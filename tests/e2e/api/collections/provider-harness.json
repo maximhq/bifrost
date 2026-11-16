@@ -61,7 +61,7 @@
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -141650,7 +141650,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"reasoning_effort\": \"low\"\n}",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"reasoning_effort\": \"high\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -141710,7 +141710,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Reply with exactly: OK\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 256\n}",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Reply with exactly: OK\",\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 256\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -141783,7 +141783,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Count from 1 to 5.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Count from 1 to 5.\",\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -142647,7 +142647,9 @@
                   "  var raw = (json.extra_fields || {}).raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
-                  "  var fileData = String((((raw.input || [])[0].content || []).filter(function (p) { return p.type === 'input_file'; }).map(function (p) { return p.file_data; })[0]) || '');",
+                  "  // Native /responses carries input[].input_file; when the endpoint declines it, the chat fallback carries messages[].file.",
+                  "  var parts = ((raw.input || raw.messages || [])[0] || {}).content || [];",
+                  "  var fileData = String((parts.map(function (p) { return p.type === 'input_file' ? p.file_data : (p.type === 'file' && p.file ? p.file.file_data : undefined); }).filter(Boolean)[0]) || '');",
                   "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
                   "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
                   "  var reply = String(((json.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('')) || '');",
@@ -164091,48 +164093,6 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - input_image reaches the decider - openrouter/typesafe/jev-router",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('an input_image part is sent to the decider as an image_url state item', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
-                  "  var a = pm.response.json().answers;",
-                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
-                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/typesafe/jev-router\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/decisions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "decisions"
-              ]
-            }
-          }
-        },
-        {
           "name": "/v1/decisions - text and image in one message read together - openrouter/openai/gpt-6-luna-decisions",
           "event": [
             {
@@ -169391,7 +169351,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": {\n        \"v\": 1,\n        \"permission_mode\": \"auto\"\n      }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -199895,43 +199855,8 @@
     },
     {
       "name": "158. Passthrough reachability for surfaces without native routes (passthrough surface pins)",
-      "description": "Rows for provider surfaces Bifrost has no native route for, covered through the catch-all passthrough routes, which accept arbitrary upstream paths for gemini (/genai_passthrough) and azure (/azure_passthrough). They prove the forwarding path for those surfaces is real, not that Bifrost models them: creating a Gemini tuning job or an Azure fine-tuning job is paid and is not exercised. Bedrock is not a catch-all passthrough: /bedrock_passthrough forwards only InvokeAgent, Retrieve and ApplyGuardrail, and folder 162 covers those operations. The /tunedModels body is carved out of the generic shape check in __skipShape.",
+      "description": "Rows for provider surfaces Bifrost has no native route for, covered through the catch-all passthrough routes, which accept arbitrary upstream paths for gemini (/genai_passthrough) and azure (/azure_passthrough). They prove the forwarding path for those surfaces is real, not that Bifrost models them: creating a Gemini tuning job or an Azure fine-tuning job is paid and is not exercised. Bedrock is not a catch-all passthrough: /bedrock_passthrough forwards only InvokeAgent, Retrieve and ApplyGuardrail, and folder 162 covers those operations.",
       "item": [
-        {
-          "name": "158.1 genai passthrough forwards a tunedModels list to Google (gemini tuned models)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/genai_passthrough/v1beta/tunedModels?pageSize=1",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "genai_passthrough",
-                "v1beta",
-                "tunedModels?pageSize=1"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var j = pm.response.json();",
-                  "pm.test('Google answered the tunedModels list through passthrough', function () { pm.expect(j, pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(j.error, 'Google rejected the list: ' + pm.response.text().slice(0, 400)).to.equal(undefined); if (j.tunedModels !== undefined) { pm.expect(j.tunedModels).to.be.an('array'); } });"
-                ]
-              }
-            }
-          ]
-        },
         {
           "name": "158.2 [EXPECT-4XX] genai passthrough forwards an operations lookup for an unknown name and Google answers not found (gemini operations)",
           "request": {
@@ -256044,46 +255969,65 @@
                   "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
                   "  pm.sendRequest(req, cb);",
                   "}",
-                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
-                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
-                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
-                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
-                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
-                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
-                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders), and the",
+                  "// built-in 'databricks' provider may hold the operator's own keys. So the row adds one run-scoped OAuth M2M",
+                  "// service-principal key to it, restricted to a model name no other row requests and pinned through",
+                  "// x-bf-api-key, so parallel rows never select it. No real Databricks credential is involved: the workspace",
+                  "// host decides how the token mint fails, which is the behaviour under test. The provider is created only",
+                  "// when absent, and only then removed afterwards.",
                   "var PROVIDER = 'databricks';",
-                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "var MODEL = 'harness-dbxoauth-unreachable';",
+                  "var KEY_PREFIX = 'harness-dbxoauth-sp-run-';",
+                  "var LEGACY_KEY = 'harness-dbxoauth-sp';",
+                  "var keyName = KEY_PREFIX + Date.now();",
                   "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthModel', MODEL);",
+                  "pm.variables.set('dbxOauthKeyName', keyName);",
+                  "pm.variables.set('dbxOauthKeyId', '');",
                   "pm.variables.set('dbxOauthCreated', '');",
-                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
-                  "function createProvider(cb) {",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(KEY_PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function addKey() {",
+                  "  mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: keyName, models: [MODEL], weight: 1, databricks_key_config: {workspace_url: '127.0.0.1:9', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err, res) {",
+                  "    pm.test('setup: added the run-scoped service principal key', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('dbxOauthKeyId', res.json().id);",
+                  "  });",
+                  "}",
+                  "function createProvider() {",
+                  "  // Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
                   "  mgmt('POST', '/api/providers', {provider: PROVIDER}, function (err, res) {",
                   "    pm.test('setup: configured the databricks provider for the run', function () {",
                   "      pm.expect(err).to.equal(null);",
                   "      pm.expect(res.code, res.text()).to.equal(200);",
                   "    });",
-                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return; }",
                   "    pm.variables.set('dbxOauthCreated', '1');",
-                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: '127.0.0.1:9', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
-                  "      pm.test('setup: added the harness service principal key', function () {",
-                  "        pm.expect(err2).to.equal(null);",
-                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
-                  "      });",
-                  "      cb();",
-                  "    });",
+                  "    addKey();",
                   "  });",
                   "}",
                   "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
-                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  if (err || !res || res.code === 404) { return createProvider(); }",
                   "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
                   "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
                   "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
-                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
-                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
-                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
-                  "    });",
-                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
-                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "    // A provider holding only the old singleton key is a leftover of an aborted run of the earlier row.",
+                  "    if (keys.length === 1 && keys[0].name === LEGACY_KEY) {",
+                  "      return mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(); });",
+                  "    }",
+                  "    var stale = keys.filter(function (k) { return isStale(k.name); });",
+                  "    (function sweep() {",
+                  "      if (stale.length) {",
+                  "        var k = stale.shift();",
+                  "        return mgmt('DELETE', '/api/providers/' + PROVIDER + '/keys/' + encodeURIComponent(k.id), null, function () { sweep(); });",
+                  "      }",
+                  "      addKey();",
+                  "    })();",
                   "  });",
                   "});"
                 ]
@@ -256103,7 +256047,9 @@
                   "  pm.sendRequest(req, cb);",
                   "}",
                   "var provider = pm.variables.get('dbxOauthProvider');",
-                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "var keyId = pm.variables.get('dbxOauthKeyId');",
+                  "function removeProvider() {",
+                  "  if (pm.variables.get('dbxOauthCreated') !== '1') { return; }",
                   "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
                   "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
                   "      pm.expect(err).to.equal(null);",
@@ -256111,8 +256057,20 @@
                   "    });",
                   "  });",
                   "}",
+                  "if (provider && keyId) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider) + '/keys/' + encodeURIComponent(keyId), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the run-scoped service principal key', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "    removeProvider();",
+                  "  });",
+                  "} else {",
+                  "  removeProvider();",
+                  "}",
                   "pm.test('an unreachable token endpoint is a temporary outage, so the configured fallback serves the request', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-provider'), 'the first attempt must be the databricks service principal key: ' + pm.response.text()).to.equal('databricks');",
                   "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + pm.response.text()).to.equal('true');",
                   "  var json = pm.response.json();",
                   "  pm.expect(json.choices).to.be.an('array').that.is.not.empty;",
@@ -256128,11 +256086,15 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{dbxOauthKeyName}}"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/{{dbxOauthModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -259288,7 +259250,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini-3-flash-preview\",\n  \"input\": \"Write a 600-word essay about rivers.\",\n  \"background\": true\n}",
+              "raw": "{\n  \"model\": \"gemini-3.1-pro-preview\",\n  \"input\": \"Write a 600-word essay about rivers.\",\n  \"background\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -266607,50 +266569,6 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/decisions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "decisions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "[EXPECT-400] /v1/decisions - extra top-level field rejected by Azure - azure/Microsoft-Decision-1",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('a passthrough field reaches Azure, which rejects it', function () {",
-                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
-                  "  pm.expect(pm.response.text()).to.include('Unrecognized request argument supplied: foo');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-bf-passthrough-extra-params",
-                "value": "true"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ],\n  \"foo\": \"bar\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/decisions",
@@ -276134,7 +276052,7 @@
                 "exec": [
                   "pm.test('Bifrost sends the assets on and relays the provider\\'s own verdict', function () {",
                   "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
-                  "  pm.expect(pm.response.text()).to.include('Unrecognized request argument supplied: assets');",
+                  "  pm.expect(pm.response.text()).to.include('image assets are not supported by this model');",
                   "});"
                 ]
               }
@@ -283042,7 +282960,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -284333,7 +284251,7 @@
     },
     {
       "name": "272. Gemini tool-call ids reach the provider without the thought signature (#8546) (gemini-call-id-strip)",
-      "description": "Bifrost joins a Gemini thought signature onto the tool-call id it hands the client (\"<id>_ts_<base64url sig>\"), because the Anthropic and OpenAI wire formats have no per-tool-call signature field. On the way back to Gemini the signature is lifted into Part.ThoughtSignature, but the joined id was also forwarded as functionCall.id / functionResponse.id, so Gemini saw a ~500-character id with the base64 signature in it as plain text -- and a model asked to reference a call by its id reproduced the whole string.\n\nEach route gets a capture row and a replay row. The signature is captured from a live turn rather than synthesised: Gemini validates the signature it is given, so a made-up blob would fail the replay for an unrelated reason. The capture row stores nothing unless the id it got back actually contains the separator, and the replay row skips on an unresolved placeholder, so a run where the model returned a bare id does not pass green having tested nothing.\n\nThe replay prompt asks the model to repeat the call id verbatim and the assertion is that the response does not contain \"_ts_\". That is one-directional by construction: once the id on the wire is the base id, the separator is a string the model has never seen and cannot invent, so the assertion can only fire when the joined id reaches the provider again.\n\nBoth converters are covered because they are the two that reach Gemini: convertResponsesMessagesToGeminiContents (/v1/responses, /anthropic/v1/messages, the Go SDK) and convertBifrostMessagesToGemini (/v1/chat/completions). Vertex has no converters of its own and reaches the same two through the WithImageURLSchemes entry points, so it is covered by the same change; swap the model prefix to a Vertex Gemini model to exercise it on that host.",
+      "description": "Bifrost joins a Gemini thought signature onto the tool-call id it hands the client (\"<id>_ts_<base64url sig>\"), because the Anthropic and OpenAI wire formats have no per-tool-call signature field. On the way back to Gemini the signature is lifted into Part.ThoughtSignature, but the joined id was also forwarded as functionCall.id / functionResponse.id, so Gemini saw a ~500-character id with the base64 signature in it as plain text -- and a model asked to reference a call by its id reproduced the whole string.\n\nEach route gets a capture row and a replay row. The signature is captured from a live turn rather than synthesised: Gemini validates the signature it is given, so a made-up blob would fail the replay for an unrelated reason. The capture row stores nothing unless the id it got back actually contains the separator, and the replay row skips on an unresolved placeholder, so a run where the model returned a bare id does not pass green having tested nothing.\n\nThe replay row reads the outbound Gemini request back through x-bf-send-back-raw-request and asserts that every functionCall.id and functionResponse.id is the base id the capture stored, with no \"_ts_\", and that the signature travels as Part.thoughtSignature. It checks the gateway's own output rather than the model's reply: Gemini does not show call ids to the model as text (asked to repeat one, it answers with the function name), so an echo-based check could not tell a stripped id from a joined one.\n\nBoth converters are covered because they are the two that reach Gemini: convertResponsesMessagesToGeminiContents (/v1/responses, /anthropic/v1/messages, the Go SDK) and convertBifrostMessagesToGemini (/v1/chat/completions). Vertex has no converters of its own and reaches the same two through the WithImageURLSchemes entry points, so it is covered by the same change; swap the model prefix to a Vertex Gemini model to exercise it on that host.",
       "item": [
         {
           "name": "gemini/gemini-3.6-flash /v1/responses signature-bearing call id captures replay input - gemini-call-id-strip",
@@ -284411,40 +284329,34 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Skip when the capture step stored nothing: the body placeholder stays",
-                  "// unresolved, so there is nothing meaningful to replay.",
+                  "// Skip when the capture step stored nothing: the body placeholder stays unresolved.",
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var text = pm.response.text() || '';",
                   "pm.test('the replayed turn is accepted', function () {",
-                  "  var body = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
-                  "  pm.expect(pm.response.json().output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + text).to.be.below(400);",
                   "});",
-                  "pm.test('the model cannot echo a separator it was never sent', function () {",
-                  "  // One-directional by construction: the prompt asks the model to repeat the",
-                  "  // call id verbatim. Once the id Gemini receives is the base id, '_ts_' is a",
-                  "  // string the model has never seen and cannot invent, so this can only fire",
-                  "  // when the joined id reaches the provider again.",
-                  "  // Scan only model-authored text and tool arguments, never the response's own",
-                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
-                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
-                  "  // correct run. Only the model's own output can show the joined id was replayed.",
-                  "  var modelText = (pm.response.json().output || []).map(function (item) {",
-                  "    var text = (item.content || []).map(function (block) { return block.text || ''; }).join('');",
-                  "    return text + (item.arguments || '');",
-                  "  }).join('');",
-                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
-                  "  // read nothing at all.",
-                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
-                  "    .to.have.length.above(0);",
-                  "  // Nonempty-and-no-'_ts_' is satisfied by any unrelated reply, on a fixed build",
-                  "  // and a broken one alike. Requiring the id the capture step actually stored is",
-                  "  // what makes the exclusion below mean something: on a broken build the model",
-                  "  // echoes base + '_ts_' + signature, so it clears this and fails the next one.",
+                  "// Reads the outbound Gemini request (x-bf-send-back-raw-request), not the model's reply: Gemini does not",
+                  "// show call ids to the model as text, so a prompt asking it to repeat one cannot verify anything.",
+                  "pm.test('Gemini gets the id it issued, with the thought signature in its own field', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 300)).to.be.an('object');",
                   "  var baseId = pm.collectionVariables.get('geminiCallIdStripBase8546') || '';",
                   "  pm.expect(baseId, 'capture stored no base id, so this row cannot verify anything').to.have.length.above(0);",
-                  "  pm.expect(modelText, 'the model did not echo the call id it was given, so this row cannot tell a stripped id from a joined one').to.include(baseId);",
-                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
-                  "    .to.not.include('_ts_');",
+                  "  var ids = [];",
+                  "  var signed = 0;",
+                  "  (raw.contents || []).forEach(function (content) {",
+                  "    (content.parts || []).forEach(function (part) {",
+                  "      if (part.functionCall) { ids.push(part.functionCall.id || ''); if (part.thoughtSignature) { signed++; } }",
+                  "      if (part.functionResponse) { ids.push(part.functionResponse.id || ''); }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(ids, 'no functionCall or functionResponse reached Gemini: ' + JSON.stringify(raw).slice(0, 400)).to.not.be.empty;",
+                  "  ids.forEach(function (id) {",
+                  "    pm.expect(id, 'the signature-joined id reached Gemini').to.not.include('_ts_');",
+                  "  });",
+                  "  pm.expect(ids, 'Gemini did not get back the id it issued').to.include(baseId);",
+                  "  pm.expect(signed, 'the thought signature was not sent as Part.thoughtSignature').to.be.above(0);",
                   "});"
                 ]
               }
@@ -284456,6 +284368,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -284549,38 +284465,34 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Skip when the capture step stored nothing: the body placeholder stays unresolved.",
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var text = pm.response.text() || '';",
                   "pm.test('the replayed turn is accepted', function () {",
-                  "  var body = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
-                  "  pm.expect(pm.response.json().choices, 'expected choices array').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + text).to.be.below(400);",
                   "});",
-                  "pm.test('the model cannot echo a separator it was never sent', function () {",
-                  "  // Scan only model-authored text and tool arguments, never the response's own",
-                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
-                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
-                  "  // correct run. Only the model's own output can show the joined id was replayed.",
-                  "  var modelText = (pm.response.json().choices || []).map(function (choice) {",
-                  "    var message = choice.message || {};",
-                  "    var calls = (message.tool_calls || []).map(function (call) {",
-                  "      var fn = call.function || {};",
-                  "      return (fn.name || '') + (fn.arguments || '');",
-                  "    }).join('');",
-                  "    return (message.content || '') + calls;",
-                  "  }).join('');",
-                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
-                  "  // read nothing at all.",
-                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
-                  "    .to.have.length.above(0);",
-                  "  // Nonempty-and-no-'_ts_' is satisfied by any unrelated reply, on a fixed build",
-                  "  // and a broken one alike. Requiring the id the capture step actually stored is",
-                  "  // what makes the exclusion below mean something: on a broken build the model",
-                  "  // echoes base + '_ts_' + signature, so it clears this and fails the next one.",
+                  "// Reads the outbound Gemini request (x-bf-send-back-raw-request), not the model's reply: Gemini does not",
+                  "// show call ids to the model as text, so a prompt asking it to repeat one cannot verify anything.",
+                  "pm.test('Gemini gets the id it issued, with the thought signature in its own field', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 300)).to.be.an('object');",
                   "  var baseId = pm.collectionVariables.get('geminiCallIdStripChatBase8546') || '';",
                   "  pm.expect(baseId, 'capture stored no base id, so this row cannot verify anything').to.have.length.above(0);",
-                  "  pm.expect(modelText, 'the model did not echo the call id it was given, so this row cannot tell a stripped id from a joined one').to.include(baseId);",
-                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
-                  "    .to.not.include('_ts_');",
+                  "  var ids = [];",
+                  "  var signed = 0;",
+                  "  (raw.contents || []).forEach(function (content) {",
+                  "    (content.parts || []).forEach(function (part) {",
+                  "      if (part.functionCall) { ids.push(part.functionCall.id || ''); if (part.thoughtSignature) { signed++; } }",
+                  "      if (part.functionResponse) { ids.push(part.functionResponse.id || ''); }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(ids, 'no functionCall or functionResponse reached Gemini: ' + JSON.stringify(raw).slice(0, 400)).to.not.be.empty;",
+                  "  ids.forEach(function (id) {",
+                  "    pm.expect(id, 'the signature-joined id reached Gemini').to.not.include('_ts_');",
+                  "  });",
+                  "  pm.expect(ids, 'Gemini did not get back the id it issued').to.include(baseId);",
+                  "  pm.expect(signed, 'the thought signature was not sent as Part.thoughtSignature').to.be.above(0);",
                   "});"
                 ]
               }
@@ -284592,6 +284504,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -284686,33 +284602,34 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Skip when the capture step stored nothing: the body placeholder stays unresolved.",
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var text = pm.response.text() || '';",
                   "pm.test('the replayed turn is accepted', function () {",
-                  "  var body = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
-                  "  pm.expect(pm.response.json().content, 'expected content array').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + text).to.be.below(400);",
                   "});",
-                  "pm.test('the model cannot echo a separator it was never sent', function () {",
-                  "  // Scan only model-authored text and tool arguments, never the response's own",
-                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
-                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
-                  "  // correct run. Only the model's own output can show the joined id was replayed.",
-                  "  var modelText = (pm.response.json().content || []).map(function (block) {",
-                  "    return (block.text || '') + (block.input ? JSON.stringify(block.input) : '');",
-                  "  }).join('');",
-                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
-                  "  // read nothing at all.",
-                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
-                  "    .to.have.length.above(0);",
-                  "  // Nonempty-and-no-'_ts_' is satisfied by any unrelated reply, on a fixed build",
-                  "  // and a broken one alike. Requiring the id the capture step actually stored is",
-                  "  // what makes the exclusion below mean something: on a broken build the model",
-                  "  // echoes base + '_ts_' + signature, so it clears this and fails the next one.",
+                  "// Reads the outbound Gemini request (x-bf-send-back-raw-request), not the model's reply: Gemini does not",
+                  "// show call ids to the model as text, so a prompt asking it to repeat one cannot verify anything.",
+                  "pm.test('Gemini gets the id it issued, with the thought signature in its own field', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 300)).to.be.an('object');",
                   "  var baseId = pm.collectionVariables.get('geminiCallIdStripAnthropicBase8546') || '';",
                   "  pm.expect(baseId, 'capture stored no base id, so this row cannot verify anything').to.have.length.above(0);",
-                  "  pm.expect(modelText, 'the model did not echo the call id it was given, so this row cannot tell a stripped id from a joined one').to.include(baseId);",
-                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
-                  "    .to.not.include('_ts_');",
+                  "  var ids = [];",
+                  "  var signed = 0;",
+                  "  (raw.contents || []).forEach(function (content) {",
+                  "    (content.parts || []).forEach(function (part) {",
+                  "      if (part.functionCall) { ids.push(part.functionCall.id || ''); if (part.thoughtSignature) { signed++; } }",
+                  "      if (part.functionResponse) { ids.push(part.functionResponse.id || ''); }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(ids, 'no functionCall or functionResponse reached Gemini: ' + JSON.stringify(raw).slice(0, 400)).to.not.be.empty;",
+                  "  ids.forEach(function (id) {",
+                  "    pm.expect(id, 'the signature-joined id reached Gemini').to.not.include('_ts_');",
+                  "  });",
+                  "  pm.expect(ids, 'Gemini did not get back the id it issued').to.include(baseId);",
+                  "  pm.expect(signed, 'the thought signature was not sent as Part.thoughtSignature').to.be.above(0);",
                   "});"
                 ]
               }
@@ -284724,6 +284641,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -288918,240 +288839,8 @@
     },
     {
       "name": "281. Tool-schema patterns are dropped for models whose datasheet row rejects them (tool-schema-pattern)",
-      "description": "zai.glm-5.3 on Bedrock answers a request whose tools carry Claude Code's ArtifactData collection pattern, a top-level `^…(?:\\/…){0,14}$`, with 400 \"The task request was rejected by the target\" and no detail, so every Claude Code turn failed. The same pattern nested under array items or an object was accepted, and removing only that one pattern let the full 33-tool request through. The construct inside the pattern was never isolated, so the fix drops the keyword outright. zai.glm-5 and 4.7 accept these patterns. core/bifrost.go toolSchemaPolicy now drops the `pattern` keyword from every tool schema when the model's datasheet row sets supports_schema_pattern:false (the us. and global. zai.glm-5.3 rows); there is no name fallback. Rows: 281.1 pins the production Claude Code route (/anthropic/v1/messages), 281.2 and 281.3 the neutral Responses and Chat routes, 281.4 is the control that zai.glm-5 gets every pattern byte-identical. 281.1 to 281.3 need an AWS account with zai.glm-5.3 access. Run: make run-provider-harness-test PROVIDER=bedrock FEATURE=\"tool-schema-pattern\"",
+      "description": "zai.glm-5.3 on Bedrock answers a request whose tools carry Claude Code's ArtifactData collection pattern, a top-level `^…(?:\\/…){0,14}$`, with 400 \"The task request was rejected by the target\" and no detail, so every Claude Code turn failed. The same pattern nested under array items or an object was accepted, and removing only that one pattern let the full 33-tool request through. The construct inside the pattern was never isolated, so the fix drops the keyword outright. zai.glm-5 and 4.7 accept these patterns. core/bifrost.go toolSchemaPolicy now drops the `pattern` keyword from every tool schema when the model's datasheet row sets supports_schema_pattern:false (the us. and global. zai.glm-5.3 rows); there is no name fallback. Only zai.glm-5.3 rows set supports_schema_pattern:false, so the drop itself is pinned in Go (TestToolSchemaPolicy_DropsPatternsOnlyWhenTheRowSaysSo, TestApplyToolSchemaPolicy_DropPatternRemovesEveryKeyword); the zai.glm-5.3 rows were removed because the harness account has no zai.glm-5.3 access. 281.4 is the control that zai.glm-5 gets every pattern byte-identical. Run: make run-provider-harness-test PROVIDER=bedrock FEATURE=\"tool-schema-pattern\"",
       "item": [
-        {
-          "name": "281.1 bedrock/us.zai.glm-5.3 /anthropic/v1/messages: no pattern on the wire for the Claude Code ArtifactData tool (was 400) - tool-schema-pattern",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var txt = pm.response.text() || '';",
-                  "var body = {};",
-                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var rr = (body.extra_fields || {}).raw_request;",
-                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
-                  "var wire = JSON.stringify(rr || null);",
-                  "",
-                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
-                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
-                  "function collect(node, key, out) {",
-                  "  if (!node || typeof node !== 'object') { return out; }",
-                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
-                  "  Object.keys(node).forEach(function (k) {",
-                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
-                  "  });",
-                  "  return out;",
-                  "}",
-                  "var pats = collect(rr, 'pattern', []);",
-                  "",
-                  "pm.test('request is accepted', function () {",
-                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
-                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "});",
-                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
-                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
-                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
-                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
-                  "});",
-                  "pm.test('the model answers', function () {",
-                  "  var u = body.usage || {};",
-                  "  var out = u.output_tokens || u.completion_tokens;",
-                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
-                  "});",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
-              },
-              {
-                "key": "User-Agent",
-                "value": "claude-cli/2.1.301 (external, cli)"
-              },
-              {
-                "key": "x-bf-send-back-raw-request",
-                "value": "true"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/us.zai.glm-5.3\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"ArtifactData\",\n      \"description\": \"Read or write artifact data\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n          },\n          \"doc_id\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n          },\n          \"writes\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"collection\": {\n                  \"type\": \"string\",\n                  \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                }\n              }\n            }\n          }\n        },\n        \"required\": [\n          \"collection\"\n        ]\n      }\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "281.2 bedrock/global.zai.glm-5.3 /v1/responses: no pattern on the wire (was 400) - tool-schema-pattern",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var txt = pm.response.text() || '';",
-                  "var body = {};",
-                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var rr = (body.extra_fields || {}).raw_request;",
-                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
-                  "var wire = JSON.stringify(rr || null);",
-                  "",
-                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
-                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
-                  "function collect(node, key, out) {",
-                  "  if (!node || typeof node !== 'object') { return out; }",
-                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
-                  "  Object.keys(node).forEach(function (k) {",
-                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
-                  "  });",
-                  "  return out;",
-                  "}",
-                  "var pats = collect(rr, 'pattern', []);",
-                  "",
-                  "pm.test('request is accepted', function () {",
-                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
-                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "});",
-                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
-                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
-                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
-                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
-                  "});",
-                  "pm.test('the model answers', function () {",
-                  "  var u = body.usage || {};",
-                  "  var out = u.output_tokens || u.completion_tokens;",
-                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
-                  "});",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-bf-send-back-raw-request",
-                "value": "true"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.zai.glm-5.3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ArtifactData\",\n      \"description\": \"Read or write artifact data\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n          },\n          \"doc_id\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n          },\n          \"writes\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"collection\": {\n                  \"type\": \"string\",\n                  \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                }\n              }\n            }\n          }\n        },\n        \"required\": [\n          \"collection\"\n        ]\n      }\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/responses",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "responses"
-              ]
-            }
-          }
-        },
-        {
-          "name": "281.3 bedrock/us.zai.glm-5.3 /v1/chat/completions: no pattern on the wire (was 400) - tool-schema-pattern",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var txt = pm.response.text() || '';",
-                  "var body = {};",
-                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var rr = (body.extra_fields || {}).raw_request;",
-                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
-                  "var wire = JSON.stringify(rr || null);",
-                  "",
-                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
-                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
-                  "function collect(node, key, out) {",
-                  "  if (!node || typeof node !== 'object') { return out; }",
-                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
-                  "  Object.keys(node).forEach(function (k) {",
-                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
-                  "  });",
-                  "  return out;",
-                  "}",
-                  "var pats = collect(rr, 'pattern', []);",
-                  "",
-                  "pm.test('request is accepted', function () {",
-                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
-                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "});",
-                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
-                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
-                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
-                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
-                  "});",
-                  "pm.test('the model answers', function () {",
-                  "  var u = body.usage || {};",
-                  "  var out = u.output_tokens || u.completion_tokens;",
-                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
-                  "});",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-bf-send-back-raw-request",
-                "value": "true"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/us.zai.glm-5.3\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"ArtifactData\",\n        \"description\": \"Read or write artifact data\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"collection\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n            },\n            \"doc_id\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n            },\n            \"writes\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"collection\": {\n                    \"type\": \"string\",\n                    \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                  }\n                }\n              }\n            }\n          },\n          \"required\": [\n            \"collection\"\n          ]\n        }\n      }\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
         {
           "name": "281.4 bedrock/zai.glm-5 /v1/responses: the same schema reaches the provider byte-identical - tool-schema-pattern",
           "event": [
@@ -322941,56 +322630,6 @@
           ]
         },
         {
-          "name": "[EXPECT-4XX] 342.7 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an out-of-range seed is rejected by ElevenLabs, so the body field reached it unchanged",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "xi-api-key",
-                "value": "sk-bf-test-key"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\",\n  \"seed\": 4294967296\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "elevenlabs",
-                "v1",
-                "text-to-speech",
-                "21m00Tcm4TlvDq8ikWAM"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('ElevenLabs validates the forwarded seed', function () {",
-                  "  var code = pm.response.code;",
-                  "  pm.expect(code, 'want a 4xx validation error from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
-                  "  pm.expect(code, 'a rate limit is not a validation error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
-                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name seed: ' + pm.response.text().slice(0, 300)).to.include('seed');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "[EXPECT-4XX] 342.8 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an out-of-range voice_settings.stability is rejected by ElevenLabs, so the nested body field reached it unchanged",
           "request": {
             "method": "POST",
@@ -323089,7 +322728,7 @@
                   "  pm.expect(code, 'a rate limit is not a validation error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
                   "  var j = pm.response.json();",
                   "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
-                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name output_format: ' + pm.response.text().slice(0, 300)).to.include('output_format');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name output_format: ' + pm.response.text().slice(0, 300)).to.match(/output[ _]format/);",
                   "});"
                 ]
               }
@@ -337766,6 +337405,1135 @@
                   "  var body = pm.response.json();",
                   "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
                   "  pm.expect(body.error.message, text).to.include('machgen');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "359. Thinking block_binding reaches the provider with its beta (thinking block binding)",
+      "description": "thinking.block_binding.prefix_mismatch_behavior (\"error\" | \"drop_block\", beta thinking-binding-controls-2026-08-01) tells the API to drop, rather than 400 on, a thinking block whose signature is bound to a different conversation (\"The block is bound to a different conversation\"). AnthropicThinking had no field for it, so every typed route dropped it silently: native /anthropic/v1/messages (adaptive thinking is rebuilt from the neutral reasoning shape, never restored) and /v1/chat/completions with an Anthropic thinking object (promoteThinkingFromExtraParams rebuilt it from type+display). The raw Claude Code passthrough kept it, but also forwarded it to hosts that do not take the beta. The fix models the field, records it in the native request witness and reattaches it at egress on a thinking-on mode, derives the beta from the body (SDK clients cannot set anthropic-beta on the neutral routes), and strips it on hosts without ProviderFeatures.ThinkingBinding (Vertex, Bedrock, Mantle, Azure) on both the typed and raw paths. Cases: native route forwards it (raw_request) and is accepted, which also proves the derived beta (the field 400s without it); the stream variant completes; chat completions forwards it, streaming too (raw_request on the final frame; the native stream case cannot see the outgoing body because Anthropic-shaped SSE has no raw_request echo, so it pins acceptance and the derived beta); chat completions with x-bf-passthrough-extra-params and an explicit reasoning_effort gets the beta derived from the merged body (the typed derivation ran before the merge and missed it); Claude Code passthrough to Vertex no longer leaks it. /v1/responses has no thinking object to carry it (no neutral construct) and is not covered.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                                    "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
+"var txt = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: stream completes', function () {",
+                  "  pm.expect(txt, 'no message_stop: ' + txt.slice(0, 400)).to.include('message_stop');",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The chat stream attaches raw_request to its final SSE frame, which is the witness that the streaming builder kept the binding.",
+                  "var finished = false;",
+                  "var streamError = null;",
+                  "var rr;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (chunk.error) { streamError = chunk.error; }",
+                  "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (choice && choice.finish_reason) { finished = true; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding: stream accepted and finished', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(streamError, 'stream carried an error: ' + JSON.stringify(streamError)).to.eql(null);",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing on the final frame - x-bf-send-back-raw-request not honored: ' + txt.slice(-400)).to.be.an('object');",
+                  "  pm.expect(rr.stream, 'raw_request is not the streaming request: ' + JSON.stringify(rr).slice(0, 400)).to.eql(true);",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the streaming build: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// x-bf-passthrough-extra-params merges the caller's thinking object onto the wire after the typed body is built, so the beta has to come from the merged body. Before the fix it did not, and Anthropic 400s on block_binding without thinking-binding-controls-2026-08-01.",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"reasoning_effort\": \"low\",\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex does not take thinking-binding-controls, so the field must be stripped there instead of forwarded into an 'Extra inputs are not permitted' 400.",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding: Vertex returned an assistant message', function () {",
+                  "  pm.expect(body.type, 'not a message response: ' + txt.slice(0, 400)).to.eql('message');",
+                  "  pm.expect(body.role, 'not an assistant message: ' + txt.slice(0, 400)).to.eql('assistant');",
+                  "  pm.expect(body.content, 'content missing: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.content.some(function (b) { return b && (b.type === 'text' || b.type === 'thinking'); }), 'no text or thinking block: ' + txt.slice(0, 400)).to.eql(true);",
+                  "  pm.expect(body.stop_reason, 'stop_reason missing: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "360. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway) [SERIAL]",
+      "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /claude-code route is unrouted, so each case fails.",
+      "item": [
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway discovery advertises the device grant - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/claude-code/.well-known/oauth-authorization-server"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('discovery advertises the device and refresh grants under /claude-code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/device_authorization$/);",
+                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/token$/);",
+                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/revoke$/);",
+                  "  pm.expect(body.grant_types_supported, pm.response.text()).to.include.members(['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']);",
+                  "  pm.expect(body, pm.response.text()).to.not.have.property('authorization_endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] anthropic claude-code-gateway claude-haiku messages without a gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a request without a gateway bearer is refused with the Anthropic error envelope', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.headers.get('x-should-retry'), 'x-should-retry makes Claude Code prompt for /login at once').to.equal('false');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('error');",
+                  "  pm.expect(body.error.type, pm.response.text()).to.equal('authentication_error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway device authorization without client_id - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-code/harness"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/device_authorization",
+            "body": {
+              "mode": "raw",
+              "raw": "surface=claude_code"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('device authorization issues a device code and a base-20 user code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.device_code, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.user_code, pm.response.text()).to.match(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);",
+                  "  pm.expect(body.verification_uri, pm.response.text()).to.match(/\\/oauth\\/device$/);",
+                  "  pm.expect(body.verification_uri_complete, pm.response.text()).to.include('user_code=' + encodeURIComponent(body.user_code));",
+                  "  pm.expect(body.interval, pm.response.text()).to.equal(5);",
+                  "  pm.collectionVariables.set('cc_gateway_device_code', body.device_code);",
+                  "  pm.collectionVariables.set('cc_gateway_user_code', body.user_code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic claude-code-gateway token poll before approval is pending - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:device_code"
+                },
+                {
+                  "key": "device_code",
+                  "value": "{{cc_gateway_device_code}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unapproved device code polls as authorization_pending', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.equal('authorization_pending');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway verification page accepts the typed user code - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/device/verify",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_code\": \"{{cc_gateway_user_code_lower}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Users type codes in any case and spacing; the gateway normalizes them.",
+                  "pm.collectionVariables.set('cc_gateway_user_code_lower', String(pm.collectionVariables.get('cc_gateway_user_code') || '').toLowerCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the user code leads to the consent page for this sign-in', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var consentURL = pm.response.json().consent_url;",
+                  "  pm.expect(consentURL, pm.response.text()).to.match(/\\/oauth\\/consent\\?flow=[^#&]+/);",
+                  "  var flow = decodeURIComponent(consentURL.match(/[?&]flow=([^#&]+)/)[1]);",
+                  "  var token = consentURL.indexOf('#t=') === -1 ? '' : decodeURIComponent(consentURL.split('#t=')[1]);",
+                  "  pm.collectionVariables.set('cc_gateway_flow', flow);",
+                  "  pm.collectionVariables.set('cc_gateway_consent_token', token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway consent with the harness virtual key - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{cc_gateway_consent_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{cc_gateway_flow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"vk\",\n  \"value\": \"sk-bf-test-key\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('consent approves the device sign-in without minting an authorization code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var redirect = pm.response.json().redirect_url;",
+                  "  pm.expect(redirect, pm.response.text()).to.match(/\\/oauth\\/device\\?approved=1$/);",
+                  "  pm.expect(redirect, pm.response.text()).to.not.include('code=');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway approved device code returns tokens - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:device_code"
+                },
+                {
+                  "key": "device_code",
+                  "value": "{{cc_gateway_device_code}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait out the advertised 5s poll interval so this poll is not answered slow_down.",
+                  "setTimeout(function () {}, 5500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the approved device code is exchanged once for a bearer and a refresh token', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.token_type, pm.response.text()).to.equal('Bearer');",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.expires_in, pm.response.text()).to.be.above(0);",
+                  "  pm.collectionVariables.set('cc_gateway_access_token', body.access_token);",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway claude-haiku messages with the gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the gateway bearer runs inference as the virtual key it was approved for', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('message');",
+                  "  pm.expect(body.content, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway claude-haiku count_tokens with the gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages/count_tokens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Count these tokens.\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('count_tokens is served behind the gateway bearer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().input_tokens, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway managed settings served with checksum - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/managed/settings"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('managed settings carry the Claude Code checksum and a matching ETag', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.checksum, pm.response.text()).to.match(/^sha256:[0-9a-f]{64}$/);",
+                  "  pm.expect(body.uuid, pm.response.text()).to.equal(body.checksum);",
+                  "  pm.expect(body.settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, pm.response.text()).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('ETag'), pm.response.text()).to.equal('\"' + body.checksum + '\"');",
+                  "  pm.collectionVariables.set('cc_gateway_settings_etag', pm.response.headers.get('ETag'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-304] anthropic claude-code-gateway unchanged managed settings answer 304 - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "If-None-Match",
+                "value": "{{cc_gateway_settings_etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/managed/settings"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unchanged policy is answered 304 so the hourly poll stays cheap', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(304);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway OTLP metrics export accepted - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/metrics",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceMetrics\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('telemetry exports are accepted so the client exporter does not error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway refresh grant without client_id - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the refresh grant rotates the refresh token without a client_id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, 'a rotated refresh token: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway rotated refresh token refreshes again - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the rotated refresh token works and rotates again', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, 'a rotated refresh token: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway sign-out revokes the grant - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/revoke",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                },
+                {
+                  "key": "token_type_hint",
+                  "value": "refresh_token"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('revocation succeeds and removes the grant this folder created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic claude-code-gateway revoked refresh token is refused - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('after sign-out the refresh token no longer works', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.equal('invalid_grant');",
                   "});"
                 ]
               }

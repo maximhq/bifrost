@@ -316,6 +316,58 @@ func TestConsentOAuth2AuthorizeRequest_AtomicPendingTransition(t *testing.T) {
 	assert.Equal(t, "code-hash-1", *got.CodeHash)
 }
 
+func TestOAuth2AuthorizeRequest_DeviceCodeLookups(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	seedDevice := func(id, deviceHash, userHash string, status tables.OAuth2AuthorizeRequestStatus, expires time.Time) {
+		require.NoError(t, s.CreateOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+			ID: id, ClientID: "bifrost-claude-code", Resource: "https://bifrost.test/claude-code", Status: status,
+			DeviceCodeHash: strPtr(deviceHash), UserCodeHash: strPtr(userHash),
+			ExpiresAt: expires, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}))
+	}
+	seedDevice("dev-pending", "device-1", "user-1", tables.OAuth2AuthorizeRequestStatusPending, time.Now().Add(time.Minute))
+	seedDevice("dev-consented", "device-2", "user-2", tables.OAuth2AuthorizeRequestStatusConsented, time.Now().Add(time.Minute))
+	seedDevice("dev-expired", "device-3", "user-3", tables.OAuth2AuthorizeRequestStatusPending, time.Now().Add(-time.Minute))
+	// Authorization-code rows leave both columns NULL; many may coexist under the unique indexes.
+	seedAuthorizeRequest(t, s, "code-1", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+	seedAuthorizeRequest(t, s, "code-2", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+
+	// The device-code lookup returns the row in any status, so polling can tell pending from consented.
+	for hash, id := range map[string]string{"device-1": "dev-pending", "device-2": "dev-consented", "device-3": "dev-expired"} {
+		got, err := s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, hash)
+		require.NoError(t, err)
+		assert.Equal(t, id, got.ID)
+	}
+	_, err := s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, "missing")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// The user-code lookup only finds a still-pending, unexpired sign-in.
+	got, err := s.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "dev-pending", got.ID)
+	for _, hash := range []string{"user-2", "user-3", "missing"} {
+		_, err := s.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, hash)
+		assert.ErrorIs(t, err, ErrNotFound, hash)
+	}
+
+	// Device codes are unique.
+	err = s.CreateOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+		ID: "dev-dup", ClientID: "bifrost-claude-code", Status: tables.OAuth2AuthorizeRequestStatusPending,
+		DeviceCodeHash: strPtr("device-1"), ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	assert.Error(t, err)
+
+	// Consent without a code hash (the device-grant path) completes the row.
+	require.NoError(t, s.ConsentOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+		ID: "dev-pending", BfMode: "vk", BfSub: "vk-1", UpdatedAt: time.Now(),
+	}))
+	got, err = s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, "device-1")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.Nil(t, got.CodeHash)
+}
+
 func TestConsumeOAuth2AuthorizeRequest_SingleUse(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()
