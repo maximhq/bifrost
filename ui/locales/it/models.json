@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "Il router di complessità sta diventando Router",
-				"body": "I router possono eseguire più classificatori, ognuno con i propri modelli e le richieste che gestisce. Questa pagina continua a funzionare come oggi; ti consigliamo di provare i router per le nuove configurazioni.",
+				"body": "Con i router puoi creare più router, ognuno con il proprio classificatore e i propri modelli. Questa pagina continua a funzionare come oggi; ti consigliamo di passare ai router sia per le configurazioni esistenti sia per quelle nuove.",
 				"action": "Apri i router"
 			}
 		},

@@ -755,6 +755,38 @@ func (s *ClickHouseLogStore) withChildAggregates(ctx context.Context, log Log) *
 
 // --- Updates (read-modify-write + re-insert) ---
 
+// chFindForUpdate loads the row an RMW update patches. logs, mcp_tool_logs,
+// agent_logs and relay_logs all sort by (timestamp, id), so a bare id read
+// prunes only through the id bloom filter, and only where FINAL honours skip
+// indexes; otherwise it reads every granule of the table. A timestamp hint on
+// ctx (LogTimestampContextKey) bounds the read to the partition and granules
+// around the row, the same way FindByID does. With no hint, or one that
+// matches nothing, it falls back to the id alone.
+func (s *ClickHouseLogStore) chFindForUpdate(ctx context.Context, dst any, id string) error {
+	idCtx := s.idLookupContext(ctx)
+	if ts, ok := logTimestampFromContext(ctx); ok {
+		err := s.db.WithContext(idCtx).
+			Where("id = ?", id).
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)",
+				ts.Add(-chLogTimestampWindow).UnixMilli(), ts.Add(chLogTimestampWindow).UnixMilli()).
+			First(dst).Error
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if err := s.db.WithContext(idCtx).Where("id = ?", id).First(dst).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 // Update applies an update (a column->value map, or a *Log/Log whose non-zero
 // fields are written) to the log row by re-inserting a patched copy.
 func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) error {
@@ -764,10 +796,7 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 	}
 	defer s.lockRMW("logs", id)()
 	var existing Log
-	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		}
+	if err := s.chFindForUpdate(ctx, &existing, id); err != nil {
 		return err
 	}
 	dest := reflect.ValueOf(&existing).Elem()
@@ -797,6 +826,139 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 		return fmt.Errorf("clickhouse: unsupported Update entry type %T", entry)
 	}
 	return s.chReinsert(ctx, &existing)
+}
+
+// HasObjectMark names a row whose payload object has been written.
+type HasObjectMark struct {
+	ID        string
+	Timestamp time.Time // the row's timestamp; zero when unknown
+	Key       string    // the object written; checked against the row's payload_reference where the table has one
+}
+
+// HasObjectMarkResult reports the marks MarkHasObject did not apply.
+type HasObjectMarkResult struct {
+	Missing    []string // ids with no row
+	Superseded []string // keys of marks whose row now references a different object
+}
+
+// MarkHasObject sets has_object on many rows of one offloaded table. Each chunk
+// costs one read and at most one re-insert, where flipping rows one Update at a
+// time costs a read and a single-row insert (a new part) per row. The read is
+// bounded by the chunk's timestamp range, so it prunes on the (timestamp, id)
+// sort key; ids it misses there (a wrong or zero timestamp) are read by id
+// alone. Rows already flagged are not re-inserted.
+//
+// agent_logs rows name their object in payload_reference, and an update moves
+// the row to a new object. A mark for any other key is superseded: the row's
+// current object may not exist, so the flag is left alone and the mark's key
+// is reported for the caller to delete.
+func (s *ClickHouseLogStore) MarkHasObject(ctx context.Context, table string, marks []HasObjectMark) (HasObjectMarkResult, error) {
+	switch table {
+	case "logs":
+		return chMarkHasObject(ctx, s, table, marks, func(r *Log) (string, *bool, *string) { return r.ID, &r.HasObject, nil })
+	case "mcp_tool_logs":
+		return chMarkHasObject(ctx, s, table, marks, func(r *MCPToolLog) (string, *bool, *string) { return r.ID, &r.HasObject, nil })
+	case "agent_logs":
+		return chMarkHasObject(ctx, s, table, marks, func(r *AgentLog) (string, *bool, *string) { return r.ID, &r.HasObject, r.PayloadReference })
+	case "relay_logs":
+		return chMarkHasObject(ctx, s, table, marks, func(r *RelayLog) (string, *bool, *string) { return r.ID, &r.HasObject, nil })
+	default:
+		return HasObjectMarkResult{}, fmt.Errorf("clickhouse: MarkHasObject: unsupported table %q", table)
+	}
+}
+
+// chMarkHasObject is MarkHasObject for one table. fields returns a row's id,
+// its has_object flag, and the object it references (nil when the table does
+// not track one, so every mark for the row applies).
+func chMarkHasObject[T any](ctx context.Context, s *ClickHouseLogStore, table string, marks []HasObjectMark, fields func(*T) (string, *bool, *string)) (HasObjectMarkResult, error) {
+	var result HasObjectMarkResult
+	err := forEachRMWChunk(marks, func(chunk []HasObjectMark) error {
+		ids := make([]string, 0, len(chunk))
+		var lo, hi time.Time
+		bounded := true
+		for _, m := range chunk {
+			ids = append(ids, m.ID)
+			if m.Timestamp.IsZero() {
+				bounded = false
+				continue
+			}
+			if lo.IsZero() || m.Timestamp.Before(lo) {
+				lo = m.Timestamp
+			}
+			if hi.IsZero() || m.Timestamp.After(hi) {
+				hi = m.Timestamp
+			}
+		}
+		defer s.lockRMWBatch(table, ids)()
+		idCtx := s.idLookupContext(ctx)
+		var rows []*T
+		if bounded {
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			if err := s.db.WithContext(idCtx).Where("id IN ?", ids).
+				Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)",
+					lo.Add(-chLogTimestampWindow).UnixMilli(), hi.Add(chLogTimestampWindow).UnixMilli()).
+				Find(&rows).Error; err != nil {
+				return err
+			}
+		}
+		found := make(map[string]struct{}, len(rows))
+		for _, r := range rows {
+			id, _, _ := fields(r)
+			found[id] = struct{}{}
+		}
+		var rest []string
+		for _, id := range ids {
+			if _, ok := found[id]; !ok {
+				rest = append(rest, id)
+			}
+		}
+		if len(rest) > 0 {
+			var more []*T
+			if err := s.db.WithContext(idCtx).Where("id IN ?", rest).Find(&more).Error; err != nil {
+				return err
+			}
+			for _, r := range more {
+				id, _, _ := fields(r)
+				found[id] = struct{}{}
+			}
+			rows = append(rows, more...)
+		}
+		byID := make(map[string]*T, len(rows))
+		for _, r := range rows {
+			id, _, _ := fields(r)
+			byID[id] = r
+		}
+		applies := make(map[string]bool, len(rows))
+		reported := make(map[string]struct{})
+		for _, m := range chunk {
+			r, ok := byID[m.ID]
+			if !ok {
+				if _, seen := reported[m.ID]; !seen {
+					result.Missing = append(result.Missing, m.ID)
+					reported[m.ID] = struct{}{}
+				}
+				continue
+			}
+			if _, _, ref := fields(r); ref != nil && *ref != "" && m.Key != "" && *ref != m.Key {
+				result.Superseded = append(result.Superseded, m.Key)
+				continue
+			}
+			applies[m.ID] = true
+		}
+		write := make([]*T, 0, len(applies))
+		for id := range applies {
+			r := byID[id]
+			if _, flag, _ := fields(r); !*flag {
+				*flag = true
+				write = append(write, r)
+			}
+		}
+		if len(write) == 0 {
+			return nil
+		}
+		return s.chReinsert(ctx, &write)
+	})
+	return result, err
 }
 
 // BulkUpdateCost backfills costs by reading each chunk of rows, patching cost,
@@ -904,10 +1066,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	}
 	defer s.lockRMW("agent_logs", id)()
 	var existing AgentLog
-	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		}
+	if err := s.chFindForUpdate(ctx, &existing, id); err != nil {
 		return err
 	}
 	dest := reflect.ValueOf(&existing).Elem()
@@ -931,10 +1090,7 @@ func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, upda
 	}
 	defer s.lockRMW("relay_logs", id)()
 	var existing RelayLog
-	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		}
+	if err := s.chFindForUpdate(ctx, &existing, id); err != nil {
 		return err
 	}
 	if err := chApplyUpdateMap(ctx, st, reflect.ValueOf(&existing).Elem(), updates); err != nil {
@@ -951,10 +1107,7 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 	}
 	defer s.lockRMW("mcp_tool_logs", id)()
 	var existing MCPToolLog
-	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		}
+	if err := s.chFindForUpdate(ctx, &existing, id); err != nil {
 		return err
 	}
 	dest := reflect.ValueOf(&existing).Elem()
@@ -1883,13 +2036,13 @@ func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context
 	return inserted, nil
 }
 
-// DeleteRelayLogs deletes the identified rows with a lightweight delete.
 // DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
 // request logs, so the retention cleaner prunes relay rows on ClickHouse too.
 func (s *ClickHouseLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
 	return s.chRetentionDelete(ctx, "relay_logs", "timestamp", cutoff)
 }
 
+// DeleteRelayLogs deletes the identified rows with a lightweight delete.
 func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil

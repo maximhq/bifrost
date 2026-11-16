@@ -1068,7 +1068,7 @@ Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses Typ
 - **Limits.** Choice questions take 2-255 options and score questions 2-10 levels; the context window is 32,768 tokens.
 - **No response `id`.** Azure's `x-request-id` is in `extra_fields.provider_response_headers`.
 
-Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
+Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. A [router](/features/routers#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
 
 A decision is priced from the model catalog: at the model's decision rates where it lists them, otherwise at its chat rates. A model the catalog does not list is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
 

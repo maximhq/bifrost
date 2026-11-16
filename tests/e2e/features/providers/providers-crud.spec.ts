@@ -491,7 +491,9 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible();
       const saved = await savedAliases();
       expect(saved, "the replaced pattern must be gone").not.toHaveProperty([pattern]);
-      expect(saved[corrected].model_id).toBe("global.anthropic.$1");
+      // An alias with only model_id comes back in the legacy string shape.
+      const correctedAlias: string | { model_id: string } = saved[corrected];
+      expect(typeof correctedAlias === "string" ? correctedAlias : correctedAlias.model_id).toBe("global.anthropic.$1");
     });
 
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
@@ -615,6 +617,40 @@ test.describe("Providers", () => {
       const saved = provider.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
+    });
+
+    test("should add MachGen from the provider list and save a key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("machgen"))) {
+        await providersPage.addKnownProviderFromDropdown("machgen");
+        createdProviders.push("machgen");
+      }
+      await expect(providersPage.getProviderItem("machgen")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("machgen");
+
+      const keyData = createProviderKeyData({
+        name: `MachGen-Key-${Date.now()}`,
+        value: "MGA_e2e-machgen-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "machgen", keyName: keyData.name });
+
+      // Model discovery runs on save and fails against a fake key; the key must still save.
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/machgen/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; models?: string[] }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.models).toEqual(["*"]);
     });
   });
 
@@ -1126,7 +1162,7 @@ test.describe("Providers", () => {
 
       // Change only the weight, then save without touching the auth method.
       await providersPage.openKeyEditor(keyName);
-      await page.getByLabel("Weight").fill("2");
+      await page.getByLabel("Weight").fill("0.5");
       await providersPage.keySaveBtn.click();
       await providersPage.waitForSuccessToast();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
@@ -1136,7 +1172,7 @@ test.describe("Providers", () => {
       const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
       const saved = body.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
-      expect(saved?.weight).toBe(2);
+      expect(saved?.weight).toBe(0.5);
       expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
     });
 

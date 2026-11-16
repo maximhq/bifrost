@@ -725,6 +725,8 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 type anthropicNativeRequestSurface struct {
 	// Thinking is set only for the closed preservable set; nil otherwise.
 	Thinking *AnthropicThinking
+	// BlockBinding is the caller's thinking.block_binding, kept for every thinking type.
+	BlockBinding *AnthropicThinkingBlockBinding
 	// MaxTokens is the caller's own max_tokens, kept only so the restore can
 	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
 	// one case where the caller's budget_tokens has to be refitted rather than
@@ -805,7 +807,12 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		if req.Thinking.Display != nil {
 			recorded.Display = schemas.Ptr(*req.Thinking.Display)
 		}
+		// Restored separately, behind the host gate, by restoreThinkingBlockBinding.
+		recorded.BlockBinding = nil
 		surface.Thinking = &recorded
+	}
+	if req.Thinking != nil {
+		surface.BlockBinding = copyThinkingBlockBinding(req.Thinking.BlockBinding)
 	}
 	surface.MaxTokens = req.MaxTokens
 	// Deep copy: the projection's pointer fields alias the inbound request
@@ -813,6 +820,19 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 	// and reused after conversion.
 	surface.NeutralReasoning = copyResponsesReasoning(neutralReasoning)
 	ctx.SetValue(anthropicNativeRequestSurfaceKey, surface)
+}
+
+// copyThinkingBlockBinding deep-copies a thinking.block_binding so the recorded
+// witness shares no pointer with the (possibly pooled) inbound request.
+func copyThinkingBlockBinding(in *AnthropicThinkingBlockBinding) *AnthropicThinkingBlockBinding {
+	if in == nil {
+		return nil
+	}
+	out := AnthropicThinkingBlockBinding{}
+	if in.PrefixMismatchBehavior != nil {
+		out.PrefixMismatchBehavior = schemas.Ptr(*in.PrefixMismatchBehavior)
+	}
+	return &out
 }
 
 // copyResponsesReasoning deep-copies a reasoning projection so the recorded
@@ -912,6 +932,23 @@ func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
 	return set
 }
 
+// restoreThinkingBlockBinding puts the caller's thinking.block_binding back on the
+// egress thinking object. The neutral reasoning shape has no slot for it, so the
+// converter rebuilds thinking without it -- and for "adaptive", the mode the
+// prefix-check models require, the thinking object is always rebuilt rather than
+// restored. It is reattached whatever thinking type the egress settled on, as long
+// as that type can carry it and the host accepts the beta: a plugin that turned
+// thinking off, or a fallback onto a host without the beta, simply leaves it off.
+func restoreThinkingBlockBinding(req *AnthropicMessageRequest, binding *AnthropicThinkingBlockBinding, provider schemas.ModelProvider) {
+	if binding == nil || req.Thinking == nil || req.Thinking.BlockBinding != nil {
+		return
+	}
+	if !ProviderFeatures[provider].ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		return
+	}
+	req.Thinking.BlockBinding = copyThinkingBlockBinding(binding)
+}
+
 // restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
 // Anthropic Messages request that the round trip through the neutral shape
 // could not carry. It is a no-op unless this request arrived as a native
@@ -996,6 +1033,8 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 			}
 		}
 	}
+
+	restoreThinkingBlockBinding(req, surface.BlockBinding, provider)
 
 	// Sampling is deliberately NOT restored, and the reason is worth keeping
 	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips

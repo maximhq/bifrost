@@ -341,7 +341,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'baseten'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'baseten', 'machgen'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -337409,7 +337409,755 @@
       ]
     },
     {
-      "name": "358. Bedrock Request Metadata Headers (#9297 / PR #9189)",
+      "name": "358. MachGen Provider Coverage (list models, image, image edit, video)",
+      "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
+      "item": [
+        {
+          "name": "machgen /v1/models lists the key's catalog with task types",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=machgen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "machgen"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('list models succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('every model is a machgen model with its task types', function () {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'empty catalog: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  data.forEach(function (m) {",
+                  "    pm.expect(m.id).to.match(/^machgen\\//);",
+                  "    pm.expect(m.supported_methods, 'no task types on ' + m.id).to.be.an('array').that.is.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('includes a public image and video model with their task types', function () {",
+                  "  var byId = {};",
+                  "  pm.response.json().data.forEach(function (m) { byId[m.id] = m; });",
+                  "  pm.expect(byId, 'machgen/FLUX.2-dev missing').to.have.property('machgen/FLUX.2-dev');",
+                  "  pm.expect(byId, 'machgen/MiniMax-H3 missing').to.have.property('machgen/MiniMax-H3');",
+                  "  pm.expect(byId['machgen/FLUX.2-dev'].supported_methods).to.include.members(['T2I', 'I2I']);",
+                  "  pm.expect(byId['machgen/MiniMax-H3'].supported_methods).to.include('T2V');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/FLUX.2-dev text-to-image (waits for the task, returns b64_json)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a blue glass marble on white background\",\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-image succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns the image inline as base64', function () {",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d[0].b64_json, 'no b64_json: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/FLUX.2-dev image edit via image_url (I2I, no upload)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "machgen/FLUX.2-dev",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the scones look frosted",
+                  "type": "text"
+                },
+                {
+                  "key": "image_url",
+                  "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image edit by URL succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns the image inline as base64', function () {",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d[0].b64_json, 'no b64_json: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] machgen/FLUX.2-dev n=2 is rejected before reaching MachGen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a red cube\",\n  \"n\": 2,\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected as a caller error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('n must be 1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] machgen/FLUX.2-dev data-URL input image is rejected before reaching MachGen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/FLUX.2-dev\",\n  \"prompt\": \"a red cube\",\n  \"input_images\": [\"data:image/png;base64,iVBORw0KGgo=\"],\n  \"size\": \"1024x1024\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected as a caller error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('public http(s) URL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen/MiniMax-H3 text-to-video submit (size maps to height + aspect ratio)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"machgen/MiniMax-H3\",\n  \"prompt\": \"a red panda exploring a misty forest at dawn\",\n  \"seconds\": \"5\",\n  \"size\": \"1366x768\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-video submit accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('returns a queued job id', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.status).to.equal('queued');",
+                  "  pm.collectionVariables.set('machgenVideoId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "machgen video retrieve - poll the text-to-video job (GET /v1/videos/{id})",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{machgenVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{machgenVideoId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('machgenVideoId');",
+                  "pm.test('the submit row produced a video id', function () {",
+                  "  pm.expect(id, 'machgenVideoId was not set by the text-to-video submit row').to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('retrieve resolves the provider from the id suffix', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('reports a lifecycle status', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(['queued','in_progress','completed','failed'], 'unexpected status: ' + pm.response.text())",
+                  "    .to.include(j.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] machgen video delete is unsupported (DELETE /v1/videos/{id})",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/t-unsupported:machgen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "t-unsupported:machgen"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('refusal is the unsupported-operation error for machgen', function () {",
+                  "  var text = pm.response.text();",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('machgen');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "359. Thinking block_binding reaches the provider with its beta (thinking block binding)",
+      "description": "thinking.block_binding.prefix_mismatch_behavior (\"error\" | \"drop_block\", beta thinking-binding-controls-2026-08-01) tells the API to drop, rather than 400 on, a thinking block whose signature is bound to a different conversation (\"The block is bound to a different conversation\"). AnthropicThinking had no field for it, so every typed route dropped it silently: native /anthropic/v1/messages (adaptive thinking is rebuilt from the neutral reasoning shape, never restored) and /v1/chat/completions with an Anthropic thinking object (promoteThinkingFromExtraParams rebuilt it from type+display). The raw Claude Code passthrough kept it, but also forwarded it to hosts that do not take the beta. The fix models the field, records it in the native request witness and reattaches it at egress on a thinking-on mode, derives the beta from the body (SDK clients cannot set anthropic-beta on the neutral routes), and strips it on hosts without ProviderFeatures.ThinkingBinding (Vertex, Bedrock, Mantle, Azure) on both the typed and raw paths. Cases: native route forwards it (raw_request) and is accepted, which also proves the derived beta (the field 400s without it); the stream variant completes; chat completions forwards it, streaming too (raw_request on the final frame; the native stream case cannot see the outgoing body because Anthropic-shaped SSE has no raw_request echo, so it pins acceptance and the derived beta); chat completions with x-bf-passthrough-extra-params and an explicit reasoning_effort gets the beta derived from the merged body (the typed derivation ran before the merge and missed it); Claude Code passthrough to Vertex no longer leaks it. /v1/responses has no thinking object to carry it (no neutral construct) and is not covered.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages thinking.block_binding reaches the provider with its derived beta - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                                    "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
+"var txt = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: stream completes', function () {",
+                  "  pm.expect(txt, 'no message_stop: ' + txt.slice(0, 400)).to.include('message_stop');",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions top-level thinking.block_binding reaches the provider - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The chat stream attaches raw_request to its final SSE frame, which is the witness that the streaming builder kept the binding.",
+                  "var finished = false;",
+                  "var streamError = null;",
+                  "var rr;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (chunk.error) { streamError = chunk.error; }",
+                  "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (choice && choice.finish_reason) { finished = true; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding: stream accepted and finished', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(streamError, 'stream carried an error: ' + JSON.stringify(streamError)).to.eql(null);",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions stream thinking.block_binding reaches the provider - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing on the final frame - x-bf-send-back-raw-request not honored: ' + txt.slice(-400)).to.be.an('object');",
+                  "  pm.expect(rr.stream, 'raw_request is not the streaming request: ' + JSON.stringify(rr).slice(0, 400)).to.eql(true);",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the streaming build: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// x-bf-passthrough-extra-params merges the caller's thinking object onto the wire after the typed body is built, so the beta has to come from the merged body. Before the fix it did not, and Anthropic 400s on block_binding without thinking-binding-controls-2026-08-01.",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "// raw_request echoes block_binding on success, so a 200 is scanned only in its error payload; any other status is scanned whole.",
+                  "var rejection = pm.response.code === 200 ? JSON.stringify(body.error || '') : txt;",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(rejection, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic/claude-sonnet-5-5 /v1/chat/completions passthrough extra params with reasoning_effort derives the thinking.block_binding beta - thinking block binding: block_binding forwarded verbatim', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.thinking, 'thinking dropped: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(['adaptive', 'enabled'], 'block_binding needs a thinking-on mode').to.include(rr.thinking.type);",
+                  "  pm.expect(rr.thinking.block_binding, 'thinking.block_binding dropped on the way to the provider: ' + JSON.stringify(rr.thinking)).to.eql({ prefix_mismatch_behavior: 'drop_block' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"reasoning_effort\": \"low\",\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex does not take thinking-binding-controls, so the field must be stripped there instead of forwarded into an 'Extra inputs are not permitted' 400.",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding: no block_binding rejection', function () {",
+                  "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough strips thinking.block_binding - thinking block binding: Vertex returned an assistant message', function () {",
+                  "  pm.expect(body.type, 'not a message response: ' + txt.slice(0, 400)).to.eql('message');",
+                  "  pm.expect(body.role, 'not an assistant message: ' + txt.slice(0, 400)).to.eql('assistant');",
+                  "  pm.expect(body.content, 'content missing: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.content.some(function (b) { return b && (b.type === 'text' || b.type === 'thinking'); }), 'no text or thinking block: ' + txt.slice(0, 400)).to.eql(true);",
+                  "  pm.expect(body.stop_reason, 'stop_reason missing: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"block_binding\": {\n      \"prefix_mismatch_behavior\": \"drop_block\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "360. Bedrock Request Metadata Headers (#9297 / PR #9189)",
       "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
       "item": [
         {

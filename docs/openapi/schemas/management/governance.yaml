@@ -216,7 +216,7 @@ BudgetOverrideRequest:
       description: |
         Number of reset windows the override stays active for, counting the current window as the first.
         Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
-      minimum: 1
+      minimum: 0
 
 ApproveBudgetRequestRequest:
   type: object
@@ -3222,9 +3222,10 @@ ComplexityDecisionTierCriteria:
 ComplexityLLMConfig:
   type: object
   description: |
-    Chat-completion (LLM) fallback classifier settings. The block is inert
-    unless `semantic.fallback` selects `llm`; the classifier runs only after
-    semantic classification produces no tier. Tier names (SIMPLE, MEDIUM,
+    Chat-completion (LLM) classifier settings. Used as the primary classifier
+    when `classifier` is `llm`, and as the fallback when `semantic.fallback`
+    selects `llm`, where it runs only after semantic classification produces no
+    tier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,
     COMPLEX) and the response format are fixed: the gateway always appends a
     non-editable reinforcement stating them.
   additionalProperties: false
@@ -3239,7 +3240,7 @@ ComplexityLLMConfig:
     model:
       type: string
       minLength: 1
-      description: Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one.
+      description: Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one.
     timeout:
       description: Per-request classification timeout. Accepts a duration string ("2s") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
       oneOf:
@@ -3262,7 +3263,7 @@ ComplexityLLMConfig:
 
 ComplexitySemanticStatus:
   type: object
-  description: Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.
+  description: Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.
   properties:
     state:
       type: string
