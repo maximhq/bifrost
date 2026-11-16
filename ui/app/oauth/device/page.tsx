@@ -18,7 +18,7 @@ function formatUserCode(value: string): string {
 	return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }
 
-export default function ClaudeCodeDevicePage() {
+export default function DeviceSignInPage() {
 	const { t } = useTranslation("login");
 	const [approved] = useQueryState("approved");
 	const [prefill] = useQueryState("user_code");
@@ -55,7 +55,7 @@ function CodeEntry({ prefill }: { prefill: string }) {
 		setSubmitting(true);
 		setError(null);
 		try {
-			const res = await fetch(getEndpointUrl("/gateway/claude-code/device/verify"), {
+			const res = await fetch(getEndpointUrl("/oauth2/device/verify"), {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ user_code: code }),
