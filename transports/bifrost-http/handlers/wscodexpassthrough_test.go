@@ -766,7 +766,7 @@ func TestCodexCallerKey(t *testing.T) {
 	resolved.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-vk-a")
 	resolved.SetGrant(grant.New())
 	resolved.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), nil, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
-	resolved.Grant().SetAccess(grant.NewAccess(nil, nil, grant.Union, nil))
+	resolved.Grant().SetAccess(grant.NewAccess(nil, "", nil, grant.Union, nil))
 	assert.Equal(t, "vk:vk-a", codexCallerKey(reqCtx, resolved), "the resolved key row names the caller, not the header")
 
 	// A direct key resolves the request, but says nothing about a virtual key sent beside it.
@@ -780,7 +780,7 @@ func TestCodexCallerKey(t *testing.T) {
 	both := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	both.SetGrant(grant.New())
 	both.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), &schemas.UserRef{ID: "user-1"}, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
-	both.Grant().SetAccess(grant.NewAccess(nil, nil, grant.Union, nil))
+	both.Grant().SetAccess(grant.NewAccess(nil, "", nil, grant.Union, nil))
 	assert.Equal(t, "user:user-1", codexCallerKey(reqCtx, both))
 }
 
