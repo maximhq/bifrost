@@ -532,7 +532,7 @@ Requests for `gemini-3.5-transcribe` go to `POST /v1beta/interactions`, for both
 | `timestamp_granularities` | → `transcription_config.mode: {"type": "verbatim", "timestamp_granularities": [...]}`. Gemini documents only `"word"` |
 | `stream` | → `stream: true` |
 
-These `extra_params` are copied into `transcription_config`: `language_codes`, `mode`, `diarization_mode` and `custom_vocabulary`. `diarization_mode` is placed inside `mode` (created as `{"type": "verbatim"}` if absent). Other `extra_params` are not sent on this endpoint.
+These `extra_params` are copied into `transcription_config`: `language_codes`, `mode`, `diarization_mode` and `custom_vocabulary`. `diarization_mode` is placed inside `mode` (created as `{"type": "verbatim"}` if absent). The `store` extra param is sent as the top-level `store` field; set it to `false` to opt out of Gemini storing the interaction. A form value of `"false"` is accepted. Other `extra_params` are not sent on this endpoint.
 
 ```json
 {

@@ -401,6 +401,43 @@ func TestGeminiInteractionTranscriptionStreamRecoversPostHookPanic(t *testing.T)
 	assert.Equal(t, 500, *last.BifrostError.StatusCode)
 }
 
+// store is a top-level Interactions field: an explicit false (bool or the "false"
+// string a multipart form sends) must be serialized, and an absent store omitted.
+func TestToGeminiInteractionTranscriptionRequestStore(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		extra map[string]interface{}
+		want  string
+	}{
+		{name: "bool false", extra: map[string]interface{}{"store": false}, want: `false`},
+		{name: "form string false", extra: map[string]interface{}{"store": "false"}, want: `false`},
+		{name: "bool true", extra: map[string]interface{}{"store": true}, want: `true`},
+		{name: "absent", extra: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			converted := ToGeminiInteractionTranscriptionRequest(&schemas.BifrostTranscriptionRequest{
+				Model:  geminiInteractionTranscriptionModel,
+				Input:  &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
+				Params: &schemas.TranscriptionParameters{ExtraParams: test.extra},
+			}, false)
+			body, err := providerUtils.MarshalProviderRequest(converted)
+			require.NoError(t, err)
+
+			var decoded map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			store, present := decoded["store"]
+			if test.want == "" {
+				assert.False(t, present, "store must be omitted when not set: %s", body)
+				return
+			}
+			require.True(t, present, "store must be sent: %s", body)
+			assert.Equal(t, test.want, string(store))
+			_, inConfig := decoded["generation_config"]
+			assert.False(t, inConfig, "store must not go into transcription_config: %s", body)
+		})
+	}
+}
+
 // diarization_mode is merged into a copy of the caller's mode map, so the request's
 // ExtraParams stay unchanged across retries and fallbacks.
 func TestToGeminiInteractionTranscriptionRequestDoesNotMutateCallerMode(t *testing.T) {

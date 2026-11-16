@@ -36,6 +36,7 @@ type geminiInteractionTranscriptionRequest struct {
 	Input            []geminiInteractionContent         `json:"input"`
 	GenerationConfig *geminiInteractionGenerationConfig `json:"generation_config,omitempty"`
 	Stream           bool                               `json:"stream,omitempty"`
+	Store            *bool                              `json:"store,omitempty"` // pointer so an explicit false is sent
 }
 
 type geminiInteractionGenerationConfig struct {
@@ -122,6 +123,11 @@ func ToGeminiInteractionTranscriptionRequest(bifrostReq *schemas.BifrostTranscri
 
 	transcriptionConfig := make(map[string]interface{})
 	if bifrostReq.Params != nil {
+		// store is a top-level Interactions field (store=false opts out of server-side
+		// storage); multipart form values arrive as strings, so parse "false" too.
+		if store, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["store"]); ok {
+			request.Store = store
+		}
 		if bifrostReq.Params.Language != nil && strings.TrimSpace(*bifrostReq.Params.Language) != "" {
 			transcriptionConfig["language_codes"] = []string{*bifrostReq.Params.Language}
 		}
