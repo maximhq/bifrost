@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,28 +237,40 @@ func TestStreamIdleTimeoutAfterMessageDeltaBillsReportedUsage(t *testing.T) {
 	}
 }
 
+// structPromptUsage holds the per-stream prompt state for
+// accumulateResponsesUsageFromStruct, keyed by the accumulator it feeds, the way
+// the handler keeps one anthropicStreamPromptUsage per stream.
+var structPromptUsage sync.Map // *schemas.ResponsesResponseUsage -> *anthropicStreamPromptUsage
+
 // accumulateResponsesUsageFromStruct drives accumulateAnthropicResponsesUsage
 // from a typed usage struct. A struct cannot say which keys the wire carried, so
 // a non-zero prompt counter counts as reported and a zero one as omitted, which
-// is what these struct-built fixtures mean. Tests that have the raw frame use
-// reportedAnthropicStreamPromptCounters instead, as the handler does.
+// is what these struct-built fixtures mean: the frame is rebuilt from the
+// non-zero counters. Tests that have the raw frame pass it to
+// anthropicStreamPromptUsage.observe instead, as the handler does.
 func accumulateResponsesUsageFromStruct(usage *schemas.ResponsesResponseUsage, billed *schemas.BifrostLLMUsage, u *AnthropicUsage) {
-	var reported anthropicPromptCounterBit
-	if u != nil {
-		if u.InputTokens != 0 {
-			reported |= anthropicPromptCounterInputTokens
-		}
-		if u.CacheReadInputTokens != 0 {
-			reported |= anthropicPromptCounterCacheReadInputTokens
-		}
-		if u.CacheCreationInputTokens != 0 {
-			reported |= anthropicPromptCounterCacheCreationInputTokens
-		}
-		if u.CacheCreation.Ephemeral5mInputTokens != 0 || u.CacheCreation.Ephemeral1hInputTokens != 0 {
-			reported |= anthropicPromptCounterCacheCreation
+	if u == nil {
+		accumulateAnthropicResponsesUsage(usage, billed, u, anthropicPromptCounts{})
+		return
+	}
+	var keys []string
+	for _, kv := range []struct {
+		key string
+		set bool
+	}{
+		{"input_tokens", u.InputTokens != 0},
+		{"cache_read_input_tokens", u.CacheReadInputTokens != 0},
+		{"cache_creation_input_tokens", u.CacheCreationInputTokens != 0},
+		{"cache_creation", u.CacheCreation.Ephemeral5mInputTokens != 0 || u.CacheCreation.Ephemeral1hInputTokens != 0},
+	} {
+		if kv.set {
+			keys = append(keys, `"`+kv.key+`":1`)
 		}
 	}
-	accumulateAnthropicResponsesUsage(usage, billed, u, reported)
+	frame := []byte(`{"type":"message_delta","usage":{` + strings.Join(keys, ",") + `}}`)
+	state, _ := structPromptUsage.LoadOrStore(usage, &anthropicStreamPromptUsage{})
+	prompt := state.(*anthropicStreamPromptUsage).observe(true, u, frame)
+	accumulateAnthropicResponsesUsage(usage, billed, u, prompt)
 }
 
 // streamPromptUsageCase is one upstream split of the prompt-side usage across
@@ -266,6 +279,7 @@ type streamPromptUsageCase struct {
 	name        string
 	startUsage  string // message_start message.usage object
 	deltaUsage  string // message_delta usage object
+	deltas      int    // message_delta frames carrying deltaUsage; 0 means 1
 	prompt      int    // billed prompt tokens, cache folded in
 	cachedRead  int
 	cachedWrite int
@@ -336,6 +350,13 @@ var streamPromptUsageCases = []streamPromptUsageCase{
 		prompt:     20610, cachedRead: 20100, completion: 350,
 	},
 	{
+		name:       "two deltas omit the prompt counters and repeat a compaction pass",
+		startUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":0,"output_tokens":1}`,
+		deltaUsage: `{"output_tokens":300,"iterations":[{"type":"compaction","input_tokens":500,"cache_read_input_tokens":100,"output_tokens":50},{"type":"message","input_tokens":10,"cache_read_input_tokens":20000,"output_tokens":250}]}`,
+		deltas:     2,
+		prompt:     20610, cachedRead: 20100, completion: 350,
+	},
+	{
 		name:       "no prompt caching",
 		startUsage: `{"input_tokens":20458,"output_tokens":1}`,
 		deltaUsage: `{"input_tokens":20458,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":200}`,
@@ -352,8 +373,8 @@ func streamPromptUsageBody(c streamPromptUsageCase) string {
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
 		"event: content_block_stop\n" +
 		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
-		"event: message_delta\n" +
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":` + c.deltaUsage + `}` + "\n\n" +
+		strings.Repeat("event: message_delta\n"+
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":`+c.deltaUsage+`}`+"\n\n", max(c.deltas, 1)) +
 		"event: message_stop\n" +
 		`data: {"type":"message_stop"}` + "\n\n"
 }
@@ -517,8 +538,9 @@ func BenchmarkAnthropicStreamUsageMerge(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		usage := schemas.BifrostLLMUsage{}
-		accumulateAnthropicStreamUsage(&usage, start, reportedAnthropicStreamPromptCounters(false, start, startFrame))
-		accumulateAnthropicStreamUsage(&usage, delta, reportedAnthropicStreamPromptCounters(true, delta, deltaFrame))
+		var promptUsage anthropicStreamPromptUsage
+		accumulateAnthropicStreamUsage(&usage, start, promptUsage.observe(false, start, startFrame))
+		accumulateAnthropicStreamUsage(&usage, delta, promptUsage.observe(true, delta, deltaFrame))
 		normalizeCachedUsage(&usage)
 		if usage.PromptTokens != 20010 {
 			b.Fatalf("prompt = %d", usage.PromptTokens)

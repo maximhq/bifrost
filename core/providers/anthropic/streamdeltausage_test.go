@@ -72,6 +72,7 @@ func relayTurn(t *testing.T, ctx *schemas.BifrostContext, upstream upstreamStrea
 
 	accumulated := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
+	var promptUsage anthropicStreamPromptUsage
 	chunkIndex := 0
 	var frames []string
 
@@ -89,7 +90,7 @@ func relayTurn(t *testing.T, ctx *schemas.BifrostContext, upstream upstreamStrea
 			usageToProcess = event.Message.Usage
 		}
 		if usageToProcess != nil {
-			accumulateAnthropicResponsesUsage(accumulated, billed, usageToProcess, reportedAnthropicStreamPromptCounters(event.Usage != nil, usageToProcess, eventDataBytes))
+			accumulateAnthropicResponsesUsage(accumulated, billed, usageToProcess, promptUsage.observe(event.Usage != nil, usageToProcess, eventDataBytes))
 		}
 
 		// The handler's raw field-presence record, at the same point and with the
