@@ -12994,13 +12994,16 @@ const warpConfigBody = (writes) => [
   `pm.variables.set('warp_config_body', JSON.stringify({ enabled: true, provider: 'openai', model: 'mock-model', api_key_id: '', embedding_provider: 'openai', embedding_model: 'text-embedding-3-small', embedding_dimension: 1536, management_writes: ${JSON.stringify(writes)} }));`,
 ];
 const WMG_ALL_KINDS = ["create", "update", "delete", "action"];
-// Saving the Warp config is admin-only; the admin's Basic credentials, which every request carries, are the local admin.
+// Saving the Warp config is admin-only. The admin's Basic credentials, which every request carries, authenticate but do
+// not mark the local admin; the same credentials sent as Bearer base64(user:pass) do.
+const WARP_ADMIN_BEARER = ["pm.variables.set('admin_bearer', pm.variables.get('admin_auth_header').replace(/^Basic /, 'Bearer '));"];
+const warpAdminPut = { noAuth: true, headers: [{ key: "Authorization", value: "{{admin_bearer}}" }] };
 const warpOn = (id, writes = []) => [
   request(id, "setup: the warp feature flag is on", "GET", "/api/feature-flags", { asserts: [A.status(200), A.custom("warp is enabled", ["var f = (pm.response.json().flags || []).filter(function (x) { return x.id === 'warp'; })[0];", "pm.expect(f && f.enabled, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   request(id, "setup: read the Warp config", "GET", "/api/warp/config", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('warp_config_was', pm.response.text());"] }),
-  request(id, writes.length ? `setup: configure Warp on openai/mock-model, allowing ${writes.join(", ")}` : "setup: configure Warp on openai/mock-model, reads only", "PUT", "/api/warp/config", { raw: "{{warp_config_body}}", pre: warpConfigBody(writes), asserts: [A.status(200)] }),
+  request(id, writes.length ? `setup: configure Warp on openai/mock-model, allowing ${writes.join(", ")}` : "setup: configure Warp on openai/mock-model, reads only", "PUT", "/api/warp/config", { ...warpAdminPut, raw: "{{warp_config_body}}", pre: [...WARP_ADMIN_BEARER, ...warpConfigBody(writes)], asserts: [A.status(200)] }),
 ];
-const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { raw: "{{warp_config_was}}", asserts: [A.status(200)] });
+const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { ...warpAdminPut, raw: "{{warp_config_was}}", pre: WARP_ADMIN_BEARER, asserts: [A.status(200)] });
 // warpAsk starts a Warp thread with one question carrying the scenario marker. The thread id goes in <key>_conv, the
 // question in <key>_q, what Warp answered (a card's question, else the answer) in <key>_a, and a confirmation card's
 // Confirm hint in <key>_token.
