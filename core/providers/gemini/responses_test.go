@@ -2390,6 +2390,45 @@ func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
 	assert.Equal(t, "medium", *got.ThinkingLevel)
 }
 
+// The /anthropic ingress routed to Gemini 4 with output_config.effort: xhigh and max
+// reach gemini-4-hydrogen as its xhigh rung, and gemini-4-argon (no xhigh rung) as high.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+func TestAnthropicEffortReachesGemini4AsNearestThinkingLevel(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+	}{
+		{"hydrogen xhigh", "gemini/gemini-4-hydrogen", "xhigh", "xhigh"},
+		{"hydrogen max clamps down to xhigh", "gemini/gemini-4-hydrogen", "max", "xhigh"},
+		{"argon xhigh clamps down to high", "gemini/gemini-4-argon", "xhigh", "high"},
+		{"argon max clamps down to high", "gemini/gemini-4-argon", "max", "high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &anthropic.AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 16000,
+				Messages: []anthropic.AnthropicMessage{
+					{Role: anthropic.AnthropicMessageRoleUser, Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")}},
+				},
+				Thinking:     &anthropic.AnthropicThinking{Type: "adaptive"},
+				OutputConfig: &anthropic.AnthropicOutputConfig{Effort: schemas.Ptr(tc.effort)},
+			}
+			normalized := req.ToBifrostResponsesRequest(ctx)
+			out, err := ToGeminiResponsesRequest(ctx, normalized)
+			require.NoError(t, err)
+			got := out.GenerationConfig.ThinkingConfig
+			require.NotNil(t, got)
+			assert.Nil(t, got.ThinkingBudget, "gemini-4 rejects thinkingBudget with a 400")
+			require.NotNil(t, got.ThinkingLevel)
+			assert.Equal(t, tc.want, *got.ThinkingLevel)
+		})
+	}
+}
+
 // TestExtractFunctionResponseOutput_KeepsSiblingFields pins which functionResponse.response
 // shapes are unwrapped. Only the documented {"output": X} envelope is unwrapped; any sibling
 // field (stderr, ok, budget, error, ...) means the whole object is the tool result, so it must

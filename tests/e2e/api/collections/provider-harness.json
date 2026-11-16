@@ -337773,6 +337773,637 @@
           ]
         }
       ]
+    },
+    {
+      "name": "360. Gemini 4 Hydrogen xhigh thinking level (gemini 4 hydrogen thinking level)",
+      "description": "Gemini 4 Hydrogen (gemini-4-hydrogen) takes thinkingLevel low, medium, high (default) and xhigh, and rejects minimal. Bifrost had no thinking-level entry for it, so it used the low/medium/high fallback and clamped reasoning_effort xhigh (and max) down to high, and the typed /genai ingress turned a native xhigh into medium. These cases assert the OUTBOUND payload, so they do not depend on model behaviour: /v1/chat/completions and /v1/responses read it through x-bf-send-back-raw-request, /genai and /anthropic/v1/messages read it from the log row because those responses have no extra_fields. Each route is covered on both the gemini and vertex providers, which share the thinking-level table. gemini-4-argon, which has no xhigh rung, must still receive high. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+      "item": [
+        {
+          "name": "gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh",
+          "description": "reasoning_effort xhigh must reach gemini-4-hydrogen as its xhigh rung instead of being clamped to high. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-hydrogen\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: response carries a non-empty choices array', function () {",
+                  "  pm.expect(body.choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: xhigh effort sent as thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh",
+          "description": "max is above the highest rung gemini-4-hydrogen implements, so it lands on xhigh. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-hydrogen\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: response carries a non-empty output array', function () {",
+                  "  pm.expect(body.output, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: max effort clamped to thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh",
+          "description": "The typed /genai ingress converts a native thinkingLevel into an effort and back before the request leaves. xhigh used to fall through to the medium default on the way in, so gemini-4-hydrogen received medium. The /genai response has no extra_fields, so the outbound body is read from the log row. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"xhigh\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-4-hydrogen:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-4-hydrogen:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400 || !reqId) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: response carries a non-empty candidates array', function () {",
+                  "  pm.expect(body.candidates, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "      var tcs = JSON.stringify(tc);",
+                  "      pm.test('gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: thinkingBudget never reaches the wire', function () {",
+                  "        pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "      });",
+                  "      pm.test('gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: native xhigh sent as thinkingLevel xhigh', function () {",
+                  "        pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh",
+          "description": "output_config.effort xhigh on the /anthropic ingress must reach gemini-4-hydrogen as its xhigh rung instead of being clamped to high. The Anthropic-shaped response has no extra_fields, so the outbound body is read from the log row. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-hydrogen\",\n  \"max_tokens\": 16000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400 || !reqId) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: response carries a non-empty content array', function () {",
+                  "  pm.expect(body.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "      var tcs = JSON.stringify(tc);",
+                  "      pm.test('gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "        pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "      });",
+                  "      pm.test('gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: xhigh effort sent as thinkingLevel xhigh', function () {",
+                  "        pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini gemini/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh",
+          "description": "reasoning_effort xhigh must reach gemini-4-hydrogen on Vertex as its xhigh rung instead of being clamped to high. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-hydrogen\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: response carries a non-empty choices array', function () {",
+                  "  pm.expect(body.choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "});",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: xhigh effort sent as thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh",
+          "description": "max is above the highest rung gemini-4-hydrogen implements, so it lands on xhigh. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-hydrogen\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: response carries a non-empty output array', function () {",
+                  "  pm.expect(body.output, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "});",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: max effort clamped to thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh",
+          "description": "The typed /genai ingress converts a native thinkingLevel into an effort and back before the request leaves. xhigh used to fall through to the medium default on the way in, so gemini-4-hydrogen on Vertex received medium. The /genai response has no extra_fields, so the outbound body is read from the log row. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"xhigh\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-4-hydrogen:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-4-hydrogen:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400 || !reqId) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: response carries a non-empty candidates array', function () {",
+                  "  pm.expect(body.candidates, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "      var tcs = JSON.stringify(tc);",
+                  "      pm.test('vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: thinkingBudget never reaches the wire', function () {",
+                  "        pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "      });",
+                  "      pm.test('vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: native xhigh sent as thinkingLevel xhigh', function () {",
+                  "        pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('vertex vertex/gemini-4-hydrogen /genai generateContent native thinkingLevel xhigh kept as xhigh: log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh",
+          "description": "output_config.effort xhigh on the /anthropic ingress must reach gemini-4-hydrogen on Vertex as its xhigh rung instead of being clamped to high. The Anthropic-shaped response has no extra_fields, so the outbound body is read from the log row. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-hydrogen\",\n  \"max_tokens\": 16000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400 || !reqId) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: response carries a non-empty content array', function () {",
+                  "  pm.expect(body.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "      var tcs = JSON.stringify(tc);",
+                  "      pm.test('vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "        pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "      });",
+                  "      pm.test('vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: xhigh effort sent as thinkingLevel xhigh', function () {",
+                  "        pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('vertex vertex/gemini-4-hydrogen /anthropic/v1/messages output_config.effort xhigh sent as thinkingLevel xhigh: log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high",
+          "description": "gemini-4-argon has no xhigh rung, so xhigh keeps clamping to high there. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: response carries a non-empty choices array', function () {",
+                  "  pm.expect(body.choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc, 'thinkingConfig: ' + tcs).to.not.have.property('thinkingBudget');",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: xhigh effort clamped to thinkingLevel high', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('high');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

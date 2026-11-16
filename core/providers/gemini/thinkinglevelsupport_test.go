@@ -98,6 +98,23 @@ func TestGeminiThinkingLevelClampedToModelSupport(t *testing.T) {
 		{"3.1-flash-lite-image low clamps down to minimal", "gemini-3.1-flash-lite-image", "low", "minimal"},
 		{"3.1-flash-lite-image medium clamps up to high", "gemini-3.1-flash-lite-image", "medium", "high"},
 		{"3.1-flash-lite-image high", "gemini-3.1-flash-lite-image", "high", "high"},
+
+		// gemini-4-hydrogen supports low, medium, high and xhigh - NOT minimal.
+		{"4-hydrogen minimal clamps up to low", "gemini-4-hydrogen", "minimal", "low"},
+		{"4-hydrogen low", "gemini-4-hydrogen", "low", "low"},
+		{"4-hydrogen medium", "gemini-4-hydrogen", "medium", "medium"},
+		{"4-hydrogen high", "gemini-4-hydrogen", "high", "high"},
+		{"4-hydrogen xhigh", "gemini-4-hydrogen", "xhigh", "xhigh"},
+		{"4-hydrogen max clamps down to xhigh", "gemini-4-hydrogen", "max", "xhigh"},
+
+		// Models without an xhigh rung keep clamping xhigh and max down to high.
+		{"4-argon xhigh clamps down to high", "gemini-4-argon", "xhigh", "high"},
+		{"4-argon max clamps down to high", "gemini-4-argon", "max", "high"},
+		{"4-carbon xhigh clamps down to high", "gemini-4-carbon", "xhigh", "high"},
+		{"3.7-flash xhigh clamps down to high", "gemini-3.7-flash", "xhigh", "high"},
+		{"3-pro xhigh clamps down to high", "gemini-3-pro-preview", "xhigh", "high"},
+		{"3.1-flash-lite-image xhigh clamps down to high", "gemini-3.1-flash-lite-image", "xhigh", "high"},
+		{"unknown gemini 3 model xhigh clamps down to high", "gemini-3-unknown", "xhigh", "high"},
 	}
 
 	for _, tc := range cases {
@@ -128,6 +145,7 @@ func TestGeminiEffortNoneDoesNotDisableThinkingOnGemini3(t *testing.T) {
 		{"gemini-3-pro-preview", "low"}, // floor is low
 		{"gemini-3-flash-preview", "minimal"},
 		{"gemini-3.1-flash-lite", "minimal"},
+		{"gemini-4-hydrogen", "low"}, // floor is low, Gemini 4 rejects minimal
 	}
 
 	for _, tc := range cases {
@@ -292,9 +310,9 @@ func TestFlashLiteThinkingRoundTripAcrossProviders(t *testing.T) {
 }
 
 // Gemini 4 removed thinkingBudget: the API rejects it with "Thinking budget is not
-// supported for this model. Use thinking level instead." and accepts only
-// low/medium/high, with no way to turn thinking off. A budget from any ingress has to
-// reach the wire as the nearest thinkingLevel.
+// supported for this model. Use thinking level instead." and accepts only a
+// thinkingLevel (low/medium/high, plus xhigh on gemini-4-hydrogen), with no way to turn
+// thinking off. A budget from any ingress has to reach the wire as the nearest thinkingLevel.
 // Source: https://ai.google.dev/gemini-api/docs/thinking
 var gemini4BudgetToLevelCases = []struct {
 	name   string
@@ -508,6 +526,18 @@ func TestGemini4RawThinkingBudgetRewrittenToLevel(t *testing.T) {
 			`{"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096}}}`,
 			`{"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4096}}}`,
 		},
+		{
+			"hydrogen large budget tops out at high",
+			"gemini-4-hydrogen",
+			`{"generationConfig":{"thinkingConfig":{"thinkingBudget":32768}}}`,
+			`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`,
+		},
+		{
+			"hydrogen explicit xhigh level is forwarded untouched",
+			"gemini-4-hydrogen",
+			`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"xhigh"}}}`,
+			`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"xhigh"}}}`,
+		},
 	}
 	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
 		for _, tc := range cases {
@@ -556,4 +586,150 @@ func TestGemini4InvalidNegativeThinkingBudgetRejected(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "only 0 and -1 are supported")
 	})
+}
+
+// gemini-4-hydrogen adds an xhigh rung above high and has no minimal rung. The
+// Responses path (used by Gemini and Vertex) must reach xhigh on that model only.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+func TestGemini4HydrogenThinkingLevelOnResponsesPath(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+	}{
+		{"hydrogen xhigh", "gemini-4-hydrogen", "xhigh", "xhigh"},
+		{"hydrogen max clamps down to xhigh", "gemini-4-hydrogen", "max", "xhigh"},
+		{"hydrogen minimal clamps up to low", "gemini-4-hydrogen", "minimal", "low"},
+		{"hydrogen none lands on the floor", "gemini-4-hydrogen", "none", "low"},
+		{"argon xhigh clamps down to high", "gemini-4-argon", "xhigh", "high"},
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, tc := range cases {
+			t.Run(string(provider)+"/"+tc.name, func(t *testing.T) {
+				req := &schemas.BifrostResponsesRequest{
+					Provider: provider,
+					Model:    tc.model,
+					Input: []schemas.ResponsesMessage{
+						{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+					},
+					Params: &schemas.ResponsesParameters{
+						Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(tc.effort)},
+					},
+				}
+				out, err := gemini.ToGeminiResponsesRequest(nil, req)
+				require.NoError(t, err)
+				assertGemini4ThinkingLevel(t, out.GenerationConfig.ThinkingConfig, tc.want)
+			})
+		}
+	}
+}
+
+// The GenAI ingress on the typed path (Vertex, or a model without an explicit gemini/
+// prefix) turns a native thinkingLevel back into an effort before routing. xhigh must
+// survive that step, so it reaches gemini-4-hydrogen as xhigh and clamps to high on a
+// model without that rung, instead of falling through to medium.
+func TestGeminiGenAIThinkingLevelXHighRoundTrip(t *testing.T) {
+	cases := []struct {
+		name  string
+		model string
+		level string
+		want  string
+	}{
+		{"hydrogen keeps xhigh", "gemini-4-hydrogen", "xhigh", "xhigh"},
+		{"hydrogen accepts the enum spelling XHIGH", "gemini-4-hydrogen", "XHIGH", "xhigh"},
+		{"argon clamps xhigh down to high", "gemini-4-argon", "XHIGH", "high"},
+		{"3.7-flash clamps xhigh down to high", "gemini-3.7-flash", "XHIGH", "high"},
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, tc := range cases {
+			t.Run(string(provider)+"/"+tc.name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				native := &gemini.GeminiGenerationRequest{
+					Model:    string(provider) + "/" + tc.model,
+					Contents: []gemini.Content{{Role: "user", Parts: []*gemini.Part{{Text: "Say OK."}}}},
+					GenerationConfig: gemini.GenerationConfig{ThinkingConfig: &gemini.GenerationConfigThinkingConfig{
+						IncludeThoughts: true,
+						ThinkingLevel:   schemas.Ptr(tc.level),
+					}},
+				}
+				normalized := native.ToBifrostResponsesRequest(ctx)
+				require.NotNil(t, normalized.Params.Reasoning)
+				require.NotNil(t, normalized.Params.Reasoning.Effort)
+				assert.Equal(t, schemas.ReasoningEffortXHigh, *normalized.Params.Reasoning.Effort)
+
+				out, err := gemini.ToGeminiResponsesRequest(ctx, normalized)
+				require.NoError(t, err)
+				assertGemini4ThinkingLevel(t, out.GenerationConfig.ThinkingConfig, tc.want)
+			})
+		}
+	}
+}
+
+// Google publishes no thinking-budget cut-off for xhigh, so a budget sent to
+// gemini-4-hydrogen tops out at high, the same as on the other Gemini 4 models.
+func TestGemini4HydrogenThinkingBudgetTopsOutAtHigh(t *testing.T) {
+	cases := []struct {
+		name   string
+		budget int
+		want   string
+	}{
+		{"8192 is medium", 8192, "medium"},
+		{"just above 8192 is high, not xhigh", 8193, "high"},
+		{"large budget is high, not xhigh", 32768, "high"},
+		{"zero budget lands on the floor", 0, "low"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := gemini.ToGeminiChatCompletionRequest(nil, chatReqWithReasoning("gemini-4-hydrogen",
+				&schemas.ChatReasoning{MaxTokens: schemas.Ptr(tc.budget)}))
+			require.NoError(t, err)
+			assertGemini4ThinkingLevel(t, out.GenerationConfig.ThinkingConfig, tc.want)
+			assertFunctionDeclarationsSurvived(t, out)
+		})
+	}
+}
+
+// A native xhigh on the GenAI typed path carries through as effort xhigh on every
+// target, including the budget-only Gemini 2.5 models: there it converts to the same
+// budget a direct xhigh effort gets, which is larger than the one medium gets.
+func TestGeminiGenAIThinkingLevelXHighBecomesXHighBudgetOnGemini25(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	budgetForEffort := func(effort string) int32 {
+		t.Helper()
+		out, err := gemini.ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-2.5-flash",
+			Input: []schemas.ResponsesMessage{
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+			},
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(effort)},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, out.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, out.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		return *out.GenerationConfig.ThinkingConfig.ThinkingBudget
+	}
+
+	native := &gemini.GeminiGenerationRequest{
+		Model:    "gemini/gemini-2.5-flash",
+		Contents: []gemini.Content{{Role: "user", Parts: []*gemini.Part{{Text: "Say OK."}}}},
+		GenerationConfig: gemini.GenerationConfig{ThinkingConfig: &gemini.GenerationConfigThinkingConfig{
+			IncludeThoughts: true,
+			ThinkingLevel:   schemas.Ptr("XHIGH"),
+		}},
+	}
+	out, err := gemini.ToGeminiResponsesRequest(ctx, native.ToBifrostResponsesRequest(ctx))
+	require.NoError(t, err)
+	got := out.GenerationConfig.ThinkingConfig
+	require.NotNil(t, got)
+	assert.Nil(t, got.ThinkingLevel, "thinkingLevel on a pre-3.0 model is a hard API error")
+	require.NotNil(t, got.ThinkingBudget)
+	assert.Equal(t, budgetForEffort(schemas.ReasoningEffortXHigh), *got.ThinkingBudget)
+	assert.Greater(t, *got.ThinkingBudget, budgetForEffort(schemas.ReasoningEffortMedium),
+		"xhigh must not fall back to the medium budget")
 }
