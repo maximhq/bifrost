@@ -8,7 +8,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
-### Upcoming
+### 2.1.49
 
 - Added `serviceMonitor` to create a Prometheus Operator ServiceMonitor that scrapes Bifrost's `/metrics`. Off by default.
 - Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for scraping when auth is enabled. `basicAuth` reuses your existing auth Secret.
@@ -21,6 +21,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added Prometheus metrics for the embedded Redis: `vectorStore.redis.metrics.enabled` runs a `redis_exporter` sidecar on port 9121.
 - Added `vectorStore.redis.metrics.serviceMonitor` to create a Prometheus Operator ServiceMonitor for the Redis exporter, with optional basic auth.
 - Added `vectorStore.redis.master.extraEnv` and `envFrom` to pass environment variables such as `REDIS_ARGS` to the embedded Redis. They work with Redis auth enabled.
+- Fixed the embedded Redis not saving its data to the persistent volume when Redis auth is enabled, which lost data whenever the pod was replaced. **Behavior change:** the Redis pod restarts once on upgrade.
 - Added `bifrost.client.usageEstimationTokenizers` to choose the tokenizers that estimate usage for cancelled or timed-out streams.
 - Added `bifrost.datasheetOverrides` for pricing and model-parameter overrides that survive datasheet syncs. With config.json as the source of truth, `[]` removes stored overrides.
 - Baseten keys now accept a per-alias `deployment_url`.

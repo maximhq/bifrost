@@ -836,7 +836,7 @@ rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"
 c = rd["spec"]["template"]["spec"]["containers"]
 assert [x["name"] for x in c] == ["redis"], "Redis manifest contract failed: %s" % [x["name"] for x in c]
 assert [e["name"] for e in c[0]["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH"], "Redis manifest contract failed"
-assert c[0]["command"] == ["redis-stack-server", "--requirepass", "$(REDIS_PASSWORD)"], "default Redis command changed, existing pods would roll: %r" % c[0]["command"]
+assert c[0]["command"] == ["redis-stack-server", "--dir", "/data", "--requirepass", "$(REDIS_PASSWORD)"], "redis-stack must save to the /data volume: %r" % c[0]["command"]
 assert "envFrom" not in c[0] and "annotations" not in rd["spec"]["template"]["metadata"], "Redis manifest contract failed"
 assert [p["name"] for p in rs["spec"]["ports"]] == ["redis"], "Redis manifest contract failed"
 assert not any(d.get("kind") == "ServiceMonitor" for d in docs), "ServiceMonitor unexpectedly rendered"' \
@@ -849,7 +849,7 @@ sm = next(d for d in docs if d.get("kind") == "ServiceMonitor")
 redis, exporter = rd["spec"]["template"]["spec"]["containers"]
 assert [e["name"] for e in redis["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH", "REDIS_ARGS"], "Redis manifest contract failed"
 assert redis["envFrom"] == [{"configMapRef": {"name": "redis-tuning"}}], "Redis manifest contract failed"
-assert redis["command"] == ["sh", "-c", "exec redis-stack-server --requirepass \"$REDIS_PASSWORD\" $REDIS_ARGS"], "REDIS_ARGS not wired under auth: %r" % redis["command"]
+assert redis["command"] == ["sh", "-c", "exec redis-stack-server --dir /data --requirepass \"$REDIS_PASSWORD\" $REDIS_ARGS"], "REDIS_ARGS not wired under auth: %r" % redis["command"]
 env = {e["name"]: e for e in exporter["env"]}
 assert exporter["name"] == "metrics" and exporter["image"].startswith("oliver006/redis_exporter:"), "Redis manifest contract failed"
 assert env["REDIS_ADDR"]["value"] == "redis://localhost:6379" and env["REDIS_EXPORTER_WEB_LISTEN_ADDRESS"]["value"] == ":9200", "Redis manifest contract failed"
