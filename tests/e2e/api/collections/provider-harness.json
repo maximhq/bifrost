@@ -349636,7 +349636,7 @@
                   "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
                   "pm.test('one entry per document', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(2); });",
-                  "pm.test('each document holds one numeric vector per chunk, with the chunk texts', function () { body.data.forEach(function (d) { pm.expect(d.embedding, pm.response.text()).to.be.an('array').that.is.not.empty; d.embedding.forEach(function (v) { pm.expect(v, pm.response.text()).to.be.an('array').that.is.not.empty; pm.expect(v[0], pm.response.text()).to.be.a('number'); }); pm.expect(d.chunks, pm.response.text()).to.have.lengthOf(d.embedding.length); d.chunks.forEach(function (t) { pm.expect(t, pm.response.text()).to.be.a('string').that.is.not.empty; }); }); });",
+                  "pm.test('each document holds one numeric vector per chunk, with the chunk texts when Voyage returns them', function () { body.data.forEach(function (d) { pm.expect(d.embedding, pm.response.text()).to.be.an('array').that.is.not.empty; d.embedding.forEach(function (v) { pm.expect(v, pm.response.text()).to.be.an('array').that.is.not.empty; v.forEach(function (x) { pm.expect(x, pm.response.text()).to.be.a('number'); }); }); if (d.chunks !== undefined) { pm.expect(d.chunks, pm.response.text()).to.have.lengthOf(d.embedding.length); d.chunks.forEach(function (t) { pm.expect(t, pm.response.text()).to.be.a('string').that.is.not.empty; }); } }); });",
                   "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
                 ]
               }
@@ -349881,6 +349881,46 @@
                   "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
                   "pm.test('rejected with 400 before reaching Voyage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
                   "pm.test('names the problem', function () { pm.expect(JSON.stringify(body), pm.response.text()).to.include(\"not a rerank model\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] voyage/voyage-4 int8 encoding_format against output_dtype float is refused via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"conflicting output types\"\n  ],\n  \"encoding_format\": \"int8\",\n  \"output_dtype\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('rejected with 400 before reaching Voyage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('names the conflict', function () { pm.expect(JSON.stringify(body), pm.response.text()).to.include(\"conflicts with output_dtype\"); });"
                 ]
               }
             }
