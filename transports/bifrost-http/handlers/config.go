@@ -597,6 +597,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
 			return
 		}
+		if isAuthBypassed(ctx) && clientGatewayEnabled(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "enabling the client gateway requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayManagedSettingsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway managed settings requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDropAttributesChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry drop_attributes requires an authenticated admin session")
+			return
+		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
 			if uri == configstoreTables.AllowAnyRedirectURI {
 				continue
@@ -1933,6 +1945,42 @@ func setMCPProtocolCap(field, v string, dst *string) error {
 	}
 	*dst = v
 	return nil
+}
+
+// clientGatewayEnabled reports whether the save switches the client gateway on. Switching it
+// off needs no admin session, as pausing telemetry does not.
+func clientGatewayEnabled(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := before.ClaudeCodeGateway(), after.ClaudeCodeGateway()
+	return a != nil && a.Enabled && (b == nil || !b.Enabled)
+}
+
+// clientGatewayManagedSettingsChanged reports whether the managed settings pushed to every
+// signed-in client change.
+func clientGatewayManagedSettingsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	var b, a map[string]any
+	if g := before.ClaudeCodeGateway(); g != nil {
+		b = g.ManagedSettings
+	}
+	if g := after.ClaudeCodeGateway(); g != nil {
+		a = g.ManagedSettings
+	}
+	bj, _ := json.Marshal(b)
+	aj, _ := json.Marshal(a)
+	return !bytes.Equal(bj, aj)
+}
+
+// clientGatewayTelemetryDropAttributesChanged reports whether the attributes dropped before
+// forwarding change; removing one would start forwarding it.
+func clientGatewayTelemetryDropAttributesChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	return !slices.Equal(clientGatewayTelemetryDropAttributes(before), clientGatewayTelemetryDropAttributes(after))
+}
+
+func clientGatewayTelemetryDropAttributes(c *configstoreTables.OAuth2ServerConfig) []string {
+	g := c.ClaudeCodeGateway()
+	if g == nil || g.Telemetry == nil {
+		return nil
+	}
+	return g.Telemetry.DropAttributes
 }
 
 // clientGatewayTelemetryDestinationsChanged reports whether the Claude Code telemetry
