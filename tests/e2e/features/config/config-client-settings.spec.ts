@@ -2,7 +2,7 @@ import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import type { Page } from '@playwright/test'
 import { ConfigSettingsState } from './pages/config-settings.page'
-import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
+import { DefaultCoreConfig } from '../../../../ui/lib/types/coreConfigDefaults'
 
 test.describe('Skills marketplace URL settings', () => {
   test.use({ skipAutoLogin: true })

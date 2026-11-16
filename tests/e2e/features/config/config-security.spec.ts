@@ -1,7 +1,7 @@
 import { coreConfigApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { ConfigSettingsPage, ConfigSettingsState } from "./pages/config-settings.page";
-import { DefaultCoreConfig } from "../../../../ui/lib/types/config";
+import { DefaultCoreConfig } from "../../../../ui/lib/types/coreConfigDefaults";
 import { storageStatePath } from "../../plan";
 
 test.describe("Inference auth setup defaults", () => {
