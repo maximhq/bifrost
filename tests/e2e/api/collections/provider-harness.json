@@ -346992,7 +346992,7 @@
                   "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
                   "pm.test('one entry per document', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(2); });",
-                  "pm.test('each document holds one vector per chunk, with the chunk texts', function () { body.data.forEach(function (d) { pm.expect(d.embedding, pm.response.text()).to.be.an('array').that.is.not.empty; pm.expect(d.embedding[0], pm.response.text()).to.be.an('array'); pm.expect(d.chunks, pm.response.text()).to.have.lengthOf(d.embedding.length); }); });",
+                  "pm.test('each document holds one numeric vector per chunk, with the chunk texts', function () { body.data.forEach(function (d) { pm.expect(d.embedding, pm.response.text()).to.be.an('array').that.is.not.empty; d.embedding.forEach(function (v) { pm.expect(v, pm.response.text()).to.be.an('array').that.is.not.empty; pm.expect(v[0], pm.response.text()).to.be.a('number'); }); pm.expect(d.chunks, pm.response.text()).to.have.lengthOf(d.embedding.length); d.chunks.forEach(function (t) { pm.expect(t, pm.response.text()).to.be.a('string').that.is.not.empty; }); }); });",
                   "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
                 ]
               }
