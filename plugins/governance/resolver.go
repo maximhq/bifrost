@@ -4,6 +4,7 @@ package governance
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -61,6 +62,9 @@ type EvaluationRequest struct {
 type EvaluationResult struct {
 	Decision Decision `json:"decision"`
 	Reason   string   `json:"reason"`
+	// RetryAfter is how long until a rate-limit refusal stops applying. Zero when the decision is not
+	// a rate limit, or when no window length is known.
+	RetryAfter time.Duration `json:"-"`
 }
 
 // BudgetResolver provides decision logic for the new hierarchical governance system
@@ -220,8 +224,9 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 	// message stable for a caller that is both throttled and out of money.
 	if decision, err := r.store.CheckRateLimits(ctx, rateLimits, nil, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
-			Decision: decision,
-			Reason:   fmt.Sprintf("Rate limit exceeded: %s", reasonFromErr(err, decision)),
+			Decision:   decision,
+			Reason:     fmt.Sprintf("Rate limit exceeded: %s", reasonFromErr(err, decision)),
+			RetryAfter: retryAfterFromError(err),
 		}
 	}
 

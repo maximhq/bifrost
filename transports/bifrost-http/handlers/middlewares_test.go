@@ -124,7 +124,7 @@ func TestCorsMiddleware_ExposesBifrostResponseHeaders(t *testing.T) {
 		for _, name := range []string{
 			"x-bifrost-request-id", "x-bifrost-trace-id", "x-bifrost-provider", "x-bifrost-request-type",
 			"x-bifrost-routing-info-provider", "x-bifrost-routing-info-model", "x-bifrost-cache-hit",
-			"x-bifrost-latency-ms", "x-bifrost-converted-request-type", "x-bifrost-error-type", "x-bifrost-retry-after-ms",
+			"x-bifrost-latency-ms", "x-bifrost-converted-request-type", "x-bifrost-error-type", "x-bifrost-retry-after-ms", "Retry-After",
 		} {
 			if !slices.Contains(exposed, name) {
 				t.Errorf("origin %s: Access-Control-Expose-Headers %q does not list %s", origin, exposed, name)
