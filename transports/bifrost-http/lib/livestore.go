@@ -69,9 +69,9 @@ func takePresetStore() *livestore.Store {
 	return store
 }
 
-// loadLiveStore fills the live store once everything LoadConfig writes to the config store has
-// been written: from the config store when there is one, otherwise from config.json alone.
-func loadLiveStore(ctx context.Context, config *Config) error {
+// attachLiveStore gives config its live store, before anything that keeps state in it is built:
+// the store SetLiveStore handed over, or a new one. It is empty until loadLiveStore fills it.
+func attachLiveStore(config *Config) error {
 	live := takePresetStore()
 	if live == nil {
 		var err error
@@ -82,6 +82,13 @@ func loadLiveStore(ctx context.Context, config *Config) error {
 	if err := config.AttachLiveStore(live); err != nil {
 		return err
 	}
+	return nil
+}
+
+// loadLiveStore fills config's live store once everything LoadConfig writes to the config store has
+// been written: from the config store when there is one, otherwise from config.json alone.
+func loadLiveStore(ctx context.Context, config *Config) error {
+	live := config.LiveStore
 	if config.ConfigStore != nil {
 		if err := runLiveStoreLoadHook(ctx, config); err != nil {
 			return err

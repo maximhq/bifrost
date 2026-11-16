@@ -1366,7 +1366,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadPlugins(ctx, config, &configData)
 	// 11. Skills registry (after plugins, before framework)
 	loadSkillsRegistry(ctx, config, &configData)
-	// 12. Framework config and pricing manager
+	// 12. Framework config and pricing manager. The live store is created first, empty, since the
+	// per-user MCP providers keep their caches in it; it is filled in step 17.
 	// PUT /api/config refuses an openapi_url outside the app directory; config.json
 	// gets the same rule. An env reference is checked once resolved, in
 	// ResolveFrameworkPricingConfig.
@@ -1375,7 +1376,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("openapi_url %w", err)
 		}
 	}
-	initFrameworkConfig(ctx, config, &configData)
+	if err := attachLiveStore(config); err != nil {
+		return nil, err
+	}
+	if err := initFrameworkConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 13. Encryption sync
 	syncEncryption(ctx, config)
 	// 14. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
@@ -7706,7 +7712,7 @@ func nonEmptyOpenAPIURL(value *string) *string {
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
-func initFrameworkConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func initFrameworkConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	mcpPricingConfig := &mcpcatalog.Config{}
 	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
@@ -7728,15 +7734,23 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 		}
 	}
 
-	// Initialize OAuth provider
-	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+	// Initialize OAuth provider, its token and ID-JAG caches in the live store
+	var err error
+	if config.OAuthProvider, err = oauth2.NewOAuth2Provider(config.ConfigStore, config.LiveStore, logger); err != nil {
+		return fmt.Errorf("failed to create OAuth provider: %w", err)
+	}
 	// Initialize per-user-headers credential provider. Storage parallel of
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
-	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
+	if config.MCPHeadersProvider, err = mcp_headers.NewProvider(config.ConfigStore, config.LiveStore, logger); err != nil {
+		return fmt.Errorf("failed to create MCP headers provider: %w", err)
+	}
 	// Discovery store for per_user_discovery clients' tools, one set per caller
-	// read through a bounded cache. The shared clients' store keeps its tools in
-	// the live store, so it is built once that has loaded (see LoadConfig).
-	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(config.ConfigStore, logger)
+	// read through a cache in the live store. The shared clients' store keeps
+	// its tools in the live store too, filled from the rows, so it is built
+	// once that has loaded (see LoadConfig).
+	if config.MCPPerUserDiscoveryStore, err = mcpdiscovery.NewPerUserStore(config.ConfigStore, config.LiveStore, logger); err != nil {
+		return fmt.Errorf("failed to create per-user discovery store: %w", err)
+	}
 
 	// Construct the OAuth token refresh worker, but don't start it here: Start
 	// runs an immediate refresh sweep synchronously with launching its
@@ -7802,6 +7816,7 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	}
 
 	loadDatasheetOverridesFromFile(ctx, config, configData)
+	return nil
 }
 
 // initEncryption initializes encryption from config data or environment variables.

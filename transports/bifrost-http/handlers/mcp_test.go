@@ -24,7 +24,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
@@ -47,6 +49,42 @@ func TestMain(m *testing.M) {
 	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
 	SetLogger(&mockLogger{})
 	os.Exit(m.Run())
+}
+
+// newTestProviderLiveStore returns a new, empty live store closed when the test ends.
+var newTestProviderLiveStore = livestoretest.New
+
+// newTestOAuthProvider returns an OAuth provider over store with its caches in a live store of its
+// own.
+func newTestOAuthProvider(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *oauth2.OAuth2Provider {
+	t.Helper()
+	p, err := oauth2.NewOAuth2Provider(store, newTestProviderLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("oauth provider: %v", err)
+	}
+	return p
+}
+
+// newTestHeadersProvider returns a header credential provider over store with its cache in a live
+// store of its own.
+func newTestHeadersProvider(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *mcp_headers.Provider {
+	t.Helper()
+	p, err := mcp_headers.NewProvider(store, newTestProviderLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("headers provider: %v", err)
+	}
+	return p
+}
+
+// newTestPerUserDiscovery returns a per-user discovery store over store with its cache in a live
+// store of its own.
+func newTestPerUserDiscovery(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *mcpdiscovery.PerUserStore {
+	t.Helper()
+	s, err := mcpdiscovery.NewPerUserStore(store, newTestProviderLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("per-user discovery store: %v", err)
+	}
+	return s
 }
 
 // =============================================================================
@@ -172,7 +210,7 @@ func newReregisterFixture(t *testing.T) *reregisterFixture {
 
 	as := newReregisterAuthServer(t)
 	store := &flowFailingStore{ConfigStore: newRealOAuth2Store(t)}
-	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 
 	initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
 		AuthorizeURL:    as.server.URL + "/authorize",
@@ -487,7 +525,7 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(tc.allow))
 			server := newLoopbackOAuthMCPServer(t)
 			store := newRealOAuth2Store(t)
-			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
 			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
@@ -548,7 +586,7 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			SetLogger(&mockLogger{})
 			server, oauthRequests := newLoopbackOAuthMCPServerWithCIMD(t, true)
 			store := newRealOAuth2Store(t)
-			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			base, host := "https://bifrost.example.com", "bifrost.example.com"
 			if tc.local {
 				base, host = "http://localhost:8080", "localhost:8080"
@@ -885,7 +923,7 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 // The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
 // request (through InitiateOAuthFlow) and a config.json client's stored pending config.
 func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
-	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil, nil)
+	handler := NewOAuthHandler(newTestOAuthProvider(t, nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil, nil)
 	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
 		ClientID:                  schemas.NewSecretVar("preset"),
 		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",
@@ -1158,8 +1196,9 @@ func (refusingExchangeResolver) ValidateTokenExchangeConfig(context.Context, *sc
 }
 
 // newRefusingExchangeProvider is an OAuth provider whose identity-provider integration is refusingExchangeResolver.
-func newRefusingExchangeProvider(store configstore.ConfigStore) *oauth2.OAuth2Provider {
-	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+func newRefusingExchangeProvider(t testing.TB, store configstore.ConfigStore) *oauth2.OAuth2Provider {
+	t.Helper()
+	provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	provider.SetTokenExchangeIdPResolver(refusingExchangeResolver{})
 	return provider
 }
@@ -1170,7 +1209,7 @@ func TestAddMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	manager := &capturingAddMCPManager{}
-	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: newRefusingExchangeProvider(store)}, mcpManager: manager}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: newRefusingExchangeProvider(t, store)}, mcpManager: manager}
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -1201,7 +1240,7 @@ func TestUpdateMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
 		MCPConfig:     &schemas.MCPConfig{},
 		ClientConfig:  &configstore.ClientConfig{},
 		ConfigStore:   store,
-		OAuthProvider: newRefusingExchangeProvider(store),
+		OAuthProvider: newRefusingExchangeProvider(t, store),
 	}
 	libtest.MCPClients(t, cfg, existing)
 	h := &MCPHandler{store: cfg, mcpManager: manager, mcpCredentialCacheManager: &recordingCredentialCache{}}
@@ -1265,7 +1304,7 @@ func TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent(t *testing.T) {
 				MCPConfig:     &schemas.MCPConfig{},
 				ClientConfig:  &configstore.ClientConfig{},
 				ConfigStore:   store,
-				OAuthProvider: oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)),
+				OAuthProvider: newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError)),
 			}
 			libtest.MCPClients(t, cfg, existing)
 			h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}, mcpCredentialCacheManager: &recordingCredentialCache{}}
@@ -1690,7 +1729,7 @@ func TestParseRequestDurationUnits(t *testing.T) {
 // client's first discovery check finds no credential and marks it unstable.
 func TestAddMCPClient_PerUserHeadersKeepsAdminCredential(t *testing.T) {
 	h, mgr := newOpenAPITestHandler(t)
-	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, h.store.ConfigStore, &mockLogger{})
 
 	body, err := json.Marshal(map[string]any{
 		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
@@ -1722,7 +1761,7 @@ func (failingHeaderCredentialStore) UpsertMCPPerUserHeaderCredential(context.Con
 // client created and registered; verify-headers can store the credential later.
 func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *testing.T) {
 	h, mgr := newOpenAPITestHandler(t)
-	h.store.MCPHeadersProvider = mcp_headers.NewProvider(failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
 
 	body, err := json.Marshal(map[string]any{
 		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
@@ -1967,7 +2006,7 @@ func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provid
 	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
 	server := newLoopbackOAuthMCPServer(t)
 	store := newRealOAuth2Store(t)
-	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
 	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}, provider, server
 }
@@ -2028,7 +2067,7 @@ func TestAddMCPClient_OAuthKeepsTheEndpointSlug(t *testing.T) {
 func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
 	h := NewOAuthHandler(provider, nil, cfg, nil)
 	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
@@ -2061,7 +2100,7 @@ func TestAddMCPClient_OAuthURLsCarryBasePath(t *testing.T) {
 			t.Cleanup(func() { lib.SetBasePath("") })
 			server, _ := newLoopbackOAuthMCPServerWithCIMD(t, true)
 			store := newRealOAuth2Store(t)
-			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
 				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com" + tc.basePath),
 			}}
@@ -2612,7 +2651,7 @@ func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	provider := oauth2.NewOAuth2Provider(store, logger)
+	provider := newTestOAuthProvider(t, store, logger)
 	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "exchanged-admin", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in": 3600})
@@ -2624,7 +2663,7 @@ func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler
 		ClientConfig:       &configstore.ClientConfig{},
 		MCPConfig:          &schemas.MCPConfig{},
 		OAuthProvider:      provider,
-		MCPHeadersProvider: mcp_headers.NewProvider(store, logger),
+		MCPHeadersProvider: newTestHeadersProvider(t, store, logger),
 	})
 	recorder := &verificationRecorder{}
 	h := &MCPHandler{store: cfg, mcpManager: recorder, client: runtime, mcpCredentialCacheManager: &evictionLog{}}
