@@ -28,6 +28,11 @@ test('MCP provider-wire harness includes two real routes, no paid calls on impor
   assert.match(checks,/raw_request/u);
   assert.match(checks,/matching\.length/u);
   assert.match(checks,/additionalProperties/u);
+  for (const tool of ['closed_schema_probe','object_schema_probe','absent_schema_probe']) {
+   assert.match(checks,new RegExp('schema_probe_mcp-'+tool,'u'));
+  }
+  assert.match(checks,/\.to\.deep\.equal\(\{type:'string'\}\)/u);
+  assert.match(checks,/hasOwnProperty\.call\(params, 'additionalProperties'\)/u);
   assert.match(checks,/\.to\.equal\(false\)/u);
   assert.match(checks,/pm\.response\.code/u);
  }
@@ -36,11 +41,14 @@ test('MCP test client is isolated and fixture advertises the original closed sch
  const config=JSON.parse(fs.readFileSync(path.join(root,'tests/integrations/python/config.json'),'utf8'));
  const clients=config.mcp.client_configs.filter(x=>x.name==='schema_probe_mcp');
  assert.equal(clients.length,1);
- assert.deepEqual(clients[0].tools_to_execute,['closed_schema_probe']);
+ assert.deepEqual(clients[0].tools_to_execute,['closed_schema_probe','object_schema_probe','absent_schema_probe']);
  assert.deepEqual(clients[0].tools_to_auto_execute,[]);
  const src=fs.readFileSync(path.join(root,'examples/mcps/remote-test-server/main.go'),'utf8');
  assert.match(src,/mcp\.NewToolWithRawSchema\(/u);
  assert.match(src,/"additionalProperties":false/u);
+ assert.match(src,/"additionalProperties":\{"type":"string"\}/u);
+ assert.match(src,/"absent_schema_probe"/u);
+ assert.match(src,/"object_schema_probe"/u);
  assert.doesNotMatch(src,/closedSchemaTool\.InputSchema\.AdditionalProperties/u);
  assert.match(src,/s\.AddTool\(closedSchemaTool/u);
 });
