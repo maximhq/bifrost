@@ -135,11 +135,11 @@ func (TableModelConfig) TableName() string {
 	return "governance_model_configs"
 }
 
-// AfterFind propagates calendar_aligned down to owned budgets so the reset path reads
-// the stamped value off each budget. Mirrors TableTeam/TableVirtualKey. The governance
-// store's Update*InMemory paths re-stamp on every model-config update.
+// AfterFind propagates calendar_aligned down to owned budgets and rate limit so the
+// reset path reads the stamped value off each one. Mirrors TableTeam/TableVirtualKey.
+// The governance store's Update*InMemory paths re-stamp on every model-config update.
 func (mc *TableModelConfig) AfterFind(tx *gorm.DB) error {
-	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, mc.RateLimit)
 	return nil
 }
 

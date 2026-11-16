@@ -5788,11 +5788,6 @@ func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configs
 	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
 	for i := range mcs {
 		ptrs[i] = &mcs[i]
-		// AfterFind stamps calendar alignment onto a model config's budgets only. Stamp its
-		// rate limit too, as the governance store does, so next resets follow the same windows.
-		if mcs[i].RateLimit != nil {
-			mcs[i].RateLimit.IsCalendarAligned = mcs[i].CalendarAligned
-		}
 	}
 	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs), buildVKModelBudgetsIndex(ptrs))
 
