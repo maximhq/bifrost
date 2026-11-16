@@ -361,6 +361,11 @@ const (
 	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
 	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
 	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
+	// WarpUnavailableNoBifrostMCP means the Bifrost MCP is not loaded (no
+	// bifrost_url, or its OpenAPI spec could not be read). Warp needs it to read
+	// configuration, so it does not answer at all without it. The dashboard shows
+	// admins the setup notice and everyone else an ask-an-admin message.
+	WarpUnavailableNoBifrostMCP WarpUnavailableReason = "no_bifrost_mcp"
 )
 
 // WarpUnavailableResponse is the 503 body for both reasons above.

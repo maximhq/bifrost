@@ -3696,6 +3696,18 @@ type GeminiLiveClientMessage struct {
 	ClientContent *GeminiLiveClientContent `json:"clientContent,omitempty"`
 	RealtimeInput *GeminiLiveRealtimeInput `json:"realtimeInput,omitempty"`
 	ToolResponse  *GeminiLiveToolResponse  `json:"toolResponse,omitempty"`
+	ContextUpdate *GeminiLiveContextUpdate `json:"contextUpdate,omitempty"`
+}
+
+// GeminiLiveContextUpdate changes the instructions or the tools of a running session, on Gemini 3 and later. A field left out is kept.
+type GeminiLiveContextUpdate struct {
+	SystemInstruction *Content                      `json:"systemInstruction,omitempty"` // an empty one clears the instructions
+	Tools             *GeminiLiveContextUpdateTools `json:"tools,omitempty"`
+}
+
+// GeminiLiveContextUpdateTools wraps the tool list so that an empty list, which clears the tools, differs from no update.
+type GeminiLiveContextUpdateTools struct {
+	Tools []Tool `json:"tools"`
 }
 
 // GeminiLiveSetup is the first and only configuration frame of a Live session.

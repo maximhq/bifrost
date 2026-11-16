@@ -202,6 +202,14 @@ WarpConfig:
             type: integer
             description: Rough estimate (declaration characters / 3).
         required: [kind, tools, estimated_tokens]
+    bifrost_mcp_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the gateway's Bifrost MCP is loaded. Warp reads configuration
+        through it and does not answer without it: chat returns 503 with reason
+        `no_bifrost_mcp`. False when `client.bifrost_url` is unset or the
+        OpenAPI spec could not be read.
   required:
     - configured
     - enabled
@@ -220,6 +228,7 @@ WarpConfig:
     - vector_store_connected
     - management_writes
     - management_writes_available
+    - bifrost_mcp_available
 
 WarpManagementWrite:
   type: string
@@ -413,6 +422,10 @@ WarpUnavailable:
       semantic search specifically is unavailable. Everything else Warp does
       still works, so this is a degraded state rather than an absent one - do
       not hide the launcher for it.
+    - `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,
+      or its OpenAPI spec could not be read). Warp does not answer without it.
+      Show administrators the setup step and everyone else an ask-an-admin
+      message, in place of the composer.
   properties:
     reason:
       type: string
@@ -420,6 +433,7 @@ WarpUnavailable:
         - not_configured
         - no_log_store
         - no_vector_store
+        - no_bifrost_mcp
     message:
       type: string
   required:

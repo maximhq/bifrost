@@ -1,3 +1,4 @@
+import WarpBifrostMCPNotice from "@/components/warp/warpBifrostMCPNotice";
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -560,6 +561,7 @@ export default function WarpView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
+			<WarpBifrostMCPNotice warpEnabled={!!config?.enabled} bifrostMCPAvailable={!!config?.bifrost_mcp_available} />
 			<form onSubmit={onSubmit} className="space-y-4">
 				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>

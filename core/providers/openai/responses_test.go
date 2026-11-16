@@ -2770,6 +2770,43 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 }
 
+// TestToOpenAIResponsesRequest_DropsForeignCustomToolCallItemID checks a custom_tool_call id must begin with "ctc".
+func TestToOpenAIResponsesRequest_DropsForeignCustomToolCallItemID(t *testing.T) {
+	for _, tc := range []struct {
+		itemID string
+		keep   bool
+	}{{"fc_x", false}, {"ctc_x", true}} {
+		t.Run(tc.itemID, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5-mini",
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr(tc.itemID),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:                  schemas.Ptr("call_1"),
+						Name:                    schemas.Ptr("code_exec"),
+						ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"},
+					},
+				}},
+			}
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			converted := ToOpenAIResponsesRequest(ctx, req)
+			got := converted.Input.OpenAIResponsesRequestInputArray[0]
+			if tc.keep != (got.ID != nil && *got.ID == tc.itemID) || (!tc.keep && got.ID != nil) {
+				t.Errorf("id = %v, keep = %v", got.ID, tc.keep)
+			}
+			if got.ResponsesToolMessage == nil || got.ResponsesToolMessage.CallID == nil || *got.ResponsesToolMessage.CallID != "call_1" {
+				t.Error("call_id changed")
+			}
+			if req.Input[0].ID == nil || *req.Input[0].ID != tc.itemID {
+				t.Error("original id was mutated")
+			}
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID verifies that a
 // replayed function_call item whose id does not begin with "fc" (e.g. Gemini
 // streaming reuses the "<id>_ts_<sig>" call id as the item id) has its id dropped

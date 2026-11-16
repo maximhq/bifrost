@@ -376,6 +376,15 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "entity_access_profile_mode": {
+          "type": "string",
+          "enum": [
+            "union",
+            "intersect"
+          ],
+          "default": "union",
+          "description": "Enterprise only. How the access profiles of the teams, business units and customers a caller belongs to combine with the caller's own access. Takes the same values as a project's access_rule. 'union' (default) lets each of them add to what the caller may reach. 'intersect' makes each level that holds an active profile cap it instead: the caller keeps only what their own profiles (or virtual key) allow AND what at least one of their team or business unit profiles allows AND what at least one of their customer profiles allows. A level holding no active profile is skipped. The cap covers providers, models, provider keys, MCP tools and relays; agents are not capped, since team, business unit and customer profiles cannot grant them. Budgets and rate limits are charged as in 'union' mode. The x-bf-customer-id / x-bf-customer-name scope headers are ignored in 'intersect' mode."
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -6516,6 +6525,11 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Span attributes win on conflict. The suffixes path and method, and keys in reserved attribute namespaces (gen_ai., llm., bifrost., http., url., session., service., k8s., langfuse., openinference., otel.), are skipped. Default false.",
+          "default": false
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
@@ -7615,7 +7629,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."
+          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; with false, suggestions run only on demand, never on the schedule. A run started without a suggestion model is accepted and then fails."
         },
         "sample_rate": {
           "type": "number",

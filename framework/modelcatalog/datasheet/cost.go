@@ -254,6 +254,9 @@ func (s *Store) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadat
 
 // computeGuardrailJudgeCost computes one internal judge chat-completion cost.
 func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall, scopes *LookupScopes) float64 {
+	// External guardrail service calls have no judge model. Their EstimatedCost
+	// is display-only, so they price to zero here and stay out of request cost
+	// and budgets.
 	if call.JudgeProvider == "" || call.JudgeModel == "" {
 		return 0
 	}

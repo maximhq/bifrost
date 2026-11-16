@@ -42,7 +42,8 @@ export default function OAuth2ConsentPage() {
 		);
 	}
 
-	return <ConsentView flowId={flowId} />;
+	// Keyed so a different flow never inherits the previous flow's state.
+	return <ConsentView key={flowId} flowId={flowId} />;
 }
 
 // isSafeRedirect rejects URLs whose scheme could execute script when assigned to
@@ -60,7 +61,7 @@ function isSafeRedirect(url: string): boolean {
 function ConsentView({ flowId }: { flowId: string }) {
 	const { t } = useTranslation("login");
 	const { t: tc } = useTranslation("common");
-	const { data: flow, isLoading, isError, error } = useGetOAuth2ConsentFlowQuery(flowId);
+	const { data: flow, isLoading, isError, error, refetch } = useGetOAuth2ConsentFlowQuery(flowId);
 	const { data: authState } = useIsAuthEnabledQuery();
 	const [submitFlow, { isLoading: submitting }] = useSubmitOAuth2ConsentFlowMutation();
 	const [vkValue, setVkValue] = useState("");
@@ -77,6 +78,16 @@ function ConsentView({ flowId }: { flowId: string }) {
 
 	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 	const showLoginOption = usingTempToken && signedOut;
+
+	// The auth probe can refresh an expired SSO session while the flow read is in
+	// flight, so the flow misses a user the probe sees. Re-read the flow once.
+	const [flowRechecked, setFlowRechecked] = useState(false);
+	const flowMissedSession = !!flow?.available_modes.includes("user") && !flow.logged_in_user && authState?.has_valid_token === true;
+	const awaitingRecheck = flowMissedSession && !flowRechecked;
+	useEffect(() => {
+		if (!awaitingRecheck) return;
+		void Promise.resolve(refetch()).finally(() => setFlowRechecked(true));
+	}, [awaitingRecheck, refetch]);
 
 	const handleSubmit = async (mode: "vk" | "session" | "user") => {
 		setSelectedMode(mode);
@@ -102,7 +113,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 		}
 	};
 
-	if (isLoading) return <FullPageLoader />;
+	if (isLoading || awaitingRecheck) return <FullPageLoader />;
 
 	if (isError || !flow) {
 		const status = (error as { status?: number } | undefined)?.status;
@@ -128,6 +139,9 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const hasVK = flow.available_modes.includes("vk");
 	const hasSession = flow.available_modes.includes("session");
 	const hasAnyMode = hasUser || hasVK || hasSession;
+	// Never leave user mode without an action: when it is the only mode, offer sign-in
+	// even if the probe disagrees with the flow about the session.
+	const showSignIn = hasUser && !flow.logged_in_user && (showLoginOption || (!hasVK && !hasSession));
 	const clientName = flow.client_name || t("consent.mcpClient");
 
 	return (
@@ -206,7 +220,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 				)}
 
 				{/* User mode — sign in prompt when not logged in */}
-				{hasUser && !flow.logged_in_user && showLoginOption && (
+				{showSignIn && (
 					<div className="rounded-sm border p-4">
 						<div className="flex items-center gap-3">
 							<div className="bg-muted flex size-9 shrink-0 items-center justify-center rounded-full">

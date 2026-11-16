@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,7 +51,6 @@ type liveTranslator struct {
 	modelPath string // how the setup names the model when it is not "models/<model>"
 	config    *liveConfig
 	phase     livePhase
-	sentSetup []byte
 	// fromUpdate is set when the setup came from a session.update, which is answered with session.updated.
 	fromUpdate  bool
 	queued      []json.RawMessage
@@ -234,17 +234,28 @@ func (t *liveTranslator) startSetup(out *liveOutput, fromUpdate bool) {
 	if frame == nil {
 		return
 	}
-	t.sentSetup = frame
 	t.fromUpdate = fromUpdate
 	t.phase = liveSettingUp
 	out.Provider = append(out.Provider, frame)
 }
+
+// liveLateSettings are the settings a session.update can still change after the setup, on any Live model,
+// because the translator keeps them itself: the text/audio choice and the input rate.
+var liveLateSettings = []string{"output_modalities", "modalities", "input_audio_format", "audio.input.format"}
+
+// liveLateContextSettings adds the settings a context update changes, which Gemini 3 and later accept.
+var liveLateContextSettings = append(slices.Clone(liveLateSettings), "instructions", "tools", "tool_choice")
 
 func (t *liveTranslator) sessionUpdate(out *liveOutput, event *schemas.BifrostRealtimeEvent) error {
 	// An update names only what it changes, so it is read on top of the settings sent before it.
 	session, err := providerUtils.MergeJSONObjects(t.session, []byte(providerUtils.GetJSONField(event.RawData, "session").Raw))
 	if err != nil {
 		return fmt.Errorf("invalid session in session.update: %w", err)
+	}
+	if t.phase != liveAwaitingSetup {
+		if session, err = t.settingsInEffect(session); err != nil {
+			return err
+		}
 	}
 	update, err := parseLiveSessionUpdate(session)
 	if err != nil {
@@ -260,20 +271,83 @@ func (t *liveTranslator) sessionUpdate(out *liveOutput, event *schemas.BifrostRe
 		t.startSetup(out, true)
 		return nil
 	}
-	// Live cannot change a session once set up. Repeating its configuration is harmless, and common
-	// in clients that send their settings on every connect, so it is acknowledged.
-	if resent := out.marshal(&GeminiLiveClientMessage{Setup: config.setup}); out.err != nil || !bytes.Equal(resent, t.sentSetup) {
+	// Instructions and tools reach a running session as a context update, which waits behind the setup if it is still pending.
+	if frame := liveContextUpdate(t.config.setup, config.setup); frame != nil {
+		if err := t.send(out, frame); err != nil {
+			return err
+		}
 		if out.err != nil {
 			return out.err
 		}
-		return errors.New("gemini live fixes a session's configuration with the first message, so this session.update would change it; send the settings first or open a new session")
 	}
-	// What the setup does not hold can still change: the text/audio choice and the input rate.
 	t.config, t.session = config, session
 	reply := t.newEvent("session.updated")
 	reply.Session = &t.config.session
 	out.client(reply)
 	return nil
+}
+
+// settingsInEffect narrows a session.update that comes after the setup to what a running session can take. Live fixes
+// the rest with the setup, so those changes are ignored and the reply shows what is in effect. It returns the session as it stands.
+func (t *liveTranslator) settingsInEffect(merged []byte) ([]byte, error) {
+	settings := liveLateSettings
+	if isGemini3Plus(t.model) {
+		settings = liveLateContextSettings
+	}
+	effective := t.session
+	if len(effective) == 0 {
+		effective = []byte("{}")
+	}
+	for _, path := range settings {
+		value := providerUtils.GetJSONField(merged, path)
+		if !value.Exists() {
+			continue
+		}
+		var err error
+		if effective, err = providerUtils.SetRawJSONField(effective, path, []byte(value.Raw)); err != nil {
+			return nil, fmt.Errorf("invalid %s in session.update: %w", path, err)
+		}
+	}
+	return effective, nil
+}
+
+// liveContextUpdate is the frame that moves a running session from one setup's instructions and tools to another's, or nil when neither changed.
+func liveContextUpdate(from, to *GeminiLiveSetup) *GeminiLiveClientMessage {
+	var update GeminiLiveContextUpdate
+	if !liveSameJSON(from.SystemInstruction, to.SystemInstruction) {
+		update.SystemInstruction = to.SystemInstruction
+		if update.SystemInstruction == nil {
+			update.SystemInstruction = &Content{}
+		}
+	}
+	if !liveSameJSON(from.Tools, to.Tools) {
+		update.Tools = &GeminiLiveContextUpdateTools{Tools: append([]Tool{}, to.Tools...)}
+	}
+	if update.SystemInstruction == nil && update.Tools == nil {
+		return nil
+	}
+	return &GeminiLiveClientMessage{ContextUpdate: &update}
+}
+
+// liveSameJSON reports whether two values mean the same JSON: the order of object keys does not matter and nothing differs from an empty list, because every needless context update costs the prefix cache.
+func liveSameJSON(a, b any) bool {
+	decode := func(value any) (any, bool) {
+		raw, err := providerUtils.MarshalSorted(value)
+		if err != nil {
+			return nil, false
+		}
+		var decoded any
+		if schemas.Unmarshal(raw, &decoded) != nil {
+			return nil, false
+		}
+		if list, ok := decoded.([]any); ok && len(list) == 0 {
+			return nil, true
+		}
+		return decoded, true
+	}
+	left, leftOK := decode(a)
+	right, rightOK := decode(b)
+	return leftOK && rightOK && reflect.DeepEqual(left, right)
 }
 
 func (t *liveTranslator) audioAppend(out *liveOutput, event *schemas.BifrostRealtimeEvent) error {

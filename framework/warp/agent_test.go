@@ -2174,7 +2174,7 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, "Never write chart or diagram code")
 	require.NotContains(t, content, "You cannot draw charts")
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
-	require.Contains(t, content, "You only read")
+	require.Contains(t, content, managementNotAllowed, "reads only by default: changes are an administrator's to allow")
 	require.Contains(t, content, "Nothing carries over between conversations")
 	// "Remember my team" got "I'll use it in this conversation" and no link.
 	require.Contains(t, content, "saying you will use it here does not replace the link")

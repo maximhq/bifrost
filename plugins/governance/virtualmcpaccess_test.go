@@ -59,7 +59,7 @@ func TestVirtualMCPToolAccess(t *testing.T) {
 		accessPermit := permitFor(buildVKNoMCPConfigs(), []configstoreTables.TableVirtualMCP{
 			{Name: "acc", EndpointSlug: "acc", Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{spec("cA", "read")}},
 		}, names, nil)
-		access := grant.NewAccess([]schemas.Permit{accessPermit}, nil, "", nil)
+		access := grant.NewAccess([]schemas.Permit{accessPermit}, "", nil, "", nil)
 
 		served, ok := store(names).VirtualMCPToolAccess(gatewayCtx(assigned), "g", access)
 		assert.True(t, ok)
