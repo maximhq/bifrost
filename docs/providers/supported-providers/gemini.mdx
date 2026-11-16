@@ -21,7 +21,7 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Chat Completions | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Responses API | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Speech (TTS) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
-| Transcriptions (STT) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1beta/interactions` for `gemini-3.5-transcribe`; `/v1beta/models/{model}:generateContent` for other models |
 | Image Generation | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
 | Image Edit | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
 | Video Generation | ✅ | - | `/v1beta/models/{model}:predictLongRunning` |
@@ -517,6 +517,58 @@ resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.
   - `promptTokenCount` → `input_tokens`
   - `candidatesTokenCount` → `output_tokens`
   - `totalTokenCount` → `total_tokens`
+
+## gemini-3.5-transcribe (Interactions API)
+
+Requests for `gemini-3.5-transcribe` go to `POST /v1beta/interactions`, for both non-streaming and streaming transcription. The model name must match exactly.
+
+### Request Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `file` | Audio bytes → an `input[]` part `{"type": "audio", "data": "<base64>", "mime_type": "<detected>"}` |
+| `prompt` | → an `input[]` part `{"type": "text", "text": "..."}`, sent before the audio. Omitted when empty; there is no default prompt |
+| `language` | → `generation_config.transcription_config.language_codes: ["<language>"]` |
+| `timestamp_granularities` | → `transcription_config.mode: {"type": "verbatim", "timestamp_granularities": [...]}`. Gemini documents only `"word"` |
+| `stream` | → `stream: true` |
+
+These `extra_params` are copied into `transcription_config`: `language_codes`, `mode`, `diarization_mode` and `custom_vocabulary`. `diarization_mode` is placed inside `mode` (created as `{"type": "verbatim"}` if absent). The `store` extra param is sent as the top-level `store` field; set it to `false` to opt out of Gemini storing the interaction. A form value of `"false"` is accepted. Other `extra_params` are not sent on this endpoint.
+
+```json
+{
+  "model": "gemini-3.5-transcribe",
+  "input": [
+    {"type": "text", "text": "Transcribe the call."},
+    {"type": "audio", "data": "<base64-encoded-audio>", "mime_type": "audio/wav"}
+  ],
+  "generation_config": {
+    "transcription_config": {
+      "language_codes": ["en"],
+      "mode": {"type": "verbatim", "diarization_mode": "speaker"}
+    }
+  }
+}
+```
+
+With raw request mode (`BifrostContextKeyUseRawRequestBody`), the caller's body is sent to `/v1beta/interactions` unchanged.
+
+### Response Conversion
+
+- Text is read from `output_text`. When that is empty, the `text` parts of `steps[].content[]` are joined.
+- `task` is set to `"transcribe"` when text is present.
+- With `timestamp_granularities: ["word"]`, each `word_info` annotation on `steps[].content[].annotations[]` becomes an entry in `words`: `text` → `word`, `start_offset` / `end_offset` (duration strings such as `"0.100s"`) → `start` / `end` in seconds, and `speaker` (for example `spk_1`, when diarization is on) → `speaker`. A word whose offsets cannot be parsed is skipped.
+- Usage is mapped as tokens, and is kept even when the transcript is empty:
+  - `total_input_tokens` → `input_tokens`
+  - `total_output_tokens` → `output_tokens`
+  - `total_tokens` → `total_tokens`
+
+### Streaming
+
+- Each text `delta` becomes a `transcript.text.delta` chunk.
+- The stream ends with `transcript.text.done`, carrying the full text and usage, once Gemini sends `interaction.completed`.
+- If the connection closes before `interaction.completed`, the stream ends with an upstream error instead of a done chunk, so a partial transcript is never reported as complete.
+- An `error` event ends the stream with that error.
+- Word timestamps are not returned on streams: Gemini does not document how word annotations appear in stream events.
 
 ---
 
