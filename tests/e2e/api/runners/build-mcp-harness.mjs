@@ -13290,6 +13290,285 @@ const OAS46 = folder("OAS-46 A server cap below 2025-11-25 turns off Client ID M
   request("OAS-46", "auto: metadata documents are advertised again", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), cimdFlag(true)] }),
 ]));
 
+// ================================================================ network paths
+
+// The fleet is reached under a *.proxy.test name that only the mock's forward proxy resolves, so a request
+// succeeds only through the proxy, as in a proxy-only egress network. Loopback is never proxied, so the
+// fleet's own 127.0.0.1 URLs cannot test this.
+const PROXIED = "{{net_proxied}}";
+const PROXIED_HOST = "{{net_proxied_host}}";
+const NET_TEXT = "Bifrost's global proxy (PUT /api/proxy-config, type http, enable_for_api) points at the mock's forward proxy; servers are reached as chaos.proxy.test, a name only that proxy resolves";
+const netSetup = (id) => request(id, "setup: read the mock's proxy and the fleet's proxy-only name", "GET", "/control", {
+  base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("the mock runs a forward proxy", ["pm.expect((pm.response.json().proxy || {}).url, 'body: ' + pm.response.text()).to.match(/^http:/);"])],
+  extraTests: [
+    "var b = pm.response.json(); var host = 'chaos.proxy.test:' + b.base_url.replace(/^.*:/, '');",
+    "pm.collectionVariables.set('net_proxy_url', b.proxy.url);",
+    "pm.collectionVariables.set('net_proxied_host', host);",
+    "pm.collectionVariables.set('net_proxied', 'http://' + host);",
+    "pm.collectionVariables.set('net_chaos_port', b.base_url.replace(/^.*:/, ''));",
+    "pm.collectionVariables.set('net_proxy_ca', b.proxy.ca_pem);",
+    "pm.collectionVariables.set('net_proxy_ca_json', JSON.stringify(b.proxy.ca_pem).slice(1, -1));",
+  ],
+});
+// proxyMode sets the mock proxy's mode and empties its log.
+const proxyMode = (id, title, mode = {}) => request(id, title, "POST", "/control", { base: CHAOS, noAuth: true, body: { proxy: { ...mode, clear_log: true } }, asserts: [A.status(200)] });
+const proxyOn = (id, title, over = {}) => request(id, title, "PUT", "/api/proxy-config", {
+  body: { enabled: true, type: "http", url: "{{net_proxy_url}}", enable_for_api: true, ...over }, asserts: [A.status(200)],
+});
+// The harness boots with no global proxy, so teardown turns it off.
+const proxyOff = (id) => request(id, "teardown: turn the global proxy off", "PUT", "/api/proxy-config", { body: { enabled: false, type: "http", url: "" }, asserts: [A.status(200)] });
+const netTeardown = (id) => [proxyOff(id), proxyMode(id, "teardown: the mock proxy accepts everything again")];
+// proxyLog checks the mock proxy's log with ES5 on `log`, its entries {method, host, path, status}.
+const proxyLog = (id, title, lines) => request(id, title, "GET", "/control", {
+  base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom(title, ["var log = pm.response.json().proxy.log || [];", ...lines])],
+});
+const proxiedClient = (clientId, name, path, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${PROXIED}/s/${path}`, auth_type: "none", tools_to_execute: ["*"], ...over });
+const allProxied = "log.forEach(function (e) { pm.expect(e.host, JSON.stringify(e)).to.equal('chaos.proxy.test'); });";
+const logHas = (method, pathRe, status = 200) => `pm.expect(log.filter(function (e) { return e.method === ${lit(method)} && ${pathRe}.test(e.path) && e.status === ${status}; }).length, 'log: ' + JSON.stringify(log)).to.be.at.least(1);`;
+const unstableAtDiscovery = [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([])];
+
+const NET01 = folder("NET-01 HTTP clients through the proxy", `Setup: ${NET_TEXT}; fleet server net01 (echo_tool, add_tool); a per-call and a sticky HTTP client on it by its proxy-only name.`, [
+  netSetup("NET-01"), ...freshServer("NET-01", "net01", ["echo_tool", "add_tool"]),
+  proxyMode("NET-01", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-01", "setup: turn the global proxy on for API traffic"),
+  createClient("NET-01", proxiedClient("net01-p", "net01_p", "net01/mcp"), "create a per-call client by the proxy-only name"),
+  getClient("NET-01", "net01-p", "the per-call client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  execTool("NET-01", "execute on the per-call client", "net01_p-echo_tool", [A.status(200)]),
+  createClient("NET-01", proxiedClient("net01-s", "net01_s", "net01/mcp", { needs_session_stickiness: true }), "create a sticky client by the proxy-only name"),
+  getClient("NET-01", "net01-s", "the sticky client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  execTool("NET-01", "execute on the sticky client", "net01_s-echo_tool", [A.status(200)]),
+  mockGet("NET-01", "net01", "net01 ran echo_tool twice", [callsIs("echo_tool", 2)]),
+  proxyLog("NET-01", "every request reached net01 through the proxy under its proxy-only name", [allProxied, logHas("POST", "/^\\/s\\/net01\\/mcp$/")]),
+  deleteClient("NET-01", "net01-p"), deleteClient("NET-01", "net01-s"), ...netTeardown("NET-01"),
+]);
+
+const NET02 = folder("NET-02 SSE client through the proxy", `Setup: ${NET_TEXT}; fleet server net02 (echo_tool, add_tool); an SSE client on /s/net02/sse by its proxy-only name.`, [
+  netSetup("NET-02"), ...freshServer("NET-02", "net02", ["echo_tool", "add_tool"]),
+  proxyMode("NET-02", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-02", "setup: turn the global proxy on for API traffic"),
+  createClient("NET-02", proxiedClient("net02-c", "net02_c", "net02/sse", { connection_type: "sse" }), "create an SSE client by the proxy-only name"),
+  getClient("NET-02", "net02-c", "the SSE client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  execTool("NET-02", "execute over the SSE stream", "net02_c-echo_tool", [A.status(200)]),
+  mockGet("NET-02", "net02", "net02 ran echo_tool once", [callsIs("echo_tool", 1)]),
+  proxyLog("NET-02", "the stream and its messages went through the proxy", [allProxied, logHas("GET", "/^\\/s\\/net02\\/sse$/")]),
+  deleteClient("NET-02", "net02-c"), ...netTeardown("NET-02"),
+]);
+
+// NET-03 consents on the mock's loopback address with the proxy-only name as Host, since newman cannot resolve it.
+const NET03 = folder("NET-03 OAuth sign-in through the proxy", `Setup: ${NET_TEXT}; no mcp_oauth_private_allowlist; fleet server net03 as an OAuth protected resource whose authorization server offers registration and issues 5s access tokens; an OAuth client net03-c on it by its proxy-only name, oauth_config {}; consent as id1.`, [
+  netSetup("NET-03"), ...asServer("NET-03", "net03", { access_ttl: "5s" }),
+  proxyMode("NET-03", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-03", "setup: turn the global proxy on for API traffic"),
+  createOAuth("NET-03", "create the OAuth client by the proxy-only name", oauthBody("net03-c", "net03", "net03", { connection_string: `${PROXIED}/s/net03/mcp` }), "net03", [statusIs("pending_oauth"),
+    A.custom("authorize_url is on the proxy-only name", ["pm.expect(pm.response.json().authorize_url, 'body: ' + pm.response.text()).to.include('//chaos.proxy.test:');"])]),
+  request("NET-03", "consent as id1", "GET", "", {
+    base: "{{net03_au_local}}&login_hint=id1", noAuth: true, noRedirect: true, noCookies: true, headers: [{ key: "Host", value: PROXIED_HOST }],
+    pre: ["pm.collectionVariables.set('net03_au_local', pm.collectionVariables.get('net03_au').replace(/^https?:\\/\\/[^/]+/, pm.variables.get('chaos_url')));"],
+    asserts: [A.status(302)], extraTests: ["pm.collectionVariables.set('net03_cb', pm.response.headers.get('Location'));"],
+  }),
+  followCallback("NET-03", "follow the callback", "net03", callbackSuccess()),
+  completeOAuth("NET-03", "complete", "net03", [A.status(200)]),
+  execTool("NET-03", "execute", "net03-echo_tool", [A.status(200)]),
+  execAfterWait("NET-03", "execute after the access token expired, 6s later", "net03-echo_tool", [A.status(200)], 6000),
+  proxyLog("NET-03", "discovery, registration, the code exchange and a refresh all went through the proxy", [allProxied,
+    logHas("GET", "/^\\/\\.well-known\\/oauth-protected-resource/"), logHas("GET", "/oauth-authorization-server|openid-configuration/"),
+    logHas("POST", "/^\\/s\\/net03\\/as\\/register$/", 201), logHas("POST", "/^\\/s\\/net03\\/as\\/token$/"),
+    "pm.expect(log.filter(function (e) { return e.path === '/s/net03/as/token' && e.status === 200; }).length, 'a code exchange and at least one refresh: ' + JSON.stringify(log)).to.be.at.least(2);"]),
+  deleteClient("NET-03", "net03-c"), ...netTeardown("NET-03"),
+]);
+
+const NET04 = folder("NET-04 no_proxy sends a name direct", `Setup: ${NET_TEXT}, with no_proxy chaos.proxy.test; fleet server net04; a per-call client on it by its proxy-only name.`, [
+  netSetup("NET-04"), ...freshServer("NET-04", "net04", ["echo_tool", "add_tool"]),
+  proxyMode("NET-04", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-04", "setup: global proxy on, no_proxy chaos.proxy.test", { no_proxy: "chaos.proxy.test" }),
+  createClient("NET-04", proxiedClient("net04-c", "net04_c", "net04/mcp"), "create the client: no_proxy sends it direct, where the name does not resolve"),
+  getClient("NET-04", "net04-c", "the client is unstable at tool_discovery with no tools", unstableAtDiscovery),
+  proxyLog("NET-04", "nothing went through the proxy", ["pm.expect(log, 'log').to.eql([]);"]),
+  deleteClient("NET-04", "net04-c"), ...netTeardown("NET-04"),
+]);
+
+const NET05 = folder("NET-05 The proxy goes down and comes back", `Setup: ${NET_TEXT}; fleet server net05; a per-call client on it by its proxy-only name, created while the proxy is up; then the proxy drops every connection, then accepts again.`, [
+  netSetup("NET-05"), ...freshServer("NET-05", "net05", ["echo_tool", "add_tool"]),
+  proxyMode("NET-05", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-05", "setup: turn the global proxy on for API traffic"),
+  createClient("NET-05", proxiedClient("net05-c", "net05_c", "net05/mcp"), "create the client while the proxy is up"),
+  execTool("NET-05", "control: execute while the proxy is up", "net05_c-echo_tool", [A.status(200)]),
+  proxyMode("NET-05", "the proxy goes down", { down: true }),
+  execTool("NET-05", "execute while the proxy is down fails", "net05_c-echo_tool", [A.custom("the call fails", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(200);"])]),
+  createClient("NET-05", proxiedClient("net05-d", "net05_d", "net05/mcp"), "create a client while the proxy is down"),
+  getClient("NET-05", "net05-d", "the new client is unstable at tool_discovery with no tools", unstableAtDiscovery),
+  proxyMode("NET-05", "the proxy is back"),
+  execTool("NET-05", "execute once the proxy is back", "net05_c-echo_tool", [A.status(200)]),
+  request("NET-05", "refresh-tools on the client created while down", "POST", "/api/mcp/client/net05-d/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
+  deleteClient("NET-05", "net05-c"), deleteClient("NET-05", "net05-d"), ...netTeardown("NET-05"),
+]);
+
+const NET06 = folder("NET-06 A proxy that asks for credentials", `Setup: ${NET_TEXT}; the mock proxy requires Basic credentials u:p; fleet server net06. First the global proxy has no credentials, then username u and password p.`, [
+  netSetup("NET-06"), ...freshServer("NET-06", "net06", ["echo_tool", "add_tool"]),
+  proxyMode("NET-06", "setup: the mock proxy requires credentials u:p, log cleared", { auth: "u:p" }),
+  proxyOn("NET-06", "setup: global proxy on, no credentials"),
+  createClient("NET-06", proxiedClient("net06-a", "net06_a", "net06/mcp"), "create a client while Bifrost sends no proxy credentials"),
+  getClient("NET-06", "net06-a", "the client is unstable at tool_discovery with no tools", unstableAtDiscovery),
+  proxyLog("NET-06", "the proxy answered 407", [logHas("POST", "/^\\/s\\/net06\\/mcp$/", 407)]),
+  proxyOn("NET-06", "global proxy credentials u and p", { username: "u", password: "p" }),
+  createClient("NET-06", proxiedClient("net06-b", "net06_b", "net06/mcp"), "create a client with the proxy credentials set"),
+  getClient("NET-06", "net06-b", "the client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  execTool("NET-06", "execute with the proxy credentials set", "net06_b-echo_tool", [A.status(200)]),
+  deleteClient("NET-06", "net06-a"), deleteClient("NET-06", "net06-b"), ...netTeardown("NET-06"),
+]);
+
+const NET07 = folder("NET-07 MCP traffic follows enable_for_api", `Setup: ${NET_TEXT.replace("enable_for_api", "enable_for_inference only, enable_for_api false")}; fleet server net07; a per-call client on it by its proxy-only name.`, [
+  netSetup("NET-07"), ...freshServer("NET-07", "net07", ["echo_tool", "add_tool"]),
+  proxyMode("NET-07", "setup: the mock proxy accepts everything, log cleared"),
+  proxyOn("NET-07", "setup: global proxy on for inference only", { enable_for_api: false, enable_for_inference: true }),
+  createClient("NET-07", proxiedClient("net07-c", "net07_c", "net07/mcp"), "create the client: MCP traffic is API traffic, so it goes direct"),
+  getClient("NET-07", "net07-c", "the client is unstable at tool_discovery with no tools", unstableAtDiscovery),
+  proxyLog("NET-07", "nothing went through the proxy", ["pm.expect(log, 'log').to.eql([]);"]),
+  deleteClient("NET-07", "net07-c"), ...netTeardown("NET-07"),
+]);
+
+// NET-08 pins current behaviour: the strict fetcher needs Bifrost's own DNS to resolve a document host, even with a proxy.
+const NET08_DOC = "https://doc.proxy.test/net08/client.json";
+const NET08 = folder("NET-08 A client metadata document on a name only the proxy resolves", `Setup: ${NET_TEXT}; mcp_server_auth_mode oauth with issuer_url set to the base URL; an authorize request whose client_id is ${NET08_DOC}.`, [
+  netSetup("NET-08"), proxyMode("NET-08", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-08", "setup: turn the global proxy on for API traffic"),
+  readConfig("NET-08"), setMode("NET-08", "oauth"),
+  request("NET-08", "authorize with the document is refused: it is not fetched", "GET", goodAuthorize("net08_unused", { client_id: encodeURIComponent(NET08_DOC) }), {
+    noAuth: true, noRedirect: true,
+    asserts: [A.status(400), O.error("invalid_client"), O.descEquals("client metadata document could not be fetched"), O.noLocation()],
+  }),
+  proxyLog("NET-08", "the document host was never asked for through the proxy", ["pm.expect(log.filter(function (e) { return e.host === 'doc.proxy.test'; }), 'log').to.eql([]);"]),
+  restoreHeaders("NET-08"), ...netTeardown("NET-08"),
+]);
+
+// netHost is the fleet under another proxy-only name, for a rule that applies to one host only.
+const netHost = (name) => `http://${name}.proxy.test:{{net_chaos_port}}`;
+const TIMING = ["var _b = pm.response.text(); try { var _c = JSON.parse(_b).clients; if (_c && _c[0]) { _b = JSON.stringify({ state: _c[0].state, last_failure: _c[0].last_failure }); } } catch (e) {} console.log('TIMING ' + pm.info.requestName + ' ' + pm.response.responseTime + 'ms ' + _b.slice(0, 600));"];
+const tookUnder = (ms) => A.custom(`answered within ${ms}ms`, [`pm.expect(pm.response.responseTime, 'took ' + pm.response.responseTime + 'ms').to.be.below(${ms});`]);
+const failureMessage = (re) => A.custom(`last_failure.message matches ${re}`, [`pm.expect(String((pm.response.json().clients[0].last_failure || {}).message), 'body: ' + pm.response.text()).to.match(${re});`]);
+
+const NET09 = folder("NET-09 Traffic the firewall drops", `Setup: ${NET_TEXT}; fleet server net09; a per-call client on chaos.proxy.test with tool_execution_timeout 3s, created while the proxy forwards; then the proxy never answers requests for chaos.proxy.test, as a firewall that drops traffic; dark.proxy.test is never answered from the start.`, [
+  netSetup("NET-09"), ...freshServer("NET-09", "net09", ["echo_tool", "add_tool"]),
+  proxyMode("NET-09", "setup: the mock proxy accepts everything, log cleared"), proxyOn("NET-09", "setup: turn the global proxy on for API traffic"),
+  createClient("NET-09", proxiedClient("net09-c", "net09_c", "net09/mcp", { tool_execution_timeout: 3 }), "setup: create the client while traffic flows"),
+  execTool("NET-09", "control: execute while traffic flows", "net09_c-echo_tool", [A.status(200)]),
+  proxyMode("NET-09", "the firewall starts dropping chaos.proxy.test", { stall: ["chaos.proxy.test", "dark.proxy.test"] }),
+  request("NET-09", "execute while dropped fails within the tool timeout, not minutes later", "POST", "/v1/mcp/tool/execute", {
+    noAuth: true, noCookies: true, body: { id: "c1", type: "function", function: { name: "net09_c-echo_tool", arguments: lit({ text: "hi" }) } },
+    asserts: [A.custom("the call fails", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(200);"]), A.skip(tookUnder(15000)), tookUnder(70000)], extraTests: TIMING,
+  }),
+  request("NET-09", "create a client on a dropped host returns within the connect timeout", "POST", "/api/mcp/client", {
+    body: { client_id: "net09-d", name: "net09_d", connection_type: "http", connection_string: `${netHost("dark")}/s/net09/mcp`, auth_type: "none", tools_to_execute: ["*"] },
+    asserts: [A.status(200), tookUnder(45000)], extraTests: TIMING,
+  }),
+  getClient("NET-09", "net09-d", "the client on the dropped host is unstable at tool_discovery with no tools", unstableAtDiscovery),
+  proxyMode("NET-09", "the firewall stops dropping"),
+  execTool("NET-09", "execute once traffic flows again", "net09_c-echo_tool", [A.status(200)]),
+  deleteClient("NET-09", "net09-c"), deleteClient("NET-09", "net09-d"), ...netTeardown("NET-09"),
+]);
+
+const NET10 = folder("NET-10 Hosts the proxy's policy blocks", `Setup: ${NET_TEXT}; the mock proxy answers 403 for blocked.proxy.test and forwards chaos.proxy.test; fleet server net10 reached under both names, also as an OAuth protected resource (net10o).`, [
+  netSetup("NET-10"), ...freshServer("NET-10", "net10", ["echo_tool", "add_tool"]), ...asServer("NET-10", "net10o"),
+  proxyMode("NET-10", "setup: the mock proxy blocks blocked.proxy.test, log cleared", { deny: ["blocked.proxy.test"] }),
+  proxyOn("NET-10", "setup: turn the global proxy on for API traffic"),
+  request("NET-10", "create a client on a blocked host", "POST", "/api/mcp/client", {
+    body: { client_id: "net10-b", name: "net10_b", connection_type: "http", connection_string: `${netHost("blocked")}/s/net10/mcp`, auth_type: "none", tools_to_execute: ["*"] },
+    asserts: [A.status(200)], extraTests: TIMING,
+  }),
+  getClient("NET-10", "net10-b", "the client is unstable at tool_discovery, and its failure names the 403", [...unstableAtDiscovery, A.skip(failureMessage("/403|Forbidden|blocked/i"))], { extraTests: TIMING }),
+  createClient("NET-10", proxiedClient("net10-a", "net10_a", "net10/mcp"), "a client on an allowed host is created"),
+  execTool("NET-10", "the allowed host still works", "net10_a-echo_tool", [A.status(200)]),
+  request("NET-10", "create an OAuth client on a blocked host", "POST", "/api/mcp/client", {
+    body: oauthBody("net10-o", "net10o", "net10o", { connection_string: `${netHost("blocked")}/s/net10o/mcp` }),
+    asserts: [A.custom("the create is refused, not left pending", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(200);"])], extraTests: TIMING,
+  }),
+  proxyLog("NET-10", "the proxy refused every request for blocked.proxy.test", [
+    "var b = log.filter(function (e) { return e.host === 'blocked.proxy.test'; });",
+    "pm.expect(b.length, 'log: ' + JSON.stringify(log)).to.be.at.least(1);",
+    "b.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(403); });"]),
+  deleteClient("NET-10", "net10-b"), deleteClient("NET-10", "net10-a"), ...netTeardown("NET-10"),
+]);
+
+// NET-11 reaches the fleet as https://chaos.proxy.test; the proxy decrypts the tunnel and relays plain http.
+const PROXIED_TLS = "https://{{net_proxied_host}}";
+const tlsClient = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${PROXIED_TLS}/s/${server}/mcp`, auth_type: "none", tools_to_execute: ["*"], ...over });
+const NET11 = folder("NET-11 A TLS-inspecting proxy", `Setup: ${NET_TEXT}; the mock proxy decrypts CONNECT tunnels with certificates from its own CA; fleet server net11 reached as https://chaos.proxy.test. First the proxy's CA is set as proxy_config.ca_cert_pem, then not at all, then only as the client's tls_config.ca_cert_pem; last an OAuth client over https with the proxy CA set.`, [
+  netSetup("NET-11"), ...freshServer("NET-11", "net11", ["echo_tool", "add_tool"]), ...asServer("NET-11", "net11o"),
+  proxyMode("NET-11", "setup: the mock proxy inspects TLS, log cleared", { intercept: true }),
+  proxyOn("NET-11", "setup: global proxy on with the inspecting proxy's CA", { ca_cert_pem: "{{net_proxy_ca_json}}" }),
+  request("NET-11", "create an https client with the proxy CA set globally", "POST", "/api/mcp/client", { body: tlsClient("net11-g", "net11_g", "net11"), asserts: [A.status(200)], extraTests: TIMING }),
+  getClient("NET-11", "net11-g", "the client trusts the proxy's CA: healthy with both tools", [A.skip(clientState("healthy")), A.skip(toolNamesAre(["add_tool", "echo_tool"])),
+    A.custom("today: the global proxy CA is not used, so the certificate is refused", ["pm.expect(String((pm.response.json().clients[0].last_failure || {}).message), 'body: ' + pm.response.text()).to.match(/certificate signed by unknown authority/);"])], { extraTests: TIMING }),
+  proxyOn("NET-11", "global proxy on without a CA"),
+  request("NET-11", "create an https client with no CA anywhere", "POST", "/api/mcp/client", { body: tlsClient("net11-n", "net11_n", "net11"), asserts: [A.status(200)], extraTests: TIMING }),
+  getClient("NET-11", "net11-n", "the client is unstable and its failure names the certificate", [...unstableAtDiscovery, failureMessage("/certificate|x509|tls/i")], { extraTests: TIMING }),
+  request("NET-11", "create an https client with the CA in its own tls_config", "POST", "/api/mcp/client", {
+    body: tlsClient("net11-c", "net11_c", "net11", { tls_config: { ca_cert_pem: "{{net_proxy_ca_json}}" } }), asserts: [A.status(200)], extraTests: TIMING,
+  }),
+  getClient("NET-11", "net11-c", "the client is healthy with both tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])], { extraTests: TIMING }),
+  proxyOn("NET-11", "global proxy on with the inspecting proxy's CA again", { ca_cert_pem: "{{net_proxy_ca_json}}" }),
+  request("NET-11", "create an OAuth client over https with the proxy CA set globally", "POST", "/api/mcp/client", {
+    body: oauthBody("net11-o", "net11o", "net11o", { connection_string: `${PROXIED_TLS}/s/net11o/mcp` }),
+    asserts: [A.skip(A.status(200)), A.skip(statusIs("pending_oauth")),
+      A.custom("today: discovery refuses the proxy's certificate", ["pm.expect(pm.response.text()).to.include('certificate signed by unknown authority');"])], extraTests: TIMING,
+  }),
+  deleteClient("NET-11", "net11-g"), deleteClient("NET-11", "net11-n"), deleteClient("NET-11", "net11-c"), ...netTeardown("NET-11"),
+]);
+
+// NET-12: the mock's authorization server reaches documents through a closed port, except docs.example.test.
+const NET12_AS = { metadata_documents: "advertised", metadata_documents_via: "http://127.0.0.1:9", metadata_documents_via_hosts: { "docs.example.test": "{{base_url}}" } };
+const NET12 = folder("NET-12 An upstream that cannot reach Bifrost's document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server net12 whose authorization server advertises client metadata documents but cannot reach ${EXT_A} (Bifrost is private), while it can reach docs.example.test; an OAuth client net12-c on it. Then mcp_client_metadata_url becomes ${HOSTED}.`, [
+  readConfig("NET-12"), extUrl("NET-12", EXT_A),
+  ...asServer("NET-12", "net12", NET12_AS),
+  createOAuth("NET-12", "create the OAuth client", oauthBody("net12-c", "net12", "net12"), "net12", [statusIs("pending_oauth"), docAuthorize(EXT_A)]),
+  consentAs("NET-12", "the authorization server cannot fetch Bifrost's document and refuses the sign-in", "net12", "id1", [A.status(400)]),
+  mockGet("NET-12", "net12", "the fetch of Bifrost's document failed", [A.custom(`a failed fetch of ${EXT_A}${DOC_PATH}`, [
+    "var f = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'metadata_document'; });",
+    `pm.expect(f.map(function (e) { return e.client_id + ' ' + e.status; }), 'log: ' + JSON.stringify(f)).to.eql([${lit(EXT_A + DOC_PATH + " 400")}]);`])]),
+  oauthStatus("NET-12", "the client is still pending, not broken", "net12", "", [statusIs("pending")]),
+  extUrl("NET-12", EXT_A, hostedUrl(HOSTED), `, mcp_client_metadata_url ${HOSTED}`),
+  createOAuth("NET-12", "add the server again: the sign-in uses the hosted document", oauthBody("net12-c", "net12", "net12"), "net12", [statusIs("pending_oauth"), authorizeClientId(HOSTED, HOSTED)]),
+  consentVia("NET-12", "consent as id1 now succeeds", "net12", "id1", EXT_A),
+  followCallback("NET-12", "follow the callback", "net12", callbackSuccess()),
+  completeOAuth("NET-12", "complete", "net12", [A.status(200)]),
+  execTool("NET-12", "execute", "net12-echo_tool", [A.status(200)]),
+  deleteClient("NET-12", "net12-c"),
+  putConfig("NET-12", "teardown: restore the original config with no hosted URL", hostedUrl(null), [A.status(200)]),
+]);
+
+// NET-13: Bifrost as the authorization server, fetching a client's document from a host that refuses or hangs.
+const NET13_DOC = (key) => `${REST("net13")}/${key}.json`;
+const net13Authorize = (key) => goodAuthorize("net13_unused", { client_id: NET13_DOC(key) });
+const net13Refused = (desc, more = []) => [A.status(400), O.error("invalid_client"), O.descEquals(desc), O.noLocation(), ...more];
+const restCalls = (path, n) => A.custom(`${path} was fetched ${n} time${n === 1 ? "" : "s"}`, [
+  `pm.expect(((pm.response.json().rest || {}).calls || []).filter(function (c) { return c.path === ${lit(path)}; }).length, 'body: ' + pm.response.text()).to.equal(${n});`]);
+const NET13 = folder("NET-13 A client's document host that refuses or hangs", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; fleet server net13 serves client documents: first answering 403, as a firewall in front of the host might, then hanging 8s, longer than Bifrost's 5s fetch limit.", [
+  ...freshServer("NET-13", "net13", []),
+  mockPost("NET-13", "net13", "routes/set", "setup: net13 answers its client documents with 403", { routes: [{ method: "GET", path: "/forbidden.json", status: 403, body: "blocked" }, { method: "GET", path: "/slow.json", json: { client_name: "NET-13 slow" } }] }),
+  readConfig("NET-13"), setMode("NET-13", "oauth"),
+  request("NET-13", "a document answered with 403 is refused", "GET", net13Authorize("forbidden"), { noAuth: true, noRedirect: true, asserts: net13Refused("client metadata document fetch returned HTTP 403") }),
+  mockPost("NET-13", "net13", "faults", "net13 hangs 8s", { faults: { hang: "8s" } }),
+  request("NET-13", "a document that hangs is refused once the 5s fetch limit passes", "GET", net13Authorize("slow"), {
+    noAuth: true, noRedirect: true, asserts: net13Refused("client metadata document could not be fetched", [tookUnder(7500),
+      A.custom("Bifrost waited for the fetch limit", ["pm.expect(pm.response.responseTime, 'took ' + pm.response.responseTime + 'ms').to.be.at.least(4500);"])]), extraTests: TIMING,
+  }),
+  request("NET-13", "a retry straight after is refused at once from the cached failure", "GET", net13Authorize("slow"), {
+    noAuth: true, noRedirect: true, asserts: net13Refused("client metadata document could not be fetched", [tookUnder(1500)]), extraTests: TIMING,
+  }),
+  mockGetAfter("NET-13", "net13", "the hanging document was fetched once (read after the mock's 8s hang ends)", [restCalls("/slow.json", 1)], ["setTimeout(function () {}, 4000);"]),
+  mockPost("NET-13", "net13", "faults/clear", "teardown: net13 answers normally", {}),
+  restoreHeaders("NET-13"),
+]);
+
+// NET-14: the mock's SSE keepalive is 15s, so a 3s idle cut ends a quiet stream well before it.
+const NET14 = folder("NET-14 A middlebox that cuts idle connections", `Setup: ${NET_TEXT}; the mock proxy cuts connections quiet for 3s; fleet server net14; an SSE client on it by its proxy-only name. Then the cut is lifted and the client recovers on its own.`, [
+  netSetup("NET-14"), ...freshServer("NET-14", "net14", ["echo_tool", "add_tool"]),
+  proxyMode("NET-14", "setup: the mock proxy cuts connections idle for 3s, log cleared", { idle_timeout_ms: 3000 }),
+  proxyOn("NET-14", "setup: turn the global proxy on for API traffic"),
+  createClient("NET-14", proxiedClient("net14-c", "net14_c", "net14/sse", { connection_type: "sse", tool_execution_timeout: 3 }), "create an SSE client by the proxy-only name"),
+  getClient("NET-14", "net14-c", "the cut stream is noticed: unstable, transport_lost", [clientState("unstable"), clientField("last_failure.stage", "transport_lost")],
+    { pre: waitForClient("net14-c", "c.state === 'unstable'", 40), extraTests: TIMING }),
+  proxyMode("NET-14", "the middlebox stops cutting idle connections"),
+  getClient("NET-14", "net14-c", "the client recovers on its own, with no reconnect call", [clientState("healthy")],
+    { pre: waitForClient("net14-c", "c.state === 'healthy'", 120), extraTests: TIMING }),
+  execTool("NET-14", "execute after the recovery", "net14_c-echo_tool", [A.status(200)]),
+  deleteClient("NET-14", "net14-c"), ...netTeardown("NET-14"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -13318,6 +13597,7 @@ const collection = {
     section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
     section("BMC Bifrost MCP on /v1/mcp", "Bifrost's own HTTP API as MCP tools on /v1/mcp: protocol, who may call it, what is served and how it is annotated, tool calls, what a call carries, settings, and the required bifrost_url.", [BMC01, BMC02, BMC03, BMC04, BMC05, BMC06, BMC07, BMC08]),
     section("WMG Warp on the Bifrost MCP", "Warp's management tools, reached in process through the Bifrost MCP: what the model can be offered, that by default it is reads only, that no offered read hands it a virtual key's value, and that the writes its settings allow run only on Confirm.", [WMG01, WMG02, WMG03, WMG04, WMG05, WMG06, WMG07, WMG08, WMG09, WMG10, WMG11]),
+    section("NET Network paths", "Bifrost on a restricted network: MCP and OAuth traffic through an outbound proxy, no_proxy, a proxy that is down or asks for credentials, which proxy setting covers MCP, and what firewalls do: dropped traffic, a proxy's block policy, TLS inspection, an upstream that cannot reach Bifrost, a client document host that refuses or hangs, and idle cuts.", [NET01, NET02, NET03, NET04, NET05, NET06, NET07, NET08, NET09, NET10, NET11, NET12, NET13, NET14]),
   ],
 };
 
