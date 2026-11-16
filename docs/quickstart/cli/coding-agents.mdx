@@ -144,7 +144,7 @@ For Claude Code without the launcher and with SSO, configure `apiKeyHelper` your
 
 - **Model permissions.** The launcher lists models from `/v1/models` using the effective credential, so it shows only models your user or virtual key can use. The model must also support the tool calling the harness relies on.
 - **Gemini CLI** sends its credential as `x-goog-api-key`, which cannot carry an SSO session. Store a virtual key before launching Gemini on a gateway that enforces inference authentication.
-- **Codex CLI** builds its `/model` picker from its own catalog. Start Codex with the full Bifrost model ID (`bifrost codex --model provider/model`) and confirm with `/status`. Codex uses the Responses API, so non-OpenAI models must support Responses tool calls through Bifrost.
+- **Codex CLI** uses its own `/model` catalog, not `/v1/models`. [Configure the catalog](/cli-agents/codex-cli#configure-a-model-catalog), or launch with a full model ID and confirm with `/status`. Non-OpenAI models must support Responses tool calls through Bifrost.
 - **OpenCode** shows the launched model as `bifrost/<model>`. Relaunch to switch to a model outside that generated provider. If colors differ from a direct launch, set an explicit theme in `~/.config/opencode/tui.json`.
 - **Claude Code** model setup, routing aliases, and MCP are covered in the [Claude Code guide](/cli-agents/claude-code).
 

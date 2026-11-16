@@ -227,6 +227,890 @@
     }
   ],
   "paths": {
+    "/catalog/codex": {
+      "get": {
+        "operationId": "exportCodexCatalog",
+        "summary": "Export Codex model catalog",
+        "description": "Exports all matching models from configured Bifrost providers without pagination. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true, including during search. Known modes other than chat and responses are excluded; models without mode metadata remain included. Model IDs retain the exact provider/model form, including custom providers and upstream IDs containing slashes. Uses inference middleware, not dashboard/admin authentication. Bearer inference credentials and virtual keys are accepted; virtual keys restrict both providers and models. Access-resolution errors return 401. Credentials may be omitted only when the deployment permits unauthenticated inference.\n\nSet Codex model_catalog_url to this endpoint URL to fetch the catalog directly. The catalog URL is separate from the inference base URL, which remains /openai/v1. The Bifrost launcher does not configure this setting automatically.",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Configured provider name to filter, including custom provider names. Omit to include all accessible configured providers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Search model names.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_deprecated",
+            "in": "query",
+            "description": "Set to true to include deprecated models, which are otherwise hidden even during search.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete model catalog export",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "models"
+                  ],
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "slug",
+                          "display_name",
+                          "description",
+                          "base_instructions",
+                          "supported_reasoning_levels",
+                          "shell_type",
+                          "visibility",
+                          "supported_in_api",
+                          "priority",
+                          "support_verbosity",
+                          "supports_reasoning_summary_parameter",
+                          "input_modalities",
+                          "experimental_supported_tools",
+                          "truncation_policy"
+                        ],
+                        "properties": {
+                          "slug": {
+                            "type": "string",
+                            "examples": [
+                              "openai/gpt-5"
+                            ],
+                            "description": "Exact provider/model identifier."
+                          },
+                          "display_name": {
+                            "type": "string",
+                            "description": "Same provider/model identifier as slug."
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "Model description from catalog metadata, or an empty string."
+                          },
+                          "base_instructions": {
+                            "type": "string",
+                            "enum": [
+                              "You are a coding assistant."
+                            ]
+                          },
+                          "default_reasoning_level": {
+                            "type": "string",
+                            "description": "Omitted unless model capabilities advertise a default present in supported_reasoning_levels."
+                          },
+                          "supported_reasoning_levels": {
+                            "type": "array",
+                            "description": "Advertised reasoning effort levels; empty when unavailable.",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "effort",
+                                "description"
+                              ],
+                              "properties": {
+                                "effort": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string",
+                                  "description": "Same value as effort."
+                                }
+                              }
+                            }
+                          },
+                          "shell_type": {
+                            "type": "string",
+                            "enum": [
+                              "shell_command"
+                            ],
+                            "description": "Backward-compatible Codex shell type alias."
+                          },
+                          "visibility": {
+                            "type": "string",
+                            "enum": [
+                              "list"
+                            ]
+                          },
+                          "supported_in_api": {
+                            "type": "boolean",
+                            "enum": [
+                              true
+                            ]
+                          },
+                          "priority": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Zero-based position in the deterministically ordered exported list."
+                          },
+                          "support_verbosity": {
+                            "type": "boolean",
+                            "enum": [
+                              false
+                            ]
+                          },
+                          "supports_reasoning_summary_parameter": {
+                            "type": "boolean",
+                            "enum": [
+                              false
+                            ]
+                          },
+                          "context_window": {
+                            "type": "integer",
+                            "description": "Context length from metadata, falling back to maximum input tokens; omitted when unknown."
+                          },
+                          "input_modalities": {
+                            "type": "array",
+                            "description": "Text plus supported image/audio modalities from model architecture; defaults to text.",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "image",
+                                "audio"
+                              ]
+                            }
+                          },
+                          "experimental_supported_tools": {
+                            "type": "array",
+                            "description": "Empty; no experimental tools are advertised.",
+                            "items": {
+                              "type": "string"
+                            },
+                            "maxItems": 0
+                          },
+                          "truncation_policy": {
+                            "type": "object",
+                            "required": [
+                              "mode",
+                              "limit"
+                            ],
+                            "properties": {
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "tokens"
+                                ]
+                              },
+                              "limit": {
+                                "type": "integer",
+                                "enum": [
+                                  10000
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to create the inference request context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid inference credential or catalog access could not be resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to list configured catalog models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/catalog/claude": {
+      "get": {
+        "operationId": "exportClaudeCatalog",
+        "summary": "Export Claude model catalog",
+        "description": "Exports all matching models from configured Bifrost providers without pagination. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true, including during search. Known modes other than chat and responses are excluded; models without mode metadata remain included. Model IDs retain the exact provider/model form, including custom providers and upstream IDs containing slashes. Uses inference middleware, not dashboard/admin authentication. Bearer inference credentials and virtual keys are accepted; virtual keys restrict both providers and models. Access-resolution errors return 401. Credentials may be omitted only when the deployment permits unauthenticated inference.\n\nStandalone Anthropic-format models export, not an inference base URL. Claude Code gateway discovery continues to use /anthropic/v1/models and does not automatically read this export.",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Configured provider name to filter, including custom provider names. Omit to include all accessible configured providers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Search model names.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_deprecated",
+            "in": "query",
+            "description": "Set to true to include deprecated models, which are otherwise hidden even during search.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete model catalog export",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "has_more",
+                    "first_id",
+                    "last_id"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "type",
+                          "display_name",
+                          "created_at"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "examples": [
+                              "anthropic/claude-sonnet-4-6"
+                            ],
+                            "description": "Exact provider/model identifier; not an alias."
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "model"
+                            ]
+                          },
+                          "display_name": {
+                            "type": "string",
+                            "description": "Same provider/model identifier as id."
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "Description from model metadata; omitted when empty."
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "enum": [
+                              "1970-01-01T00:00:00Z"
+                            ],
+                            "description": "Stable placeholder because the catalog has no creation timestamps."
+                          }
+                        }
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "first_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "First exported model ID, or null for an empty list."
+                    },
+                    "last_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Last exported model ID, or null for an empty list."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to create the inference request context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid inference credential or catalog access could not be resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to list configured catalog models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/catalog/pi": {
+      "get": {
+        "operationId": "exportPiCatalog",
+        "summary": "Export Pi provider configuration",
+        "description": "Exports all matching configured models without pagination as a native providers.bifrost fragment. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true. Known modes other than chat/responses are excluded; unknown modes remain included. Exact provider/model IDs, including upstream slashes, are preserved. Uses inference middleware and credentials, not dashboard authentication; virtual keys restrict providers and models. Credentials may be omitted only when unauthenticated inference is allowed. Access resolution errors return 401. Unknown capabilities, limits and prices are omitted; prices are USD per million tokens. Credentials are never embedded: the fragment references BIFROST_VIRTUAL_KEY. Merge into existing client configuration after inspection; no automatic catalog fetching or launcher integration. Targets Pi models.json providers.bifrost with openai-completions; only text/image input and metadata-confirmed thinking mappings are exported.",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Configured provider name to filter, including custom provider names. Omit to include all accessible configured providers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Search model names.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_deprecated",
+            "in": "query",
+            "description": "Set to true to include deprecated models, which are otherwise hidden even during search.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "base_url",
+            "in": "query",
+            "description": "Full inference base URL including /openai/v1. Must be absolute HTTP(S) with hostname and no userinfo, query or fragment; invalid values return 400. Defaults to request scheme and Host plus /openai/v1, ignoring forwarded headers. Override behind a reverse proxy or TLS termination.",
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "example": "http://localhost:8080/openai/v1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Native provider configuration fragment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "providers"
+                  ],
+                  "properties": {
+                    "providers": {
+                      "type": "object",
+                      "required": [
+                        "bifrost"
+                      ],
+                      "properties": {
+                        "bifrost": {
+                          "type": "object",
+                          "required": [
+                            "baseUrl",
+                            "api",
+                            "apiKey",
+                            "authHeader",
+                            "models"
+                          ],
+                          "properties": {
+                            "baseUrl": {
+                              "type": "string"
+                            },
+                            "api": {
+                              "type": "string",
+                              "enum": [
+                                "openai-completions"
+                              ]
+                            },
+                            "apiKey": {
+                              "type": "string",
+                              "enum": [
+                                "$BIFROST_VIRTUAL_KEY"
+                              ]
+                            },
+                            "authHeader": {
+                              "type": "boolean",
+                              "enum": [
+                                true
+                              ]
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "id",
+                                  "name"
+                                ],
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "reasoning": {
+                                    "type": "boolean"
+                                  },
+                                  "input": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "text",
+                                        "image"
+                                      ]
+                                    }
+                                  },
+                                  "contextWindow": {
+                                    "type": "integer"
+                                  },
+                                  "maxTokens": {
+                                    "type": "integer"
+                                  },
+                                  "cost": {
+                                    "type": "object",
+                                    "properties": {
+                                      "input": {
+                                        "type": "number"
+                                      },
+                                      "output": {
+                                        "type": "number"
+                                      },
+                                      "cacheRead": {
+                                        "type": "number"
+                                      },
+                                      "cacheWrite": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "input",
+                                      "output",
+                                      "cacheRead",
+                                      "cacheWrite"
+                                    ]
+                                  },
+                                  "compat": {
+                                    "type": "object",
+                                    "properties": {
+                                      "supportsReasoningEffort": {
+                                        "type": "boolean"
+                                      }
+                                    }
+                                  },
+                                  "thinkingLevelMap": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid base_url or failed to create inference request context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid inference credential or catalog access could not be resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to list configured catalog models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/catalog/opencode": {
+      "get": {
+        "operationId": "exportOpenCodeCatalog",
+        "summary": "Export OpenCode provider configuration",
+        "description": "Exports all matching configured models without pagination as a native providers.bifrost fragment. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true. Known modes other than chat/responses are excluded; unknown modes remain included. Exact provider/model IDs, including upstream slashes, are preserved. Uses inference middleware and credentials, not dashboard authentication; virtual keys restrict providers and models. Credentials may be omitted only when unauthenticated inference is allowed. Access resolution errors return 401. Unknown capabilities, limits and prices are omitted; prices are USD per million tokens. Credentials are never embedded: the fragment references BIFROST_VIRTUAL_KEY. Merge into existing client configuration after inspection; no automatic catalog fetching or launcher integration. Targets current OpenCode providers/package/settings/models/modelID schema, not legacy provider/npm/options. Check installed client version.",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Configured provider name to filter, including custom provider names. Omit to include all accessible configured providers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Search model names.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_deprecated",
+            "in": "query",
+            "description": "Set to true to include deprecated models, which are otherwise hidden even during search.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "base_url",
+            "in": "query",
+            "description": "Full inference base URL including /openai/v1. Must be absolute HTTP(S) with hostname and no userinfo, query or fragment; invalid values return 400. Defaults to request scheme and Host plus /openai/v1, ignoring forwarded headers. Override behind a reverse proxy or TLS termination.",
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "example": "http://localhost:8080/openai/v1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Native provider configuration fragment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "providers"
+                  ],
+                  "properties": {
+                    "$schema": {
+                      "type": "string"
+                    },
+                    "providers": {
+                      "type": "object",
+                      "required": [
+                        "bifrost"
+                      ],
+                      "properties": {
+                        "bifrost": {
+                          "type": "object",
+                          "required": [
+                            "name",
+                            "package",
+                            "env",
+                            "settings",
+                            "models"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "enum": [
+                                "Bifrost"
+                              ]
+                            },
+                            "package": {
+                              "type": "string",
+                              "enum": [
+                                "@opencode/ai/providers/openai-compatible"
+                              ]
+                            },
+                            "env": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "BIFROST_VIRTUAL_KEY"
+                                ]
+                              }
+                            },
+                            "settings": {
+                              "type": "object",
+                              "required": [
+                                "baseURL"
+                              ],
+                              "properties": {
+                                "baseURL": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "models": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "object",
+                                "required": [
+                                  "modelID",
+                                  "name"
+                                ],
+                                "properties": {
+                                  "modelID": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "limit": {
+                                    "type": "object",
+                                    "properties": {
+                                      "context": {
+                                        "type": "integer"
+                                      },
+                                      "input": {
+                                        "type": "integer"
+                                      },
+                                      "output": {
+                                        "type": "integer"
+                                      }
+                                    }
+                                  },
+                                  "cost": {
+                                    "type": "object",
+                                    "required": [
+                                      "input",
+                                      "output"
+                                    ],
+                                    "properties": {
+                                      "input": {
+                                        "type": "number"
+                                      },
+                                      "output": {
+                                        "type": "number"
+                                      },
+                                      "cache": {
+                                        "type": "object",
+                                        "properties": {
+                                          "read": {
+                                            "type": "number"
+                                          },
+                                          "write": {
+                                            "type": "number"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "capabilities": {
+                                    "type": "object",
+                                    "properties": {
+                                      "reasoning": {
+                                        "type": "object",
+                                        "properties": {
+                                          "supported": {
+                                            "type": "boolean"
+                                          },
+                                          "effort": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "toggle": {
+                                            "type": "boolean"
+                                          }
+                                        }
+                                      },
+                                      "input": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "output": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "tools": {
+                                        "type": "boolean"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid base_url or failed to create inference request context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid inference credential or catalog access could not be resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to list configured catalog models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/v1/models": {
       "get": {
         "operationId": "listModels",

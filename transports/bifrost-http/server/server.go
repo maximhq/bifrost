@@ -2991,6 +2991,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	}
 	s.MCPServerHandler = mcpServerHandler
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
+	handlers.NewProviderHandler(s, s.Config, s.Client).RegisterCatalogRoutes(s.Router, middlewares...)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	s.wsLiveHandler.RegisterRoutes(s.Router, middlewares...)
 	s.wsSpeechHandler.RegisterRoutes(s.Router, middlewares...)
