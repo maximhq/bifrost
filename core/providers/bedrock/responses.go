@@ -4539,7 +4539,7 @@ func bedrockToolResultNeedsBlocks(content []BedrockContentBlock) bool {
 func validateBedrockToolResultContent(messages []BedrockMessage) error {
 	for mi := range messages {
 		for _, block := range messages[mi].Content {
-			if block.ToolResult == nil || !bedrockToolResultNeedsBlocks(block.ToolResult.Content) {
+			if block.ToolResult == nil {
 				continue
 			}
 			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
