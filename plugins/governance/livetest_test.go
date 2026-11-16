@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -93,22 +94,13 @@ func newTestConfigStore(t testing.TB) (configstore.ConfigStore, error) {
 }
 
 // liveFixture is what a test's gateway is configured with besides governance: providers, MCP
-// clients and agents. The harness writes the providers and clients as rows, so the live store
-// holds them; the agents are the plugin's EnabledAgents.
+// clients and agents. The harness writes them as rows, so the live store holds them.
 type liveFixture struct {
 	allowedByDefaultClients map[string]string // clientID -> clientName, open to every key
 	clientNames             map[string]string // clientID -> clientName, configured clients not open by default
 	clientSlugs             map[string]string // endpoint slug -> clientID
 	configuredProviders     map[schemas.ModelProvider]configstore.ProviderConfig
 	enabledAgents           map[string]bool // agent name -> allowed by default
-}
-
-// agents is the fixture's report of the enabled agents, nil when there is no fixture.
-func (f *liveFixture) agents() func() map[string]bool {
-	if f == nil {
-		return nil
-	}
-	return func() map[string]bool { return f.enabledAgents }
 }
 
 // liveHarness is one test's configuration source: a SQLite config store and a live store loaded
@@ -409,7 +401,34 @@ func (h *liveHarness) writeFixture(f *liveFixture) error {
 			return err
 		}
 	}
+	return h.writeAgents(f.enabledAgents)
+}
+
+// writeAgents makes the agents in enabled the enabled registrations, each allowed by default as
+// its value says, and disables every other registration. It writes rows only; the caller loads or
+// refreshes the live store.
+func (h *liveHarness) writeAgents(enabled map[string]bool) error {
+	if err := h.db.Model(&configstoreTables.TableAgentRegistration{}).Where("1 = 1").Update("enabled", false).Error; err != nil {
+		return err
+	}
+	for name, allowByDefault := range enabled {
+		row := &configstoreTables.TableAgentRegistration{Name: name, AgentCardURL: "https://" + name + ".example/card", Enabled: true, AllowByDefault: allowByDefault}
+		if err := h.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "name"}},
+			DoUpdates: clause.AssignmentColumns([]string{"enabled", "allow_by_default"}),
+		}).Create(row).Error; err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// setAgents rewrites the agent registrations as writeAgents does and refreshes them, failing the
+// test when either step fails.
+func (h *liveHarness) setAgents(enabled map[string]bool) {
+	h.t.Helper()
+	require.NoError(h.t, h.writeAgents(enabled))
+	require.NoError(h.t, h.live.RefreshKind(h.ctx, livestore.KindAgent))
 }
 
 // ensureMCPClient returns the row ID of the MCP client with this client ID, creating it with name,
@@ -739,8 +758,16 @@ func (h *liveHarness) writeVirtualKey(vk *configstoreTables.TableVirtualKey, lis
 		}
 	}
 	for _, g := range vk.AgentGrants {
-		if err := h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&configstoreTables.TableAgentRegistration{Name: g.AgentName, AgentCardURL: "https://" + g.AgentName + ".example/card", Enabled: true}).Error; err != nil {
-			return err
+		// The registration exists for the grant's foreign key; whether it is enabled is the
+		// fixture's to say, so one created here is then disabled (the column defaults to enabled).
+		created := h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&configstoreTables.TableAgentRegistration{Name: g.AgentName, AgentCardURL: "https://" + g.AgentName + ".example/card"})
+		if created.Error != nil {
+			return created.Error
+		}
+		if created.RowsAffected == 1 {
+			if err := h.db.Model(&configstoreTables.TableAgentRegistration{}).Where("name = ?", g.AgentName).Update("enabled", false).Error; err != nil {
+				return err
+			}
 		}
 		if err := h.db.Omit(clause.Associations).Create(&configstoreTables.TableVirtualKeyAgentGrant{VirtualKeyID: vk.ID, AgentName: g.AgentName}).Error; err != nil {
 			return err

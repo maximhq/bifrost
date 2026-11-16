@@ -8,7 +8,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -44,7 +44,7 @@ func TestAgentGatewayReplacementCredentialOrigins(t *testing.T) {
 				require.NoError(t, err)
 				defer manager.Close()
 				recorder := &recordingAgentRegistrationManager{}
-				h := NewAgentGatewayHandler(manager, recorder, &lib.Config{LiveStore: liveStoreForTest(t)}, nil)
+				h := NewAgentGatewayHandler(manager, recorder, libtest.Config(t, nil), nil)
 				ctx := &fasthttp.RequestCtx{}
 				ctx.SetUserValue("name", "fixture")
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, bypassed)
@@ -77,7 +77,7 @@ func TestAgentGatewayPublicPolicyComesFromAuthentication(t *testing.T) {
 			manager, err := agent.NewManager(context.Background(), store, nil, "", http.DefaultClient)
 			require.NoError(t, err)
 			defer manager.Close()
-			h := NewAgentGatewayHandler(manager, nil, &lib.Config{LiveStore: liveStoreForTest(t)}, nil)
+			h := NewAgentGatewayHandler(manager, nil, libtest.Config(t, nil), nil)
 			ctx := &fasthttp.RequestCtx{}
 			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, bypassed)
 			ctx.Request.SetBodyString(fmt.Sprintf(`{"name":"fixture","agent_card_url":"https://agent.example.com/card","enabled":false,"require_public_target":%t}`, !bypassed))

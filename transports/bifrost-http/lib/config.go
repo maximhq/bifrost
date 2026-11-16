@@ -757,10 +757,9 @@ type GovernanceFileSync struct {
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 //   - Lock-free plugin reads via atomic.Pointer for minimal hot-path latency
 type Config struct {
-	Mu              sync.RWMutex // Exported for direct access from handlers (governance plugin)
-	muWebhooks      sync.RWMutex
-	muEnabledAgents sync.RWMutex
-	client          *bifrost.Bifrost
+	Mu         sync.RWMutex // Exported for direct access from handlers (governance plugin)
+	muWebhooks sync.RWMutex
+	client     *bifrost.Bifrost
 
 	// fileVirtualMCPs are the mcp.virtual_mcps declarations from the last config.json load, kept so a
 	// client registered later can be linked into the declarations that name it. Guarded by
@@ -798,10 +797,6 @@ type Config struct {
 	// decrypt per request — through one invalidation point. See
 	// GetOAuth2SigningKey.
 	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
-
-	// enabledAgents mirrors MCP's config-owned allow-by-default lookup: membership
-	// means the registration is enabled and the value is AllowByDefault.
-	enabledAgents map[string]bool
 
 	// boot holds the configuration LoadConfig assembles, until loadLiveStore has loaded the live
 	// store and drops it.
@@ -9013,44 +9008,6 @@ func (c *Config) rebuildMCPHeaderAllowlist() {
 		allowlist = schemas.WhiteList{"*"}
 	}
 	c.mcpHeaderAllowlist.Store(&allowlist)
-}
-
-// ReplaceEnabledAgents atomically replaces enabled registration policy state.
-func (c *Config) ReplaceEnabledAgents(agents map[string]bool) {
-	c.muEnabledAgents.Lock()
-	defer c.muEnabledAgents.Unlock()
-	c.enabledAgents = make(map[string]bool, len(agents))
-	maps.Copy(c.enabledAgents, agents)
-}
-
-// SetEnabledAgent publishes or removes one registration after a successful write.
-func (c *Config) SetEnabledAgent(name string, enabled, allowOnAll bool) {
-	c.muEnabledAgents.Lock()
-	defer c.muEnabledAgents.Unlock()
-	if !enabled {
-		delete(c.enabledAgents, name)
-		return
-	}
-	if c.enabledAgents == nil {
-		c.enabledAgents = make(map[string]bool)
-	}
-	c.enabledAgents[name] = allowOnAll
-}
-
-// DeleteEnabledAgent removes a successfully deleted registration.
-func (c *Config) DeleteEnabledAgent(name string) {
-	c.muEnabledAgents.Lock()
-	defer c.muEnabledAgents.Unlock()
-	delete(c.enabledAgents, name)
-}
-
-// GetEnabledAgents returns a copy for governance hot-path decisions.
-func (c *Config) GetEnabledAgents() map[string]bool {
-	c.muEnabledAgents.RLock()
-	defer c.muEnabledAgents.RUnlock()
-	result := make(map[string]bool, len(c.enabledAgents))
-	maps.Copy(result, c.enabledAgents)
-	return result
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.

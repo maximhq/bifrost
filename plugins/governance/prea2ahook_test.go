@@ -2,7 +2,7 @@ package governance
 
 import (
 	"context"
-	"sync"
+	"fmt"
 	"testing"
 	"time"
 
@@ -19,33 +19,6 @@ const (
 	a2aTestVKID    = "vk-a2a"
 )
 
-// fakeA2AAgents reports the enabled agents to the plugin and counts how often it was asked.
-type fakeA2AAgents struct {
-	mu     sync.Mutex
-	agents map[string]bool
-	reads  int
-}
-
-// GetEnabledAgents is the plugin's EnabledAgents: the agents enabled now, each with whether it is
-// allowed by default.
-func (f *fakeA2AAgents) GetEnabledAgents() map[string]bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reads++
-	result := make(map[string]bool, len(f.agents))
-	for name, allowByDefault := range f.agents {
-		result[name] = allowByDefault
-	}
-	return result
-}
-
-// setAgents replaces the enabled agents.
-func (f *fakeA2AAgents) setAgents(agents map[string]bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.agents = agents
-}
-
 // a2aVK builds the test key with one provider config and a grant for each named agent.
 func a2aVK(grantedAgents ...string) *configstoreTables.TableVirtualKey {
 	vk := buildVirtualKeyWithProviders(a2aTestVKID, a2aTestVKValue, "a2a-vk", []configstoreTables.TableVirtualKeyProviderConfig{
@@ -61,8 +34,9 @@ func a2aVK(grantedAgents ...string) *configstoreTables.TableVirtualKey {
 }
 
 // newPluginForA2A builds a plugin over a store holding vk (a key with no agent grants when nil),
-// with agents as the enabled agents. It returns the harness, so a test can rewrite the key.
-func newPluginForA2A(t *testing.T, agents map[string]bool, vk *configstoreTables.TableVirtualKey) (*GovernancePlugin, *liveHarness, *fakeA2AAgents) {
+// with agents as the enabled agents. It returns the harness, so a test can rewrite the key and the
+// agents.
+func newPluginForA2A(t *testing.T, agents map[string]bool, vk *configstoreTables.TableVirtualKey) (*GovernancePlugin, *liveHarness) {
 	t.Helper()
 	logger := NewMockLogger()
 	if vk == nil {
@@ -70,16 +44,12 @@ func newPluginForA2A(t *testing.T, agents map[string]bool, vk *configstoreTables
 	}
 	h := newLiveHarness(t, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil)
+	}, &liveFixture{enabledAgents: agents})
 	store := h.mustGovernanceStore(logger, nil)
-	if agents == nil {
-		agents = map[string]bool{}
-	}
-	inMemory := &fakeA2AAgents{agents: agents}
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false), EnabledAgents: inMemory.GetEnabledAgents}, logger, store, nil, nil, nil, store.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
-	return plugin, h, inMemory
+	return plugin, h
 }
 
 func a2aVKCtx(value string) *schemas.BifrostContext {
@@ -142,7 +112,7 @@ func requireA2ADenied(t *testing.T, p *GovernancePlugin, ctx *schemas.BifrostCon
 
 // TestPreA2AHook_ExplicitVirtualKeyGrant checks that a key granted an agent may call it and that the grant is recorded on the request.
 func TestPreA2AHook_ExplicitVirtualKeyGrant(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, a2aVK("alpha"))
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, a2aVK("alpha"))
 	ctx := a2aVKCtx(a2aTestVKValue)
 	requireA2AAllowed(t, p, ctx, operationReq("alpha"))
 	require.NotNil(t, ctx.Grant().Access())
@@ -151,7 +121,7 @@ func TestPreA2AHook_ExplicitVirtualKeyGrant(t *testing.T) {
 
 // TestPreA2AHook_PreAuthenticatedUserAccess checks that access already settled on the request (a user's profile granting the agent) admits the call.
 func TestPreA2AHook_PreAuthenticatedUserAccess(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
 	ctx := a2aUserCtx()
 	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
 		grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"alpha"})),
@@ -161,7 +131,7 @@ func TestPreA2AHook_PreAuthenticatedUserAccess(t *testing.T) {
 
 // TestDefaultAgentPermitDoesNotRestrictLLMRouting checks that the default agent permit admits an A2A call without becoming request access that would narrow LLM routing.
 func TestDefaultAgentPermitDoesNotRestrictLLMRouting(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 	ctx := a2aUserCtx()
 
 	access, err := p.ResolveAccess(ctx)
@@ -175,9 +145,73 @@ func TestDefaultAgentPermitDoesNotRestrictLLMRouting(t *testing.T) {
 	assert.Nil(t, ctx.Grant().Access(), "A2A-only default access must not mutate shared request access")
 }
 
+// TestDefaultAgentPermitNamesOnlyTheRequestedAgent checks that the default agent permit names the
+// agent the request asks for when it is enabled and allowed by default, and no other agent; that
+// it is still given, naming none, for an agent that is not while another is; and that there is none
+// once no enabled agent is allowed by default, a disabled one included.
+func TestDefaultAgentPermitNamesOnlyTheRequestedAgent(t *testing.T) {
+	p, h := newPluginForA2A(t, map[string]bool{"alpha": true, "beta": true, "gamma": false}, nil)
+	identity := a2aUserCtx().Grant().Identity()
+
+	permit := p.defaultAgentPermit(identity, "alpha")
+	require.NotNil(t, permit)
+	assert.Equal(t, []string{"alpha"}, permit.AgentPermits())
+	permit = p.defaultAgentPermit(identity, "gamma")
+	require.NotNil(t, permit, "another agent is allowed by default")
+	assert.Empty(t, permit.AgentPermits())
+	permit = p.defaultAgentPermit(identity, "ghost")
+	require.NotNil(t, permit, "another agent is allowed by default")
+	assert.Empty(t, permit.AgentPermits())
+
+	// alpha and beta stay allowed by default but are disabled.
+	h.setAgents(map[string]bool{"gamma": false})
+	assert.Nil(t, p.defaultAgentPermit(identity, "alpha"))
+	assert.Nil(t, p.defaultAgentPermit(identity, "gamma"))
+}
+
+// TestPreA2AHook_DefaultAgentAccessShapesTheRefusal checks what an agent allowed by default changes
+// for a caller refused another agent: while any agent is allowed by default, the caller holds the
+// default agent access, so a caller with no access of its own is refused the agent rather than
+// refused for holding no access, and the refusal names the default access among the permits that
+// refused. With no agent allowed by default, neither happens.
+func TestPreA2AHook_DefaultAgentAccessShapesTheRefusal(t *testing.T) {
+	refusal := func(t *testing.T, p *GovernancePlugin, ctx *schemas.BifrostContext, agentName string) (string, string) {
+		t.Helper()
+		_, short, err := p.PreA2AHook(ctx, operationReq(agentName))
+		require.NoError(t, err)
+		require.NotNil(t, short)
+		require.NotNil(t, short.Error)
+		require.NotNil(t, short.Error.Type)
+		require.NotNil(t, short.Error.Error)
+		return *short.Error.Type, short.Error.Error.Message
+	}
+	t.Run("no access of its own", func(t *testing.T) {
+		p, h := newPluginForA2A(t, map[string]bool{"alpha": true, "beta": false}, nil)
+		decision, message := refusal(t, p, a2aUserCtx(), "beta")
+		assert.Equal(t, string(DecisionAgentBlocked), decision)
+		assert.Equal(t, "Agent 'beta' is not allowed for agent_default 'default agent access'", message)
+
+		h.setAgents(map[string]bool{"alpha": false, "beta": false})
+		decision, message = refusal(t, p, a2aUserCtx(), "beta")
+		assert.Equal(t, string(DecisionAccessNotFound), decision)
+		assert.Equal(t, "Access not found", message)
+	})
+	t.Run("a key granted another agent", func(t *testing.T) {
+		p, h := newPluginForA2A(t, map[string]bool{"alpha": true, "beta": false, "gamma": false}, a2aVK("gamma"))
+		decision, message := refusal(t, p, a2aVKCtx(a2aTestVKValue), "beta")
+		assert.Equal(t, string(DecisionAgentBlocked), decision)
+		assert.Equal(t, "Agent 'beta' is not allowed for virtual keys 'a2a-vk', 'default agent access'", message)
+
+		h.setAgents(map[string]bool{"alpha": false, "beta": false, "gamma": false})
+		decision, message = refusal(t, p, a2aVKCtx(a2aTestVKValue), "beta")
+		assert.Equal(t, string(DecisionAgentBlocked), decision)
+		assert.Equal(t, "Agent 'beta' is not allowed for virtual key 'a2a-vk'", message)
+	})
+}
+
 // TestPreA2AHook_AllowByDefaultForIdentifiedCallers checks that an agent allowed by default admits any caller identified by a key or a user.
 func TestPreA2AHook_AllowByDefaultForIdentifiedCallers(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 	requireA2AAllowed(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"))
 	requireA2AAllowed(t, p, a2aUserCtx(), operationReq("alpha"))
 }
@@ -186,12 +220,11 @@ func TestPreA2AHook_AllowByDefaultForIdentifiedCallers(t *testing.T) {
 // user rather than passed through as anonymous, the same as a user who presented an IdP token.
 func TestPreA2AHook_KnownUserWithoutCredentialIsGoverned(t *testing.T) {
 	t.Run("no access to a deny-by-default agent", func(t *testing.T) {
-		p, _, inMemory := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+		p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
 		requireA2ADenied(t, p, a2aKnownUserCtx(), operationReq("alpha"), DecisionAccessNotFound)
-		assert.NotZero(t, inMemory.reads, "the agent lookup must run for a known user")
 	})
 	t.Run("granted by an access profile", func(t *testing.T) {
-		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+		p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
 		ctx := a2aKnownUserCtx()
 		ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
 			grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"alpha"})),
@@ -199,24 +232,24 @@ func TestPreA2AHook_KnownUserWithoutCredentialIsGoverned(t *testing.T) {
 		requireA2AAllowed(t, p, ctx, operationReq("alpha"))
 	})
 	t.Run("allowed by default", func(t *testing.T) {
-		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+		p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 		requireA2AAllowed(t, p, a2aKnownUserCtx(), operationReq("alpha"))
 	})
 	t.Run("disabled or unknown agent", func(t *testing.T) {
-		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+		p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 		requireA2ADenied(t, p, a2aKnownUserCtx(), operationReq("ghost"), DecisionAgentBlocked)
 	})
 }
 
 // TestPreA2AHook_UnresolvedCredentialDoesNotGetAllowByDefault checks that a presented key that resolves to nothing is refused rather than given default agent access.
 func TestPreA2AHook_UnresolvedCredentialDoesNotGetAllowByDefault(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 	requireA2ADenied(t, p, a2aVKCtx("sk-bf-unknown"), operationReq("alpha"), DecisionAccessNotFound)
 }
 
 // TestPreA2AHook_DirectAssignmentAndDenial checks that a key reaches the agent granted to it and is refused one it was not granted.
 func TestPreA2AHook_DirectAssignmentAndDenial(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false, "beta": false}, a2aVK("alpha"))
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": false, "beta": false}, a2aVK("alpha"))
 	requireA2AAllowed(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"))
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("beta"), DecisionAgentBlocked)
 }
@@ -226,22 +259,22 @@ func TestPreA2AHook_ExpiredPermitDenies(t *testing.T) {
 	vk := a2aVK("alpha")
 	expired := time.Now().UTC().Add(-time.Second)
 	vk.ExpiresAt = &expired
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, vk)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, vk)
 	ctx := a2aVKCtx(a2aTestVKValue)
 	requireA2ADenied(t, p, ctx, operationReq("alpha"), DecisionAccessBlocked)
 	assert.True(t, ctx.Grant().Access().Bases()[0].IsExpired())
 }
 
-// TestPreA2AHook_DisabledOrUnknownAgentDenies checks that an agent not enabled and a name nothing registers are both refused, grant or not.
+// TestPreA2AHook_DisabledOrUnknownAgentDenies checks that a disabled registration and a name no registration holds are both refused, grant or not.
 func TestPreA2AHook_DisabledOrUnknownAgentDenies(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{}, a2aVK("alpha"))
+	p, _ := newPluginForA2A(t, map[string]bool{}, a2aVK("alpha"))
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"), DecisionAgentBlocked)
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("ghost"), DecisionAgentBlocked)
 }
 
 // TestPreA2AHook_ActualOperationIsGoverned checks that the hook governs the operation the request carries, not only message sends.
 func TestPreA2AHook_ActualOperationIsGoverned(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
 	req := &schemas.BifrostA2ARequest{
 		RequestType:           schemas.A2ARequestTypeCancelTask,
 		AgentName:             "alpha",
@@ -252,7 +285,7 @@ func TestPreA2AHook_ActualOperationIsGoverned(t *testing.T) {
 
 // TestPreA2AHook_ChangesAreEffectiveOnNextRequest checks that a key's agent grants and the enabled agents are read afresh on every request.
 func TestPreA2AHook_ChangesAreEffectiveOnNextRequest(t *testing.T) {
-	p, h, inMemory := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+	p, h := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"), DecisionAgentBlocked)
 
 	h.putVirtualKey(a2aVK("alpha"))
@@ -261,28 +294,61 @@ func TestPreA2AHook_ChangesAreEffectiveOnNextRequest(t *testing.T) {
 	h.putVirtualKey(a2aVK())
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"), DecisionAgentBlocked)
 
-	inMemory.setAgents(map[string]bool{"alpha": true})
+	h.setAgents(map[string]bool{"alpha": true})
 	requireA2AAllowed(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"))
 
-	inMemory.setAgents(map[string]bool{})
+	h.setAgents(map[string]bool{})
 	requireA2ADenied(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"), DecisionAgentBlocked)
 }
 
-// TestPreA2AHook_AnonymousPassesThroughWithoutAgentLookup checks that an anonymous call passes through without an agent lookup or given access.
+// TestPreA2AHook_AnonymousPassesThroughWithoutAgentLookup checks that an anonymous call passes through without being checked against the registrations or given access.
 func TestPreA2AHook_AnonymousPassesThroughWithoutAgentLookup(t *testing.T) {
-	p, _, inMemory := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 	ctx := anonymousA2ACtx()
 	requireA2AAllowed(t, p, ctx, operationReq("alpha"))
-	assert.Zero(t, inMemory.reads)
+	// An agent no registration names passes too: an anonymous caller is never checked against the
+	// registrations.
+	requireA2AAllowed(t, p, anonymousA2ACtx(), operationReq("ghost"))
 	assert.Nil(t, ctx.Grant().Access())
 }
 
 // TestPostA2AHook_PassesThrough checks that the post hook returns the response and error it was given unchanged.
 func TestPostA2AHook_PassesThrough(t *testing.T) {
-	p, _, _ := newPluginForA2A(t, map[string]bool{}, nil)
+	p, _ := newPluginForA2A(t, map[string]bool{}, nil)
 	resp := &schemas.BifrostA2AResponse{}
 	gotResp, gotErr, err := p.PostA2AHook(anonymousA2ACtx(), resp, nil)
 	require.NoError(t, err)
 	assert.Same(t, resp, gotResp)
 	assert.Nil(t, gotErr)
+}
+
+// BenchmarkPreA2AHook measures governing one agent call from a user whose access profile grants one
+// agent, over 300 enabled agents of which every third is allowed by default: a call to an agent
+// allowed by default and a call to the agent the profile grants. Both look the requested agent up
+// among the enabled ones and build the default agent access, so the per-request cost of that
+// lookup is what the two cases share.
+func BenchmarkPreA2AHook(b *testing.B) {
+	agents := make(map[string]bool, 300)
+	for i := range 300 {
+		agents[fmt.Sprintf("agent-%03d", i)] = i%3 == 0
+	}
+	p := newPluginWithFixture(b, &liveFixture{enabledAgents: agents})
+	ctx := a2aUserCtx()
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
+		grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"agent-001"})),
+	}, "", nil, "", nil))
+	for _, tc := range []struct{ name, agent string }{
+		{"allowed-by-default", "agent-150"},
+		{"granted-by-profile", "agent-001"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			req := operationReq(tc.agent)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, short, err := p.PreA2AHook(ctx, req); err != nil || short != nil {
+					b.Fatalf("PreA2AHook(%s): %v %v", tc.agent, err, short)
+				}
+			}
+		})
+	}
 }

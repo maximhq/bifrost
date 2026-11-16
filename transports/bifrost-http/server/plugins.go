@@ -142,15 +142,11 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
-		// A copy, so the caller's config is left as it was; agents are reported live from the
-		// transport's config unless the caller supplied its own report, and the log timestamp
-		// precision is always the transport's log store's.
-		withAgents := *governanceConfig
-		if withAgents.EnabledAgents == nil {
-			withAgents.EnabledAgents = bifrostConfig.GetEnabledAgents
-		}
-		withAgents.LogTimestampPrecision = GovernanceLogTimestampPrecision(bifrostConfig)
-		governancePlugin, err := governance.Init(ctx, &withAgents, logger, bifrostConfig.ConfigStore,
+		// A copy, so the caller's config is left as it was; the log timestamp precision is always
+		// the transport's log store's.
+		withPrecision := *governanceConfig
+		withPrecision.LogTimestampPrecision = GovernanceLogTimestampPrecision(bifrostConfig)
+		governancePlugin, err := governance.Init(ctx, &withPrecision, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.LiveStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 		if err != nil {
 			return nil, err

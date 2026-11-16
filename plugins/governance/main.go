@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -89,9 +90,6 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
-	// EnabledAgents reports the enabled agents, each with whether it is allowed by default; nil
-	// means none is enabled.
-	EnabledAgents func() map[string]bool `json:"-"`
 	// LogTimestampPrecision is the precision the log store keeps request timestamps at; zero keeps
 	// them exact. Usage counted around a reset compares the request's start at this precision, so
 	// live counters and the logs put a request on the same side of the reset.
@@ -150,11 +148,9 @@ type GovernancePlugin struct {
 	mcpCatalog   *mcpcatalog.MCPCatalog
 	logger       schemas.Logger
 
-	// live holds the configuration records the plugin reads: providers, MCP clients, keys and the
-	// teams and customers they sit under.
+	// live holds the configuration records the plugin reads: providers, MCP clients, agent
+	// registrations, keys and the teams and customers they sit under.
 	live *livestore.Store
-	// enabledAgents reports the enabled agents; nil means none is enabled.
-	enabledAgents func() map[string]bool
 
 	cfgMutex sync.RWMutex
 
@@ -267,19 +263,10 @@ func Init(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 		live:                  live,
-		enabledAgents:         enabledAgentsOf(config),
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
-}
-
-// enabledAgentsOf is config's report of the enabled agents, nil when config has none.
-func enabledAgentsOf(config *Config) func() map[string]bool {
-	if config == nil {
-		return nil
-	}
-	return config.EnabledAgents
 }
 
 // InitFromStore initializes and returns a governance plugin instance with a custom store.
@@ -354,7 +341,6 @@ func InitFromStore(
 		mcpCatalog:            mcpCatalog,
 		logger:                logger,
 		live:                  live,
-		enabledAgents:         enabledAgentsOf(config),
 		isVkMandatory:         isVkMandatory,
 		cfgMutex:              sync.RWMutex{},
 		requiredHeaders:       requiredHeaders,
@@ -2055,20 +2041,28 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
-// defaultAgentPermit is the permit to the enabled agents allowed by default, for a caller identified
-// by a user or a key; nil when there is no such caller or no agent is enabled.
-func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas.Permit {
-	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) || p.enabledAgents == nil {
+// agentEnabled reports whether an agent-gateway registration with this name exists and is enabled.
+func (p *GovernancePlugin) agentEnabled(name string) bool {
+	a, ok := p.live.Collections.Agents.Get(name)
+	return ok && a.Enabled
+}
+
+// defaultAgentPermit is the permit agents allowed by default give a caller identified by a user or
+// a key; nil when there is no such caller or no enabled agent is allowed by default. It names
+// agentName, the agent the request asks for, when that agent is enabled and allowed by default,
+// and no other: the access it joins is asked about that agent only. While any agent is allowed by
+// default the permit is given even when it names none, so a caller refused another agent is
+// refused that agent, with the default access among the permits that refused.
+func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity, agentName string) schemas.Permit {
+	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) {
 		return nil
 	}
-	allowedByDefault := make([]string, 0)
-	for agentName, allowByDefault := range p.enabledAgents() {
-		if allowByDefault {
-			allowedByDefault = append(allowedByDefault, agentName)
-		}
-	}
-	if len(allowedByDefault) == 0 {
+	if _, open := p.live.Collections.Agents.GetBy(registry.AgentsAllowedByDefault, registry.AllowedByDefaultKey); !open {
 		return nil
+	}
+	allowedByDefault := make([]string, 0, 1)
+	if a, ok := p.live.Collections.Agents.Get(agentName); ok && a.Enabled && a.AllowByDefault {
+		allowedByDefault = append(allowedByDefault, agentName)
 	}
 	return grant.NewPermit("agent_default", "agent_default", "default agent access", true, false, nil, nil, grant.WithAgentPermits(allowedByDefault))
 }
@@ -2097,11 +2091,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 		}}, nil
 	}
 
-	enabledAgents := map[string]bool(nil)
-	if p.enabledAgents != nil {
-		enabledAgents = p.enabledAgents()
-	}
-	if _, enabled := enabledAgents[req.AgentName]; !enabled {
+	if !p.agentEnabled(req.AgentName) {
 		return deny(DecisionAgentBlocked, fmt.Sprintf("Agent '%s' is disabled or unknown", req.AgentName))
 	}
 
@@ -2109,7 +2099,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 	if err != nil {
 		return deny(DecisionAccessUnresolved, err.Error())
 	}
-	if defaultPermit := p.defaultAgentPermit(ctx.Grant().Identity()); defaultPermit != nil {
+	if defaultPermit := p.defaultAgentPermit(ctx.Grant().Identity(), req.AgentName); defaultPermit != nil {
 		bases := []schemas.Permit{defaultPermit}
 		var scoping schemas.Permit
 		var mode grant.CompositionMode

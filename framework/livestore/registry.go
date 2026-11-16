@@ -36,6 +36,9 @@ const (
 	KindVirtualMCP  Kind = "virtual_mcp"
 )
 
+// KindAgent names the agent-gateway registration collection.
+const KindAgent Kind = "agent"
+
 // Collections holds the typed collection of each config store table the live store loads. New
 // registers every one of them, so a reader takes them from Store.Collections. The record types and
 // the reads that load them are in the registry package.
@@ -50,6 +53,7 @@ type Collections struct {
 	RateLimits   *Collection[registry.RateLimit]
 	ModelConfigs *Collection[registry.ModelConfig]
 	VirtualMCPs  *Collection[registry.VirtualMCP]
+	Agents       *Collection[registry.Agent]
 }
 
 // Views holds the global derived tables: tables derived only from collections and read by more
@@ -126,6 +130,13 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		return nil, err
 	}
 	if err := registerGovernance(s, c, o); err != nil {
+		return nil, err
+	}
+	if c.Agents, err = s.Register(KindAgent, nil, Loader[registry.Agent]{
+		ID:   registry.AgentName,
+		Page: registry.AgentsPage,
+		ByID: registry.AgentsByName,
+	}, MultiIndex(registry.AgentsAllowedByDefault, registry.AgentAllowedByDefault)); err != nil {
 		return nil, err
 	}
 	return c, nil

@@ -128,3 +128,14 @@ func TestVirtualMCPsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, NumericID(1), VirtualMCPID(rows[0]))
 }
+
+// TestAgentsByNameReadsMoreNamesThanTheParameterLimit checks that a refresh of more agent names than
+// one statement may bind still reads the registrations that exist.
+func TestAgentsByNameReadsMoreNamesThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	require.NoError(t, db.Create(&tables.TableAgentRegistration{Name: "alpha", AgentCardURL: "https://alpha.example/card", Enabled: true}).Error)
+	rows, err := AgentsByName(context.Background(), db, withMissingIDs("alpha"))
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "alpha", rows[0].Name)
+}
