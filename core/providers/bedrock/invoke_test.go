@@ -3774,3 +3774,251 @@ func TestInvokeAnthropicBody_MidConvSystemReminderStableAcrossTurns(t *testing.T
 		assert.Equal(t, "ephemeral", msg.Get("content.0.cache_control.type").String())
 	}
 }
+
+// invokeDocumentConverseBody pushes an InvokeModel body through the same chain the
+// /invoke and /invoke-with-response-stream routes use (decode, Converse shape, neutral
+// Responses request) and then the Converse egress, returning the body Bedrock receives.
+func invokeDocumentConverseBody(t *testing.T, body string) []byte {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	out, err := sonic.Marshal(converseReq)
+	require.NoError(t, err)
+	return out
+}
+
+const (
+	invokeDocTextBlock   = `{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}`
+	invokeDocPDFBlock    = `{"type":"document","title":"Report","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`
+	invokeDocQuestionTxt = `{"type":"text","text":"What is the secret word?"}`
+)
+
+func TestInvokeRequest_DocumentBlockReachesConverse(t *testing.T) {
+	t.Run("text source is forwarded as txt bytes", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocTextBlock+`]}]}`)
+		doc := gjson.GetBytes(out, "messages.0.content.1.document")
+		require.True(t, doc.Exists(), "document dropped on the invoke ingress: %s", out)
+		assert.Equal(t, "txt", doc.Get("format").String())
+		assert.Equal(t, "Notes", doc.Get("name").String())
+		decoded, err := base64.StdEncoding.DecodeString(doc.Get("source.bytes").String())
+		require.NoError(t, err)
+		assert.Equal(t, "The secret word is PINEAPPLE.", string(decoded))
+	})
+
+	t.Run("base64 pdf source is forwarded untouched", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocPDFBlock+`]}]}`)
+		doc := gjson.GetBytes(out, "messages.0.content.1.document")
+		require.True(t, doc.Exists(), "document dropped on the invoke ingress: %s", out)
+		assert.Equal(t, "pdf", doc.Get("format").String())
+		assert.Equal(t, "Report", doc.Get("name").String())
+		assert.Equal(t, "JVBERi0xLjQK", doc.Get("source.bytes").String())
+	})
+
+	t.Run("untitled documents get distinct names", func(t *testing.T) {
+		untitled := `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"a"}}`
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+untitled+`,`+untitled+`]}]}`)
+		names := gjson.GetBytes(out, "messages.0.content.#.document.name").Array()
+		require.Len(t, names, 2, "body=%s", out)
+		assert.NotEmpty(t, names[0].String())
+		assert.NotEqual(t, names[0].String(), names[1].String(), "Converse rejects duplicate document names: %s", out)
+	})
+
+	t.Run("cache_control becomes a cache point after the document", func(t *testing.T) {
+		cached := `{"type":"document","title":"Notes","cache_control":{"type":"ephemeral"},"source":{"type":"text","media_type":"text/plain","data":"x"}}`
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+cached+`]}]}`)
+		// Converse needs text beside a document, so a placeholder text block may precede it.
+		content := gjson.GetBytes(out, "messages.0.content").Array()
+		require.GreaterOrEqual(t, len(content), 2, "body=%s", out)
+		assert.True(t, content[len(content)-2].Get("document").Exists(), "body=%s", out)
+		assert.True(t, content[len(content)-1].Get("cachePoint").Exists(), "body=%s", out)
+	})
+
+	t.Run("document nested in tool_result survives", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"},`+invokeDocTextBlock+`]}]}]}`)
+		content := gjson.GetBytes(out, "messages.1.content.0.toolResult.content")
+		require.Len(t, content.Array(), 2, "tool result flattened to text: %s", out)
+		assert.Equal(t, "ok", content.Get("0.text").String())
+		assert.Equal(t, "txt", content.Get("1.document.format").String())
+		assert.Equal(t, "Notes", content.Get("1.document.name").String())
+	})
+}
+
+func TestInvokeRequest_UnsupportedOrMalformedDocumentIsRejected(t *testing.T) {
+	cases := map[string]struct {
+		block   string
+		message string
+	}{
+		"url without url":         {`{"type":"document","source":{"type":"url"}}`, "requires source.url"},
+		"url with ftp scheme":     {`{"type":"document","source":{"type":"url","url":"ftp://example.com/a.pdf"}}`, `unsupported document url scheme "ftp"`},
+		"url with file scheme":    {`{"type":"document","source":{"type":"url","url":"file:///etc/passwd"}}`, `unsupported document url scheme "file"`},
+		"url with s3 scheme":      {`{"type":"document","source":{"type":"url","url":"s3://bucket/key.pdf"}}`, `unsupported document url scheme "s3"`},
+		"url without scheme":      {`{"type":"document","source":{"type":"url","url":"example.com/a.pdf"}}`, `unsupported document url scheme ""`},
+		"content source":          {`{"type":"document","source":{"type":"content","content":[{"type":"text","text":"x"}]}}`, `unsupported document source type "content"`},
+		"file source":             {`{"type":"document","source":{"type":"file","file_id":"file_1"}}`, `unsupported document source type "file"`},
+		"missing source":          {`{"type":"document"}`, `unsupported document source type ""`},
+		"base64 without data":     {`{"type":"document","source":{"type":"base64","media_type":"application/pdf"}}`, "requires source.data"},
+		"base64 unknown type":     {`{"type":"document","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}`, "unsupported document media_type"},
+		"base64 without type":     {`{"type":"document","source":{"type":"base64","data":"AAAA"}}`, "unsupported document media_type"},
+		"text without data":       {`{"type":"document","source":{"type":"text","media_type":"text/plain"}}`, "requires source.data"},
+		"nested in tool_result":   {`{"type":"tool_result","tool_use_id":"t1","content":[{"type":"document","source":{"type":"file","file_id":"file_1"}}]}`, `unsupported document source type "file"`},
+		"tool_result bad content": {`{"type":"tool_result","tool_use_id":"t1","content":123}`, "invalid message content"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var req BedrockInvokeRequest
+			err := sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+tc.block+`]}]}`), &req)
+			require.Error(t, err, "a block that cannot be forwarded must fail the request, not be dropped: %+v", req.Messages)
+			assert.Contains(t, err.Error(), tc.message)
+		})
+	}
+}
+
+func TestInvokeRequest_StringContentMessageStillDecodesBesideBlocks(t *testing.T) {
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[`+
+		`{"role":"user","content":"plain string"},`+
+		`{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocTextBlock+`]}]}`), &req))
+	require.Len(t, req.Messages, 2)
+	require.Len(t, req.Messages[0].Content, 1)
+	assert.Equal(t, "plain string", *req.Messages[0].Content[0].Text)
+	require.Len(t, req.Messages[1].Content, 2)
+	assert.NotNil(t, req.Messages[1].Content[1].Document)
+}
+
+func TestToBifrostResponsesRequest_ToolResultKeepsDocumentAndJSON(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockConverseRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"modelId":"us.anthropic.claude-sonnet-5-5","messages":[`+
+		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"toolu_01","name":"read","input":{}}}]},`+
+		`{"role":"user","content":[{"toolResult":{"toolUseId":"toolu_01","content":[`+
+		`{"json":{"rows":2}},{"document":{"format":"txt","name":"Notes","source":{"bytes":"UElORUFQUExF"}}}]}}]}]}`), &req))
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	out := toolReferenceFunctionCallOutput(t, bifrostReq)
+	require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+	jsonBlock, fileBlock := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+	require.NotNil(t, jsonBlock.Text)
+	assert.JSONEq(t, `{"rows":2}`, *jsonBlock.Text)
+	assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeFile, fileBlock.Type)
+	require.NotNil(t, fileBlock.ResponsesInputMessageContentBlockFile)
+	assert.Equal(t, "Notes", *fileBlock.ResponsesInputMessageContentBlockFile.Filename)
+}
+
+const invokeDocPresignedURL = "https://bucket.example.com/reports/q3.docx?X-Amz-Signature=SUPERSECRET"
+
+func TestInvokeRequest_DocumentURLSourceIsCarriedForTheEgressFetch(t *testing.T) {
+	decode := func(t *testing.T, sourceURL string) *BedrockDocumentSource {
+		t.Helper()
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"Q3","source":{"type":"url","url":"`+sourceURL+`"}}]}]}`), &req))
+		require.Len(t, req.Messages, 1)
+		require.Len(t, req.Messages[0].Content, 1)
+		doc := req.Messages[0].Content[0].Document
+		require.NotNil(t, doc, "url document dropped on the invoke ingress")
+		require.NotNil(t, doc.Source)
+		return doc
+	}
+
+	t.Run("http url is kept unfetched with the extension as format hint", func(t *testing.T) {
+		doc := decode(t, "https://example.com/files/report.pdf")
+		require.NotNil(t, doc.Source.URL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *doc.Source.URL)
+		assert.Nil(t, doc.Source.Bytes, "the decoder must not fetch")
+		assert.Equal(t, "pdf", doc.Format)
+		assert.Equal(t, "Q3", doc.Name)
+	})
+
+	t.Run("extension is read before the query string", func(t *testing.T) {
+		doc := decode(t, invokeDocPresignedURL)
+		assert.Equal(t, "docx", doc.Format)
+		assert.Equal(t, invokeDocPresignedURL, *doc.Source.URL)
+	})
+
+	t.Run("no extension leaves the format to the fetched content type", func(t *testing.T) {
+		assert.Empty(t, decode(t, "https://example.com/download?id=7").Format)
+	})
+
+	t.Run("the url is never serialized as a Converse field", func(t *testing.T) {
+		out, err := sonic.Marshal(decode(t, "https://example.com/files/report.pdf"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(out), "example.com")
+	})
+
+	t.Run("rejection never echoes the url", func(t *testing.T) {
+		var req BedrockInvokeRequest
+		err := sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"ftp://host/a.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`), &req)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "SUPERSECRET")
+	})
+}
+
+func TestInvokeRequest_DocumentURLReachesTheNeutralRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	convert := func(t *testing.T, body string) *schemas.BifrostResponsesRequest {
+		t.Helper()
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+		req.ModelID = "us.anthropic.claude-sonnet-5-5"
+		bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		return bifrostReq
+	}
+	urlBlock := `{"type":"document","title":"Q3","source":{"type":"url","url":"https://example.com/files/report.pdf"}}`
+
+	t.Run("top level", func(t *testing.T) {
+		bifrostReq := convert(t, `{"messages":[{"role":"user","content":[`+urlBlock+`]}]}`)
+		var found *schemas.ResponsesInputMessageContentBlockFile
+		for _, m := range bifrostReq.Input {
+			if m.Content == nil {
+				continue
+			}
+			for _, b := range m.Content.ContentBlocks {
+				if b.ResponsesInputMessageContentBlockFile != nil {
+					found = b.ResponsesInputMessageContentBlockFile
+				}
+			}
+		}
+		require.NotNil(t, found, "url document dropped before the Converse egress: %+v", bifrostReq.Input)
+		require.NotNil(t, found.FileURL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *found.FileURL)
+		assert.Nil(t, found.FileData)
+	})
+
+	t.Run("nested in tool_result", func(t *testing.T) {
+		bifrostReq := convert(t, `{"messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[`+urlBlock+`]}]}]}`)
+		out := toolReferenceFunctionCallOutput(t, bifrostReq)
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 1, "got %+v", out)
+		file := out.ResponsesFunctionToolCallOutputBlocks[0].ResponsesInputMessageContentBlockFile
+		require.NotNil(t, file)
+		require.NotNil(t, file.FileURL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *file.FileURL)
+	})
+}
+
+// A unit test cannot fetch a real URL: FetchAndEncodeURL dials through an SSRF-safe dialer
+// that rejects loopback unconditionally and has no test seam (the constraint documented in
+// openai/chatfileurl_test.go). That refusal is the deterministic, network-free proof that
+// the egress reaches the shared fetcher instead of dropping the document, and that the
+// fetcher's error redaction holds on this ingress.
+func TestInvokeRequest_DocumentURLIsFetchedByTheEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"http://127.0.0.1/report.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	_, err = ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "a url document that cannot be fetched must fail the request, not be dropped")
+	assert.NotContains(t, err.Error(), "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+}
