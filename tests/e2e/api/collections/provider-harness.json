@@ -313312,6 +313312,54 @@
           "response": []
         },
         {
+          "name": "gemini/gemini-2.5-flash chat completions input_audio url without format takes the type from the download - #2200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "var body = pm.response.json();",
+                  "pm.test('model answers about the audio fetched from the URL', function () {",
+                  "  var content = (((body.choices || [])[0] || {}).message || {}).content;",
+                  "  pm.expect(content, 'no answer text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Gemini counted the downloaded audio as prompt audio tokens', function () {",
+                  "  var details = (body.usage || {}).prompt_tokens_details || {};",
+                  "  pm.expect(details.audio_tokens, 'no audio tokens: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
           "name": "gemini/gemini-2.5-flash responses input_audio url is downloaded and understood - #2200",
           "event": [
             {

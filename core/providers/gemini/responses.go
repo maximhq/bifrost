@@ -4941,11 +4941,15 @@ func resolveResponsesAudioBlocks(ctx context.Context, blocks []schemas.Responses
 			continue
 		}
 		audio := *block.Audio
-		audioData, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("%s[%d]", location, blockIndex))
+		audioData, audioType, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("%s[%d]", location, blockIndex))
 		if err != nil {
 			return nil, err
 		}
 		audio.Data = audioData
+		// Without a format the converter labels the audio audio/mpeg; the download knows better.
+		if strings.TrimSpace(audio.Format) == "" && audioType != "" {
+			audio.Format = audioType
+		}
 		block.Audio = &audio
 	}
 	return resolved, nil

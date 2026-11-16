@@ -2452,6 +2452,36 @@ func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
 	require.Equal(t, int32(1), fetches.Load())
 }
 
+func TestResolveResponsesAudioURLsTakesFormatFromContentType(t *testing.T) {
+	cases := []struct {
+		name        string
+		format      string
+		contentType string
+		wantMIME    string
+	}{
+		{name: "no format, audio content type", contentType: "audio/ogg", wantMIME: "audio/ogg"},
+		{name: "no format, non-audio content type", contentType: "application/octet-stream", wantMIME: "audio/mpeg"},
+		{name: "explicit format wins", format: "mp3", contentType: "audio/ogg", wantMIME: "audio/mp3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+				return tc.contentType, base64.StdEncoding.EncodeToString([]byte("audio-bytes")), nil
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := responsesAudioURLRequest("https://audio.example/clip")
+			request.Input[0].Content.ContentBlocks[0].Audio.Format = tc.format
+
+			resolved, err := ResolveResponsesAudioURLs(ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, tc.format, request.Input[0].Content.ContentBlocks[0].Audio.Format, "the caller's block must not change")
+			result, err := ToGeminiResponsesRequest(ctx, resolved)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMIME, result.Contents[0].Parts[0].InlineData.MIMEType)
+		})
+	}
+}
+
 // TestAudioURLRequestsNormalizeUpstreamModel drives each provider route with a
 // google/ model name and URL-only audio. The audio resolvers return a copy, so the
 // converter's model normalization must still reach the request the URL is built from.

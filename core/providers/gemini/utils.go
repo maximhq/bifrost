@@ -2324,24 +2324,28 @@ func NewAudioURLBudget() *AudioURLBudget {
 	return &AudioURLBudget{remaining: maxAudioURLBytesPerRequest}
 }
 
-// fetch downloads audioURL as base64 and charges its decoded size to the budget. location names
-// the block (e.g. "messages[2].content[1]") in errors. A fetch failure or an exhausted budget is
-// the caller's input, so it is returned as InvalidRequestErrorf and reaches the client as a 400;
-// a cancelled or expired request context is returned as-is.
-func (b *AudioURLBudget) fetch(ctx context.Context, audioURL, location string) (string, error) {
-	_, encoded, err := fetchAudioURL(ctx, audioURL)
+// fetch downloads audioURL as base64 and charges its decoded size to the budget. It also returns
+// the response's media type when it is audio/*, else "". location names the block (e.g.
+// "messages[2].content[1]") in errors. A fetch failure or an exhausted budget is the caller's
+// input, so it is returned as InvalidRequestErrorf and reaches the client as a 400; a cancelled
+// or expired request context is returned as-is.
+func (b *AudioURLBudget) fetch(ctx context.Context, audioURL, location string) (encoded, audioType string, err error) {
+	mediaType, encoded, err := fetchAudioURL(ctx, audioURL)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", ctxErr
+			return "", "", ctxErr
 		}
-		return "", providerUtils.InvalidRequestErrorf("failed to download audio for %s: %v", location, err)
+		return "", "", providerUtils.InvalidRequestErrorf("failed to download audio for %s: %v", location, err)
 	}
 	size := decodedBase64Len(encoded)
 	if size > b.remaining {
-		return "", providerUtils.InvalidRequestErrorf("audio downloaded from URLs exceeds the %d-byte total allowed per request (at %s)", maxAudioURLBytesPerRequest, location)
+		return "", "", providerUtils.InvalidRequestErrorf("audio downloaded from URLs exceeds the %d-byte total allowed per request (at %s)", maxAudioURLBytesPerRequest, location)
 	}
 	b.remaining -= size
-	return encoded, nil
+	if mediaType = strings.ToLower(mediaType); strings.HasPrefix(mediaType, "audio/") {
+		audioType = mediaType
+	}
+	return encoded, audioType, nil
 }
 
 // decodedBase64Len is the exact decoded size of padded standard base64. DecodedLen alone counts
@@ -2417,11 +2421,15 @@ func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage, budge
 			}
 
 			audio := *block.InputAudio
-			audioData, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("messages[%d].content[%d]", msgIndex, blockIndex))
+			audioData, audioType, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("messages[%d].content[%d]", msgIndex, blockIndex))
 			if err != nil {
 				return nil, err
 			}
 			audio.Data = audioData
+			// Without a format the converter labels the audio audio/mpeg; the download knows better.
+			if (audio.Format == nil || strings.TrimSpace(*audio.Format) == "") && audioType != "" {
+				audio.Format = &audioType
+			}
 			block.InputAudio = &audio
 		}
 	}

@@ -95,6 +95,40 @@ func TestToGeminiChatCompletionRequestDoesNotDownloadAudio(t *testing.T) {
 	require.Zero(t, fetches.Load(), "converters must make no HTTP calls")
 }
 
+// Without a client format, the converter labels audio audio/mpeg. A URL download knows the real
+// type from Content-Type, so an audio/* answer fills the missing format; an explicit format and a
+// non-audio Content-Type are left as they are.
+func TestResolveChatAudioURLsTakesFormatFromContentType(t *testing.T) {
+	cases := []struct {
+		name        string
+		format      *string
+		contentType string
+		wantMIME    string
+	}{
+		{name: "no format, audio content type", contentType: "audio/wav", wantMIME: "audio/wav"},
+		{name: "no format, non-audio content type", contentType: "application/octet-stream", wantMIME: "audio/mpeg"},
+		{name: "no format, no content type", contentType: "", wantMIME: "audio/mpeg"},
+		{name: "explicit format wins", format: schemas.Ptr("mp3"), contentType: "audio/wav", wantMIME: "audio/mp3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+				return tc.contentType, base64.StdEncoding.EncodeToString([]byte("audio-bytes")), nil
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := chatAudioURLRequest("https://audio.example/clip")
+			request.Input[0].Content.ContentBlocks[0].InputAudio.Format = tc.format
+
+			resolved, err := ResolveChatAudioURLs(ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, tc.format, request.Input[0].Content.ContentBlocks[0].InputAudio.Format, "the caller's block must not change")
+			result, err := ToGeminiChatCompletionRequest(ctx, resolved)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMIME, result.Contents[0].Parts[0].InlineData.MIMEType)
+		})
+	}
+}
+
 func TestResolveChatAudioURLsSkipsToolResultAudio(t *testing.T) {
 	fetches := stubAudioFetchBytes(t, []byte("audio-bytes"))
 
