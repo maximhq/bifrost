@@ -127,11 +127,7 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
-	// ApplyTraceDimensionsToChildSpans controls whether x-bf-dim-* dimensions stored on
-	// the trace (TraceAttrDimensions) are merged onto every exported span. When false
-	// (default), these attributes are only present on the root span via the standard
-	// span-attribute mechanism.
-	ApplyTraceDimensionsToChildSpans bool `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+	ApplyTraceDimensionsToChildSpans bool `json:"apply_trace_dimensions_to_child_spans,omitempty"` // merge x-bf-dim-* onto every span; see convertTraceToResourceSpan
 
 	// ExportRawPayloads attaches captured provider or agent bodies to operation
 	// spans. Off by default; requires the corresponding raw-storage setting and
