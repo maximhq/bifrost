@@ -5315,10 +5315,48 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
 
-		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
+		// Convert tool choice. allowed_tools narrows the declarations even when the model rejects a
+		// forced choice; only a forced choice itself is then dropped.
+		if bifrostReq.Params.ToolChoice != nil {
 			anthropicToolChoice := convertResponsesToolChoiceToAnthropic(bifrostReq.Params.ToolChoice)
-			if anthropicToolChoice != nil {
+			if choice := bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct; anthropicToolChoice != nil && choice != nil &&
+				choice.Type == schemas.ResponsesToolChoiceTypeAllowedTools {
+				// Function/custom selectors narrow by name; any other selector (mcp, image_generation)
+				// permits a server tool, which is never filtered, so it rules out "none".
+				named := make([]schemas.ChatToolChoiceAllowedToolsTool, 0, len(choice.Tools))
+				otherSelected := false
+				for _, allowedTool := range choice.Tools {
+					switch allowedTool.Type {
+					case "", string(schemas.ResponsesToolTypeFunction), string(schemas.ResponsesToolTypeCustom):
+						if allowedTool.Name != nil && *allowedTool.Name != "" {
+							named = append(named, schemas.ChatToolChoiceAllowedToolsTool{Type: allowedTool.Type, Function: schemas.ChatToolChoiceFunction{Name: *allowedTool.Name}})
+						}
+					default:
+						otherSelected = true
+					}
+				}
+				if len(named) > 0 || otherSelected {
+					// The synthetic structured-output tool is the gateway's, not the caller's to exclude.
+					if structuredOutputTool, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && structuredOutputTool != "" {
+						named = append(named, schemas.ChatToolChoiceAllowedToolsTool{Function: schemas.ChatToolChoiceFunction{Name: structuredOutputTool}})
+					}
+					if len(named) > 0 {
+						anthropicReq.Tools = filterToolsByAllowed(anthropicReq.Tools, named)
+					} else {
+						serverTools := make([]AnthropicTool, 0, len(anthropicReq.Tools))
+						for _, tool := range anthropicReq.Tools {
+							if tool.Type != nil || tool.MCPToolset != nil {
+								serverTools = append(serverTools, tool)
+							}
+						}
+						anthropicReq.Tools = serverTools
+					}
+					if !otherSelected && countFunctionTools(anthropicReq.Tools) == 0 {
+						anthropicToolChoice.Type = "none"
+					}
+				}
+			}
+			if anthropicToolChoice != nil && (!forcedToolChoiceRejected || anthropicToolChoice.Type == "none") {
 				anthropicReq.ToolChoice = anthropicToolChoice
 			}
 		}
@@ -10681,6 +10719,13 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 		anthropicChoice.Type = "auto"
 	case "required":
 		anthropicChoice.Type = "any"
+	case string(schemas.ResponsesToolChoiceTypeAllowedTools):
+		// Anthropic has no subset form; the caller narrows the declarations to the allowed names.
+		anthropicChoice.Type = "auto"
+		if toolChoice.ResponsesToolChoiceStruct.Mode != nil && *toolChoice.ResponsesToolChoiceStruct.Mode == "required" {
+			anthropicChoice.Type = "any"
+		}
+		return anthropicChoice
 	case "function":
 		// Handle function type - set as "tool" with specific function name
 		if toolChoice.ResponsesToolChoiceStruct != nil && toolChoice.ResponsesToolChoiceStruct.Name != nil {
