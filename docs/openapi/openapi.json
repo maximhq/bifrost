@@ -114947,6 +114947,185 @@
         ]
       }
     },
+    "/v1/mcp": {
+      "post": {
+        "operationId": "bifrostMCPMessage",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| None | Not RBAC-gated - each `tools/call` is authorized by the permission its route requires |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Bifrost MCP message",
+        "description": "Receives a JSON-RPC 2.0 message for the Bifrost MCP, which serves this gateway's own\nHTTP API as MCP tools: every operation in this spec except the deprecated ones, the\nroutes that cannot be a request/response tool (session and credential endpoints,\nbrowser OAuth steps, streams and WebSocket upgrades, binary downloads, and the two MCP\nservers themselves) and any route this gateway does not serve. Tools are named after\ntheir `operationId`. With `client.bifrost_mcp_allow_writes` off, non-GET `/api`\noperations are left out; inference, batch and file routes are served either way.\n\nThe server is stateless Streamable HTTP: every message is a POST, there is no session,\nand `notifications/cancelled` is accepted and ignored. A tool call never streams: the\n`stream` argument is dropped, so the route answers once.\n\nIt takes the same credentials as the management API: the admin login, or a management\nAPI key. On OSS, while dashboard auth is not active (no admin account, or auth disabled),\nit takes the setup token instead, in the `X-Bifrost-Setup-Token` header only: sent as\n`Authorization: Bearer` it is refused with `401`, and once dashboard auth is enabled the\nsetup token is no longer accepted. A virtual key alone is refused with `401`; to use one\nwith inference tools, send it in `x-bf-vk` alongside a management credential. Each tool\ncall is authorized again by the route it reaches, with the caller's credential.\n",
+        "tags": [
+          "Infrastructure"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "JSON-RPC 2.0 request or notification",
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "enum": [
+                      "2.0"
+                    ]
+                  },
+                  "method": {
+                    "type": "string",
+                    "description": "MCP method, such as `initialize`, `tools/list` or `tools/call`"
+                  },
+                  "params": {
+                    "type": "object"
+                  },
+                  "id": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC 2.0 response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jsonrpc": {
+                      "type": "string",
+                      "enum": [
+                        "2.0"
+                      ]
+                    },
+                    "result": {
+                      "type": "object"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "integer"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "id": {
+                      "description": "The request's id; null on a parse error, when the id could not be read",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Notification accepted; no response body"
+          },
+          "401": {
+            "description": "No management credential, or only a virtual key. A virtual-key-only request is\nanswered with a message saying to send a management credential alongside it. While\nthe OSS setup lock is on, a request without the `X-Bifrost-Setup-Token` header is\nanswered with a message asking for it.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Bifrost MCP is not loaded: `client.bifrost_url` is unset (\"the Bifrost MCP needs\nbifrost_url set\"), or the spec named by `framework.pricing.openapi_url` could not be\nloaded yet (\"the Bifrost MCP spec is unavailable\"; retried in the background).\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "bifrostMCPStream",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| None | Not RBAC-gated - authorized by the credential below |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Bifrost MCP SSE stream (not offered)",
+        "description": "The Bifrost MCP has no server-to-client SSE stream, which Streamable HTTP lets a server\ndecline. A GET runs the same authentication as POST first: a management credential, or\nthe setup token in `X-Bifrost-Setup-Token` while the OSS setup lock is on. Once it is\nadmitted, it is answered `405` with `Allow: POST`.\n",
+        "tags": [
+          "Infrastructure"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No management credential, or only a virtual key, refused before the `405`. A\nvirtual-key-only request is answered with a message saying to send a management\ncredential alongside it. While the OSS setup lock is on, a request without the\n`X-Bifrost-Setup-Token` header is answered with a message asking for it.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "The Bifrost MCP serves JSON-RPC over POST only",
+            "headers": {
+              "Allow": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "POST"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/metrics": {
       "get": {
         "operationId": "getMetrics",
@@ -128566,6 +128745,7 @@
           "typesafe",
           "minimax",
           "byteplus",
+          "machgen",
           "baseten",
           "kimchi",
           "soniox"
@@ -142973,6 +143153,17 @@
                 ],
                 "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
+              "mcp_server_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. \"auto\", or an empty value, serves every version Bifrost supports. Below \"2025-11-25\", sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead; sign-ins already granted keep working. On update, omitting it or sending \"\" keeps the stored value. Applies without a restart.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -143340,7 +143531,7 @@
               },
               "oauth2_server_config": {
                 "type": "object",
-                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways, in any mcp_server_auth_mode).\n",
                 "properties": {
                   "issuer_url": {
                     "oneOf": [
@@ -143394,7 +143585,7 @@
                   },
                   "gateways": {
                     "type": "object",
-                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.",
+                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.\n",
                     "properties": {
                       "claude_code": {
                         "type": "object",
@@ -143403,29 +143594,32 @@
                           "enabled": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
+                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused).\n"
                           },
                           "managed_settings": {
                             "type": [
                               "object",
                               "null"
                             ],
-                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy.\n"
                           },
                           "telemetry": {
                             "type": "object",
-                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.\n",
                             "properties": {
                               "enabled": {
                                 "type": "boolean",
                                 "default": false,
-                                "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                                "description": "Forward telemetry. Off, exports are acknowledged and discarded."
                               },
                               "destinations": {
                                 "type": "array",
                                 "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
                                 "items": {
                                   "type": "object",
+                                  "required": [
+                                    "endpoint"
+                                  ],
                                   "properties": {
                                     "endpoint": {
                                       "oneOf": [
@@ -143481,9 +143675,6 @@
                                       }
                                     }
                                   },
-                                  "required": [
-                                    "endpoint"
-                                  ],
                                   "additionalProperties": false
                                 }
                               },
@@ -143493,16 +143684,28 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
-                                "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                                "description": "Attribute keys removed at every level before forwarding, for example \"prompt\"."
                               }
                             },
                             "if": {
-                              "properties": { "enabled": { "const": true } },
-                              "required": ["enabled"]
+                              "properties": {
+                                "enabled": {
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "enabled"
+                              ]
                             },
                             "then": {
-                              "required": ["destinations"],
-                              "properties": { "destinations": { "minItems": 1 } }
+                              "required": [
+                                "destinations"
+                              ],
+                              "properties": {
+                                "destinations": {
+                                  "minItems": 1
+                                }
+                              }
                             },
                             "additionalProperties": false
                           }
@@ -143843,6 +144046,17 @@
                 ],
                 "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
+              "mcp_server_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. \"auto\", or an empty value, serves every version Bifrost supports. Below \"2025-11-25\", sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead; sign-ins already granted keep working. On update, omitting it or sending \"\" keeps the stored value. Applies without a restart.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -144210,7 +144424,7 @@
               },
               "oauth2_server_config": {
                 "type": "object",
-                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways, in any mcp_server_auth_mode).\n",
                 "properties": {
                   "issuer_url": {
                     "oneOf": [
@@ -144264,7 +144478,7 @@
                   },
                   "gateways": {
                     "type": "object",
-                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.",
+                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.\n",
                     "properties": {
                       "claude_code": {
                         "type": "object",
@@ -144273,29 +144487,32 @@
                           "enabled": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
+                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused).\n"
                           },
                           "managed_settings": {
                             "type": [
                               "object",
                               "null"
                             ],
-                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy.\n"
                           },
                           "telemetry": {
                             "type": "object",
-                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.\n",
                             "properties": {
                               "enabled": {
                                 "type": "boolean",
                                 "default": false,
-                                "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                                "description": "Forward telemetry. Off, exports are acknowledged and discarded."
                               },
                               "destinations": {
                                 "type": "array",
                                 "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
                                 "items": {
                                   "type": "object",
+                                  "required": [
+                                    "endpoint"
+                                  ],
                                   "properties": {
                                     "endpoint": {
                                       "oneOf": [
@@ -144351,9 +144568,6 @@
                                       }
                                     }
                                   },
-                                  "required": [
-                                    "endpoint"
-                                  ],
                                   "additionalProperties": false
                                 }
                               },
@@ -144363,16 +144577,28 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
-                                "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                                "description": "Attribute keys removed at every level before forwarding, for example \"prompt\"."
                               }
                             },
                             "if": {
-                              "properties": { "enabled": { "const": true } },
-                              "required": ["enabled"]
+                              "properties": {
+                                "enabled": {
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "enabled"
+                              ]
                             },
                             "then": {
-                              "required": ["destinations"],
-                              "properties": { "destinations": { "minItems": 1 } }
+                              "required": [
+                                "destinations"
+                              ],
+                              "properties": {
+                                "destinations": {
+                                  "minItems": 1
+                                }
+                              }
                             },
                             "additionalProperties": false
                           }
