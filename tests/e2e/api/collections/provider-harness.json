@@ -338729,6 +338729,193 @@
           ]
         }
       ]
+    },
+    {
+      "name": "361. OpenAI tts-1 / tts-1-hd speech streaming is a caller error, not a 500 (tts streaming refusal)",
+      "description": "OpenAI does not stream speech on tts-1 or tts-1-hd. OpenAIProvider.SpeechStream refuses both before calling upstream, but the refusal was built with NewBifrostOperationError (IsBifrostError, no StatusCode), which EffectiveHTTPStatus maps to 500, so a caller mistake showed up as a gateway fault on customers' model status pages. It is now NewBifrostBadRequestError: 400 with type invalid_request_error.\n\nEvery route that reaches OpenAIProvider.SpeechStream is pinned, since each one maps the error status independently (handler sendBifrostErrorWithContext vs integration GenericRouter.sendError):\n  361.1 native /v1/audio/speech stream_format sse, tts-1-hd.\n  361.2 native /v1/audio/speech stream_format sse, tts-1.\n  361.3 OpenAI drop-in /openai/v1/audio/speech stream_format sse, tts-1-hd.\n  361.4 /genai streamGenerateContent criss-cross to openai/tts-1-hd.\n\nNo upstream call is made on any case, so the folder costs nothing. Non-streaming tts-1 stays covered by 8.4.M.",
+      "item": [
+        {
+          "name": "[EXPECT-400] 361.1 openai/tts-1-hd native /v1/audio/speech stream_format sse is refused as a 400 (tts streaming refusal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tts-1-hd speech streaming is a 400 that names the model', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400, a 500 is the regression: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'refusal should name the model: ' + body.slice(0, 300)).to.include('model tts-1-hd is not supported for streaming speech synthesis');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/tts-1-hd\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 361.2 openai/tts-1 native /v1/audio/speech stream_format sse is refused as a 400 (tts streaming refusal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tts-1 speech streaming is a 400 that names the model', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400, a 500 is the regression: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'refusal should name the model: ' + body.slice(0, 300)).to.include('model tts-1 is not supported for streaming speech synthesis');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/tts-1\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 361.3 openai/tts-1-hd OpenAI drop-in /openai/v1/audio/speech stream_format sse is refused as a 400 (tts streaming refusal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in tts-1-hd speech streaming is a 400 that names the model', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400, a 500 is the regression: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'refusal should name the model: ' + body.slice(0, 300)).to.include('model tts-1-hd is not supported for streaming speech synthesis');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/tts-1-hd\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 361.4 openai/tts-1-hd /genai streamGenerateContent speech stream is refused as a 400 (tts streaming refusal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('genai tts-1-hd speech streaming is a 400 that names the model', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400, a 500 is the regression: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'refusal should name the model: ' + body.slice(0, 300)).to.include('model tts-1-hd is not supported for streaming speech synthesis');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Hello, world.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"alloy\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/openai/tts-1-hd:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "openai",
+                "tts-1-hd:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

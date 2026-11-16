@@ -2886,7 +2886,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	for _, model := range providerUtils.UnsupportedSpeechStreamModels {
 		if model == request.Model {
-			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("model %s is not supported for streaming speech synthesis", model), nil)
+			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("model %s is not supported for streaming speech synthesis", model))
 		}
 	}
 
