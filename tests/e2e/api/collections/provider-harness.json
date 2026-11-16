@@ -337407,6 +337407,241 @@
           }
         }
       ]
+    },
+    {
+      "name": "Catalog exports",
+      "description": "Downloadable configured-model catalogs. Both GET exports filter to OpenAI, preserve provider/model IDs, and validate client-facing schemas without inference or paid provider calls.",
+      "item": [
+        {
+          "name": "openai/gpt-4o Codex catalog exports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('Codex catalog exports return HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt).to.eql(200);",
+                  "});",
+                  "pm.test('Codex catalog exports retain configured OpenAI IDs and required ModelInfo fields', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.models, 'missing models array: ' + txt).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.models.map(function (model) { return model.slug; }), 'missing configured model: ' + txt).to.include('openai/gpt-4o');",
+                  "  body.models.forEach(function (model) {",
+                  "    pm.expect(model.slug).to.match(/^openai\\/.+/);",
+                  "    pm.expect(model.display_name).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(model.description).to.be.a('string');",
+                  "    pm.expect(model.supported_reasoning_levels).to.be.an('array');",
+                  "    model.supported_reasoning_levels.forEach(function (level) {",
+                  "      pm.expect(level.effort).to.be.a('string').that.is.not.empty;",
+                  "      pm.expect(level.description).to.be.a('string');",
+                  "    });",
+                  "    pm.expect(model.shell_type).to.eql('shell_command');",
+                  "    pm.expect(model.visibility).to.eql('list');",
+                  "    pm.expect(model.supported_in_api).to.eql(true);",
+                  "    pm.expect(model.priority).to.be.a('number');",
+                  "    pm.expect(model.support_verbosity).to.eql(false);",
+                  "    pm.expect(model.supports_reasoning_summary_parameter).to.eql(false);",
+                  "    pm.expect(model.truncation_policy).to.deep.eql({ mode: 'tokens', limit: 10000 });",
+                  "    pm.expect(model.input_modalities).to.be.an('array').that.includes('text');",
+                  "    if (model.context_window !== undefined) pm.expect(model.context_window).to.be.a('number').above(0);",
+                  "    if (model.default_reasoning_level !== undefined) pm.expect(model.default_reasoning_level).to.be.a('string');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/codex?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "codex"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o Claude catalog exports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('Claude catalog exports return HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt).to.eql(200);",
+                  "});",
+                  "pm.test('Claude catalog exports retain configured OpenAI IDs in Anthropic models format', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing data array: ' + txt).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data.map(function (model) { return model.id; }), 'missing configured model: ' + txt).to.include('openai/gpt-4o');",
+                  "  pm.expect(body.has_more).to.eql(false);",
+                  "  pm.expect(body.first_id).to.eql(body.data[0].id);",
+                  "  pm.expect(body.last_id).to.eql(body.data[body.data.length - 1].id);",
+                  "  body.data.forEach(function (model) {",
+                  "    pm.expect(model.id).to.match(/^openai\\/.+/);",
+                  "    pm.expect(model.type).to.eql('model');",
+                  "    pm.expect(model.display_name).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(model.created_at).to.eql('1970-01-01T00:00:00Z');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/claude?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "claude"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o Pi catalog exports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('Pi catalog exports return HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt).to.eql(200);",
+                  "});",
+                  "pm.test('Pi catalog exports use native providers.bifrost and credential references', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.providers, 'missing providers: ' + txt).to.be.an('object');",
+                  "  pm.expect(body).to.not.have.property('provider');",
+                  "  var provider = body.providers.bifrost;",
+                  "  pm.expect(provider, 'missing bifrost provider: ' + txt).to.be.an('object');",
+                  "  pm.expect(provider).to.have.all.keys('name', 'api', 'apiKey', 'authHeader', 'baseUrl', 'models');",
+                  "  pm.expect(provider.name).to.eql('Bifrost');",
+                  "  pm.expect(provider.api).to.eql('openai-completions');",
+                  "  pm.expect(provider.baseUrl).to.eql('http://localhost:8080/openai/v1');",
+                  "  pm.expect(provider.apiKey).to.eql('$BIFROST_VIRTUAL_KEY');",
+                  "  pm.expect(provider.authHeader).to.eql(true);",
+                  "  pm.expect(provider.models).to.be.an('array').that.is.not.empty;",
+                  "  var model = provider.models.filter(function (m) { return m.id === 'openai/gpt-4o'; })[0];",
+                  "  pm.expect(model, 'missing configured model: ' + txt).to.be.an('object');",
+                  "  pm.expect(model.name).to.eql('openai/gpt-4o');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/pi?provider=openai&base_url=http://localhost:8080/openai/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "pi"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "base_url",
+                  "value": "http://localhost:8080/openai/v1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o OpenCode catalog exports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('OpenCode catalog exports return HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt).to.eql(200);",
+                  "});",
+                  "pm.test('OpenCode catalog exports use native providers.bifrost and credential references', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.providers, 'missing providers: ' + txt).to.be.an('object');",
+                  "  pm.expect(body).to.not.have.property('provider');",
+                  "  var provider = body.providers.bifrost;",
+                  "  pm.expect(provider, 'missing bifrost provider: ' + txt).to.be.an('object');",
+                  "  pm.expect(provider).to.have.all.keys('name', 'package', 'env', 'settings', 'models');",
+                  "  pm.expect(provider.name).to.eql('Bifrost');",
+                  "  pm.expect(provider.package).to.eql('@opencode/ai/providers/openai-compatible');",
+                  "  pm.expect(provider.env).to.deep.eql(['BIFROST_VIRTUAL_KEY']);",
+                  "  pm.expect(provider.settings).to.deep.eql({ baseURL: 'http://localhost:8080/openai/v1' });",
+                  "  pm.expect(provider).to.not.have.property('apiKey');",
+                  "  var model = provider.models['openai/gpt-4o'];",
+                  "  pm.expect(model, 'missing configured model: ' + txt).to.be.an('object');",
+                  "  pm.expect(model.modelID).to.eql('openai/gpt-4o');",
+                  "  pm.expect(model.name).to.eql('openai/gpt-4o');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/opencode?provider=openai&base_url=http://localhost:8080/openai/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "opencode"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "base_url",
+                  "value": "http://localhost:8080/openai/v1"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

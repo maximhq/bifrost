@@ -10,6 +10,10 @@
 - **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
 - **Streaming Panic Recovery** - A panic in a provider stream, a stream chunk converter, a plugin post-hook or chunk hook, or stream teardown no longer takes down the gateway. The client gets a terminal error frame in the route's own format, and logging and billing record the failure
 
+## Features
+
+- **Coding-Agent Catalogs** - Added model exports for Codex, Claude, Pi, and OpenCode with virtual-key access and model filters. Codex can fetch its catalog directly; Pi and OpenCode exports provide configuration fragments without exposing credentials.
+
 ## 🔧 Maintenance
 
 - **Runtime Image** - The Docker runtime image moves to Alpine 3.23.7

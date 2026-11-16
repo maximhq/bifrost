@@ -108,6 +108,51 @@ Enterprise browser SSO is user-scoped. Administrative commands still require a
 scoped management API key. See the
 [Bifrost CLI credential guide](/quickstart/cli/getting-started#credential-types).
 
+### Model catalogs
+
+Export configured models in the format your client expects:
+
+| Client | Endpoint |
+| --- | --- |
+| [Codex CLI](/cli-agents/codex-cli#configure-a-model-catalog) | `/catalog/codex` |
+| [Claude Code](/cli-agents/claude-code#export-an-anthropic-format-catalog) | `/catalog/claude` |
+| Pi | `/catalog/pi` |
+| [OpenCode](/cli-agents/opencode#export-an-opencode-provider-with-a-virtual-key) | `/catalog/opencode` |
+
+Use your inference credential, not a dashboard/admin credential. Virtual keys
+can be sent as `Authorization: Bearer …` or `x-bf-vk`; their permissions restrict
+the exported providers and models. Failed access resolution returns `401`.
+
+All exports preserve full `provider/model` IDs and return every match without
+pagination. Optional filters are `provider`, `query` (model-name search), and
+`include_deprecated=true`. Deprecated models and known non-chat/non-Responses
+models are excluded by default; models without mode metadata remain included.
+Catalog availability does not guarantee a model supports your agent's tools.
+
+Pi and OpenCode exports are configuration fragments, not automatic subscriptions.
+They reference `BIFROST_VIRTUAL_KEY` without including its value. Behind a reverse
+proxy, pass `base_url` as the public inference URL, including `/openai/v1`:
+the default uses the request scheme and Host, not forwarded headers.
+
+### Export a Pi model configuration
+
+Download a fragment for [Pi's `models.json`](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/models-configuration.md):
+
+```bash
+export BIFROST_VIRTUAL_KEY="your-bifrost-virtual-key"
+fragment="$(mktemp)"
+curl --fail --silent --show-error --get \
+  http://localhost:8080/catalog/pi \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY" \
+  --data-urlencode "base_url=http://localhost:8080/openai/v1" \
+  --output "$fragment"
+```
+
+Review `$fragment`, then merge `providers.bifrost` into
+`~/.pi/agent/models.json` without replacing other providers. If the file does
+not exist, use the fragment as its contents. Keep `BIFROST_VIRTUAL_KEY` exported
+when running Pi.
+
 ## Monitoring Agent Traffic
 
 All agent interactions are automatically logged and can be monitored at `http://localhost:8080/logs`. You can filter by provider, model, or search through conversation content to track your agents' performance.

@@ -427,6 +427,25 @@ Inside a session, `/model <name>` switches to any provider and model configured 
 
 Claude Code can also add Bifrost's models to the `/model` picker. Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`; Claude Code then reads `/anthropic/v1/models` at startup and lists IDs that contain `claude` or `anthropic`. Bifrost CLI enables this automatically for sessions it launches.
 
+### Export an Anthropic-format catalog
+
+`GET /catalog/claude` downloads models in Anthropic's models-list format.
+Claude Code does not fetch this export automatically; its `/model` discovery
+uses `/anthropic/v1/models`. Keep `ANTHROPIC_BASE_URL` pointed at
+`http://localhost:8080/anthropic`.
+
+```bash
+curl --fail --silent --show-error --get \
+  "http://localhost:8080/catalog/claude" \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY" \
+  --data-urlencode "provider=anthropic" \
+  --data-urlencode "query=claude" \
+  --output claude-models.json
+```
+
+See [model catalogs](/cli-agents/overview#model-catalogs) for access rules and
+optional filters. The export preserves Bifrost's full `provider/model` IDs.
+
 ## Auto mode classifier compatibility
 
 Claude Code can perform eligible auto mode classifier checks on the server without separate classifier requests. This requires both a supported Claude Code model name and an upstream platform that has server-side checks enabled.

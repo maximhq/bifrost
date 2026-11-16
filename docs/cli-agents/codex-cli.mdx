@@ -102,6 +102,7 @@ model_provider = "bifrost"
 [model_providers.bifrost]
 name = "Bifrost"
 base_url = "http://localhost:8080/openai/v1"
+model_catalog_url = "http://localhost:8080/catalog/codex"
 wire_api = "responses"
 env_key = "OPENAI_API_KEY"
 requires_openai_auth = false
@@ -403,16 +404,28 @@ Or, when starting Codex directly from a manually configured shell:
 codex --model openai/gpt-5
 ```
 
-<Warning>
-Codex's in-session `/model` picker uses Codex's model catalog, not Bifrost's
-`/v1/models` response. Provider-qualified Bifrost models may not appear there,
-and entering an arbitrary value after `/model` can leave the previous model
-active. Use `/status` to verify the model. For a model outside the picker, exit
-and relaunch with `bifrost run codex --model provider/model`.
-</Warning>
+Codex's `/model` picker uses its own catalog, not `/v1/models`.
+[Configure a model catalog](#configure-a-model-catalog) to list Bifrost models.
+Otherwise, launch with the full model ID and confirm it with `/status`.
 
-The Bifrost launcher currently validates gateway connectivity and discovers the
-permitted models, but it does not generate a Codex model-catalog file.
+### Configure a model catalog
+
+Set `model_catalog_url` to `http://localhost:8080/catalog/codex` inside your
+existing `[model_providers.bifrost]` table, as shown in the
+[manual configuration](#configure-codex-manually-with-a-virtual-key).
+Keep `base_url` pointed at `/openai/v1` for inference.
+The Bifrost launcher does not set the catalog URL for you.
+
+Preview the catalog with your inference credential:
+
+```bash
+curl --fail --silent --show-error \
+  "http://localhost:8080/catalog/codex" \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY"
+```
+
+See [model catalogs](/cli-agents/overview#model-catalogs) for access rules and
+optional filters.
 
 ## Non-OpenAI models
 

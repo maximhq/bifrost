@@ -51,42 +51,32 @@ session reaches token expiry, exit and relaunch it through Bifrost so the CLI
 can refresh the Enterprise session first.
 </Warning>
 
-## Configure OpenCode manually with a virtual key
+## Export an OpenCode provider with a virtual key
 
-Create or update `~/.config/opencode/opencode.json`:
+Download a provider fragment for the current
+[OpenCode configuration schema](https://opencode.ai/docs/providers/).
+It uses `providers.bifrost`; older `provider` / `npm` / `options` configurations
+need migration before using this export.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "model": "bifrost/openai/gpt-5",
-  "provider": {
-    "bifrost": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Bifrost",
-      "options": {
-        "baseURL": "http://localhost:8080/openai",
-        "apiKey": "your-bifrost-virtual-key"
-      },
-      "models": {
-        "openai/gpt-5": {},
-        "anthropic/claude-sonnet-4-6": {},
-        "gemini/gemini-2.5-pro": {}
-      }
-    }
-  }
-}
+```bash
+export BIFROST_VIRTUAL_KEY="your-bifrost-virtual-key"
+fragment="$(mktemp)"
+curl --fail --silent --show-error --get \
+  http://localhost:8080/catalog/opencode \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY" \
+  --data-urlencode "base_url=http://localhost:8080/openai/v1" \
+  --output "$fragment"
 ```
 
-Use the provider/model pair as OpenCode's model reference:
+Review `$fragment`, then merge `providers.bifrost` into
+`~/.config/opencode/opencode.json` without replacing other providers. If the
+file does not exist, use the fragment as its contents.
+Keep `BIFROST_VIRTUAL_KEY` exported when running OpenCode, and select a model
+such as `bifrost/openai/gpt-4o`.
 
-```text
-bifrost/openai/gpt-5
-bifrost/anthropic/claude-sonnet-4-6
-bifrost/gemini/gemini-2.5-pro
-```
-
-When configuring multiple teams or environments, use a separate Bifrost virtual
-key for each required governance boundary.
+See [model catalogs](/cli-agents/overview#model-catalogs) for access rules,
+filters, and reverse-proxy configuration. The Bifrost launcher does not install
+this fragment.
 
 ## Model selection
 
