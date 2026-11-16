@@ -294,6 +294,7 @@
               "features/routers",
               "features/complexity-router",
               "features/warp",
+          "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
