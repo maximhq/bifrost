@@ -1011,3 +1011,44 @@ func TestRoundTripState(t *testing.T) {
 	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
 	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
 }
+
+// TestConvertMCPToolToBifrostSchema_PreservesAdditionalProperties protects
+// argument-object closure through MCP-to-provider schema conversion.
+func TestConvertMCPToolToBifrostSchema_PreservesAdditionalProperties(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   any
+		want    any
+		present bool
+	}{
+		{name: "absent", input: nil, present: false},
+		{name: "closed", input: false, want: false, present: true},
+		{name: "open", input: true, want: true, present: true},
+		{name: "object", input: map[string]any{"type": "string"}, want: map[string]any{"type": "string"}, present: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := &mcp.Tool{
+				Name: "schema_test",
+				InputSchema: mcp.ToolInputSchema{
+					Type:                 "object",
+					Properties:           map[string]any{"name": map[string]any{"type": "string"}},
+					AdditionalProperties: tc.input,
+				},
+			}
+			converted := convertMCPToolToBifrostSchema(upstream, defaultLogger)
+			require.NotNil(t, converted.Function)
+			require.NotNil(t, converted.Function.Parameters)
+			encoded, err := json.Marshal(converted.Function.Parameters)
+			require.NoError(t, err)
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &parsed))
+			actual, present := parsed["additionalProperties"]
+			assert.Equal(t, tc.present, present)
+			if tc.present {
+				assert.Equal(t, tc.want, actual)
+			}
+		})
+	}
+}
