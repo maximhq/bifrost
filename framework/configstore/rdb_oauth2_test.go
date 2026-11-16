@@ -321,7 +321,7 @@ func TestOAuth2AuthorizeRequest_DeviceCodeLookups(t *testing.T) {
 	ctx := context.Background()
 	seedDevice := func(id, deviceHash, userHash string, status tables.OAuth2AuthorizeRequestStatus, expires time.Time) {
 		require.NoError(t, s.CreateOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
-			ID: id, ClientID: "bifrost-claude-code", Resource: "https://bifrost.test/claude-code", Status: status,
+			ID: id, ClientID: "bifrost-claude-code", Resource: "https://bifrost.test/gateway/claude-code", Status: status,
 			DeviceCodeHash: strPtr(deviceHash), UserCodeHash: strPtr(userHash),
 			ExpiresAt: expires, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}))
