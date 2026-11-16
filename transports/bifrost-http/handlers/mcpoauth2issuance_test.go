@@ -1054,10 +1054,11 @@ func TestUpdateConfig_ClientGatewayTelemetryValidated(t *testing.T) {
 		body    string
 		wantErr string
 	}{
-		"no destinations":   {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
-		"non-http endpoint": {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
-		"plain-text header": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), "must be an env. or vault. reference"},
-		"valid":             {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
+		"no destinations":    {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
+		"non-http endpoint":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
+		"plain-text header":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), ""},
+		"empty header value": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":" "}}]}`), "needs a value"},
+		"valid":              {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := &lib.Config{

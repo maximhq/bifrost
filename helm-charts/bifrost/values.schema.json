@@ -1254,9 +1254,9 @@
                                     "type": "object",
                                     "additionalProperties": {
                                       "type": "string",
-                                      "pattern": "^(env|vault)\\."
+                                      "pattern": "\\S"
                                     },
-                                    "description": "Headers sent with every export. Values must be env. or vault. references."
+                                    "description": "Headers sent with every export. Values can be plain or env./vault. references, like provider keys, and must not be empty."
                                   }
                                 },
                                 "required": [

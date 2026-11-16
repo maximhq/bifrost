@@ -4,7 +4,7 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 
 // The gateway's configuration is mocked so the shared test gateway is never
 // reconfigured; the assertions read the PUT the settings form submits.
-const mockConfig = async (page: Page, issuer?: string) => {
+const mockConfig = async (page: Page, issuer?: string, gateways?: Record<string, unknown>) => {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') {
@@ -16,7 +16,7 @@ const mockConfig = async (page: Page, issuer?: string) => {
         client_config: {
           ...DefaultCoreConfig,
           mcp_server_auth_mode: 'headers',
-          oauth2_server_config: issuer ? { issuer_url: { value: issuer, ref: '', type: 'plain_text' }, auth_code_ttl: 300, access_token_ttl: 600 } : undefined,
+          oauth2_server_config: issuer ? { issuer_url: { value: issuer, ref: '', type: 'plain_text' }, auth_code_ttl: 300, access_token_ttl: 600, ...(gateways ? { gateways } : {}) } : undefined,
         },
         auth_config: null, framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
       } })
@@ -67,7 +67,7 @@ test.describe('Claude Code gateway settings', () => {
     })
   })
 
-  test('forwards telemetry to a collector with reference-only headers', async ({ page, claudeCodeGatewayPage }) => {
+  test('forwards telemetry with a plain header value or a reference', async ({ page, claudeCodeGatewayPage }) => {
     await mockConfig(page, 'https://bifrost.example.com')
     await claudeCodeGatewayPage.goto()
     await claudeCodeGatewayPage.enabledSwitch.click()
@@ -75,26 +75,69 @@ test.describe('Claude Code gateway settings', () => {
     await claudeCodeGatewayPage.telemetryAddBtn.click()
     await claudeCodeGatewayPage.telemetryEndpointInput.fill('https://otel-collector.example.com')
 
-    // A plain-text credential is refused before anything is sent.
-    let puts = 0
-    page.on('request', r => { if (new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT') puts++ })
+    // A plain value is accepted, like a provider key.
     await claudeCodeGatewayPage.telemetryHeaderNameInput.fill('authorization')
     await claudeCodeGatewayPage.telemetryHeaderValueInput.fill('Bearer abc')
+    await claudeCodeGatewayPage.telemetryDropInput.fill('prompt, tool_input')
+    let submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
-    const refusal = page.getByText('The authorization header must be an env. or vault. reference.')
-    await expect(refusal).toBeVisible()
-    expect(puts).toBe(0)
-    await expect(refusal).toBeHidden({ timeout: 15000 })
+    let clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.gateways.claude_code.telemetry).toEqual({
+      enabled: true,
+      destinations: [{ endpoint: 'https://otel-collector.example.com', headers: { authorization: 'Bearer abc' } }],
+      drop_attributes: ['prompt', 'tool_input'],
+    })
 
     await claudeCodeGatewayPage.telemetryHeaderValueInput.fill('env.OTEL_COLLECTOR_TOKEN')
-    await claudeCodeGatewayPage.telemetryDropInput.fill('prompt, tool_input')
+    submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+    await claudeCodeGatewayPage.saveBtn.click()
+    clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.gateways.claude_code.telemetry.destinations).toEqual([
+      { endpoint: 'https://otel-collector.example.com', headers: { authorization: 'env.OTEL_COLLECTOR_TOKEN' } },
+    ])
+  })
+
+  test('sends a stored plain header back redacted so the server keeps it', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com', {
+      claude_code: {
+        enabled: true,
+        managed_settings: null,
+        telemetry: {
+          enabled: true,
+          destinations: [{
+            endpoint: { value: 'https://otel-collector.example.com', ref: '', type: 'plain_text' },
+            headers: { authorization: { value: '<REDACTED>', ref: '', type: 'plain_text' } },
+          }],
+        },
+      },
+    })
+    await claudeCodeGatewayPage.goto()
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
     const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
     const clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.gateways.claude_code.telemetry.destinations).toEqual([
+      { endpoint: 'https://otel-collector.example.com', headers: { authorization: '<REDACTED>' } },
+    ])
+  })
+
+  test('saves other settings while a paused collector has an invalid endpoint', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com', {
+      claude_code: {
+        enabled: true,
+        managed_settings: null,
+        telemetry: { enabled: false, destinations: [{ endpoint: { value: 'ftp://otel.example.com', ref: '', type: 'plain_text' } }] },
+      },
+    })
+    await claudeCodeGatewayPage.goto()
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
+    const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.access_token_ttl).toBe(300)
     expect(clientConfig.oauth2_server_config.gateways.claude_code.telemetry).toEqual({
-      enabled: true,
-      destinations: [{ endpoint: 'https://otel-collector.example.com', headers: { authorization: 'env.OTEL_COLLECTOR_TOKEN' } }],
-      drop_attributes: ['prompt', 'tool_input'],
+      enabled: false,
+      destinations: [{ endpoint: 'ftp://otel.example.com' }],
     })
   })
 

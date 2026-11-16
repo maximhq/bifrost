@@ -1715,16 +1715,16 @@
 		"collectorsLabel": "Collectors",
 		"collectorEndpointLabel": "Collector endpoint",
 		"collectorHeadersLabel": "Collector headers",
-		"collectorHeadersHelp": "Header values must be env. or vault. references, so no credential is stored in the config.",
+		"collectorHeadersHelp": "Header values can be plain values or env./vault. references. Plain values are never shown again after saving; use a reference to keep the credential out of the configuration.",
 		"addCollector": "Add collector",
 		"removeCollector": "Remove collector",
 		"dropAttributesLabel": "Drop attributes",
 		"dropAttributesHelp": "Comma-separated attribute keys removed at every level before forwarding, for example <code0>prompt</code0>.",
 		"telemetryNoDestination": "Add at least one collector to forward telemetry.",
 		"telemetryEndpointInvalid": "Each collector endpoint must be an http or https URL, or an env. or vault. reference.",
+		"telemetryEndpointDuplicate": "Each collector endpoint can be listed only once.",
 		"telemetryHeaderMalformed": "Give every collector header a name and a value.",
-		"telemetryHeaderConflict": "Two headers on one collector have the same name. Rename or remove one.",
-		"telemetryHeaderNotReference": "The {{name}} header must be an env. or vault. reference."
+		"telemetryHeaderConflict": "Two headers on one collector have the same name. Rename or remove one."
 	},
 	"gateways": {
 		"title": "Gateways",

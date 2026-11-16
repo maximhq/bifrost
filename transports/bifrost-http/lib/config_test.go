@@ -486,6 +486,39 @@ func TestLoadClientConfig_FileSyncKeepsMaxProtocolVersion(t *testing.T) {
 	assert.Equal(t, schemas.MCPProtocolVersion20250618, cfg.ClientConfig.MCPMaxProtocolVersion)
 }
 
+// A config.json listing a telemetry collector twice still boots: every entry for it is dropped
+// with a warning and never reaches the store, while the other collectors are kept.
+func TestLoadClientConfig_DuplicateTelemetryCollectorIsSkipped(t *testing.T) {
+	SetLogger(&testLogger{})
+	file := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com","headers":{"authorization":"Bearer first"}},` +
+		`{"endpoint":"https://b.example.com"},` +
+		`{"endpoint":" https://a.example.com","headers":{"authorization":"Bearer second"}}]}}}}}}`
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var data ConfigData
+	require.NoError(t, json.Unmarshal([]byte(file), &data))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+
+	for name, cc := range map[string]*configstore.ClientConfig{"live": cfg.ClientConfig, "stored": store.clientConfig} {
+		dests := cc.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations
+		require.Len(t, dests, 1, name)
+		assert.Equal(t, "https://b.example.com", dests[0].Endpoint.GetValue(), name)
+	}
+
+	// With only the repeated collector listed, nothing is left, so forwarding is paused rather than failing boot.
+	only := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com"},{"endpoint":"https://a.example.com"}]}}}}}}`
+	var onlyData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(only), &onlyData))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &onlyData))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+	telemetry := store.clientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.False(t, telemetry.Enabled)
+	assert.Empty(t, telemetry.Destinations)
+}
+
 // A partial wildcard in config.json must stop the file sync before it reaches the
 // store, so the previously stored allowlist stays in effect and fixing the file
 // is enough to recover.

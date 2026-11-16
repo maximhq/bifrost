@@ -1739,16 +1739,16 @@
 		"collectorsLabel": "수집기",
 		"collectorEndpointLabel": "수집기 엔드포인트",
 		"collectorHeadersLabel": "수집기 헤더",
-		"collectorHeadersHelp": "자격 증명이 설정에 저장되지 않도록 헤더 값은 env. 또는 vault. 참조여야 해요.",
+		"collectorHeadersHelp": "헤더 값은 일반 값이나 env./vault. 참조를 사용할 수 있습니다. 일반 값은 저장한 뒤 다시 표시되지 않습니다. 자격 증명을 설정에 남기지 않으려면 참조를 사용하세요.",
 		"addCollector": "수집기 추가",
 		"removeCollector": "수집기 제거",
 		"dropAttributesLabel": "제거할 속성",
 		"dropAttributesHelp": "전달하기 전에 모든 수준에서 제거할 속성 키를 쉼표로 구분해 입력하세요. 예: <code0>prompt</code0>",
 		"telemetryNoDestination": "텔레메트리를 전달하려면 수집기를 하나 이상 추가하세요.",
 		"telemetryEndpointInvalid": "각 수집기 엔드포인트는 http 또는 https URL이거나 env. 또는 vault. 참조여야 해요.",
+		"telemetryEndpointDuplicate": "각 수집기 엔드포인트는 한 번만 지정할 수 있습니다.",
 		"telemetryHeaderMalformed": "각 수집기 헤더에 이름과 값을 입력하세요.",
-		"telemetryHeaderConflict": "한 수집기에 같은 이름의 헤더가 두 개 있습니다. 하나의 이름을 바꾸거나 삭제하세요.",
-		"telemetryHeaderNotReference": "{{name}} 헤더는 env. 또는 vault. 참조여야 해요."
+		"telemetryHeaderConflict": "한 수집기에 같은 이름의 헤더가 두 개 있습니다. 하나의 이름을 바꾸거나 삭제하세요."
 	},
 	"gateways": {
 		"title": "게이트웨이",

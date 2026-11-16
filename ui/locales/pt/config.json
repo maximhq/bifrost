@@ -1715,16 +1715,16 @@
 		"collectorsLabel": "Coletores",
 		"collectorEndpointLabel": "Endpoint do coletor",
 		"collectorHeadersLabel": "Cabeçalhos do coletor",
-		"collectorHeadersHelp": "Os valores têm de ser referências env. ou vault., para que nenhuma credencial fique guardada na configuração.",
+		"collectorHeadersHelp": "Os valores dos cabeçalhos podem ser valores em texto simples ou referências env./vault. Os valores em texto simples não voltam a ser mostrados depois de guardados; use uma referência para manter a credencial fora da configuração.",
 		"addCollector": "Adicionar coletor",
 		"removeCollector": "Remover coletor",
 		"dropAttributesLabel": "Remover atributos",
 		"dropAttributesHelp": "Chaves de atributo separadas por vírgulas, removidas em todos os níveis antes do reencaminhamento, por exemplo <code0>prompt</code0>.",
 		"telemetryNoDestination": "Adicione pelo menos um coletor para reencaminhar a telemetria.",
 		"telemetryEndpointInvalid": "Cada endpoint de coletor tem de ser um URL http ou https, ou uma referência env. ou vault.",
+		"telemetryEndpointDuplicate": "Cada endpoint de coletor só pode ser indicado uma vez.",
 		"telemetryHeaderMalformed": "Indique um nome e um valor para cada cabeçalho do coletor.",
-		"telemetryHeaderConflict": "Dois cabeçalhos do mesmo coletor têm o mesmo nome. Renomeie ou remova um deles.",
-		"telemetryHeaderNotReference": "O cabeçalho {{name}} tem de ser uma referência env. ou vault."
+		"telemetryHeaderConflict": "Dois cabeçalhos do mesmo coletor têm o mesmo nome. Renomeie ou remova um deles."
 	},
 	"gateways": {
 		"title": "Gateways",

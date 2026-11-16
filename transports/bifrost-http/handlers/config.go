@@ -573,6 +573,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if effectiveAuthMode == "" {
 		effectiveAuthMode = currentConfig.MCPServerAuthMode
 	}
+	// The config API redacts plain telemetry header values; a value sent back still redacted
+	// keeps the stored one, as provider proxy and MCP credentials do.
+	restoreRedactedTelemetryHeaders(payload.ClientConfig.OAuth2ServerConfig, currentConfig.OAuth2ServerConfig)
+	// A redacted value that matched nothing (its collector's endpoint or the header's name
+	// changed) would be saved as the credential itself, so it must be typed again.
+	if endpoint, name, ok := unrestoredRedactedTelemetryHeader(payload.ClientConfig.OAuth2ServerConfig); ok {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("re-enter the value of the %s header for collector %s: a redacted value can only be kept as it is", name, endpoint))
+		return
+	}
 	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
 	if payload.ClientConfig.OAuth2ServerConfig != nil {
 		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
@@ -1944,6 +1953,61 @@ func clientGatewayTelemetryDestinationsChanged(before, after *configstoreTables.
 		}
 	}
 	return false
+}
+
+// restoreRedactedTelemetryHeaders puts the stored value back for each telemetry header sent
+// back exactly as GET /api/config redacted it. Headers are matched by their collector's
+// endpoint and name, not position, so removing a collector cannot shift a secret onto another.
+func restoreRedactedTelemetryHeaders(next, stored *configstoreTables.OAuth2ServerConfig) {
+	storedDests := clientGatewayTelemetryDestinations(stored)
+	if len(storedDests) == 0 {
+		return
+	}
+	redactedDests := clientGatewayTelemetryDestinations(stored.Redacted())
+	nextDests := clientGatewayTelemetryDestinations(next)
+	matches := func(d configstoreTables.ClientGatewayTelemetryDestination, i int) bool {
+		return d.Endpoint.Equals(storedDests[i].Endpoint) || d.Endpoint.Equals(redactedDests[i].Endpoint)
+	}
+	for _, d := range nextDests {
+		// Only an endpoint listed once on both sides identifies its collector; otherwise the
+		// placeholder stays and the save is refused rather than guessing which secret is meant.
+		match, storedCount, nextCount := -1, 0, 0
+		for i := range storedDests {
+			if matches(d, i) {
+				match = i
+				storedCount++
+			}
+		}
+		for _, other := range nextDests {
+			if other.Endpoint.Equals(d.Endpoint) {
+				nextCount++
+			}
+		}
+		if storedCount != 1 || nextCount != 1 {
+			continue
+		}
+		for name, v := range d.Headers {
+			if v.IsMaskedPlaceholder() && v.Equals(redactedDests[match].Headers[name]) {
+				d.Headers[name] = storedDests[match].Headers[name]
+			}
+		}
+	}
+}
+
+// unrestoredRedactedTelemetryHeader reports a telemetry header still holding a redaction
+// placeholder after restoreRedactedTelemetryHeaders, with its collector's endpoint.
+func unrestoredRedactedTelemetryHeader(c *configstoreTables.OAuth2ServerConfig) (endpoint, name string, ok bool) {
+	for _, d := range clientGatewayTelemetryDestinations(c) {
+		for n, v := range d.Headers {
+			if v.IsMaskedPlaceholder() {
+				if d.Endpoint.IsFromSecret() {
+					return d.Endpoint.GetRawRef(), n, true
+				}
+				return d.Endpoint.GetValue(), n, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 func clientGatewayTelemetryDestinations(c *configstoreTables.OAuth2ServerConfig) []configstoreTables.ClientGatewayTelemetryDestination {

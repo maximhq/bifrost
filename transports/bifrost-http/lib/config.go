@@ -1253,6 +1253,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := loadClientConfig(ctx, config, &configData); err != nil {
 		return nil, err
 	}
+	dropDuplicateTelemetryDestinations(config.ClientConfig)
 	// Reject an out-of-range client config (e.g. auth_code_ttl above the cap)
 	// loudly at startup instead of silently correcting it, so in-memory, core,
 	// and DB state cannot diverge.
@@ -1908,11 +1909,32 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	return nil
 }
 
+// dropDuplicateTelemetryDestinations skips every Claude Code telemetry collector listed more than
+// once, with a warning, so startup neither fails nor persists them; forwarding is paused when no
+// collector is left. PUT /api/config still refuses them.
+func dropDuplicateTelemetryDestinations(cc *configstore.ClientConfig) {
+	if cc == nil {
+		return
+	}
+	gw := cc.OAuth2ServerConfig.ClaudeCodeGateway()
+	if gw == nil || gw.Telemetry == nil {
+		return
+	}
+	for _, i := range gw.Telemetry.DropDuplicateDestinations() {
+		logger.Warn("skipping oauth2_server_config.gateways.claude_code.telemetry.destinations[%d]: its endpoint is listed more than once, so every entry for it is skipped; list each collector once", i)
+	}
+	if gw.Telemetry.Enabled && len(gw.Telemetry.Destinations) == 0 {
+		gw.Telemetry.Enabled = false
+		logger.Warn("pausing oauth2_server_config.gateways.claude_code.telemetry: no collector is left after skipping repeated ones")
+	}
+}
+
 // persistReconciledClientConfig validates the client config loadClientConfig
 // settled on, then writes it to the store. LoadConfig validates it again once
 // loading finishes; checking first as well keeps a value startup would reject
 // out of the store, so correcting config.json is enough to recover.
 func persistReconciledClientConfig(ctx context.Context, config *Config) error {
+	dropDuplicateTelemetryDestinations(config.ClientConfig)
 	if err := validateClientConfig(config.ClientConfig); err != nil {
 		return err
 	}
