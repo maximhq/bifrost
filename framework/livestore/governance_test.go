@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -182,4 +183,60 @@ func TestDeleteOfTeamRereadsItsKeys(t *testing.T) {
 	require.True(t, ok, "the keys' own budgets stay")
 	_, ok = cols.RateLimits.Get("rl-vk")
 	require.True(t, ok)
+}
+
+// TestLimitOwnersFlagUnheldLimits checks that a store built with LimitOwners reads the owners a
+// build adds with the registry's own: a budget or rate limit no registry holder holds is calendar
+// aligned when one of the build's owners holds it with its flag on, on the load and on a refresh; a
+// limit a registry holder holds keeps that holder's flag whatever the build's owners say; and a read
+// of the build's owners that fails fails the refresh, leaving the record as it was.
+func TestLimitOwnersFlagUnheldLimits(t *testing.T) {
+	ctx := context.Background()
+	store := governanceDB(t)
+	db := store.DB()
+	window := "1m"
+	requests := int64(5)
+	require.NoError(t, db.Exec("CREATE TABLE build_limit_owners (id VARCHAR(64) PRIMARY KEY, budget_id VARCHAR(64), rate_limit_id VARCHAR(64), calendar_aligned BOOLEAN NOT NULL)").Error)
+	owner := func(id, budgetID, rateLimitID string, aligned bool) {
+		t.Helper()
+		require.NoError(t, db.Exec("INSERT INTO build_limit_owners (id, budget_id, rate_limit_id, calendar_aligned) VALUES (?, ?, ?, ?)", id, budgetID, rateLimitID, aligned).Error)
+	}
+	rollingTeam := "team-build-rolling"
+	require.NoError(t, db.Create(&tables.TableTeam{ID: rollingTeam, Name: "rolling"}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-build-owned", MaxLimit: 1, ResetDuration: "1d"}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-build-plain", MaxLimit: 1, ResetDuration: "1d"}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-build-team", MaxLimit: 1, ResetDuration: "1d", TeamID: &rollingTeam}).Error)
+	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl-build-owned", RequestMaxLimit: &requests, RequestResetDuration: &window}).Error)
+	owner("o-1", "b-build-owned", "", false)
+	owner("o-2", "b-build-owned", "rl-build-owned", true)
+	owner("o-3", "b-build-team", "", true)
+
+	budgetOwners := []registry.LimitOwner{{From: "build_limit_owners o", Column: "o.budget_id", Calendar: "o.calendar_aligned"}}
+	rateLimitOwners := []registry.LimitOwner{{From: "build_limit_owners o", Column: "o.rate_limit_id", Calendar: "o.calendar_aligned"}}
+	s, err := New(LimitOwners(budgetOwners, rateLimitOwners))
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
+	require.NoError(t, s.LoadAll(ctx, db))
+	cols := s.Collections
+
+	budgetAligned := func(id string) bool {
+		b, ok := cols.Budgets.Get(id)
+		require.True(t, ok, id)
+		return b.IsCalendarAligned
+	}
+	require.True(t, budgetAligned("b-build-owned"), "an unheld budget an aligned owner holds is calendar aligned")
+	require.False(t, budgetAligned("b-build-plain"))
+	require.False(t, budgetAligned("b-build-team"), "a team's budget takes its team's flag, not a build owner's")
+	r, ok := cols.RateLimits.Get("rl-build-owned")
+	require.True(t, ok)
+	require.True(t, r.IsCalendarAligned)
+
+	require.NoError(t, db.Exec("UPDATE build_limit_owners SET calendar_aligned = ? WHERE id = ?", false, "o-2").Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindBudget, ID: "b-build-owned"}}))
+	require.False(t, budgetAligned("b-build-owned"), "a refresh reads the owners again")
+
+	require.NoError(t, db.Exec("UPDATE build_limit_owners SET calendar_aligned = ? WHERE id = ?", true, "o-2").Error)
+	require.NoError(t, db.Exec("DROP TABLE build_limit_owners").Error)
+	require.Error(t, s.Refresh(ctx, []Ref{{Kind: KindBudget, ID: "b-build-owned"}}))
+	require.False(t, budgetAligned("b-build-owned"), "a failed read leaves the record as it was")
 }

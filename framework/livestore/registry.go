@@ -97,8 +97,27 @@ func New(opts ...StoreOption) (*Store, error) {
 // StoreOption configures the store New returns.
 type StoreOption func(*storeOptions)
 
-// storeOptions holds what the StoreOptions given to New set.
-type storeOptions struct{}
+// storeOptions holds what the StoreOptions given to New set: the owners of limits a build adds
+// (LimitOwners).
+type storeOptions struct {
+	limits registry.LimitReads
+}
+
+// LimitOwners adds a build's own owners of budgets and rate limits to the ones the registry knows,
+// for a build whose own entities hold limits. Every read of budgets and rate limits reads them in
+// the same query as the registry's own, and a limit no holder the registry knows holds is calendar
+// aligned when one of these owners holds it with its flag on. An owner that names a Parent makes
+// its limits children of that kind, which the build registers: a refresh of a holder re-reads the
+// limits it holds, keeps one that moved to another holder of the kind, drops one no holder of the
+// kind holds any more, and removing a holder removes its limits (Cascade), as for a key or a team.
+// New fails on owners registry.LimitReads cannot link, and LoadAll on a Parent no collection
+// registers. A read that fails, these owners' part included, fails the load or the refresh, so the
+// records stay as they were.
+func LimitOwners(budgets, rateLimits []registry.LimitOwner) StoreOption {
+	return func(o *storeOptions) {
+		o.limits = registry.LimitReads{BudgetOwners: budgets, RateLimitOwners: rateLimits}
+	}
+}
 
 // registerCollections registers the collection of each config store table on s, with the
 // registry's reads as its loader.
@@ -179,7 +198,8 @@ func (s *Store) rebuildProviderKeyLists(_ context.Context, changes []Change[regi
 // refresh of a key, team, customer, model config or provider re-reads the budgets and rate limits
 // it holds, and removing the holder removes them. Keys and teams keep their records when the
 // team or customer above them is removed, re-read with the reference cleared, and key-scoped
-// model configs go with their key.
+// model configs go with their key. Every read of limits reads o's limit owners with the
+// registry's own.
 func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	var err error
 	if c.Customers, err = s.Register(KindCustomer, []Kind{KindBudget, KindRateLimit}, Loader[registry.Customer]{
@@ -220,30 +240,39 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	); err != nil {
 		return err
 	}
+	// The limits of a build's owner with a Parent are children of that kind too.
+	budgetLinks, err := o.limits.BudgetLinks()
+	if err != nil {
+		return err
+	}
+	rateLimitLinks, err := o.limits.RateLimitLinks()
+	if err != nil {
+		return err
+	}
 	if c.Budgets, err = s.Register(KindBudget, nil, Loader[registry.Budget]{
 		ID:   registry.BudgetID,
-		Page: registry.BudgetsPage,
-		ByID: registry.BudgetsByID,
-	},
-		ChildOf(KindVirtualKey, registry.BudgetKeyID, registry.BudgetsByKeys, Cascade),
-		ChildOf(KindTeam, registry.BudgetTeamID, registry.BudgetsByTeams, Cascade),
-		ChildOf(KindCustomer, registry.BudgetCustomerID, registry.BudgetsByCustomers, Cascade),
-		ChildOf(KindModelConfig, registry.BudgetModelConfigID, registry.BudgetsByModelConfigs, Cascade),
-		ChildOf(KindProvider, registry.BudgetProvider, registry.BudgetsByProviders, Cascade),
-	); err != nil {
+		Page: o.limits.BudgetsPage,
+		ByID: o.limits.BudgetsByID,
+	}, append([]Option[registry.Budget]{
+		ChildOf(KindVirtualKey, registry.BudgetKeyID, o.limits.BudgetsByKeys, Cascade),
+		ChildOf(KindTeam, registry.BudgetTeamID, o.limits.BudgetsByTeams, Cascade),
+		ChildOf(KindCustomer, registry.BudgetCustomerID, o.limits.BudgetsByCustomers, Cascade),
+		ChildOf(KindModelConfig, registry.BudgetModelConfigID, o.limits.BudgetsByModelConfigs, Cascade),
+		ChildOf(KindProvider, registry.BudgetProvider, o.limits.BudgetsByProviders, Cascade),
+	}, buildLimitLinks(budgetLinks)...)...); err != nil {
 		return err
 	}
 	if c.RateLimits, err = s.Register(KindRateLimit, nil, Loader[registry.RateLimit]{
 		ID:   registry.RateLimitID,
-		Page: registry.RateLimitsPage,
-		ByID: registry.RateLimitsByID,
-	},
-		ChildOf(KindVirtualKey, registry.RateLimitKeyID, registry.RateLimitsByKeys, Cascade),
-		ChildOf(KindTeam, registry.RateLimitTeamID, registry.RateLimitsByTeams, Cascade),
-		ChildOf(KindCustomer, registry.RateLimitCustomerID, registry.RateLimitsByCustomers, Cascade),
-		ChildOf(KindModelConfig, registry.RateLimitModelConfigID, registry.RateLimitsByModelConfigs, Cascade),
-		ChildOf(KindProvider, registry.RateLimitProvider, registry.RateLimitsByProviders, Cascade),
-	); err != nil {
+		Page: o.limits.RateLimitsPage,
+		ByID: o.limits.RateLimitsByID,
+	}, append([]Option[registry.RateLimit]{
+		ChildOf(KindVirtualKey, registry.RateLimitKeyID, o.limits.RateLimitsByKeys, Cascade),
+		ChildOf(KindTeam, registry.RateLimitTeamID, o.limits.RateLimitsByTeams, Cascade),
+		ChildOf(KindCustomer, registry.RateLimitCustomerID, o.limits.RateLimitsByCustomers, Cascade),
+		ChildOf(KindModelConfig, registry.RateLimitModelConfigID, o.limits.RateLimitsByModelConfigs, Cascade),
+		ChildOf(KindProvider, registry.RateLimitProvider, o.limits.RateLimitsByProviders, Cascade),
+	}, buildLimitLinks(rateLimitLinks)...)...); err != nil {
 		return err
 	}
 	if c.VirtualMCPs, err = s.Register(KindVirtualMCP, nil, Loader[registry.VirtualMCP]{
@@ -254,4 +283,14 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 		return err
 	}
 	return nil
+}
+
+// buildLimitLinks declares each link of the limits a build's own kinds hold as a ChildIDsOf link,
+// removed with its holder.
+func buildLimitLinks[T any](links []registry.LimitLink[T]) []Option[T] {
+	opts := make([]Option[T], 0, len(links))
+	for _, l := range links {
+		opts = append(opts, ChildIDsOf(Kind(l.Parent), l.ParentID, l.ChildIDs, Cascade))
+	}
+	return opts
 }

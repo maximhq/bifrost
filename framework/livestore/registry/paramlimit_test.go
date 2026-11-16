@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -138,4 +139,50 @@ func TestAgentsByNameReadsMoreNamesThanTheParameterLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	require.Equal(t, "alpha", rows[0].Name)
+}
+
+// TestLimitReadsReadMoreIDsThanTheParameterLimit checks that every budget and rate limit reader,
+// by ID and by holder, still reads the limits that exist when it is given more IDs than one
+// statement may bind, the holder reads that filter a holder table in a subquery included.
+func TestLimitReadsReadMoreIDsThanTheParameterLimit(t *testing.T) {
+	ctx := context.Background()
+	db := newProviderDB(t, nil).DB()
+	limitHolders(t, db)
+	var lr LimitReads
+	budgetReads := []struct {
+		name string
+		read func(context.Context, *gorm.DB, []string) ([]*Budget, error)
+		id   string
+		want []string
+	}{
+		{"by ID", lr.BudgetsByID, "b-key", []string{"b-key"}},
+		{"by keys", lr.BudgetsByKeys, "vk-a", []string{"b-key", "b-pc"}},
+		{"by teams", lr.BudgetsByTeams, "team-a", []string{"b-team"}},
+		{"by customers", lr.BudgetsByCustomers, "cust-a", []string{"b-cust"}},
+		{"by model configs", lr.BudgetsByModelConfigs, "mc-a", []string{"b-mc"}},
+		{"by providers", lr.BudgetsByProviders, "openai", []string{"b-prov"}},
+	}
+	for _, c := range budgetReads {
+		rows, err := c.read(ctx, db, withMissingIDs(c.id))
+		require.NoError(t, err, "budgets %s", c.name)
+		require.ElementsMatch(t, c.want, budgetIDsOf(rows), "budgets %s", c.name)
+	}
+	rateLimitReads := []struct {
+		name string
+		read func(context.Context, *gorm.DB, []string) ([]*RateLimit, error)
+		id   string
+		want []string
+	}{
+		{"by ID", lr.RateLimitsByID, "rl-key", []string{"rl-key"}},
+		{"by keys", lr.RateLimitsByKeys, "vk-a", []string{"rl-key", "rl-pc"}},
+		{"by teams", lr.RateLimitsByTeams, "team-a", []string{"rl-team"}},
+		{"by customers", lr.RateLimitsByCustomers, "cust-a", []string{"rl-cust"}},
+		{"by model configs", lr.RateLimitsByModelConfigs, "mc-a", []string{"rl-mc"}},
+		{"by providers", lr.RateLimitsByProviders, "openai", []string{"rl-prov"}},
+	}
+	for _, c := range rateLimitReads {
+		rows, err := c.read(ctx, db, withMissingIDs(c.id))
+		require.NoError(t, err, "rate limits %s", c.name)
+		require.ElementsMatch(t, c.want, rateLimitIDsOf(rows), "rate limits %s", c.name)
+	}
 }
