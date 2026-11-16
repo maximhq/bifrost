@@ -1222,6 +1222,94 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}
 }
 
+// passthroughBodyRewritingPlugin replaces the request in PreLLMHook with a new passthrough
+// request carrying a different body, the way a guardrail redacts a passthrough turn.
+type passthroughBodyRewritingPlugin struct {
+	body []byte
+}
+
+func (p *passthroughBodyRewritingPlugin) GetName() string { return "passthrough-body-rewriting" }
+func (p *passthroughBodyRewritingPlugin) Cleanup() error  { return nil }
+func (p *passthroughBodyRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughBodyRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	rewritten := *req.PassthroughRequest
+	rewritten.Body = p.body
+	return &schemas.BifrostRequest{RequestType: req.RequestType, PassthroughRequest: &rewritten}, nil, nil
+}
+func (p *passthroughBodyRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRunStreamPreHooks_ReturnsPreHookRequest pins that a request a pre-hook replaces comes back
+// on WSStreamHooks.Request, so a websocket relay forwards the rewritten body instead of the frame
+// it received. With no plugin rewriting, the original request comes back unchanged.
+func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
+	original := []byte(`{"type":"response.create","model":"gpt-5","input":"secret"}`)
+	rewrittenBody := []byte(`{"type":"response.create","model":"gpt-5","input":"[redacted]"}`)
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughStreamRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Method:   "POST",
+				Path:     "/backend-api/codex/responses",
+				Body:     original,
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5",
+			},
+		}
+	}
+
+	t.Run("rewritten", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account:    NewMockAccount(),
+			Logger:     NewNoOpLogger(),
+			LLMPlugins: []schemas.LLMPlugin{&passthroughBodyRewritingPlugin{body: rewrittenBody}},
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request == nil || hooks.Request == req {
+			t.Fatalf("expected the pre-hook's replacement request, got %p (original %p)", hooks.Request, req)
+		}
+		if got := string(hooks.Request.PassthroughRequest.Body); got != string(rewrittenBody) {
+			t.Fatalf("expected rewritten body %s, got %s", rewrittenBody, got)
+		}
+		if got := string(req.PassthroughRequest.Body); got != string(original) {
+			t.Fatalf("original request body changed to %s", got)
+		}
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request != req {
+			t.Fatalf("expected the original request back when no plugin rewrites it")
+		}
+	})
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex
@@ -10212,5 +10300,151 @@ func TestCompaction_ReplayedCustomCallsAsFunctions(t *testing.T) {
 				t.Fatal("the caller's request must stay untouched")
 			}
 		})
+	}
+}
+
+// grammarLimitRequest is a chat request for the structured-output grammar-limit retry tests.
+func grammarLimitRequest(requestType schemas.RequestType) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Invent an invoice.")}}},
+		},
+	}
+}
+
+func grammarLimitError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error:      &schemas.ErrorField{Message: "The model returned the following errors: The compiled grammar is too large, which would cause performance issues."},
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool pins the one re-send after a provider
+// marks a native structured-output request as rejected for grammar size: granted at MaxRetries 0,
+// immediate, on the same key, with the context switched to force the synthetic tool.
+func TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			config := createTestConfig(0, 3*time.Second, 3*time.Second)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			logger := NewDefaultLogger(schemas.LogLevelError)
+
+			callCount := 0
+			var secondState any
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				callCount++
+				if callCount == 1 {
+					ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+					return "", grammarLimitError()
+				}
+				secondState = ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				return "success", nil
+			}
+
+			start := time.Now()
+			result, err := executeRequestWithRetries(ctx, config, handler, nil,
+				requestType, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(requestType), logger)
+			elapsed := time.Since(start)
+
+			if err != nil {
+				t.Fatalf("expected the tool-path retry to succeed, got %v", err)
+			}
+			if result != "success" || callCount != 2 {
+				t.Fatalf("expected success on the 2nd attempt, got %q after %d attempts", result, callCount)
+			}
+			if secondState != schemas.StructuredOutputForceTool {
+				t.Fatalf("second attempt must force the synthetic tool, context held %v", secondState)
+			}
+			if elapsed > time.Second {
+				t.Fatalf("the tool-path retry must skip the %s backoff, took %s", config.NetworkConfig.RetryBackoffInitial, elapsed)
+			}
+			if got := ctx.Value(schemas.BifrostContextKeyNumberOfRetries); got != 1 {
+				t.Fatalf("expected number_of_retries 1, got %v", got)
+			}
+		})
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce: a tool-path attempt that fails too returns
+// its own error, and the provider cannot re-mark it since it carries no outputConfig.
+func TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	second := &schemas.BifrostError{StatusCode: schemas.Ptr(400), Error: &schemas.ErrorField{Message: "tool path failed"}}
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == nil {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return "", grammarLimitError()
+		}
+		return "", second
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if err == nil || err.Error == nil || err.Error.Message != "tool path failed" {
+		t.Fatalf("expected the tool-path attempt's error, got %+v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked: a body the converter does not
+// build (raw body, outputConfig passed through extra params) is marked again; it still gets one retry.
+func TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount > 10 {
+			return "stopped a runaway loop", nil
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+		return "", grammarLimitError()
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+	if err == nil {
+		t.Fatal("expected the second rejection to be returned")
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried: the same 400 without the provider's
+// mark (a tool-path request, or any other client error) is returned as is.
+func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		return "", grammarLimitError()
+	}
+
+	if _, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger); err == nil {
+		t.Fatal("expected the 400 to be returned")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected a single attempt, got %d", callCount)
 	}
 }

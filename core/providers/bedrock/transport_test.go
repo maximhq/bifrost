@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1559,4 +1560,62 @@ func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t 
 		assert.Equal(t, `{"city":"Canberra"}`, text.String(), "caller tool arguments leaked into output_text")
 		assert.Contains(t, args.String(), "Australia")
 	})
+}
+
+// TestGrammarLimitRejectionMarksContext pins the trigger for the one tool-path retry: a 400 naming a
+// grammar limit on a request sent with outputConfig marks the context, and nothing else does.
+func TestGrammarLimitRejectionMarksContext(t *testing.T) {
+	const native = `{"messages":[],"outputConfig":{"textFormat":{"type":"json_schema"}}}`
+	cases := []struct {
+		name, body, message string
+		status              int
+		marked              bool
+	}{
+		{"grammar too large", native, "The model returned the following errors: The compiled grammar is too large, which would cause performance issues.", 400, true},
+		{"compilation timed out", native, "Grammar compilation timed out.", 400, true},
+		{"schema too complex", native, "compilation exceeded limits: Schema is too complex", 400, true},
+		{"tool path body", `{"messages":[],"toolConfig":{"tools":[]}}`, "The compiled grammar is too large", 400, false},
+		{"schema shape rejection", native, "The model returned the following errors: output_config.format.schema: For 'object' type, property 'x-order' is not supported", 400, true},
+		{"prefill rejection", native, "When using output format, pre-filling the `assistant` response is not supported.", 400, false},
+		{"other status", native, "The compiled grammar is too large", 500, false},
+	}
+	for _, tc := range cases {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Amzn-Errortype", "ValidationException:http://internal.amazon.com/coral/com.amazon.bedrock/")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"message":` + strconv.Quote(tc.message) + `}`))
+		}))
+		provider := newTestProviderWithServer(t, ts)
+		for _, route := range []string{"unary", "stream"} {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				ctx := testBedrockCtx()
+				var bifrostErr *schemas.BifrostError
+				if route == "unary" {
+					_, _, _, bifrostErr = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, bifrostErr = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				require.NotNil(t, bifrostErr)
+				state := ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				if tc.marked {
+					assert.Equal(t, schemas.StructuredOutputGrammarRejected, state)
+				} else {
+					assert.Nil(t, state)
+				}
+			})
+			// The forced attempt is never marked again, whatever its body carries.
+			t.Run(tc.name+"/"+route+"/already forced", func(t *testing.T) {
+				ctx := testBedrockCtx()
+				ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+				if route == "unary" {
+					_, _, _, _ = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, _ = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				assert.Equal(t, schemas.StructuredOutputForceTool, ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry))
+			})
+		}
+		ts.Close()
+	}
 }

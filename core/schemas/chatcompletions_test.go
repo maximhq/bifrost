@@ -422,3 +422,72 @@ func BenchmarkChatMessageUnmarshalAssistant(b *testing.B) {
 		})
 	}
 }
+
+// A custom tool call keeps its name and input through a JSON round trip, and is not
+// sent with an empty function object, on both the message and the stream delta.
+func TestChatAssistantMessageToolCall_CustomRoundTrip(t *testing.T) {
+	custom := `{"index":0,"type":"custom","id":"call_1","custom":{"name":"code_exec","input":"print(1)"}}`
+	function := `{"index":1,"type":"function","id":"call_2","function":{"name":"f","arguments":""}}`
+	body := `{"role":"assistant","content":null,"tool_calls":[` + custom + `,` + function + `]}`
+	var msg ChatMessage
+	if err := Unmarshal([]byte(body), &msg); err != nil {
+		t.Fatal(err)
+	}
+	tc := msg.ChatAssistantMessage.ToolCalls[0]
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != "print(1)" {
+		t.Fatalf("custom call not decoded: %+v", tc.Custom)
+	}
+	out, err := Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"role":"assistant","content":null,"refusal":null,"tool_calls":[` + custom + `,` + function + `]}`; string(out) != want {
+		t.Fatalf("message: got %s, want %s", out, want)
+	}
+
+	delta := ChatStreamResponseChoiceDelta{ToolCalls: msg.ChatAssistantMessage.ToolCalls[:1]}
+	out, err = Marshal(delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tool_calls":[` + custom + `]}`; string(out) != want {
+		t.Fatalf("delta: got %s, want %s", out, want)
+	}
+
+	// Calls without a custom entry keep their shape, empty function object included.
+	plain := ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{Index: 0}}}
+	out, err = Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tool_calls":[{"index":0,"function":{"arguments":""}}]}`; string(out) != want {
+		t.Fatalf("function delta changed shape: got %s, want %s", out, want)
+	}
+}
+
+func BenchmarkChatStreamDeltaToolCallMarshal(b *testing.B) {
+	delta := ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{
+		Type: Ptr("function"), ID: Ptr("call_1"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Marshal(delta); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestChatToolChoiceAllowedTools_CustomEntryRoundTrip(t *testing.T) {
+	in := `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"custom","custom":{"name":"exec"}},{"type":"function","function":{"name":"get_weather"}}]}}`
+	var choice ChatToolChoice
+	if err := json.Unmarshal([]byte(in), &choice); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(choice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("got  %s\nwant %s", out, in)
+	}
+}

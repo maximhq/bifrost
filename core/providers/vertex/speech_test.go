@@ -390,7 +390,9 @@ func TestVertexSpeechStreamIsUnsupportedForCloudTextToSpeech(t *testing.T) {
 	stream, bifrostErr := provider.SpeechStream(ctx, nil, func(context.Context) {}, key, speechRequest("hello", speechParams(chirpVoice)))
 	require.Nil(t, stream)
 	require.NotNil(t, bifrostErr)
-	assert.Contains(t, bifrostErr.GetErrorString(), "not supported")
+	assert.Equal(t, "speech_stream is not supported for model chirp-3-hd on the vertex provider; only Gemini TTS models can stream there", bifrostErr.GetErrorString())
+	require.NotNil(t, bifrostErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code)
 }
 
 func TestVertexSpeechNeedsGoogleCredentials(t *testing.T) {

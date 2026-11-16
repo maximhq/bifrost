@@ -32,9 +32,7 @@ REF_RE = re.compile(r"\./paths/management/([\w.-]+)\.yaml#/([\w~/{}.-]+)")
 
 # Fragments that are genuinely unmounted and predate this work. Listed rather than skipped
 # so they stay visible; removing one is a separate change from keeping the catalogue honest.
-KNOWN_ORPHANS = {
-    "infrastructure.yaml": {"websocket-responses"},
-}
+KNOWN_ORPHANS: dict = {}
 
 passed = 0
 failed = 0
@@ -128,7 +126,7 @@ def test_no_orphaned_fragments():
             text = other.read_text(encoding="utf-8")
             for frag in defined:
                 cross_file = f"{stem}.yaml#/{frag}/" in text
-                same_file = other == source and f"'#/{frag}/" in text
+                same_file = other == source and any(f"{q}#/{frag}/" in text for q in "'\"")
                 if cross_file or same_file:
                     composed.add(frag)
         unused = sorted(defined - referenced - composed - KNOWN_ORPHANS.get(source.name, set()))
@@ -675,6 +673,33 @@ def test_warp_config_input_models_the_embedding_contract():
 
     assert not problems, "Warp config input contract:\n    " + "\n    ".join(problems)
 
+def test_oss_bundle_is_the_full_bundle_without_enterprise_operations():
+    """openapi-oss.json is what the OSS gateway's /v1/mcp builds its tools from: the
+    full bundle with the enterprise-only operations removed, written by the same
+    bundle.py run. A spec change bundled without it, or an OSS file left behind by
+    a later bundle, fails here."""
+    import copy
+
+    sys.path.insert(0, str(HERE))
+    from bundle import filter_oss_edition, is_enterprise_operation
+
+    oss_path = HERE / "openapi-oss.json"
+    assert oss_path.exists(), "openapi-oss.json is missing; run bundle.py, which writes it beside openapi.json"
+    full = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    oss = json.loads(oss_path.read_text(encoding="utf-8"))
+    expected = copy.deepcopy(full)
+    removed = filter_oss_edition(expected)
+    assert removed > 0, "openapi.json has no enterprise-only operation to remove"
+    assert oss == expected, "openapi-oss.json is not openapi.json without its enterprise-only operations; run bundle.py"
+    leaked = [
+        f"{method.upper()} {path}"
+        for path, item in oss.get("paths", {}).items()
+        for method, op in item.items()
+        if isinstance(op, dict) and is_enterprise_operation(op)
+    ]
+    assert not leaked, f"enterprise-only operations in openapi-oss.json: {leaked[:5]}"
+
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
@@ -1161,6 +1186,7 @@ check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_c
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
+check("openapi-oss.json is openapi.json without its enterprise-only operations", test_oss_bundle_is_the_full_bundle_without_enterprise_operations)
 check("project content-logging descriptions state the header, connector and retention rules", test_project_content_logging_descriptions_state_the_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)

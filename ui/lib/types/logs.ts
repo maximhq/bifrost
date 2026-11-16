@@ -458,6 +458,7 @@ export interface ToolCall {
 	type?: string;
 	id?: string;
 	function: FunctionCall;
+	custom?: { name?: string; input?: string };
 }
 
 // Model parameters types
@@ -614,6 +615,11 @@ export interface GuardrailJudgeCall {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	// External guardrail service calls report vendor usage units instead of
+	// tokens, plus their USD cost at the vendor's list price. The cost is
+	// display-only: it is never part of the request cost or budgets.
+	usage_units?: Record<string, number>;
+	estimated_cost?: number;
 }
 
 // GuardrailMatch is one rule match recorded in guardrail_debug: a detect-only
