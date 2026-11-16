@@ -10,6 +10,7 @@ import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-m
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
 import { routeScriptCallsThroughSetupToken } from "./lib/setup-token.mjs";
+import { buildMCPAdditionalPropertiesHarnessFolder, MCP_SCHEMA_PROBE_FOLDER_NAME } from "./lib/mcp-additional-properties-harness.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -370,6 +371,14 @@ const cachingItems = buildPromptCachingHitVerificationItems();
 const CACHING_PREFIX = "Prompt caching hit-verification:";
 cachingFolder.item = (cachingFolder.item || []).filter((entry) => !(entry.name || "").startsWith(CACHING_PREFIX));
 cachingFolder.item.push(...cachingItems);
+
+// Provider-visible MCP schema regression: generated additively because the
+// ~20 MB manually-maintained Postman collection must remain byte-for-byte stable.
+// This only adds test descriptions; no provider/network call at augment time.
+if (collection.item.some((folder) => folder.name === MCP_SCHEMA_PROBE_FOLDER_NAME)) {
+  throw new Error("duplicate MCP schema parity provider harness folder");
+}
+collection.item.push(buildMCPAdditionalPropertiesHarnessFolder());
 
 // Last pass, over hand-written and generated items alike: any request whose raw body OR URL drops
 // in a variable that an EARLIER request's test script computed gets a pre-request guard. Without
