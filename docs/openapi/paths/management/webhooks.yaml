@@ -29,7 +29,9 @@ webhooks:
       - name: event
         in: query
         required: false
-        description: Comma-separated events; returns endpoints subscribed to any of them.
+        description: |
+          Comma-separated events; returns endpoints subscribed to any of them.
+          Allowed values: `async_job.completed`, `async_job.failed`. Unknown values return 400.
         schema:
           type: string
       - name: disabled
@@ -269,7 +271,7 @@ webhooks-test:
     parameters:
       - $ref: '#/components/parameters/WebhookEndpointId'
     requestBody:
-      required: true
+      required: false
       content:
         application/json:
           schema:

@@ -62,6 +62,25 @@ export interface WarpConfig {
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
+	/** Kinds of configuration change Warp may offer; empty is reads only (the default). */
+	management_writes: WarpManagementWrite[];
+	/** Whether the Bifrost MCP serves writes at all: bifrost_mcp_allow_writes is the ceiling. */
+	management_writes_available: boolean;
+	/** Per kind, what Warp could be offered and roughly what it adds to every request. Absent while the Bifrost MCP is not loaded. */
+	management_tool_sizes?: WarpManagementToolSize[];
+}
+
+/** A kind of configuration change Warp may offer. Mirrors schemas.WarpManagementWrites. */
+export type WarpManagementWrite = "create" | "update" | "delete" | "action";
+
+/** Every kind, in the order the settings page lists them and the server stores them. */
+export const WARP_MANAGEMENT_WRITES: readonly WarpManagementWrite[] = ["create", "update", "delete", "action"];
+
+export interface WarpManagementToolSize {
+	kind: "read" | WarpManagementWrite;
+	tools: number;
+	/** Rough: declaration characters / 3. */
+	estimated_tokens: number;
 }
 
 /** The write body. Every field round-trips; nothing here is write-only. */
@@ -88,6 +107,8 @@ export interface WarpConfigInput {
 	semantic_search_limit?: number;
 	/** 10 to 20000. Zero means "use the default"; omitted keeps the stored value. */
 	topic_discovery_min_requests?: number;
+	/** Omitted keeps the stored value; [] is reads only. */
+	management_writes?: WarpManagementWrite[];
 }
 
 /**

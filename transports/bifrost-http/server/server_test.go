@@ -7,9 +7,11 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,12 +26,14 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -2574,4 +2578,210 @@ func TestDropCapturesOfDisabledRouting(t *testing.T) {
 	assert.Empty(t, namespaces(), "a disabled plugin's captures are dropped")
 
 	(&BifrostHTTPServer{Config: &lib.Config{}}).dropCapturesOfDisabledRouting(ctx) // no vector store: nothing to do
+}
+
+// setOpenAPIURL sets the framework config's openapi_url the way a config save
+// publishes it: a whole new FrameworkConfig.
+func setOpenAPIURL(cfg *lib.Config, value string) {
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+}
+
+// The Bifrost MCP's settings come from the config: the spec (the framework config's
+// openapi_url, else the build's default), the writes switch (on unless turned off),
+// and the base its calls address, which is bifrost_url's origin, and nothing
+// without it: never the listen address or a request's Host.
+func TestBifrostMCPOptionsFollowClientConfig(t *testing.T) {
+	server := &BifrostHTTPServer{
+		Host: "0.0.0.0", Port: "8080", defaultOpenAPIURL: handlers.DefaultOpenAPIURL,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	opts := server.bifrostMCPOptions(handlers.BifrostMCPOptions{AppDir: "/app"})
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL)
+	assert.True(t, opts.AllowWrites)
+	assert.Empty(t, opts.BaseURL, "no bifrost_url, no base: the Bifrost MCP does not load")
+	assert.False(t, opts.BaseIsEdge)
+	assert.Equal(t, "/app", opts.AppDir, "options outside the settings are kept")
+
+	setOpenAPIURL(server.Config, "specs/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.Config.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com/bifrost/")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "specs/openapi.json", opts.SpecURL)
+	assert.False(t, opts.AllowWrites)
+	assert.Equal(t, "https://gw.example.com", opts.BaseURL, "the origin only: the in-process router accepts paths without the base path")
+	assert.True(t, opts.BaseIsEdge)
+
+	setOpenAPIURL(server.Config, "  ")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL, "a blank openapi_url falls back to the build's default")
+
+	server.defaultOpenAPIURL = "https://example.com/other-build/openapi.json"
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "https://example.com/other-build/openapi.json", opts.SpecURL, "a build's own default replaces DefaultOpenAPIURL")
+}
+
+// Without -app-dir the gateway loads config from the OS default directory, and a
+// relative openapi_url resolves against that directory: the one config
+// was loaded from, not the empty -app-dir.
+func TestStartBifrostMCPResolvesRelativeSpecAgainstConfigDir(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	lib.SetLogger(noopTestLogger{})
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	spec, err := os.ReadFile("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openapi.json"), spec, 0o600))
+	cfg, err := lib.LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	setOpenAPIURL(cfg, "openapi.json")
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com")
+
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {}) // a routed operation, so the server has a tool to serve
+	server := &BifrostHTTPServer{AppDir: "", Config: cfg, Router: r}
+	server.StartBifrostMCP(ctx, handlers.DefaultOpenAPIURL, func(*fasthttp.RequestCtx) {}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = server.bifrostMCPExec.Close() })
+	assert.Equal(t, dir, server.BifrostMCP.Options().AppDir, "the spec resolves against the directory config was loaded from")
+
+	deadline := time.Now().Add(10 * time.Second)
+	var loadErr error
+	for time.Now().Before(deadline) {
+		if _, loadErr = server.BifrostMCP.Server(ctx); loadErr == nil {
+			return
+		}
+		if !strings.Contains(loadErr.Error(), "still loading") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the relative spec did not load: %v", loadErr)
+}
+
+// A config save that changes a Bifrost MCP setting rebuilds it; one that does not
+// leaves the loaded server alone; a rebuild that fails keeps the previous server.
+func TestReloadBifrostMCPOnSettingsChange(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	before, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served := before.ListTools()["createVirtualKey"]
+	require.True(t, served, "writes are on by default")
+
+	server.reloadBifrostMCP(context.Background())
+	unchanged, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, before, unchanged, "a save that changed nothing must not rebuild")
+
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	after, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = after.ListTools()["createVirtualKey"]
+	assert.False(t, served, "turning writes off rebuilt the server without them")
+
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	kept, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, after, kept, "a failed rebuild keeps the previous server")
+
+	// One save that turns writes back on and points at the missing spec restricts
+	// nothing, so the server stays; one that then turns writes off again cannot
+	// keep a server built with them on, and unloads it.
+	setOpenAPIURL(server.Config, "")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = nil
+	server.reloadBifrostMCP(context.Background())
+	withWrites, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = withWrites.ListTools()["createVirtualKey"]
+	require.True(t, served)
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "writes off with a spec that does not load must not keep the write-capable server")
+}
+
+// Clearing bifrost_url while the spec is unavailable cannot leave the server
+// built for the old URL serving.
+func TestReloadBifrostMCPClearedBifrostURLUnloads(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	_, err = server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+
+	server.Config.ClientConfig.BifrostURL = nil
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "the server built for the cleared bifrost_url must not keep serving")
+}
+
+// fixedUserGovernance answers for any user with an empty limits projection.
+type fixedUserGovernance struct{}
+
+func (fixedUserGovernance) DescribeUserGovernance(_ context.Context, userID string) (*warp.UserGovernance, error) {
+	return &warp.UserGovernance{UserID: userID}, nil
+}
+
+// TestRegisterUserLimitsRoutes: without a user governance reader (the OSS build)
+// the user limits routes are not registered; with one they are, behind the
+// middleware chain RegisterAPIRoutes passes.
+func TestRegisterUserLimitsRoutes(t *testing.T) {
+	paths := []string{"/api/governance/users/me/limits", "/api/governance/users/u-1/limits"}
+	serve := func(s *BifrostHTTPServer, path string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(path)
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		s.Router.Handler(&ctx)
+		return &ctx
+	}
+
+	without := &BifrostHTTPServer{Router: router.New()}
+	without.registerUserLimitsRoutes()
+	for _, path := range paths {
+		ctx := serve(without, path)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s is registered without a reader", path)
+	}
+
+	ran := 0
+	mark := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ran++
+			ctx.Response.Header.Set("X-Test-Middleware", "ran")
+			next(ctx)
+		}
+	})
+	with := &BifrostHTTPServer{Router: router.New(), WarpUserGovernanceReader: fixedUserGovernance{}}
+	with.registerUserLimitsRoutes(mark)
+	for _, path := range paths {
+		ctx := serve(with, path)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s: %s", path, ctx.Response.Body())
+		require.Equal(t, "ran", string(ctx.Response.Header.Peek("X-Test-Middleware")), "%s skipped the middleware chain", path)
+	}
+	require.Equal(t, len(paths), ran)
 }
