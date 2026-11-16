@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "Si cette option est activée, les détails complets des erreurs sont écrits dans les journaux console du serveur. Utile pour le débogage, mais peut être bruyant en production.",
 		"asyncJobTtl": "TTL des résultats de tâches asynchrones (secondes)",
 		"asyncJobTtlHelp": "Durée de vie par défaut des résultats de tâches asynchrones, en secondes. Les résultats sont automatiquement nettoyés à expiration.",
+		"bifrostUrl": "URL de Bifrost",
+		"bifrostUrlHelp": "L'URL à laquelle les clients joignent cette passerelle, y compris un éventuel chemin de base. Obligatoire pour <code0>/v1/mcp</code0> et les outils de configuration de Warp : leurs appels se comportent comme s'ils arrivaient ici, de sorte que les liens de leurs résultats pointent vers elle. Si le champ est vide, les deux sont désactivés ; l'en-tête Host envoyé par une requête n'est jamais utilisé à la place.",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "URL OpenAPI",
+		"openapiUrlHelp": "La spécification OpenAPI à partir de laquelle <code0>/v1/mcp</code0> crée ses outils : une URL http(s), ou un chemin relatif au répertoire de l'application pour les installations isolées. Laissez vide pour lire la spécification publiée de cette version.",
+		"openapiUrlPlaceholder": "Spécification publiée de cette version",
 		"languageHelp": "Langue d'affichage du tableau de bord. Enregistrée dans ce navigateur et appliquée immédiatement.",
 		"headerForwarding": "Transfert d’en-têtes",
 		"headerForwardingHelp": "Contrôlez quels en-têtes supplémentaires sont transférés aux fournisseurs LLM.",
@@ -240,6 +246,8 @@
 		"deleteExpiredVirtualKeysHelp": "Une fois activée, une tâche quotidienne supprime chaque clé virtuelle expirée et publie une notification répertoriant les clés supprimées. Chaque clé peut remplacer ce paramètre avec l’option <b0>Supprimer après expiration</b0> : une clé désactivée est conservée, et une clé activée est supprimée même si cette option est désactivée.",
 		"enforceVkObjectOwnership": "Restreindre les objets fournisseur à la clé virtuelle créatrice",
 		"enforceVkObjectOwnershipHelp": "Une fois activée, les fichiers, lots, vidéos, conteneurs, contenus mis en cache et sessions actives créés avec une clé virtuelle ne peuvent être lus, répertoriés ou supprimés qu’avec cette même clé. Les autres clés virtuelles reçoivent une erreur introuvable et ne les voient pas dans les listes. Les requêtes sans clé virtuelle ne sont pas concernées. La clé créatrice est enregistrée même si cette option est désactivée ; si vous la réactivez, elle s’applique aussi aux objets créés entre-temps, sauf à ceux dont la clé créatrice n’a pas pu être enregistrée.",
+		"bifrostMcpAllowWrites": "Autoriser les modifications de configuration via le MCP de Bifrost",
+		"bifrostMcpAllowWritesHelp": "Expose comme outils sur <code0>/v1/mcp</code0> les opérations /api de la passerelle autres que GET. Les routes d'inférence, de lots et de fichiers sont exposées dans tous les cas. Les outils destructifs demandent une confirmation aux clients MCP.",
 		"proofRequired": "Saisissez le mot de passe administrateur actuel pour confirmer cette modification. La protection du tableau de bord est désactivée ; cette session n’est donc pas authentifiée. Si vous ne connaissez pas le mot de passe, utilisez plutôt le jeton de configuration.",
 		"skipAccessProfileKeyCreation": "Ne pas créer de clés virtuelles utilisateur pour les profils d’accès",
 		"skipAccessProfileKeyCreationHelp": "Lorsque cette option est activée, le premier profil d’accès d’un utilisateur ne lui crée pas de clé virtuelle. Les clés qu’il possède déjà ou que vous lui ajoutez restent régies par le profil tant qu’il en a un.",
@@ -383,6 +391,9 @@
 		"allToolsPerServerInASinglePyFile": "Tous les outils par serveur dans un seul fichier .py",
 		"individualPyFileForEachTool": "Un fichier .py individuel pour chaque outil",
 		"externalClientUrlPlaceholder": "https://bifrost.example.com ou env.BIFROST_OAUTH_REDIRECT_URL",
+		"clientMetadataUrl": "URL du document de métadonnées client",
+		"clientMetadataUrlHelp": "Emplacement où vous hébergez le document de métadonnées d'ID client de Bifrost, pour les serveurs MCP qui ne peuvent pas joindre Bifrost. Bifrost s'y connecte avec cette URL comme ID client. Après l'enregistrement, publiez <a1>le document de Bifrost</a1> à cette URL sans le modifier : son <code0>client_id</code0> doit correspondre exactement à cette URL, et il indique l'URL de rappel sous l'URL client externe ci-dessus. Laissez vide pour que Bifrost serve le document. Doit être une URL HTTPS avec un chemin. Prend en charge la syntaxe des variables d'environnement.",
+		"clientMetadataUrlPlaceholder": "https://public.example.com/bifrost/client.json ou env.BIFROST_CLIENT_METADATA_URL",
 		"externalClientUrlWarning": "Changer cette URL peut casser les clients MCP existants",
 		"headers": "En-têtes",
 		"both": "Les deux",
@@ -398,6 +409,7 @@
 		"toastSyncIntervalInvalid": "L’intervalle de synchronisation des outils doit être nul ou positif.",
 		"toastMaxInstructionsPerServerInvalid": "La longueur maximale des instructions par serveur doit être nulle ou positive.",
 		"toastMaxInstructionsTotalInvalid": "La longueur totale maximale des instructions doit être nulle ou positive.",
+		"toastOpenAPIMaxSpecInvalid": "La limite de taille de la spécification OpenAPI doit être un nombre entier compris entre 0 et {{max}} Mio.",
 		"toastIssuerUrlRequired": "L’URL de l’émetteur est obligatoire lorsque le mode d’authentification MCP est OAuth ou Both. Définissez-la d’abord dans Paramètres > Sécurité.",
 		"oauthPrivateAllowlist": "Liste d’autorisation des réseaux privés OAuth",
 		"oauthPrivateAllowlistHelp": "Hôtes, adresses IP ou plages CIDR (sans schéma ni port) que la découverte OAuth, l’enregistrement des clients et les demandes de jeton pour les serveurs MCP peuvent joindre lorsqu’ils pointent vers une adresse locale ou privée, par ex. <code0>localhost</code0>, <code1>127.0.0.1</code1> ou <code2>10.20.0.0/16</code2>. S’applique aux serveurs MCP ajoutés avec l’authentification du tableau de bord activée ; toute modification nécessite cette authentification. Les adresses link-local et de métadonnées cloud sont toujours bloquées.",
@@ -406,6 +418,8 @@
 		"maxInstructionsPerServerHelp": "Le texte plus long est tronqué avec un avis. Définissez 0 pour utiliser la valeur par défaut de 4096.",
 		"maxInstructionsTotal": "Longueur maximale totale des instructions (octets)",
 		"maxInstructionsTotalHelp": "Limite appliquée à tous les serveurs visibles par un appelant. Avec <code0>Gateway and LLM requests</code0>, ces instructions accompagnent chaque requête concernée par MCP ; augmenter cette limite augmente donc le nombre de jetons par requête. Définissez 0 pour utiliser la valeur par défaut de 16384.",
+		"maxOpenAPISpecSize": "Taille maximale de la spécification OpenAPI (Mio)",
+		"maxOpenAPISpecSizeHelp": "Plus grand document accepté par un serveur MCP OpenAPI, qu'il soit collé, importé ou récupéré depuis son URL. L'analyse occupe plusieurs fois cette taille en mémoire. Définissez 0 pour utiliser la valeur par défaut de 32.",
 		"allowedRedirectUris": "URI de redirection autorisées",
 		"allowedRedirectUrisHelp": "URI de rappel exactes que les clients MCP distants peuvent utiliser, par ex. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Ajoutez <code1>*</code1> pour autoriser tout rappel https ; les caractères génériques partiels ne sont pas pris en charge. Les rappels locaux et <code2>cursor://anysphere.cursor-mcp</code2> sont toujours autorisés. La modification de cette liste nécessite l’authentification du tableau de bord.",
 		"allowedRedirectUrisPlaceholder": "Ajouter une URI de rappel (Entrée)",
@@ -1069,6 +1083,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Outils de configuration",
+			"description": "Warp peut lire la configuration de Bifrost. Choisissez quels types de modification il peut aussi effectuer ; chacun attend toujours la confirmation de l'utilisateur.",
+			"reads": "Lire la configuration",
+			"readsHelp": "Fournisseurs, clés virtuelles, équipes, budgets, règles de routage et le reste.",
+			"alwaysOn": "Toujours actif",
+			"size_one": "{{count}} outil · ~{{tokens}} jetons",
+			"size_other": "{{count}} outils · ~{{tokens}} jetons",
+			"kinds": {
+				"create": {
+					"label": "Créer",
+					"help": "Ajouter des clés virtuelles, des équipes, des règles de routage, etc."
+				},
+				"update": {
+					"label": "Mettre à jour",
+					"help": "Modifier des ressources existantes, comme le budget d'une clé virtuelle."
+				},
+				"delete": {
+					"label": "Supprimer",
+					"help": "Retirer des ressources. Chaque suppression indique qu'elle est irréversible."
+				},
+				"action": {
+					"label": "Autres actions",
+					"help": "Exécuter des opérations comme tester un fournisseur ou vider un cache."
+				}
+			},
+			"notLoaded": "Les types de modification peuvent être choisis une fois le Bifrost MCP chargé.",
+			"writesOff": "Les modifications sont désactivées pour tout le Bifrost MCP. Activez <link0>Autoriser les modifications de configuration via le Bifrost MCP</link0> dans les paramètres de sécurité pour les choisir pour Warp.",
+			"contextWarning": "Chaque type activé est envoyé avec chaque requête Warp : environ {{tokens}} jetons d'outils avec ces paramètres. Les modèles à fenêtre de contexte plus petite risquent de ne plus répondre.",
+			"contextReadsOnly": "La lecture ajoute environ {{tokens}} jetons d'outils à chaque requête Warp."
+		},
 		"saved": "Configuration Warp enregistrée.",
 		"badRange": "Choisissez une plage de temps de backfill valide.",
 		"backfillStarted": "Backfill d'embeddings Warp démarré.",

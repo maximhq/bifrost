@@ -128,6 +128,7 @@ type SearchFilters struct {
 	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
+	ModelRouterIDs       []string   `json:"model_router_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	AgentNames           []string   `json:"agent_names,omitempty"`           // Registered Agents whose context IDs correlate the matching LLM logs
@@ -375,8 +376,10 @@ type Log struct {
 	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                          // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ModelRouterID           *string   `gorm:"type:varchar(64);index:idx_logs_model_router_id,where:model_router_id IS NOT NULL" json:"model_router_id,omitempty"`
+	ModelRouterName         *string   `gorm:"type:varchar(255)" json:"model_router_name,omitempty"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule or model router demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule or model router asked for a tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	AgentCorrelationID      *string   `gorm:"type:varchar(255);index:idx_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`                                               // Caller-supplied correlation identity from x-bf-agent-correlation-id
@@ -1608,10 +1611,12 @@ type AgentLogHistoryFilter struct {
 	PushConfigID   string
 	DeliveryID     string
 	AttemptID      string
-	RecordKind     []string
-	EventType      []string
-	TaskState      []string
-	Status         []string
+	// CallerCorrelationID matches operations a caller delegated under its own A2A task (x-bf-agent-correlation-id).
+	CallerCorrelationID string
+	RecordKind          []string
+	EventType           []string
+	TaskState           []string
+	Status              []string
 	// Search is a free-text match across DB-resident metadata columns only
 	// (agent name, operation, task/context/request/trace id and the serialized
 	// error). Protocol payloads are deliberately excluded: under the hybrid
@@ -1623,7 +1628,7 @@ type AgentLogHistoryFilter struct {
 // Explicit identifier searches keep every matching operation visible.
 func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
 	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
-		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == "" && f.CallerCorrelationID == ""
 }
 
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
@@ -1723,6 +1728,7 @@ type AgentLogSummary struct {
 	ResponseMessageID       *string          `json:"response_message_id,omitempty"`
 	ArtifactID              *string          `json:"artifact_id,omitempty"`
 	PushConfigID            *string          `json:"push_config_id,omitempty"`
+	CallerCorrelationID     *string          `json:"caller_correlation_id,omitempty"`
 	DeliveryID              *string          `json:"delivery_id,omitempty"`
 	AttemptID               *string          `json:"attempt_id,omitempty"`
 	EventSequence           *int64           `json:"event_sequence,omitempty"`
@@ -1773,7 +1779,8 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		RequestID: entry.RequestID, TraceID: entry.TraceID, TaskID: entry.TaskID, ContextID: entry.ContextID,
 		MessageID: entry.MessageID, RequestMessageID: entry.RequestMessageID, ResponseMessageID: entry.ResponseMessageID,
 		ArtifactID: entry.ArtifactID, PushConfigID: entry.PushConfigID, DeliveryID: entry.DeliveryID, AttemptID: entry.AttemptID,
-		EventSequence: entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
+		CallerCorrelationID: entry.CallerCorrelationID,
+		EventSequence:       entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
 		DownstreamTransport: entry.DownstreamTransport, UpstreamTransport: entry.UpstreamTransport,
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
@@ -1840,11 +1847,15 @@ type AgentLog struct {
 	ResponseMessageID *string `gorm:"type:varchar(255);index:idx_agent_logs_response_message_id" json:"response_message_id,omitempty"`
 	ArtifactID        *string `gorm:"type:varchar(255);index:idx_agent_logs_artifact_id" json:"artifact_id,omitempty"`
 	PushConfigID      *string `gorm:"type:varchar(255);index:idx_agent_logs_push_config_id" json:"push_config_id,omitempty"`
-	DeliveryID        *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
-	AttemptID         *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
-	EventSequence     *int64  `json:"event_sequence,omitempty"`
-	EventType         *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
-	TaskState         *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
+	// CallerCorrelationID is the caller's x-bf-agent-correlation-id: the A2A task of the agent that delegated
+	// this operation. It links a subagent's operation to its caller the way agent_correlation_id links LLM
+	// and MCP logs to the agent task that issued them.
+	CallerCorrelationID *string `gorm:"type:varchar(255);index:idx_agent_logs_caller_correlation_id,where:caller_correlation_id IS NOT NULL" json:"caller_correlation_id,omitempty"`
+	DeliveryID          *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
+	AttemptID           *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
+	EventSequence       *int64  `json:"event_sequence,omitempty"`
+	EventType           *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
+	TaskState           *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
 
 	DownstreamTransport *string  `gorm:"type:varchar(32)" json:"downstream_transport,omitempty"`
 	UpstreamTransport   *string  `gorm:"type:varchar(32)" json:"upstream_transport,omitempty"`
@@ -3097,6 +3108,7 @@ const (
 	RankingDimensionAlias               RankingDimension = "alias"
 	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
 	RankingDimensionComplexityMechanism RankingDimension = "complexity_mechanism"
+	RankingDimensionModelRouter         RankingDimension = "model_router"
 	// Stored as a comma-separated list on the row, so one request can count
 	// under several values (see commalistdimensions.go).
 	RankingDimensionRoutingEngine RankingDimension = "routing_engine"
@@ -3116,6 +3128,10 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionVirtualKey:   true,
 	RankingDimensionApp:          true,
 	RankingDimensionUserAgent:    true,
+	// The Model Routers page counts each router's requests with it.
+	RankingDimensionModelRouter: true,
+	// A router's page splits its requests by tier, filtered to that router.
+	RankingDimensionComplexityTier: true,
 }
 
 type dimensionColumnDef struct {
@@ -3140,6 +3156,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	// Not carried by mv_logs_hourly, so always read from the raw table.
 	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
 	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
+	RankingDimensionModelRouter:         {IDCol: "model_router_id", NameCol: "model_router_name", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.

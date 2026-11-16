@@ -780,8 +780,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// tool_addition / tool_removal blocks — mid-conversation tool changes (beta
 	// mid-conversation-tool-changes). Claude Code sends them in role:"system" messages, and a
-	// surface without the beta rejects the unknown content block (Vertex: "Input tag
-	// 'tool_addition' found using 'type' does not match any of the expected tags"). They are
+	// surface without the beta rejects the unknown content block. They are
 	// removed, as is a replayed compaction block's tool_changes; the text next to them stays,
 	// and a message left with no content is dropped whole rather than sent empty.
 	//
@@ -1358,6 +1357,15 @@ func IsFableFamily(model string) bool {
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
 }
 
+// DefaultStripsUserTurnTrailingWhitespace is the name-based fallback for
+// ModelCaps.StripsUserTurnTrailingWhitespace: the Claude 5 generation. Measured live on Haiku 5.5,
+// Opus 5.5 and (from customer traffic) Fable 5.1; Haiku 4.5 and Sonnet 4.6 keep the whitespace, so
+// trimming there makes a block stop matching its own history on the next turn. A model this does
+// not recognise is not trimmed, which is the behaviour before the trim existed.
+func DefaultStripsUserTurnTrailingWhitespace(model string) bool {
+	return IsFableFamily(model) || IsOpus5Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model)
+}
+
 // IsMythosPreview returns true for Claude Mythos Preview, the one member of the
 // Fable/Mythos family that still supports extended thinking
 // (thinking:{type:"enabled",budget_tokens:N}) alongside adaptive. Fable 5 and
@@ -1891,8 +1899,10 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		return nil
 	}
 
+	// No trailing newline: a cached block ending in whitespace stops matching once the content
+	// after it in the same turn changes (Claude Code drops its trailing reminder on the next turn).
 	wrap := func(text string) string {
-		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		return "<system-reminder>\n" + text + "\n</system-reminder>"
 	}
 
 	var blocks []AnthropicContentBlock
@@ -1906,19 +1916,21 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
 		// request either carries the caller's intent or the operator's, never a third thing
 		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
-		// "never drops": the loop below deliberately collapses intermediate markers onto the
-		// last block, for the reasons stated there. Adding is what changes the caller's cost
-		// profile behind their back; collapsing a redundant marker does not.
+		// "never drops": the loop below deliberately drops intermediate markers, for the
+		// reasons stated there. Adding is what changes the caller's cost profile behind their
+		// back; dropping a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
 		})
 	}
-	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter. Within a
-	// single message an intermediate marker buys nothing — one on the final block already closes
-	// over every preceding block, and the message is atomic so no later request can diverge in its
-	// middle — while still consuming one of the four checkpoints the API allows per request.
+	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter: an earlier
+	// marker in the same message closes over nothing the last one does not, and still consumes one
+	// of the four checkpoints the API allows per request. It stays on the block the caller marked.
+	// Text after it is not part of the checkpoint, and Claude Code drops such a trailing reminder on
+	// the next turn, so moving the marker onto it writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 	for _, block := range content.ContentBlocks {
 		if block.Text == nil || *block.Text == "" {
 			continue
@@ -1928,15 +1940,15 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 			Text: schemas.Ptr(wrap(*block.Text)),
 		})
 		if block.CacheControl != nil {
-			lastCacheControl = block.CacheControl
+			lastCacheControl, marked = block.CacheControl, len(blocks)-1
 		}
 	}
 
 	if len(blocks) == 0 {
 		return nil
 	}
-	if lastCacheControl != nil {
-		blocks[len(blocks)-1].CacheControl = lastCacheControl
+	if marked >= 0 {
+		blocks[marked].CacheControl = lastCacheControl
 	}
 
 	return &AnthropicMessage{
@@ -1945,29 +1957,55 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	}
 }
 
+// trimUserTurnTail strips trailing whitespace from the text that ends a user turn, called before an
+// inlined reminder joins that turn on a model that strips it at the end of a turn
+// (ModelCaps.StripsUserTurnTrailingWhitespace). Applied whether or not the block carries the
+// breakpoint: it gives the block the bytes the model sees when it ends its turn, so they match
+// whether a later request keeps the reminder after it, drops it, or moves the breakpoint on.
+func trimUserTurnTail(msgs []AnthropicMessage) {
+	n := len(msgs)
+	if n == 0 || msgs[n-1].Role != AnthropicMessageRoleUser {
+		return
+	}
+	content := &msgs[n-1].Content
+	tail := &content.ContentStr
+	if *tail == nil {
+		k := len(content.ContentBlocks) - 1
+		if k < 0 || content.ContentBlocks[k].Type != AnthropicContentBlockTypeText {
+			return
+		}
+		tail = &content.ContentBlocks[k].Text
+	}
+	// The pointer is replaced, not written through: it can alias the caller's request.
+	if *tail != nil {
+		if trimmed := strings.TrimRight(**tail, " \n\r\t"); trimmed != "" && len(trimmed) < len(**tail) {
+			*tail = new(trimmed)
+		}
+	}
+}
+
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
-// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
-// is required.
-//
-// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
-// gate, prefers the datasheet's supports_mid_conversation_system_messages
-// boolean; falls back to substring detection. The provider gate stays hardcoded
-// because a bare-model override lookup can't distinguish provider.
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5) and
+// Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
+// supports_mid_conversation_system_messages wins when set.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
-	if provider != schemas.Anthropic {
-		return false
-	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
-		return true
+	switch provider {
+	case schemas.Anthropic:
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
+			return true
+		}
+		return strings.Contains(m, "opus") &&
+			(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	case schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure:
+		return IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) ||
+			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	return false
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair

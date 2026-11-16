@@ -45,7 +45,7 @@ func TestOpenRealtimeUpstreamPrefersProviderConnector(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
 
-	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "", nil)
+	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "", nil, nil)
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %+v", bifrostErr)
 	}
@@ -210,6 +210,70 @@ func TestWSRealtimeRegistersAzurePaths(t *testing.T) {
 	for _, path := range []string{"/azure/voice-live/realtime", "/voice-live/realtime", "/azure/openai/realtime", "/azure/openai/v1/realtime"} {
 		if handler, _ := r.Lookup(fasthttp.MethodGet, path, &fasthttp.RequestCtx{}); handler == nil {
 			t.Errorf("%s is not registered", path)
+		}
+	}
+}
+
+// An ElevenLabs client's sockets are served under the /elevenlabs base URL its SDK is given, and their sessions are
+// ElevenLabs' unless the model names another provider.
+func TestElevenlabsSocketsAreServedUnderTheBaseURL(t *testing.T) {
+	r := router.New()
+	(&WSRealtimeHandler{}).RegisterRoutes(r)
+	(&WSSpeechSessionHandler{}).RegisterRoutes(r)
+	for _, path := range []string{"/elevenlabs/v1/speech-to-text/realtime", "/elevenlabs/v1/text-to-dialogue/stream-input"} {
+		if handler, _ := r.Lookup(fasthttp.MethodGet, path, &fasthttp.RequestCtx{}); handler == nil {
+			t.Errorf("%s is not served", path)
+		}
+		if got := realtimeDefaultProviderForPath(path); got != schemas.Elevenlabs {
+			t.Errorf("%s defaults to %q, want elevenlabs", path, got)
+		}
+	}
+	if !isRealtimeTransportEndpoint("/elevenlabs/v1/speech-to-text/realtime") {
+		t.Error("the Scribe socket is not a realtime transport endpoint, so the auth middleware would answer it as plain HTTP")
+	}
+}
+
+// The Google GenAI SDK in Vertex mode dials the Vertex AI service name, under the same prefix as the Gemini API path, and
+// its sessions are Vertex's unless the model names another provider.
+func TestRealtimeServesTheVertexLivePathsOfTheGenAIRoute(t *testing.T) {
+	r := router.New()
+	(&WSRealtimeHandler{}).RegisterRoutes(r)
+	for _, path := range []string{
+		"/genai/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent",
+		"/genai/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent",
+	} {
+		handler, _ := r.Lookup(fasthttp.MethodGet, path, nil)
+		if handler == nil {
+			t.Errorf("%s is not served", path)
+		}
+		if got := realtimeDefaultProviderForPath(path); got != schemas.Vertex {
+			t.Errorf("%s defaults to %q, want vertex", path, got)
+		}
+		if !isRealtimeTransportEndpoint(path) {
+			t.Errorf("%s is not a realtime transport endpoint, so the auth middleware would answer it as plain HTTP", path)
+		}
+	}
+	if got := realtimeDefaultProviderForPath("/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"); got != schemas.Gemini {
+		t.Errorf("the Gemini API path defaults to %q, want gemini", got)
+	}
+}
+
+// A route that relays a provider's own protocol names its integration itself: the shared code must not label every
+// native client with the first one that existed.
+func TestRealtimeIntegrationTypeFollowsTheRoute(t *testing.T) {
+	scribe := &nativeProtocol{name: "ElevenLabs Scribe", integration: "elevenlabs"}
+	for name, tc := range map[string]struct {
+		path   string
+		native *nativeProtocol
+		want   string
+	}{
+		"the OpenAI integration":     {"/openai/v1/realtime", nil, "openai"},
+		"the GenAI route":            {"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", geminiLiveProtocol, "genai"},
+		"another native route":       {"/elevenlabs/v1/speech-to-text/realtime", scribe, "elevenlabs"},
+		"the generic realtime route": {"/v1/realtime", nil, ""},
+	} {
+		if got := realtimeIntegrationType(tc.path, tc.native); got != tc.want {
+			t.Errorf("%s: integration type %q, want %q", name, got, tc.want)
 		}
 	}
 }

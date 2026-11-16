@@ -311,6 +311,7 @@ export interface DatabricksKeyConfig {
 	client_id?: SecretVar;
 	client_secret?: SecretVar;
 	forward_gateway_tags?: boolean;
+	scopes?: string[];
 	// UI-only discriminator; not sent to the API.
 	_auth_type?: "pat" | "oauth_m2m";
 }
@@ -322,6 +323,7 @@ export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
 	client_id: { value: "", ref: "" },
 	client_secret: { value: "", ref: "" },
 	forward_gateway_tags: false,
+	scopes: [],
 	_auth_type: "pat",
 } as const satisfies Required<DatabricksKeyConfig>;
 
@@ -782,6 +784,8 @@ export interface FrameworkConfig {
 	mcp_library_sync_interval?: number;
 	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
 	live_models_sync_interval?: number;
+	/** OpenAPI spec /v1/mcp builds its tools from; empty reads dev's openapi-oss.json. */
+	openapi_url?: string;
 }
 
 /** Seconds between background model-list refreshes when the user has not set one. */
@@ -946,6 +950,9 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_openapi_max_spec_mb: number;
+	bifrost_url?: SecretVar;
+	bifrost_mcp_allow_writes?: boolean;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];
@@ -973,6 +980,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_client_metadata_url?: SecretVar;
 	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
 	a2a_store_raw_request_response?: boolean;
@@ -1021,6 +1029,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_disable_auto_tool_inject: false,
 	mcp_max_instructions_per_client: 0,
 	mcp_max_instructions_total: 0,
+	mcp_openapi_max_spec_mb: 0,
 	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],

@@ -177,6 +177,30 @@ func TestModelCaps_SupportsNamespaceTools(t *testing.T) {
 	})
 }
 
+// ModelCaps.SupportsNativeStructuredOutput: the wire field name is what the datasheet
+// publishes, and a row decides in either direction over the caller's fallback.
+func TestModelCaps_SupportsNativeStructuredOutput(t *testing.T) {
+	var parsed ModelCapabilities
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_native_structured_output":true}`), &parsed))
+	require.NotNil(t, parsed.SupportsNativeStructuredOutput)
+	assert.True(t, *parsed.SupportsNativeStructuredOutput)
+
+	t.Run("OverrideHit", func(t *testing.T) {
+		model := "open-weight-native-so-yes"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(true)})
+		assert.True(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(false))
+	})
+	t.Run("OverrideExplicitFalse", func(t *testing.T) {
+		model := "claude-opus-4-7-native-so-off"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(false)})
+		assert.False(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(true))
+	})
+	t.Run("OverrideAbsent_CallerFallbackTakesOver", func(t *testing.T) {
+		assert.True(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(true))
+		assert.False(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(false))
+	})
+}
+
 // ModelCaps.ToolNameMaxLength: a row's tool_name_max_length replaces the caller's
 // per-provider default; absent hands the default back.
 func TestModelCaps_ToolNameMaxLength(t *testing.T) {

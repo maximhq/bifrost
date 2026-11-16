@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -47,6 +48,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
 		&tables.TableGovernanceConfig{},
+		&tables.TableModelRouter{},
+		&tables.TableModelRouterTarget{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableMCPLibrary{},
@@ -2797,6 +2800,94 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t 
 	assert.NotEqual(t, offHash, creationHash)
 	assert.NotEqual(t, offHash, deletionHash)
 	assert.NotEqual(t, creationHash, deletionHash)
+}
+
+// TestUpdateClientConfig_MCPClientMetadataURLRoundTrip pins that the hosted Client ID Metadata Document URL
+// persists with its env reference, is hashed only when set, and is masked when it comes from env.
+func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+
+	unset := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	hosted := unset
+	hosted.MCPClientMetadataURL = schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")
+	require.NoError(t, store.UpdateClientConfig(ctx, &hosted))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.MCPClientMetadataURL)
+	assert.True(t, result.MCPClientMetadataURL.IsFromEnv(), "the env reference is stored, not its value")
+	assert.Equal(t, "https://public.example.com/bifrost/client.json", result.MCPClientMetadataURL.GetValue())
+	assert.NotEqual(t, "https://public.example.com/bifrost/client.json", result.Redacted().MCPClientMetadataURL.GetValue(), "an env-backed URL is masked")
+
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true, MCPClientMetadataURL: schemas.NewSecretVar("")}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	hostedHash, err := hosted.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, unsetHash, emptyHash, "configs written before the field existed keep their hash")
+	assert.NotEqual(t, unsetHash, hostedHash)
+}
+
+func TestUpdateClientConfig_MCPOpenAPIMaxSpecMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MCPOpenAPIMaxSpecMB, "unset reads back as 0, the built-in limit")
+
+	sized := base
+	sized.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(ctx, &sized))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 64, result.MCPOpenAPIMaxSpecMB)
+
+	// Only a set value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	sizedHash, err := sized.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, sizedHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
+func TestUpdateClientConfig_BifrostURLAndBifrostMCPRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, result.BifrostURL.GetValue())
+	assert.Nil(t, result.BifrostMCPAllowWrites, "unset reads back nil: writes on")
+
+	set := base
+	set.BifrostURL = schemas.NewSecretVar("https://gateway.example.com")
+	set.BifrostMCPAllowWrites = new(false)
+	require.NoError(t, store.UpdateClientConfig(ctx, &set))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "https://gateway.example.com", result.BifrostURL.GetValue())
+	require.NotNil(t, result.BifrostMCPAllowWrites)
+	assert.False(t, *result.BifrostMCPAllowWrites, "false is stored, not replaced by a default")
+
+	// Only set values are hashed, so configs written before the fields existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	setHash, err := set.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
 }
 
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
@@ -6009,6 +6100,17 @@ func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
 	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
 }
 
+// TestValidateOpenAPIURL accepts the default (empty), an http(s) URL, or a path
+// that stays inside the app directory, and refuses everything else.
+func TestValidateOpenAPIURL(t *testing.T) {
+	for _, value := range []string{"", "  ", "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi.json", "http://mirror.internal:8080/openapi.json", "openapi.json", "specs/openapi.yaml", "./specs/../openapi.json"} {
+		require.NoError(t, ValidateOpenAPIURL(value), value)
+	}
+	for _, value := range []string{"/etc/bifrost/openapi.json", "../openapi.json", "specs/../../openapi.json", "ftp://example.com/spec", "file:///etc/passwd", "https://", strings.Repeat("a", MaxOpenAPIURLLength+1)} {
+		require.Error(t, ValidateOpenAPIURL(value), value)
+	}
+}
+
 // TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
 func TestValidatePublicBaseURL(t *testing.T) {
 	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
@@ -6018,6 +6120,24 @@ func TestValidatePublicBaseURL(t *testing.T) {
 		err := ValidatePublicBaseURL(value)
 		require.Error(t, err, value)
 		require.NotContains(t, err.Error(), value)
+	}
+}
+
+// The public URL settings accept exactly what their varchar columns store: a URL
+// of MaxPublicURLLength characters is accepted, one longer is refused before it
+// reaches UpdateClientConfig, and every column holding one is that wide.
+func TestValidatePublicBaseURLLengthMatchesColumns(t *testing.T) {
+	prefix := "https://example.com/"
+	require.NoError(t, ValidatePublicBaseURL(prefix+strings.Repeat("a", MaxPublicURLLength-len(prefix))))
+	err := ValidatePublicBaseURL(prefix + strings.Repeat("a", MaxPublicURLLength-len(prefix)+1))
+	require.ErrorContains(t, err, "at most 512 characters")
+
+	columns := map[string]string{"BifrostURL": "", "MCPExternalClientURL": "", "SkillsExternalClientURL": "", "A2AExternalClientURL": ""}
+	typ := reflect.TypeOf(tables.TableClientConfig{})
+	for name := range columns {
+		field, ok := typ.FieldByName(name)
+		require.True(t, ok, name)
+		require.Contains(t, field.Tag.Get("gorm"), fmt.Sprintf("varchar(%d)", MaxPublicURLLength), "%s's column width must match the limit validation applies", name)
 	}
 }
 
@@ -7049,6 +7169,83 @@ func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
 	row.PerUserDiscovery = schemas.Ptr(false)
 	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
 	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
+}
+
+// TestUpdateMCPClientConfigHash pins that the hash upgrade writes config_hash alone, and only from the
+// expected old value, so a concurrent edit or an earlier upgrade by another node is never overwritten.
+func TestUpdateMCPClientConfigHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "hash-client",
+		Name:             "hash_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ToolsToExecute:   []string{"*"},
+		ConfigHash:       "legacy",
+	}))
+	// Another node edits the client after this node read it.
+	edited, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	edited.ToolsToExecute = []string{"echo"}
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "hash-client", edited))
+
+	moved, err := store.UpdateMCPClientConfigHash(ctx, "hash-client", "stale", "current")
+	require.NoError(t, err)
+	assert.False(t, moved, "a hash that is no longer the expected old value is left alone")
+
+	moved, err = store.UpdateMCPClientConfigHash(ctx, "hash-client", "legacy", "current")
+	require.NoError(t, err)
+	assert.True(t, moved)
+	row, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	assert.Equal(t, "current", row.ConfigHash)
+	assert.Equal(t, []string{"echo"}, []string(row.ToolsToExecute), "the concurrent edit survives the hash upgrade")
+}
+
+// TestMCPClientServerTypeOnSlugRoundTrip pins that the slug override is stored as given, including
+// clearing it back to inherit, unlike the keep-when-unset flags above.
+func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "scm-client",
+		Name:             "scm_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		IsCodeModeClient: true,
+		ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled,
+	}))
+	stored := func() schemas.MCPServerTypeOnSlug {
+		row, err := store.GetMCPClientByID(ctx, "scm-client")
+		require.NoError(t, err)
+		return row.ServerTypeOnSlug
+	}
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
+
+	config, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	var loaded *schemas.MCPClientConfig
+	for _, client := range config.ClientConfigs {
+		if client.ID == "scm-client" {
+			loaded = client
+		}
+	}
+	require.NotNil(t, loaded)
+	assert.Equal(t, schemas.MCPServerTypeOnSlugDisabled, loaded.ServerTypeOnSlug, "the loaded client config carries the override")
+
+	row, err := store.GetMCPClientByID(ctx, "scm-client")
+	require.NoError(t, err)
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugEnabled, stored(), "an update can change the override")
+
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugInherit
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, stored(), "an update can clear the override back to inherit")
 }
 
 // Saving by target updates the existing row in place: same ID and created_at,

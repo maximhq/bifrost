@@ -353,8 +353,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -388,6 +391,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -477,8 +481,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -640,6 +646,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -830,8 +837,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -960,8 +970,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -1317,8 +1329,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1416,6 +1431,7 @@ jobs:
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -1558,8 +1574,11 @@ jobs:
             _grpc_config.localhost:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1638,8 +1657,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1685,8 +1706,11 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1775,8 +1799,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1816,8 +1842,11 @@ jobs:
           allowed-endpoints: >
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1965,8 +1994,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2145,8 +2177,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2272,8 +2307,10 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -2438,8 +2475,11 @@ jobs:
             172.38.0.11:5432
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2538,8 +2578,11 @@ jobs:
             127.0.0.1:8080
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2643,8 +2686,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2735,8 +2781,10 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -2800,8 +2848,11 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2902,8 +2953,10 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3037,8 +3090,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3167,8 +3222,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3314,8 +3371,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

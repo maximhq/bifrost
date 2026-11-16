@@ -19,6 +19,7 @@
 		"budgetsLimits": "預算與限額",
 		"routingRules": "路由規則",
 		"complexityRouter": "複雜度路由器",
+		"routers": "路由器",
 		"circuitBreaker": "熔斷器",
 		"pricingOverrides": "定價覆蓋",
 		"modelSettings": "模型設定",

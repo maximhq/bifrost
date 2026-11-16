@@ -52,6 +52,8 @@ type ClickHouseLogStore struct {
 	// Cross-pod races are not covered, but a given request id is only mutated
 	// by the pod that processed it.
 	rmwLocks [chRMWShards]sync.Mutex
+	// warpQuorumMu is this process's half of warpQuorumWrite.
+	warpQuorumMu sync.Mutex
 	// locker serializes Warp history and user agent mapping writes across
 	// instances; rmwLocks only covers this process. Nil means single-instance
 	// behaviour. Set once at startup, before any such write, so it is read
@@ -998,8 +1000,23 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 // The driver never reports rows affected for mutations, so callers that need
 // a count select it first (chDeleteWhere).
 func (s *ClickHouseLogStore) chLightweightDelete(ctx context.Context, table, where string, args ...any) error {
-	stmt := fmt.Sprintf("DELETE FROM `%s` WHERE %s SETTINGS lightweight_deletes_sync = 1", chEscapeIdentifier(table), where)
-	return s.db.WithContext(ctx).Exec(stmt, args...).Error
+	return s.db.WithContext(ctx).Exec(s.chLightweightDeleteStmt(table, where), args...).Error
+}
+
+// chLightweightDeleteStmt is the DELETE chLightweightDelete runs. On a cluster a
+// delete from the Warp history tables waits for every replica
+// (lightweight_deletes_sync = 2), not just the current one: the claim's
+// sequentially consistent reads wait for quorum inserts but not for deletes, so
+// a Confirm answered by a replica the delete had not reached would still see the
+// thread, claim the card and re-insert the message after the owner's lock was
+// released. Every Warp history delete runs under that lock, so the wait ends
+// before any claim can read.
+func (s *ClickHouseLogStore) chLightweightDeleteStmt(table, where string) string {
+	sync := 1
+	if s.cluster != "" && (table == "warp_messages" || table == "warp_conversations") {
+		sync = 2
+	}
+	return fmt.Sprintf("DELETE FROM `%s` WHERE %s SETTINGS lightweight_deletes_sync = %d", chEscapeIdentifier(table), where, sync)
 }
 
 // chCountWhere counts the logical rows matching where. The DSN-level final=1
@@ -1358,7 +1375,9 @@ func (s *ClickHouseLogStore) AppendWarpMessages(ctx context.Context, ownerID, co
 		messages[i].ConversationID = conversationID
 		messages[i].Position = i
 	}
-	if err := s.db.WithContext(ctx).Create(&messages).Error; err != nil {
+	if err := s.warpQuorumWrite(ctx, func(ctx context.Context) error {
+		return s.db.WithContext(ctx).Create(&messages).Error
+	}); err != nil {
 		return err
 	}
 	// Re-read before the re-insert, because the thread may have been deleted by
@@ -1402,7 +1421,7 @@ func (s *ClickHouseLogStore) AppendWarpMessages(ctx context.Context, ownerID, co
 		stamp = existing.UpdatedAt
 	}
 	existing.UpdatedAt = stamp
-	return s.chReinsert(ctx, &existing)
+	return s.warpQuorumWrite(ctx, func(ctx context.Context) error { return s.chReinsert(ctx, &existing) })
 }
 
 // DeleteWarpConversation removes a thread and its messages.
@@ -1429,6 +1448,109 @@ func (s *ClickHouseLogStore) DeleteWarpConversation(ctx context.Context, ownerID
 		return err
 	}
 	return s.chLightweightDelete(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+}
+
+// warpReplicaContext makes a Warp write or read consistent across the replicas
+// of a cluster (no-op single-node). Replication is asynchronous, so without it
+// a second Confirm answered by a replica the first claim's re-insert has not
+// reached yet would read the card as unclaimed and claim it again; the owner's
+// distributed lock orders the two claims but cannot make that read current.
+// Writes wait for a quorum of replicas, sequentially (insert_quorum = 'auto',
+// insert_quorum_parallel = 0), and reads only answer once their replica holds
+// every quorum insert (select_sequential_consistency = 1), the pairing
+// ClickHouse documents for ReplicatedMergeTree. The cost: with a majority of
+// replicas down, Warp history writes fail rather than land on one replica.
+//
+// WithSettings replaces any settings already on ctx, so it is built per call.
+func (s *ClickHouseLogStore) warpReplicaContext(ctx context.Context, write bool) context.Context {
+	if s.cluster == "" {
+		return ctx
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(warpReplicaSettings(write)))
+}
+
+// warpReplicaSettings are the settings warpReplicaContext applies.
+func warpReplicaSettings(write bool) clickhouse.Settings {
+	if write {
+		return clickhouse.Settings{"insert_quorum": "auto", "insert_quorum_parallel": 0}
+	}
+	return clickhouse.Settings{"select_sequential_consistency": 1}
+}
+
+// warpQuorumWriteLockKey is the shared lock every Warp quorum insert takes.
+const warpQuorumWriteLockKey = "warp_quorum_write"
+
+// warpQuorumWrite runs one Warp insert with the replica quorum settings. With
+// insert_quorum_parallel = 0 a replicated table accepts one quorum insert at a
+// time and refuses the next with UNSATISFIED_QUORUM_FOR_PREVIOUS_WRITE until the
+// previous one has reached its quorum. The owner lock only orders one owner's
+// writes, so on a cluster every quorum insert also takes this one lock, here and
+// on every instance sharing the locker; the claim reads keep their sequential
+// consistency, which parallel quorum inserts would not give. It is taken last,
+// inside the owner and RMW locks, so it cannot deadlock against them.
+func (s *ClickHouseLogStore) warpQuorumWrite(ctx context.Context, write func(context.Context) error) error {
+	if s.cluster == "" {
+		return write(ctx)
+	}
+	s.warpQuorumMu.Lock()
+	defer s.warpQuorumMu.Unlock()
+	held, release, err := s.lockShared(ctx, warpQuorumWriteLockKey)
+	if err != nil {
+		return fmt.Errorf("acquire warp quorum write lock: %w", err)
+	}
+	defer release()
+	return write(s.warpReplicaContext(held, true))
+}
+
+// SwapWarpQuestion replaces one message's stored question only if it still
+// holds expected and is still the thread's newest message. ClickHouse has no
+// conditional UPDATE, so the checks and the re-insert run under the owner's
+// distributed lock, which every Warp write to the thread takes, including
+// AppendWarpMessages, and this process's RMW lock.
+//
+// On a cluster the reads and the re-insert are made consistent across replicas
+// (warpReplicaContext), since the lock orders claims but does not make a
+// replica's read current.
+//
+// Without a distributed locker the swap is refused (ErrWarpClaimNeedsSharedLock):
+// the RMW lock is per-process, so two replicas sharing this ClickHouse could
+// both claim one card and run the confirmed change twice.
+func (s *ClickHouseLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	if s.locker == nil {
+		return false, ErrWarpClaimNeedsSharedLock
+	}
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	defer s.lockRMW("warp_messages", messageID)()
+	// On a cluster the reads see every quorum insert, the claim before this one
+	// included, whichever replica answers (see warpReplicaContext).
+	readCtx := s.warpReplicaContext(ctx, false)
+	owned, err := s.chExistsWhere(readCtx, "warp_conversations", "id = ? AND owner_id = ?", conversationID, ownerID)
+	if err != nil || !owned {
+		return false, err
+	}
+	newest, err := newestWarpMessageID(s.db.WithContext(readCtx), conversationID)
+	if err != nil || newest != messageID {
+		return false, err
+	}
+	var message WarpMessage
+	if err := s.db.WithContext(readCtx).Where("conversation_id = ? AND id = ?", conversationID, messageID).First(&message).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if message.QuestionJSON != expected {
+		return false, nil
+	}
+	message.QuestionJSON = replacement
+	if err := s.warpQuorumWrite(ctx, func(ctx context.Context) error { return s.chReinsert(ctx, &message) }); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
@@ -1782,4 +1904,271 @@ func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) 
 		return nil
 	}
 	return s.chLightweightDelete(ctx, "relay_logs", "id IN ?", entryIDs)
+}
+
+// --- Complexity phrase suggestions ---
+//
+// As with Warp's topics, the reads are inherited and the writes and deletes
+// are overridden: a plain insert is the upsert, because each table is ordered
+// by its identity and ReplacingMergeTree keeps the newest row written for it.
+
+// UpsertComplexitySuggestions writes suggestions whole, replacing any row with
+// the same ID.
+func (s *ClickHouseLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	if err := prepareComplexitySuggestions(suggestions, time.Now().UTC()); err != nil {
+		return err
+	}
+	return chCreateInChunks(ctx, s, suggestions)
+}
+
+// chCreateInChunks inserts rows complexitySuggestionWriteBatch at a time, as
+// the RDB store does, so one call never builds a single statement for all of
+// them. It stops at the first failed chunk; the chunks before it stay
+// written, which a retry of the whole call overwrites as the newest version.
+func chCreateInChunks[T any](ctx context.Context, s *ClickHouseLogStore, rows []T) error {
+	for chunk := range slices.Chunk(rows, complexitySuggestionWriteBatch) {
+		if err := s.db.WithContext(ctx).Create(&chunk).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// complexitySuggestionLockKey is the shared lock for one suggestion's status.
+func complexitySuggestionLockKey(id string) string {
+	return "model_routing_suggestion:" + id
+}
+
+// ReconcileComplexitySuggestions writes a run's outcome. New rows are
+// inserted; an existing row is read, checked and written back whole under the
+// suggestion's lock, as a status change is, only while it is still at the
+// status the run read it at.
+func (s *ClickHouseLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	inserts, updates, err := splitComplexitySuggestionWrites(writes)
+	if err != nil {
+		return nil, err
+	}
+	var skipped []string
+	for _, w := range updates {
+		written, err := s.writeComplexitySuggestionFrom(ctx, w)
+		if err != nil {
+			return skipped, err
+		}
+		if !written {
+			skipped = append(skipped, w.Suggestion.ID)
+		}
+	}
+	if len(inserts) > 0 {
+		if err := chCreateInChunks(ctx, s, inserts); err != nil {
+			return skipped, err
+		}
+	}
+	return skipped, nil
+}
+
+func (s *ClickHouseLogStore) writeComplexitySuggestionFrom(ctx context.Context, w ComplexitySuggestionWrite) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(w.Suggestion.ID))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", w.Suggestion.ID)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{w.Suggestion.ID}, OmitCentroids: true})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != w.From {
+		return false, nil
+	}
+	written := []ComplexitySuggestion{w.Suggestion}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+// ClickHouse has no conditional update, so the row is read, checked and
+// written back whole under the suggestion's lock: the shared one when a
+// locker is set, so decisions on any instance are serialized, and this
+// process's row lock. Of two decisions read from the same status only the
+// first lands. A run's writes to existing rows take the same lock (see
+// ReconcileComplexitySuggestions), so a decision and a run never both land on
+// the status they read.
+func (s *ClickHouseLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(id))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", id)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{id}})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != from {
+		return false, nil
+	}
+	row := rows[0]
+	row.Status, row.ResolvedAt = to, resolvedAt
+	written := []ComplexitySuggestion{row}
+	if err := prepareComplexitySuggestions(written, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteComplexitySuggestions removes suggestions outright.
+func (s *ClickHouseLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "model_routing_suggestions", "id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// complexitySuggestionRunLockKey is the shared lock for one run's row.
+func complexitySuggestionRunLockKey(id string) string {
+	return "model_routing_suggestion_run:" + id
+}
+
+// UpsertComplexitySuggestionRun writes a run whole, replacing any row with the
+// same ID. It takes the run's locks, as UpdateComplexitySuggestionRunStatus
+// does, so a conditional status change is never interleaved with a write of
+// the same run.
+func (s *ClickHouseLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	held, release, err := s.lockShared(ctx, complexitySuggestionRunLockKey(run.ID))
+	if err != nil {
+		return fmt.Errorf("acquire suggestion run lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestion_runs", run.ID)
+	defer unlock()
+	if err := prepareComplexitySuggestionRun(run, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(held).Create(run).Error
+}
+
+// UpdateComplexitySuggestionRunStatus ends a run. ClickHouse has no
+// conditional update, so the row is read, checked and written back whole
+// under the run's locks: the shared one when a locker is set, so it is
+// serialized with every instance's writes of the run, and this process's row
+// lock. Every write of a run takes the same locks, so an outcome the run
+// wrote first is never overwritten.
+func (s *ClickHouseLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	held, release, err := s.lockShared(ctx, complexitySuggestionRunLockKey(id))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion run lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestion_runs", id)
+	defer unlock()
+	runs, err := s.ListComplexitySuggestionRuns(held, ComplexitySuggestionRunFilter{IDs: []string{id}}, 1)
+	if err != nil {
+		return false, err
+	}
+	if len(runs) == 0 || !slices.Contains(from, runs[0].Status) {
+		return false, nil
+	}
+	run := runs[0]
+	run.Status, run.Stage, run.FinishedAt = to, "", finishedAt
+	if err := prepareComplexitySuggestionRun(&run, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err := s.db.WithContext(held).Create(&run).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// InsertComplexitySuggestionRun writes a run unless one with its ID exists.
+// ClickHouse has no insert-if-absent, so the run is looked up and written
+// under its lock: the shared one when a locker is set, so registrations on
+// any instance are serialized, and this process's row lock.
+func (s *ClickHouseLogStore) InsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) (bool, error) {
+	if err := prepareComplexitySuggestionRun(run, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	held, release, err := s.lockShared(ctx, complexitySuggestionRunLockKey(run.ID))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion run lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestion_runs", run.ID)
+	defer unlock()
+	existing, err := s.ListComplexitySuggestionRuns(held, ComplexitySuggestionRunFilter{IDs: []string{run.ID}}, 1)
+	if err != nil {
+		return false, err
+	}
+	if len(existing) > 0 {
+		return false, nil
+	}
+	if err := s.db.WithContext(held).Create(run).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs, with
+// one lightweight delete.
+func (s *ClickHouseLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, fmt.Errorf("keep must be positive")
+	}
+	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, routerID, keep)
+	if err != nil || where == "" {
+		return 0, err
+	}
+	return s.chDeleteWhere(ctx, "model_routing_suggestion_runs", where, args...)
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs,
+// with one lightweight delete each. There is no transaction to undo the first
+// with, so a failure on the second leaves the runs, which a retry removes.
+func (s *ClickHouseLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	if routerID == "" {
+		return fmt.Errorf("router id is required")
+	}
+	if err := s.chLightweightDelete(ctx, "model_routing_suggestions", "router_id = ?", routerID); err != nil {
+		return err
+	}
+	return s.chLightweightDelete(ctx, "model_routing_suggestion_runs", "router_id = ?", routerID)
+}
+
+// AddComplexityVectorDeletes records deleted logs whose captured vector delete
+// failed. A (log, namespace) recorded twice is one row once the table
+// merges.
+func (s *ClickHouseLogStore) AddComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareComplexityVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return chCreateInChunks(ctx, s, rows)
+}
+
+// DeleteComplexityVectorDeletes removes exactly the given (log, namespace)
+// rows.
+func (s *ClickHouseLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	for chunk := range slices.Chunk(rows, chWarpTopicDeleteChunk) {
+		where, args := complexityVectorDeleteWhere(chunk)
+		if err := s.chLightweightDelete(ctx, "model_routing_vector_deletes", where, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }

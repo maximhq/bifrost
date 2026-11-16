@@ -479,6 +479,50 @@ Existing releases that still use `code_keywords`, `technical_keywords`, and `rea
 
 ---
 
+## Model Routers
+
+`bifrost.modelRouters` declares named model routers. The chart renders them as the top-level `model_routers` section of `config.json`, passing every field through as written. Leave the list empty (the default) to render nothing and keep the routers that are stored.
+
+Each router takes an `id` (letters, digits, `_` and `-`), a unique `name`, an optional `description`, the same settings as `complexityAnalyzerConfig` above (`keywords` (required), `classifier`, `semantic`, `decision`, `llm`, `session`, `tier_boundaries`, and `suggestions`), `targets`, and `routing`. `classifier` is `semantic` (the default), `decision`, or `llm`; `llm` classifies with the model in the `llm` block. Routers are separate from `complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
+
+`targets` sets the model each tier gets. A tier with no target keeps the request's model, and weights within a tier sum to 1. Leave `targets` out to keep the targets set in the dashboard; an empty list clears them.
+
+`routing` decides which requests the router takes. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), and by `priority` within a scope. The first enabled router whose `cel_expression` holds classifies the request as `SIMPLE`, `MEDIUM`, or `COMPLEX`, and its target for that tier replaces the provider and model; no other router is tried. `scope` (`global`, `team`, `customer`, or `virtual_key`), `scope_id`, and `cel_expression` work as in routing rules, but `cel_expression` cannot use `complexity_tier`, and priorities are unique among model routers only. Routing whose `scope_id` names no existing entity is skipped at load with a warning. A condition of `model == "<name>"` lets apps ask for the router by that model name. Leave `routing` out to keep the routing set in the dashboard; a new router without it starts off (`enabled: false`), global, after the other global routers.
+
+```yaml
+bifrost:
+  modelRouters:
+    - id: "support"
+      name: "Support"
+      description: "Classifies support traffic"
+      classifier: decision
+      decision:
+        provider: typesafe
+        model: jev-latest
+      keywords:
+        simple_keywords: ["how do I reset my password?"]
+        medium_keywords: ["why is my invoice higher than last month?"]
+        complex_keywords: ["plan a zero-downtime migration of our SSO setup."]
+      targets:                                      # weights within a tier sum to 1
+        - tier: SIMPLE
+          provider: "openai"
+          model: "gpt-4o-mini"
+          weight: 1
+        - tier: COMPLEX
+          provider: "anthropic"
+          model: "claude-sonnet-4-5"
+          weight: 1
+          fallbacks: ["openai/gpt-4o"]              # replaces the request's chain when this target is chosen
+      routing:
+        enabled: true
+        cel_expression: "model == 'support-assistant'"  # apps send model: "support-assistant"
+        scope: "team"
+        scope_id: "team-support"                    # the team's ID, not its name
+        priority: 0
+```
+
+---
+
 ## Full Example
 
 ```yaml

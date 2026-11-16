@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.",
 		"asyncJobTtl": "Async Job Result TTL (seconds)",
 		"asyncJobTtlHelp": "Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.",
+		"bifrostUrl": "Bifrost URL",
+		"bifrostUrlHelp": "The URL clients reach this gateway at, including any base path. Required for <code0>/v1/mcp</code0> and Warp's configuration tools: their calls act as if they arrived here, so links in their results point at it. If left blank, both are disabled; the Host header a request sends is never used instead.",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "OpenAPI URL",
+		"openapiUrlHelp": "The OpenAPI spec <code0>/v1/mcp</code0> builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Leave empty to read the published spec for this build.",
+		"openapiUrlPlaceholder": "Published spec for this build",
 		"languageHelp": "Display language for the dashboard. Saved in this browser and applied right away.",
 		"headerForwarding": "Header Forwarding",
 		"headerForwardingHelp": "Control which extra headers are forwarded to LLM providers.",
@@ -244,6 +250,8 @@
 		"deleteExpiredVirtualKeysHelp": "When enabled, a daily cleanup job deletes every virtual key whose expiry has passed and posts a notification listing the removed keys. Each key can override this from its <b0>Delete after expire</b0> switch: a key set to off is kept, and a key set to on is deleted even while this is disabled.",
 		"enforceVkObjectOwnership": "Restrict Provider Objects to the Creating Virtual Key",
 		"enforceVkObjectOwnershipHelp": "When enabled, files, batches, videos, containers, cached contents and live sessions created with a virtual key can only be read, listed or deleted with that same key. Other virtual keys get a not-found error and do not see them in lists. Requests without a virtual key are not affected. The creating key is recorded even while this is disabled, so enabling it again also covers objects created in the meantime, except any whose creating key could not be recorded.",
+		"bifrostMcpAllowWrites": "Allow configuration changes through the Bifrost MCP",
+		"bifrostMcpAllowWritesHelp": "Serve the gateway's non-GET /api operations as tools on <code0>/v1/mcp</code0>. Inference, batch and file routes are served either way. Destructive tools ask MCP clients to confirm.",
 		"proofRequired": "Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead.",
 		"skipAccessProfileKeyCreation": "Don't Create User Virtual Keys for Access Profiles",
 		"skipAccessProfileKeyCreationHelp": "When enabled, a user's first access profile doesn't create a virtual key for them. Keys the user already owns, or that you add for them, are still governed by the profile while they hold one.",
@@ -387,6 +395,9 @@
 		"allToolsPerServerInASinglePyFile": "All tools per server in a single .py file",
 		"individualPyFileForEachTool": "Individual .py file for each tool",
 		"externalClientUrlPlaceholder": "https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL",
+		"clientMetadataUrl": "Client Metadata Document URL",
+		"clientMetadataUrlHelp": "Where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Bifrost signs in to them with this URL as its client ID. After saving, publish <a1>Bifrost's document</a1> at this URL unchanged: its <code0>client_id</code0> must match this URL exactly, and it lists the callback under the External Client URL above. Leave blank to serve the document from Bifrost. Must be an HTTPS URL with a path. Supports env var syntax.",
+		"clientMetadataUrlPlaceholder": "https://public.example.com/bifrost/client.json or env.BIFROST_CLIENT_METADATA_URL",
 		"externalClientUrlWarning": "Changing this URL can break existing MCP clients",
 		"headers": "Headers",
 		"both": "Both",
@@ -402,6 +413,7 @@
 		"toastSyncIntervalInvalid": "Tool sync interval must be zero or a positive number.",
 		"toastMaxInstructionsPerServerInvalid": "Max instruction length per server must be zero or a positive number.",
 		"toastMaxInstructionsTotalInvalid": "Max instruction length total must be zero or a positive number.",
+		"toastOpenAPIMaxSpecInvalid": "OpenAPI spec size limit must be a whole number between 0 and {{max}} MiB.",
 		"toastIssuerUrlRequired": "Issuer URL is required when MCP auth mode is OAuth or Both. Set it in Settings > Security first.",
 		"oauthPrivateAllowlist": "OAuth Private Network Allowlist",
 		"oauthPrivateAllowlistHelp": "Hosts, IP addresses, or CIDR ranges (no scheme or port) that OAuth discovery, client registration, and token requests for MCP servers may reach when they resolve to a loopback or private address, e.g. <code0>localhost</code0>, <code1>127.0.0.1</code1>, or <code2>10.20.0.0/16</code2>. Applies to MCP servers added with dashboard authentication enabled; changing it requires dashboard authentication. Link-local and cloud metadata addresses are always blocked.",
@@ -412,6 +424,8 @@
 		"maxProtocolVersionHelp": "Newest MCP protocol version Bifrost offers to MCP servers. Auto uses the latest Bifrost supports. Each server can override this.",
 		"maxInstructionsTotal": "Max Instruction Length Total (bytes)",
 		"maxInstructionsTotalHelp": "Ceiling across every server a caller can see. At <code0>Gateway and LLM requests</code0> this rides on every MCP-bearing request, so raising it raises per-request tokens. Set to 0 to use the default of 16384.",
+		"maxOpenAPISpecSize": "Max OpenAPI Spec Size (MiB)",
+		"maxOpenAPISpecSizeHelp": "Largest document an OpenAPI MCP server accepts, pasted, uploaded or fetched from its URL. Parsing holds several times this in memory. Set to 0 to use the default of 32.",
 		"allowedRedirectUris": "Allowed redirect URIs",
 		"allowedRedirectUrisHelp": "Exact callback URIs remote MCP clients may use, e.g. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Add <code1>*</code1> to allow any https callback; partial wildcards are not supported. Loopback callbacks and <code2>cursor://anysphere.cursor-mcp</code2> are always allowed. Changing this list requires dashboard authentication.",
 		"allowedRedirectUrisPlaceholder": "Add callback URI (Enter)",
@@ -1040,6 +1054,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Configuration tools",
+			"description": "Warp can read how Bifrost is configured. Choose which kinds of change it may also make; each one still waits for the user to confirm it.",
+			"reads": "Read configuration",
+			"readsHelp": "Providers, virtual keys, teams, budgets, routing rules and the rest.",
+			"alwaysOn": "Always on",
+			"size_one": "{{count}} tool · ~{{tokens}} tokens",
+			"size_other": "{{count}} tools · ~{{tokens}} tokens",
+			"kinds": {
+				"create": {
+					"label": "Create",
+					"help": "Add virtual keys, teams, routing rules and more."
+				},
+				"update": {
+					"label": "Update",
+					"help": "Change existing resources, such as a virtual key's budget."
+				},
+				"delete": {
+					"label": "Delete",
+					"help": "Remove resources. Each delete says it cannot be undone."
+				},
+				"action": {
+					"label": "Other actions",
+					"help": "Run operations such as testing a provider or clearing a cache."
+				}
+			},
+			"notLoaded": "Kinds of change can be chosen once the Bifrost MCP is loaded.",
+			"writesOff": "Changes are off for the whole Bifrost MCP. Turn on <link0>Allow configuration changes through the Bifrost MCP</link0> in Security settings to choose them for Warp.",
+			"contextWarning": "Every kind you turn on is sent with each Warp request: about {{tokens}} tokens of tools with these settings. Models with a smaller context window may stop answering.",
+			"contextReadsOnly": "Reads add about {{tokens}} tokens of tools to each Warp request."
+		},
 		"saved": "Warp configuration saved.",
 		"badRange": "Choose a valid backfill time range.",
 		"backfillStarted": "Warp embedding backfill started.",

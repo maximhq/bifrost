@@ -74,6 +74,7 @@ type TableClientConfig struct {
 	UsageEstimationTokenizersJSON           string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string of tokenizer families used to estimate a cancelled stream's usage
 	RoutingChainMaxDepth                    int                            `gorm:"default:10" json:"routing_chain_max_depth"`                          // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`         // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
+	MCPClientMetadataURL                    string                         `gorm:"type:varchar(512)" json:"mcp_client_metadata_url,omitempty"`         // Where Bifrost's Client ID Metadata Document is hosted, when not under mcp_external_client_url
 	SkillsExternalClientURL                 string                         `gorm:"type:varchar(512)" json:"skills_external_client_url,omitempty"`      // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse              bool                           `gorm:"column:a2a_store_raw_request_response;default:false" json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"a2a_external_client_url,omitempty"`      // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs
@@ -91,6 +92,16 @@ type TableClientConfig struct {
 	CompatAzureDeepseek                       bool `gorm:"column:compat_azure_deepseek;default:false" json:"-"`
 	CompatForceReasoningOnlyModelsToResponses bool `gorm:"column:compat_force_reasoning_only_models_to_responses;default:false" json:"-"`
 	CompatConvertDecisionToResponses          bool `gorm:"column:compat_convert_decision_to_responses;default:false" json:"-"`
+
+	// MCPOpenAPIMaxSpecMB limits an openapi MCP client's spec, in MiB; 0 is the built-in 32.
+	// The explicit column name avoids GORM deriving "mcp_open_api_..." from the field name.
+	MCPOpenAPIMaxSpecMB int `gorm:"column:mcp_openapi_max_spec_mb;default:0" json:"mcp_openapi_max_spec_mb"`
+
+	// BifrostURL is the gateway's public base URL; empty leaves self URLs to the request.
+	BifrostURL string `gorm:"column:bifrost_url;type:varchar(512)" json:"bifrost_url,omitempty"`
+	// BifrostMCPAllowWrites gates /v1/mcp's non-GET /api tools; NULL is true. A pointer, so GORM
+	// stores false instead of substituting a column default for the zero value.
+	BifrostMCPAllowWrites *bool `gorm:"column:bifrost_mcp_allow_writes" json:"bifrost_mcp_allow_writes,omitempty"`
 
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.

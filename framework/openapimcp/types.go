@@ -11,7 +11,7 @@ import (
 
 const (
 	// MaxSpecBytes caps a spec document (inline, file or fetched).
-	MaxSpecBytes = 5 << 20
+	MaxSpecBytes = 32 << 20
 	// DefaultMaxResponseBytes caps an upstream response body returned to the model.
 	DefaultMaxResponseBytes = 64 << 10
 	// ToolCountWarnThreshold is the tool count above which a warning is emitted.
@@ -93,6 +93,7 @@ type Operation struct {
 	HasSecurity bool                  // op declared its own security (even if empty)
 	Servers     []string              // op/path-level server override
 	Unsupported string                // non-empty: reason the operation cannot become a tool
+	Extensions  map[string]any        // the operation object's x-* keys, as decoded
 }
 
 // Parameter is one path/query/header/cookie/querystring parameter.
@@ -135,6 +136,7 @@ type ArgBinding struct {
 	ArgName             string // property name in the tool input schema
 	Location            string // path | query | header | cookie | querystring
 	Name                string // wire parameter name
+	Template            string // query names with a <placeholder>: the argument is an object, one pair per entry
 	Required            bool
 	Explode             bool
 	Style               string
@@ -178,6 +180,7 @@ type ParseOptions struct {
 type SynthesizeOptions struct {
 	ClientName        string // budgets the tool-name length against the "<client>-" prefix
 	IncludeDeprecated bool
+	TemplateParams    bool // expand <placeholder> query names into object arguments; only for a spec that uses that convention
 }
 
 // HeaderResolver supplies the headers for one upstream call.
@@ -194,6 +197,7 @@ type ServerOptions struct {
 	Headers          HeaderResolver
 	MaxResponseBytes int
 	Logger           schemas.Logger
+	ToolFilter       func(ctx context.Context, tools []mcp.Tool) []mcp.Tool // optional; see mcp-go's server.WithToolFilter
 }
 
 // PreviewResult is the API-facing summary of a parsed spec.

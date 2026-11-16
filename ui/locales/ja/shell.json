@@ -19,6 +19,7 @@
 		"budgetsLimits": "予算と制限",
 		"routingRules": "ルーティングルール",
 		"complexityRouter": "複雑度ルーター",
+		"routers": "ルーター",
 		"circuitBreaker": "サーキットブレーカー",
 		"pricingOverrides": "料金オーバーライド",
 		"modelSettings": "モデル設定",

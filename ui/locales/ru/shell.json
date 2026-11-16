@@ -19,6 +19,7 @@
 		"budgetsLimits": "Бюджеты и лимиты",
 		"routingRules": "Правила маршрутизации",
 		"complexityRouter": "Маршрутизатор сложности",
+		"routers": "Маршрутизаторы",
 		"circuitBreaker": "Автоматический переключатель",
 		"pricingOverrides": "Переопределения цен",
 		"modelSettings": "Настройки моделей",

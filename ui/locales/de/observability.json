@@ -70,7 +70,8 @@
 			"decision": "Entscheidungsmodell",
 			"llm": "LLM",
 			"skipped": "Übersprungen"
-		}
+		},
+		"modelRouter": "Router"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1233,7 +1234,10 @@
 		"exactRoundTripID": "Exakte Round-Trip-ID",
 		"nothingRecorded": "In diesem Zeitraum wurde nichts erfasst",
 		"topics": "Themen",
-		"searchTopics": "Themen suchen"
+		"searchTopics": "Themen suchen",
+		"modelRouters": "Router",
+		"searchModelRouters": "Router suchen",
+		"loadFailed": "Diese Liste konnte nicht geladen werden."
 	},
 	"requestTypes": {
 		"chat_completion": "Chat",
@@ -1262,6 +1266,7 @@
 		"decisions": "Entscheidungen",
 		"speech": "Sprachsynthese",
 		"speech_stream": "Sprachsynthese-Stream",
+		"speech_session": "Sprachsynthese-Sitzung",
 		"transcription": "Transkription",
 		"transcription_stream": "Transkriptions-Stream",
 		"image_generation": "Bilderzeugung",
@@ -1632,6 +1637,70 @@
 				"publicAgentCardFetched": "Öffentliche Agent Card abgerufen",
 				"extendedAgentCardFetched": "Erweiterte Agent Card abgerufen"
 			}
+		},
+		"trace": {
+			"title": "Agent-Trace",
+			"loading": "Trace wird geladen…",
+			"partial": "Einige verknüpfte Logs konnten nicht geladen werden, daher ist dieser Trace möglicherweise unvollständig.",
+			"timeline": "Zeitachse",
+			"findSpan": "Span suchen",
+			"treeLabel": "Trace-Spans",
+			"noMatches": "Keine passenden Spans.",
+			"artifacts": "Artefakte",
+			"latency": "Latenz",
+			"tokens": "Tokens",
+			"cost": "Kosten",
+			"agents": "Agenten",
+			"llmCalls": "LLM-Aufrufe",
+			"mcpCalls": "MCP-Aufrufe",
+			"errors": "Fehler",
+			"tokensShort": "{{value}} Tok.",
+			"errorsShort": "{{value}} Fehler",
+			"followUps": "+{{value}} Folgeaufrufe",
+			"producedBy": "Erstellt von {{agent}}",
+			"artifactKind": {
+				"data": "Daten",
+				"text": "Text"
+			},
+			"expand": "{{name}} ausklappen",
+			"collapse": "{{name}} einklappen",
+			"openInLLMLogs": "In LLM-Logs öffnen",
+			"openInMCPLogs": "In MCP-Logs öffnen",
+			"a2a": "A2A",
+			"error": "Fehler",
+			"scopeTrace": "Trace",
+			"scopeSession": "Sitzung",
+			"sessionName": "Sitzung {{value}}",
+			"turn": "Runde {{value}}",
+			"turnCount": "Runden {{value}}",
+			"turns": "Runden",
+			"sessionId": "Sitzung",
+			"taskId": "Task",
+			"copyLink": "Link kopieren",
+			"linkCopied": "Link kopiert",
+			"guardrails": "Guardrails",
+			"guard": {
+				"guardrail": "Guardrail",
+				"rule": "Regel",
+				"provider": "Anbieter",
+				"phase": "Phase",
+				"outcome": "Ergebnis",
+				"reason": "Grund",
+				"judgeModel": "Bewertungsmodell",
+				"assessments": "Bewertungen"
+			},
+			"turnsLoaded": "{{loaded}} von {{total}} Runden geladen",
+			"loadMoreTurns": "Weitere Runden laden",
+			"userMessage": "Nutzer",
+			"viewSpans": "Spans anzeigen",
+			"noReply": "Keine Antwort aufgezeichnet.",
+			"spansTab": "Spans",
+			"threadTab": "Verlauf",
+			"llmShort": "{{value}} LLM",
+			"mcpShort": "{{value}} MCP",
+			"guardShort": "{{value}} Guardrails",
+			"agentSpan": "Agent-Span",
+			"conversationEnd": "Ende"
 		},
 		"logSheet": {
 			"localOperationNote": "Diese Operation wird von Bifrost ohne Upstream-Anfrage verarbeitet. Die Protokoll-Payloads unten sind serialisierte Daten, keine Transportaufzeichnungen.",
