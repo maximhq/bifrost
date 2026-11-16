@@ -15,6 +15,13 @@
         "tools_to_auto_execute": ["echo", "add", "greet"]
       },
       {
+        "name": "schema_probe_mcp",
+        "connection_type": "sse",
+        "connection_string": "http://localhost:3012/sse",
+        "tools_to_execute": ["closed_schema_probe"],
+        "tools_to_auto_execute": []
+      },
+      {
         "name": "slow_mcp",
         "connection_type": "sse",
         "connection_string": "http://localhost:3012/sse",
