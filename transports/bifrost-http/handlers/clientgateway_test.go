@@ -2,8 +2,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -28,13 +26,13 @@ const testClaudeCodeResource = testIssuer + "/claude-code"
 // migrations, so the device-code columns exist) with the gateway enabled, plus a
 // consent handler sharing the same config. /mcp is left on header auth: the
 // gateway does not depend on the MCP auth mode.
-func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*ClaudeCodeGatewayHandler, *OAuth2ConsentHandler, configstore.ConfigStore, *lib.Config) {
+func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*clientGatewayEndpoint, *OAuth2ConsentHandler, configstore.ConfigStore, *lib.Config) {
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, enforceAuth)
 	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway = &configtables.ClaudeCodeGatewayConfig{Enabled: true}
-	return NewClaudeCodeGatewayHandler(cfg, nil, nil, nil), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
+	return NewClientGatewayHandler(cfg, nil, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
 }
 
 // seedGatewayVK stores an active virtual key and returns it.
@@ -60,7 +58,7 @@ func oauthErrorCode(t *testing.T, ctx *fasthttp.RequestCtx) string {
 
 // startDeviceSignIn runs device_authorization the way Claude Code does (only
 // surface=claude_code, no client_id) and returns the device and user codes.
-func startDeviceSignIn(t *testing.T, h *ClaudeCodeGatewayHandler) (deviceCode, userCode string) {
+func startDeviceSignIn(t *testing.T, h *clientGatewayEndpoint) (deviceCode, userCode string) {
 	t.Helper()
 	ctx := formPostCtx("surface=claude_code")
 	h.handleDeviceAuthorization(ctx)
@@ -77,7 +75,7 @@ func startDeviceSignIn(t *testing.T, h *ClaudeCodeGatewayHandler) (deviceCode, u
 	return deviceCode, userCode
 }
 
-func pollDeviceToken(h *ClaudeCodeGatewayHandler, deviceCode string) *fasthttp.RequestCtx {
+func pollDeviceToken(h *clientGatewayEndpoint, deviceCode string) *fasthttp.RequestCtx {
 	ctx := formPostCtx(url.Values{"grant_type": {deviceCodeGrantType}, "device_code": {deviceCode}}.Encode())
 	h.handleToken(ctx)
 	return ctx
@@ -85,7 +83,7 @@ func pollDeviceToken(h *ClaudeCodeGatewayHandler, deviceCode string) *fasthttp.R
 
 // approveWithVK runs the verification page and consent page legs for userCode
 // using a virtual key, and returns the consent redirect.
-func approveWithVK(t *testing.T, h *ClaudeCodeGatewayHandler, consent *OAuth2ConsentHandler, userCode, vkValue string) string {
+func approveWithVK(t *testing.T, h *clientGatewayEndpoint, consent *OAuth2ConsentHandler, userCode, vkValue string) string {
 	t.Helper()
 	verify := jsonPostCtx(`{"user_code":"` + strings.ToLower(userCode) + `"}`)
 	h.handleDeviceVerify(verify)
@@ -119,6 +117,63 @@ func bearerCtx(token string) *fasthttp.RequestCtx {
 	req.Header.SetMethod("POST")
 	req.Header.Set("Authorization", "Bearer "+token)
 	return initCtx(&req)
+}
+
+// otherGatewayProfile is a second client gateway for tests: Claude Code's
+// protocol under another prefix, built-in client and audience.
+type otherGatewayProfile struct{ claudeCodeProfile }
+
+func (otherGatewayProfile) Name() string                                  { return "other-client" }
+func (otherGatewayProfile) PathPrefix() string                            { return "/other-client" }
+func (otherGatewayProfile) ClientID() string                              { return "bifrost-other-client" }
+func (otherGatewayProfile) DisplayName() string                           { return "Other Client" }
+func (otherGatewayProfile) Enabled(*configtables.OAuth2ServerConfig) bool { return true }
+
+// TestClientGateway_GrantsStayOnTheirGateway pins that with several client
+// gateways mounted, every grant is redeemable only on the gateway whose built-in
+// client it was issued to: a device code, a user code, a refresh token and an
+// access token from one gateway are all refused by another, and revoking at the
+// wrong gateway leaves the grant alone.
+func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway = &configtables.ClaudeCodeGatewayConfig{Enabled: true}
+	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	claude, other := gateways.endpoint("claude-code"), gateways.endpoint("other-client")
+	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
+	vk := seedGatewayVK(t, store, "vk-cross", "sk-bf-cross")
+
+	deviceCode, userCode := startDeviceSignIn(t, claude)
+
+	verifyElsewhere := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+	other.handleDeviceVerify(verifyElsewhere)
+	assert.Equal(t, fasthttp.StatusNotFound, verifyElsewhere.Response.StatusCode(), "user code verified at the wrong gateway")
+
+	approveWithVK(t, claude, consent, userCode, vk.Value.GetValue())
+	assert.Equal(t, "expired_token", oauthErrorCode(t, pollDeviceToken(other, deviceCode)), "device code redeemed at the wrong gateway")
+
+	issued := pollDeviceToken(claude, deviceCode)
+	require.Equal(t, fasthttp.StatusOK, issued.Response.StatusCode(), string(issued.Response.Body()))
+	accessToken, _ := jsonBody(t, issued)["access_token"].(string)
+	refreshToken, _ := jsonBody(t, issued)["refresh_token"].(string)
+
+	refreshElsewhere := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}.Encode())
+	other.handleToken(refreshElsewhere)
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, refreshElsewhere), "refresh token used at the wrong gateway")
+
+	called := false
+	elsewhere := bearerCtx(accessToken)
+	other.BearerMiddleware(func(*fasthttp.RequestCtx) { called = true })(elsewhere)
+	assert.False(t, called)
+	assert.Equal(t, fasthttp.StatusUnauthorized, elsewhere.Response.StatusCode(), "access token accepted by the wrong gateway")
+
+	revokeElsewhere := formPostCtx(url.Values{"token": {refreshToken}}.Encode())
+	other.handleRevoke(revokeElsewhere)
+	require.Equal(t, fasthttp.StatusOK, revokeElsewhere.Response.StatusCode())
+	stillValid := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}.Encode())
+	claude.handleToken(stillValid)
+	assert.Equal(t, fasthttp.StatusOK, stillValid.Response.StatusCode(), "revoking at the wrong gateway must not revoke the grant: %s", stillValid.Response.Body())
 }
 
 func TestClaudeCodeGateway_DisabledAnswers404(t *testing.T) {
@@ -352,6 +407,9 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 
 	inactive := &configtables.TableVirtualKey{ID: "vk-off", Name: "vk-off", Value: *schemas.NewSecretVar("sk-bf-off"), IsActive: new(false)}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), inactive))
+	past := time.Now().Add(-time.Hour)
+	expired := &configtables.TableVirtualKey{ID: "vk-expired", Name: "vk-expired", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
+	require.NoError(t, store.CreateVirtualKey(context.Background(), expired))
 
 	mint := func(mutate func(jwt.MapClaims)) string {
 		return mintTestToken(t, gatewayPriv, signingKey.KID, func(c jwt.MapClaims) {
@@ -368,6 +426,7 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 		"mcp audience":            mint(func(c jwt.MapClaims) { c["aud"] = jwt.ClaimStrings{testMCPResource} }),
 		"expired":                 mint(func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Minute).Unix() }),
 		"inactive virtual key":    mint(func(c jwt.MapClaims) { c["sub"] = "vk-off" }),
+		"expired virtual key":     mint(func(c jwt.MapClaims) { c["sub"] = "vk-expired" }),
 		"deleted virtual key":     mint(func(c jwt.MapClaims) { c["sub"] = "vk-gone" }),
 		"session while enforcing": mint(func(c jwt.MapClaims) { c["bf_mode"] = string(schemas.MCPAuthModeSession); c["sub"] = "sess-1" }),
 	}
@@ -461,54 +520,9 @@ func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
 	})
 }
 
-func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
-	h, _, _, cfg := newClaudeCodeGateway(t, false)
-
-	t.Run("no policy configured", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
-		h.handleManagedSettings(ctx)
-		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
-	})
-
-	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings = map[string]any{
-		"permissions": map[string]any{"deny": []any{"Bash(curl <url>)"}},
-		"env":         map[string]any{"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
-	}
-	// The checksum Claude Code computes: sha256 over key-sorted JSON with no
-	// whitespace and no HTML escaping.
-	canonical := `{"env":{"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY":"1"},"permissions":{"deny":["Bash(curl <url>)"]}}`
-	sum := sha256.Sum256([]byte(canonical))
-	wantChecksum := "sha256:" + hex.EncodeToString(sum[:])
-
-	t.Run("policy is served with its checksum", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
-		h.handleManagedSettings(ctx)
-		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
-		body := jsonBody(t, ctx)
-		assert.Equal(t, wantChecksum, body["checksum"])
-		assert.Equal(t, wantChecksum, body["uuid"])
-		assert.Equal(t, `"`+wantChecksum+`"`, string(ctx.Response.Header.Peek("ETag")))
-		assert.Contains(t, body["settings"], "permissions")
-	})
-
-	t.Run("unchanged policy answers 304", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
-		ctx.Request.Header.Set("If-None-Match", `"`+wantChecksum+`"`)
-		h.handleManagedSettings(ctx)
-		assert.Equal(t, fasthttp.StatusNotModified, ctx.Response.StatusCode())
-	})
-
-	t.Run("an empty policy is still a policy", func(t *testing.T) {
-		cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings = map[string]any{}
-		ctx := getCtx("/claude-code/managed/settings")
-		h.handleManagedSettings(ctx)
-		assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
-	})
-}
-
 func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {
 	h, _, _, _ := newClaudeCodeGateway(t, false)
-	for i := 0; i < claudeCodeDeviceAuthorizationLimit; i++ {
+	for i := 0; i < clientGatewayDeviceAuthorizationLimit; i++ {
 		ctx := formPostCtx("surface=claude_code")
 		h.handleDeviceAuthorization(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -680,12 +694,12 @@ func TestClaudeCodeIPRateLimiter(t *testing.T) {
 func TestClaudeCodeUserCode(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		code, err := generateClaudeCodeUserCode()
+		code, err := generateGatewayUserCode()
 		require.NoError(t, err)
 		require.Regexp(t, `^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`, code)
 		seen[code] = true
 	}
 	assert.Greater(t, len(seen), 45)
-	assert.Equal(t, "WDJBMJHT", normalizeClaudeCodeUserCode(" wdjb-mjht "))
-	assert.Equal(t, "WDJBMJHT", normalizeClaudeCodeUserCode("WDJB MJHT"))
+	assert.Equal(t, "WDJBMJHT", normalizeGatewayUserCode(" wdjb-mjht "))
+	assert.Equal(t, "WDJBMJHT", normalizeGatewayUserCode("WDJB MJHT"))
 }

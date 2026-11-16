@@ -535,10 +535,11 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 // refreshGrant runs the refresh-token grant for a token bound to clientID:
 // replay detection, identity liveness checks, the resource binding, and an
 // atomic rotation. It writes the token response or OAuth error to ctx. Shared by
-// /oauth2/token and the Claude Code gateway token endpoint, which passes its
-// built-in client ID because Claude Code sends none. servedResource is the
-// resource the calling endpoint issues tokens for (/mcp or /claude-code): a
-// grant bound to any other resource cannot refresh there.
+// /oauth2/token and the client gateway token endpoints, which pass their
+// built-in client ID because clients such as Claude Code send none.
+// servedResource is the resource the calling endpoint issues tokens for (/mcp or
+// a client gateway's base URL): a grant bound to any other resource cannot
+// refresh there.
 func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshToken, clientID, resource, servedResource string) {
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
