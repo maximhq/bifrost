@@ -2,6 +2,7 @@
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 - **Trace Dimensions on Child Spans** - An OTEL profile with `apply_trace_dimensions_to_child_spans` set merges the request's `x-bf-dim-*` dimensions onto every exported span (LLM call, plugin, retry, fallback, MCP tool), not only the root HTTP span. Span attributes win on conflict, and `path`, `method` and keys in reserved attribute namespaces (`gen_ai.`, `http.`, `bifrost.`, ...) are skipped (#3770)
+- **Codex WebSocket Through ChatGPT Sign-In** - `/chatgpt_passthrough/backend-api/codex/responses` accepts the WebSocket Codex opens with `supports_websockets = true` and relays it to ChatGPT with the caller's ChatGPT token. Each turn is checked against the virtual key and logged and billed like a turn sent over HTTP. A request without a ChatGPT token gets a 426, which moves Codex to HTTP right away
 
 ## 🐞 Fixed
 

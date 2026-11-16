@@ -145,7 +145,7 @@ name = "Bifrost"
 base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
 wire_api = "responses"
 requires_openai_auth = true
-supports_websockets = false
+supports_websockets = true
 env_http_headers = { "x-bf-vk" = "BIFROST_VIRTUAL_KEY" }
 ```
 
@@ -159,8 +159,20 @@ codex
 ```
 
 Bifrost forwards two routes under this base URL: `GET /models` for the Codex
-model picker and `POST /responses` for each turn. Bifrost refuses every other
-path and method.
+model picker and `/responses` for each turn. Bifrost refuses every other path
+and method.
+
+With `supports_websockets = true`, Codex opens one WebSocket to `/responses` per
+session and sends each turn over it, so later turns carry only the new input.
+Bifrost relays that socket to ChatGPT frame by frame and runs every turn
+through the virtual key's checks, logging and billing, the same way it does for a
+turn sent over HTTP. If Bifrost refuses the upgrade, for example because the
+request carries no ChatGPT token, Codex switches to HTTP for the rest of the
+session on its own. Set `supports_websockets = false` to always use HTTP.
+
+Bifrost closes a socket that has no response in progress and no traffic for 15
+minutes, and Codex opens a new one for its next turn. Each caller can hold up
+to 32 of these sockets at once.
 
 <Note>
 Model names are the ones your ChatGPT plan offers, such as `gpt-5.5`, without
@@ -217,7 +229,7 @@ name = "Bifrost"
 base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
 wire_api = "responses"
 requires_openai_auth = true
-supports_websockets = false
+supports_websockets = true
 
 [model_providers.bifrost.gateway_oauth]
 authorization_url = "https://your-org.okta.com/oauth2/default/v1/authorize"

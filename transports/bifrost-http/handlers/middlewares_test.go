@@ -773,6 +773,7 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/openai/realtime",
 		"/v1/audio/speech/stream",
 		"/elevenlabs/v1/text-to-dialogue/stream-input",
+		"/chatgpt_passthrough/backend-api/codex/responses",
 	}
 
 	for _, path := range paths {
@@ -786,6 +787,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 	}
 	if isInferenceWSEndpoint("/openai/chat/completions") {
 		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/chatgpt_passthrough/backend-api/codex/models") {
+		t.Fatal("the Codex model list is not a websocket path")
 	}
 }
 
