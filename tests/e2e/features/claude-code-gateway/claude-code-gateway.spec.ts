@@ -61,7 +61,7 @@ test.describe('Claude Code gateway settings', () => {
     // /mcp keeps its auth mode: the gateway does not depend on it.
     expect(clientConfig.mcp_server_auth_mode).toBe('headers')
     expect(clientConfig.oauth2_server_config.issuer_url.value).toBe('https://bifrost.example.com')
-    expect(clientConfig.oauth2_server_config.claude_code_gateway).toEqual({
+    expect(clientConfig.oauth2_server_config.gateways.claude_code).toEqual({
       enabled: true,
       managed_settings: { env: { CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1' } },
     })

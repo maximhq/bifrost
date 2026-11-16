@@ -19,7 +19,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	})
 
-	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings = map[string]any{
+	cfg.ClientConfig.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{
 		"permissions": map[string]any{"deny": []any{"Bash(curl <url>)"}},
 		"env":         map[string]any{"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
 	}
@@ -48,7 +48,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 	})
 
 	t.Run("an empty policy is still a policy", func(t *testing.T) {
-		cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings = map[string]any{}
+		cfg.ClientConfig.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
 		ctx := getCtx("/gateway/claude-code/managed/settings")
 		claudeCodeProfile{}.managedSettingsHandler(h.store)(ctx)
 		assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())

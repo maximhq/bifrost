@@ -31,7 +31,7 @@ func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*clientGatewayEndpoin
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, enforceAuth)
-	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway = &configtables.ClaudeCodeGatewayConfig{Enabled: true}
+	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
 	return NewClientGatewayHandler(cfg, nil, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
 }
 
@@ -138,7 +138,7 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
-	cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway = &configtables.ClaudeCodeGatewayConfig{Enabled: true}
+	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
 	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
 	claude, other := gateways.endpoint("claude-code"), gateways.endpoint("other-client")
 	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
@@ -178,8 +178,8 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 
 func TestClaudeCodeGateway_DisabledAnswers404(t *testing.T) {
 	for name, mutate := range map[string]func(*lib.Config){
-		"toggle off":       func(cfg *lib.Config) { cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.Enabled = false },
-		"toggle unset":     func(cfg *lib.Config) { cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway = nil },
+		"toggle off":       func(cfg *lib.Config) { cfg.ClientConfig.OAuth2ServerConfig.Gateways.ClaudeCode.Enabled = false },
+		"toggle unset":     func(cfg *lib.Config) { cfg.ClientConfig.OAuth2ServerConfig.Gateways.ClaudeCode = nil },
 		"issuer url unset": func(cfg *lib.Config) { cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = nil },
 	} {
 		t.Run(name, func(t *testing.T) {

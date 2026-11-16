@@ -77,11 +77,7 @@ type OAuth2ServerConfig struct {
 	// option. Only meaningful when MCPServerAuthMode is oauth.
 	DisableVKIdentity bool `json:"disable_vk_identity,omitempty"`
 
-	// ClaudeCodeGateway exposes this authorization server to Claude Code's
-	// gateway sign-in (/login → Cloud gateway) under /gateway/claude-code. It is
-	// independent of MCPServerAuthMode but requires IssuerURL. nil or
-	// Enabled=false leaves every /gateway/claude-code route answering 404.
-	ClaudeCodeGateway *ClaudeCodeGatewayConfig `json:"claude_code_gateway,omitempty"`
+	Gateways *ClientGatewaysConfig `json:"gateways,omitempty"` // client gateways under /gateway/<client>; each needs IssuerURL
 
 	// Refresh tokens have no hard expiry — they are invalidated only by:
 	//   - rotation on use (each /oauth2/token refresh call issues a new token
@@ -94,24 +90,48 @@ type OAuth2ServerConfig struct {
 	// explicit invalidation paths.
 }
 
-// ClaudeCodeGatewayConfig configures the Claude Code gateway protocol served
-// under /gateway/claude-code: the RFC 8628 device sign-in that Claude Code's /login
-// runs, Anthropic Messages inference, managed settings and OTLP telemetry.
-// It reuses the OAuth2 authorization server's signing key, consent page and
-// refresh-token rotation, but not the /mcp auth mode: it is served whenever it
-// is enabled and IssuerURL is set, even while /mcp stays on header auth.
+// ClientGatewaysConfig holds one block per client gateway served under
+// /gateway/<client>. A client gateway lets a coding client sign in to Bifrost
+// with its own /login flow (an RFC 8628 device grant approved on the OAuth
+// consent page) instead of a hand-configured virtual key. Gateways reuse the
+// OAuth2 authorization server's signing key, consent page and refresh-token
+// rotation, but not the /mcp auth mode: each is served whenever it is enabled
+// and IssuerURL is set, even while /mcp stays on header auth. A nil block, or
+// Enabled=false, leaves that gateway's routes answering 404.
+type ClientGatewaysConfig struct {
+	ClaudeCode *ClaudeCodeGatewayConfig `json:"claude_code,omitempty"` // /gateway/claude-code
+}
+
+// ClaudeCodeGatewayConfig configures the Claude Code gateway: the device sign-in
+// Claude Code's /login (Cloud gateway) runs, Anthropic Messages inference,
+// managed settings and OTLP telemetry. ManagedSettings is the
+// managed-settings.json document served at /gateway/claude-code/managed/settings
+// to every signed-in client; nil means no managed policy (the endpoint answers
+// 404), while an empty object is an empty policy.
 type ClaudeCodeGatewayConfig struct {
-	Enabled bool `json:"enabled"`
-	// ManagedSettings is the Claude Code managed-settings.json document served at
-	// /gateway/claude-code/managed/settings to every signed-in client. nil means no
-	// managed policy (the endpoint answers 404); an empty object is an empty policy.
-	ManagedSettings map[string]any `json:"managed_settings"`
+	Enabled         bool           `json:"enabled"`
+	ManagedSettings map[string]any `json:"managed_settings"` // no omitempty: {} (empty policy) must survive a round trip
+}
+
+// ClaudeCodeGateway returns the Claude Code gateway block, or nil when it is unset.
+func (c *OAuth2ServerConfig) ClaudeCodeGateway() *ClaudeCodeGatewayConfig {
+	if c == nil || c.Gateways == nil {
+		return nil
+	}
+	return c.Gateways.ClaudeCode
 }
 
 // IsClaudeCodeGatewayEnabled reports whether the Claude Code gateway toggle is
 // on. It does not check IssuerURL, which the gateway also requires.
 func (c *OAuth2ServerConfig) IsClaudeCodeGatewayEnabled() bool {
-	return c != nil && c.ClaudeCodeGateway != nil && c.ClaudeCodeGateway.Enabled
+	cc := c.ClaudeCodeGateway()
+	return cc != nil && cc.Enabled
+}
+
+// AnyClientGatewayEnabled reports whether at least one client gateway is on, and
+// so whether IssuerURL is required on that account.
+func (c *OAuth2ServerConfig) AnyClientGatewayEnabled() bool {
+	return c.IsClaudeCodeGatewayEnabled()
 }
 
 // DefaultOAuth2ServerConfig returns sensible defaults for the AS-specific settings.
