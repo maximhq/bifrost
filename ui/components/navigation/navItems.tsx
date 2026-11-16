@@ -145,6 +145,7 @@ export function useNavItems(): NavItem[] {
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
+	const hasRoutersAccess = useRbac(RbacResource.Routers, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
@@ -299,15 +300,15 @@ export function useNavItems(): NavItem[] {
 						title: t("nav.complexityRouter"),
 						url: "/workspace/complexity-router",
 						icon: GitCompareArrows,
-						hasAccess: hasRoutingRulesAccess,
+						// The Complexity Router APIs are gated on Governance.
+						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{
 						id: "models.routers",
 						title: t("nav.routers"),
 						url: "/workspace/model-routers",
 						icon: Split,
-						// The model router APIs are gated on Governance.
-						hasAccess: hasGovernanceLegacyAccess,
+						hasAccess: hasRoutersAccess,
 					},
 					{
 						id: "models.circuit-breaker",
@@ -888,6 +889,7 @@ export function useNavItems(): NavItem[] {
 			hasGovernanceLegacyAccess,
 			hasAnyGovernanceAccess,
 			hasRoutingRulesAccess,
+			hasRoutersAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
 			hasCircuitBreakerAccess,

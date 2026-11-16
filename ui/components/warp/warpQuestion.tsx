@@ -1,4 +1,4 @@
-import { isInteractiveTarget } from "./warpQuestion.utils";
+import { acceptsOptionShortcuts, isInteractiveTarget } from "./warpQuestion.utils";
 import { Button } from "@/components/ui/button";
 import { isTypingInto, type WarpQuestion } from "@/components/warp/warpStream.utils";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQue
 	// look like they do nothing, so the card reads as click-only and the whole
 	// keyboard affordance goes unused.
 	const [highlighted, setHighlighted] = useState(0);
+	const shortcuts = acceptsOptionShortcuts(question);
 	// Bound on the document: the card opens while the composer has focus, so card-level keys would need a click.
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
@@ -35,6 +36,8 @@ export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQue
 				return;
 			}
 			if (event.metaKey || event.ctrlKey || event.altKey) return;
+			// A confirmation card runs a write: only a click picks Confirm or Cancel.
+			if (!acceptsOptionShortcuts(question)) return;
 			// Empty options would make the modulo below NaN and crash the panel on the next Enter.
 			if (question.options.length === 0) return;
 
@@ -95,14 +98,16 @@ export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQue
 								index === highlighted ? "bg-primary/15 text-foreground" : "hover:bg-primary/8",
 							)}
 						>
-							<kbd
-								className={cn(
-									"flex size-5 shrink-0 items-center justify-center rounded border font-mono text-[10px]",
-									index === highlighted ? "border-primary/40 text-primary bg-background" : "bg-background text-muted-foreground",
-								)}
-							>
-								{OPTION_KEYS[index]}
-							</kbd>
+							{shortcuts && (
+								<kbd
+									className={cn(
+										"flex size-5 shrink-0 items-center justify-center rounded border font-mono text-[10px]",
+										index === highlighted ? "border-primary/40 text-primary bg-background" : "bg-background text-muted-foreground",
+									)}
+								>
+									{OPTION_KEYS[index]}
+								</kbd>
+							)}
 							<span className="min-w-0 flex-1 truncate">{option.label}</span>
 						</button>
 					))}

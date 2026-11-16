@@ -784,6 +784,8 @@ export interface FrameworkConfig {
 	mcp_library_sync_interval?: number;
 	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
 	live_models_sync_interval?: number;
+	/** OpenAPI spec /v1/mcp builds its tools from; empty reads dev's openapi-oss.json. */
+	openapi_url?: string;
 }
 
 /** Seconds between background model-list refreshes when the user has not set one. */
@@ -948,6 +950,9 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_openapi_max_spec_mb: number;
+	bifrost_url?: SecretVar;
+	bifrost_mcp_allow_writes?: boolean;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];
@@ -1024,6 +1029,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_disable_auto_tool_inject: false,
 	mcp_max_instructions_per_client: 0,
 	mcp_max_instructions_total: 0,
+	mcp_openapi_max_spec_mb: 0,
 	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],

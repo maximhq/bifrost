@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "有効にすると、詳細なエラーがサーバーのコンソールログに書き込まれます。デバッグに便利ですが、本番ではノイズが多くなることがあります。",
 		"asyncJobTtl": "非同期ジョブ結果の TTL（秒）",
 		"asyncJobTtlHelp": "非同期ジョブ結果のデフォルト有効期間（秒）。期限後に結果は自動削除されます。",
+		"bifrostUrl": "Bifrost の URL",
+		"bifrostUrlHelp": "クライアントがこのゲートウェイにアクセスする URL です（ベースパスを含む）。<code0>/v1/mcp</code0> と Warp の設定ツールに必須です。これらの呼び出しはここに届いたものとして扱われ、結果内のリンクはこの URL を指します。空のままにすると両方とも無効になり、リクエストが送る Host ヘッダーが代わりに使われることはありません。",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "OpenAPI URL",
+		"openapiUrlHelp": "<code0>/v1/mcp</code0> がツールを生成する元となる OpenAPI 仕様です。http(s) URL、またはエアギャップ環境向けにアプリディレクトリからの相対パスを指定します。空のままにすると、このビルドの公開仕様を読み込みます。",
+		"openapiUrlPlaceholder": "このビルドの公開仕様",
 		"languageHelp": "ダッシュボードの表示言語。このブラウザに保存され、すぐに適用されます。",
 		"headerForwarding": "ヘッダー転送",
 		"headerForwardingHelp": "LLM プロバイダーへ転送する追加ヘッダーを制御します。",
@@ -244,6 +250,8 @@
 		"deleteExpiredVirtualKeysHelp": "有効にすると、毎日のクリーンアップジョブが有効期限を過ぎたすべての仮想キーを削除し、削除したキーの一覧を通知します。各キーは <b0>期限後に削除</b0> スイッチでこの設定を上書きできます。オフのキーは保持され、オンのキーはこの設定が無効でも削除されます。",
 		"enforceVkObjectOwnership": "プロバイダーオブジェクトを作成した仮想キーに限定",
 		"enforceVkObjectOwnershipHelp": "有効にすると、仮想キーで作成したファイル、バッチ、動画、コンテナ、キャッシュされたコンテンツ、ライブセッションは、同じキーでのみ読み取り・一覧表示・削除できます。他の仮想キーには not-found エラーが返され、一覧にも表示されません。仮想キーなしのリクエストは影響を受けません。作成したキーはこの設定が無効でも記録されるため、再度有効にすると、その間に作成されたオブジェクトも対象になります（作成キーを記録できなかったものを除く）。",
+		"bifrostMcpAllowWrites": "Bifrost MCP による設定変更を許可",
+		"bifrostMcpAllowWritesHelp": "ゲートウェイの GET 以外の /api 操作を <code0>/v1/mcp</code0> のツールとして提供します。推論、バッチ、ファイルのルートは常に提供されます。破壊的なツールは MCP クライアントに確認を求めます。",
 		"proofRequired": "この変更を確認するには、現在の管理者パスワードを入力してください。ダッシュボード保護がオフのため、このセッションはサインインしていません。パスワードが分からない場合は、代わりにセットアップトークンを使用してください。",
 		"skipAccessProfileKeyCreation": "アクセスプロファイル用のユーザー仮想キーを作成しない",
 		"skipAccessProfileKeyCreationHelp": "有効にすると、ユーザーに初めてアクセスプロファイルを適用しても仮想キーは作成されません。ユーザーがすでに所有しているキーや、ユーザー用に追加したキーには、プロファイルが適用されている間、引き続きそのプロファイルが適用されます。",
@@ -405,6 +413,7 @@
 		"toastSyncIntervalInvalid": "ツール同期間隔は 0 以上の数値にしてください。",
 		"toastMaxInstructionsPerServerInvalid": "サーバーごとの最大インストラクション長は 0 以上の数値にしてください。",
 		"toastMaxInstructionsTotalInvalid": "最大インストラクション長（合計）は 0 以上の数値にしてください。",
+		"toastOpenAPIMaxSpecInvalid": "OpenAPI 仕様のサイズ上限は 0 から {{max}} MiB までの整数で指定してください。",
 		"toastIssuerUrlRequired": "MCP 認証モードが OAuth または Both の場合は、発行者 URL が必須です。先に設定 > セキュリティで設定してください。",
 		"oauthPrivateAllowlist": "OAuth プライベートネットワーク許可リスト",
 		"oauthPrivateAllowlistHelp": "MCP サーバー向けの OAuth ディスカバリー、クライアント登録、トークンリクエストが、ループバックまたはプライベートアドレスに解決される場合でも到達を許可するホスト、IP アドレス、CIDR 範囲（スキームとポートは不要）。例：<code0>localhost</code0>、<code1>127.0.0.1</code1>、<code2>10.20.0.0/16</code2>。ダッシュボード認証を有効にして追加した MCP サーバーに適用されます。変更にはダッシュボード認証が必要です。リンクローカルアドレスとクラウドメタデータアドレスは常にブロックされます。",
@@ -415,6 +424,8 @@
 		"maxProtocolVersionHelp": "Bifrost が MCP サーバーに提示する最新の MCP プロトコルバージョンです。Auto は Bifrost が対応する最新バージョンを使用します。サーバーごとに上書きできます。",
 		"maxInstructionsTotal": "最大インストラクション長・合計（バイト）",
 		"maxInstructionsTotalHelp": "呼び出し元から見えるすべてのサーバーの合計上限です。<code0>Gateway and LLM requests</code0> では MCP を含むすべてのリクエストに付加されるため、値を上げるとリクエストあたりのトークン数が増えます。0 にするとデフォルトの 16384 を使用します。",
+		"maxOpenAPISpecSize": "OpenAPI 仕様の最大サイズ（MiB）",
+		"maxOpenAPISpecSizeHelp": "OpenAPI MCP サーバーが受け付ける最大のドキュメントサイズです（貼り付け、アップロード、URL からの取得のいずれにも適用）。解析中はこの数倍のメモリを使用します。0 にするとデフォルトの 32 を使用します。",
 		"allowedRedirectUris": "許可するリダイレクト URI",
 		"allowedRedirectUrisHelp": "リモート MCP クライアントが使用できるコールバック URI（完全一致）。例：<code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>。<code1>*</code1> を追加すると任意の https コールバックを許可します。部分的なワイルドカードはサポートされません。ループバックのコールバックと <code2>cursor://anysphere.cursor-mcp</code2> は常に許可されます。このリストの変更にはダッシュボード認証が必要です。",
 		"allowedRedirectUrisPlaceholder": "コールバック URI を追加（Enter）",
@@ -1071,6 +1082,76 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "構成ツール",
+			"description": "Warp は Bifrost の構成を読み取れます。さらに許可する変更の種類を選んでください。いずれもユーザーの確認を待ってから実行されます。",
+			"reads": "構成の読み取り",
+			"readsHelp": "プロバイダー、仮想キー、チーム、予算、ルーティングルールなど。",
+			"alwaysOn": "常にオン",
+			"size_one": "{{count}} 個のツール · 約 {{tokens}} トークン",
+			"size_other": "{{count}} 個のツール · 約 {{tokens}} トークン",
+			"kinds": {
+				"create": {
+					"label": "作成",
+					"help": "仮想キー、チーム、ルーティングルールなどを追加します。"
+				},
+				"update": {
+					"label": "更新",
+					"help": "仮想キーの予算など、既存のリソースを変更します。"
+				},
+				"delete": {
+					"label": "削除",
+					"help": "リソースを削除します。削除は元に戻せないことが表示されます。"
+				},
+				"action": {
+					"label": "その他の操作",
+					"help": "プロバイダーのテストやキャッシュのクリアなどの操作を実行します。"
+				}
+			},
+			"notLoaded": "Bifrost MCP が読み込まれると、変更の種類を選べるようになります。",
+			"writesOff": "Bifrost MCP 全体で変更がオフになっています。Warp で選ぶには、セキュリティ設定で <link0>Bifrost MCP による構成の変更を許可</link0> をオンにしてください。",
+			"contextWarning": "オンにした種類はすべて Warp のリクエストごとに送信されます。この設定ではツールが約 {{tokens}} トークンになります。コンテキストウィンドウが小さいモデルは応答しなくなる場合があります。",
+			"contextReadsOnly": "読み取りにより、Warp のリクエストごとに約 {{tokens}} トークンのツールが追加されます。"
+		},
+		"mcpNotice": {
+			"title": "Warp は Bifrost MCP 経由で動作するようになりました",
+			"intro": "変更点と、それを制御する設定は次のとおりです。",
+			"changeReads": "構成を読み取ります: プロバイダー、仮想キー、チーム、予算、ルーティングルールなど。",
+			"changeWrites": "管理者が Warp の設定で許可した変更のみを、ユーザーの確認後に行います。既定では読み取りのみです。",
+			"changeAccess": "各ユーザー自身の権限で動作し、読み取った内容を Warp のモデルプロバイダーに送信します。仮想キーの値は除外されます。",
+			"settingsHeading": "現在の設定",
+			"loading": "設定を読み込んでいます…",
+			"settingsUnreadable": "あなたのロールではゲートウェイの設定を読み取れません。管理者に「クライアント設定」と「セキュリティ」で確認するよう依頼してください。",
+			"settingsLoadFailed": "ゲートウェイの設定を読み込めませんでした: {{error}}",
+			"bifrostUrl": "Bifrost URL",
+			"notSet": "未設定",
+			"bifrostUrlSet": "構成ツールはこのアドレスから読み込まれます。",
+			"bifrostUrlMissing": "これがないと Bifrost MCP が読み込まれず、Warp は回答しません。Warp を有効にするには、クライアント設定で設定してください。",
+			"openapiUrl": "OpenAPI 仕様",
+			"openapiDefault": "このビルド用に公開されている仕様",
+			"openapiDefaultHint": "GitHub から取得します。インターネットに接続できない環境では、OpenAPI URL をローカルのコピーに向けてください。そうしないと構成ツールは読み込まれません。",
+			"changes": "Warp が行える変更",
+			"changesReadsOnly": "読み取りのみ",
+			"changesHint": "<link0>Warp の設定</link0>の構成ツールで選択します。許可した種類はすべて Warp のリクエストごとに追加されます。",
+			"changesCeiling": "セキュリティ設定で Bifrost MCP の変更がオフになっているため、Warp は読み取りのみ行います。種類は<link0>Warp の設定</link0>で選択します。",
+			"outcome": {
+				"off": "この設定では、Warp は回答しません。有効にするには Bifrost URL を設定してください。",
+				"reads": "この設定では、Warp はトラフィックと構成に関する質問に回答し、何も変更できません。",
+				"reads_and_writes": "この設定では、Warp はトラフィックと構成に関する質問に回答し、ユーザーがそれぞれ確認した後に、Warp の設定で許可された変更を行えます。"
+			},
+			"docsLink": "アップグレードノートを読む",
+			"docsSetupLink": "Bifrost MCP のセットアップ方法",
+			"openClientSettings": "クライアント設定を開く",
+			"later": "後で通知",
+			"gotIt": "了解",
+			"bannerDescription": "Warp は構成を読み取り、ユーザーの確認後に管理者が許可した変更を行えるようになりました。これを制御する設定を確認してください。",
+			"review": "確認",
+			"setupTitle": "Warp には Bifrost MCP が必要です",
+			"setupIntro": "Bifrost MCP のセットアップが完了するまで、Warp は回答しません。",
+			"bannerSetupDescription": "Bifrost MCP のセットアップが完了するまで、Warp は回答しません。",
+			"setUp": "セットアップ",
+			"notLoaded": "Bifrost URL は設定されていますが、Bifrost MCP が読み込まれていません。多くの場合、OpenAPI 仕様をダウンロードできなかったことが原因です。理由はサーバーログの [Bifrost MCP] 警告に記載されています。"
+		},
 		"saved": "Warp の設定を保存しました。",
 		"badRange": "有効なバックフィルの時間範囲を選択してください。",
 		"backfillStarted": "Warp 埋め込みバックフィルを開始しました。",

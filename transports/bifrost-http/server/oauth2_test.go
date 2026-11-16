@@ -16,7 +16,8 @@ import (
 // other call would panic, proving the gate short-circuits before store access.
 type sweepRecordingStore struct {
 	configstore.ConfigStore
-	calls int
+	calls       int
+	orphanGrace time.Duration
 }
 
 func (s *sweepRecordingStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
@@ -31,7 +32,17 @@ func (s *sweepRecordingStore) SweepOAuth2RefreshTokens(ctx context.Context, revo
 
 func (s *sweepRecordingStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
 	s.calls++
+	s.orphanGrace = registeredOlderThan
 	return 0, nil
+}
+
+// TestOAuth2SweepWorkerKeepsAbandonedClientsForADay pins that a client whose
+// first flow was abandoned survives long enough to retry: MCP clients cache their
+// client_id and never re-register, so sweeping it strands them on "unknown client_id".
+func TestOAuth2SweepWorkerKeepsAbandonedClientsForADay(t *testing.T) {
+	store := &sweepRecordingStore{}
+	newOAuth2SweepWorker(store, nil).sweep(context.Background())
+	assert.Equal(t, 24*time.Hour, store.orphanGrace)
 }
 
 func TestOAuth2SweepWorkerShouldSweepGate(t *testing.T) {

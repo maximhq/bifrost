@@ -111,3 +111,29 @@ func TestGenerateRelayHash(t *testing.T) {
 	reordered.Routes = append([]schemas.RelayRouteConfig{{Method: "POST", Path: "/extract"}}, reordered.Routes...)
 	require.NotEqual(t, hash(ordered), hash(reordered), "reordering routes is a change")
 }
+
+// bifrost_url and bifrost_mcp_allow_writes are hashed so that where one ends is
+// unambiguous: written as plain "prefix + value", a URL whose path ends in the
+// next field's text hashed the same as a shorter URL with that field set. Both
+// unset keeps the bytes configs had before the fields existed.
+func TestGenerateClientConfigHash_BifrostURLAndAllowWritesAreUnambiguous(t *testing.T) {
+	base := func() ClientConfig {
+		return ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	}
+
+	short := base()
+	short.BifrostURL = schemas.NewSecretVar("https://gw.example.com/a")
+	short.BifrostMCPAllowWrites = new(true)
+	long := base()
+	long.BifrostURL = schemas.NewSecretVar("https://gw.example.com/abifrostMCPAllowWrites:true")
+	shortHash, err := short.GenerateClientConfigHash()
+	require.NoError(t, err)
+	longHash, err := long.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, shortHash, longHash, "a URL ending in the next field's text must not hash like a shorter URL with that field set")
+
+	unset := base()
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, "66ee28323ac8b742b63ca063f251b2f585209a32980345cf26dd0b81298ddf4c", unsetHash, "both unset keeps the hash configs had before the fields existed")
+}

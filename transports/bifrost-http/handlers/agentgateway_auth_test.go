@@ -244,10 +244,10 @@ func TestAgentGatewayAuthenticateHeaderPrecedence(t *testing.T) {
 	keys := func(id, value string) *tables.TableVirtualKey {
 		return &tables.TableVirtualKey{ID: id, Value: *schemas.NewSecretVar(value), IsActive: &active}
 	}
-	one, two, three, four, five := keys("vk-1", "sk-bf-one"), keys("vk-2", "sk-bf-two"), keys("vk-3", "sk-bf-three"), keys("vk-4", "sk-bf-four"), keys("vk-5", "sk-bf-five")
+	one, two, three, four, five, six := keys("vk-1", "sk-bf-one"), keys("vk-2", "sk-bf-two"), keys("vk-3", "sk-bf-three"), keys("vk-4", "sk-bf-four"), keys("vk-5", "sk-bf-five"), keys("vk-6", "sk-bf-six")
 	store := &agentAuthStore{
-		byID:    map[string]*tables.TableVirtualKey{"vk-1": one, "vk-2": two, "vk-3": three, "vk-4": four, "vk-5": five},
-		byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": one, "sk-bf-two": two, "sk-bf-three": three, "sk-bf-four": four, "sk-bf-five": five},
+		byID:    map[string]*tables.TableVirtualKey{"vk-1": one, "vk-2": two, "vk-3": three, "vk-4": four, "vk-5": five, "vk-6": six},
+		byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": one, "sk-bf-two": two, "sk-bf-three": three, "sk-bf-four": four, "sk-bf-five": five, "sk-bf-six": six},
 	}
 	middleware := newAgentAuthMiddleware(true, store)
 
@@ -262,6 +262,8 @@ func TestAgentGatewayAuthenticateHeaderPrecedence(t *testing.T) {
 		{"x-api-key only", map[string]string{"x-api-key": "sk-bf-three"}, "sk-bf-three", lib.VirtualKeyHeaderSourceXAPIKey},
 		{"x-goog-api-key only", map[string]string{"x-goog-api-key": "sk-bf-four"}, "sk-bf-four", lib.VirtualKeyHeaderSourceXGoogAPIKey},
 		{"api-key only", map[string]string{"api-key": "sk-bf-five"}, "sk-bf-five", lib.VirtualKeyHeaderSourceAPIKey},
+		{"xi-api-key only", map[string]string{"xi-api-key": "sk-bf-six"}, "sk-bf-six", lib.VirtualKeyHeaderSourceXiAPIKey},
+		{"api-key beats xi-api-key", map[string]string{"api-key": "sk-bf-five", "xi-api-key": "sk-bf-six"}, "sk-bf-five", lib.VirtualKeyHeaderSourceAPIKey},
 		{"canonical beats bearer", map[string]string{"x-bf-vk": "sk-bf-one", "Authorization": "Bearer sk-bf-two"}, "sk-bf-one", lib.VirtualKeyHeaderSourceXBfVK},
 		{"bearer beats x-api-key", map[string]string{"Authorization": "Bearer sk-bf-two", "x-api-key": "sk-bf-three"}, "sk-bf-two", lib.VirtualKeyHeaderSourceAuthorization},
 		{"x-api-key beats x-goog-api-key", map[string]string{"x-api-key": "sk-bf-three", "x-goog-api-key": "sk-bf-four"}, "sk-bf-three", lib.VirtualKeyHeaderSourceXAPIKey},
@@ -300,6 +302,7 @@ func TestAgentGatewayCapturesOnlyAcceptedForwardableCredentials(t *testing.T) {
 		{"x-api-key alias", "x-api-key", "sk-bf-one"},
 		{"x-goog-api-key alias", "x-goog-api-key", "sk-bf-one"},
 		{"api-key alias", "api-key", "sk-bf-one"},
+		{"xi-api-key alias", "xi-api-key", "sk-bf-one"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}

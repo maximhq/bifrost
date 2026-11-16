@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "ファイルが OpenAPI ドキュメントの上限 {{size}} を超えています。",
+			"fileTooLargeBodyCap": "ファイルが大きすぎて送信できません。リクエストは client.max_request_body_size_mb により {{size}} に制限されています。より大きなドキュメントをアップロードするには、この値を引き上げて Bifrost を再起動してください。",
 			"fileReadFailed": "ファイルを読み取れませんでした: {{message}}",
 			"fileEmpty": "ファイルが空です。",
 			"fetch": "取得",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "Bifrost はドキュメントを一度だけ取得してサーバーとともに保存し、URL は取得元として保持されます。",
 			"chooseFile": "ファイルを選択",
 			"uploadHelp": "JSON または YAML、最大 {{size}}。ファイルはブラウザーで読み取られ、サーバーとともに保存されます。",
+			"uploadHelpBodyCap": "JSON または YAML、最大約 {{size}}。リクエストは OpenAPI ドキュメントの上限より小さい client.max_request_body_size_mb で制限されています。ファイルはブラウザーで読み取られ、サーバーとともに保存されます。",
+			"uploadHelpNoLimit": "JSON または YAML。ファイルはブラウザーで読み取られ、サーバーとともに保存されます。",
 			"parsing": "ドキュメントを解析中…",
 			"staleNotice": "ドキュメントの取得後に URL またはサーバー名が変更されました。もう一度取得して、下のオペレーションを更新してください。"
 		},

@@ -166,11 +166,12 @@ func (s suggestionsConfigStore) EditModelRouter(_ context.Context, id string, ed
 }
 
 // suggestionTestRouter is the saved router the suggestion handler tests are
-// about: a semantic router with one phrase per tier.
+// about: a semantic router with one phrase per tier and suggestions on.
 func suggestionTestRouter() *configstore.ModelRouter {
 	return &configstore.ModelRouter{ID: "default", Name: "Default", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
-		Keywords: configstore.ComplexityEditableKeywordConfig{SimpleKeywords: []string{"say hello"}, MediumKeywords: []string{"summarize this"}, ComplexKeywords: []string{"design a system"}},
-		Semantic: &configstore.ComplexitySemanticConfig{Provider: "openai", EmbeddingModel: "text-embedding-3-small"},
+		Keywords:    configstore.ComplexityEditableKeywordConfig{SimpleKeywords: []string{"say hello"}, MediumKeywords: []string{"summarize this"}, ComplexKeywords: []string{"design a system"}},
+		Semantic:    &configstore.ComplexitySemanticConfig{Provider: "openai", EmbeddingModel: "text-embedding-3-small"},
+		Suggestions: &configstore.ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-4o-mini"},
 	}}
 }
 
@@ -201,7 +202,9 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ls.Close(ctx) })
 	manager := &suggestionManagerFake{store: ls, texts: map[string]string{"log-1": "where is my refund for order 12"}, version: "bank-v2"}
-	config := &configstore.ComplexityAnalyzerConfig{Suggestions: &configstore.ComplexitySuggestionsConfig{Enabled: true}}
+	// Suggestions are set per model router; the global config cannot hold
+	// them, so a schedule read from it would report them off.
+	config := &configstore.ComplexityAnalyzerConfig{}
 	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config, routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter()}})
 	require.NoError(t, err)
 	r := router.New()
@@ -246,6 +249,78 @@ func serve(t *testing.T, r *router.Router, method, uri, body string) (int, map[s
 	return ctx.Response.StatusCode(), decoded
 }
 
+// A router that is not saved is 404 on every suggestion endpoint; one that is
+// saved but not loaded (session routing without a KV store, say) is 503, as
+// its status and retry endpoints answer.
+func TestComplexitySuggestionsRouterNotServed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ls, err := logstore.NewLogStore(context.Background(), &logstore.Config{
+		Enabled: true, Type: logstore.LogStoreTypeSQLite,
+		Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+	}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ls.Close(context.Background()) })
+	// The plugin serves only "default"; "unserved" is saved but not loaded.
+	manager := &suggestionManagerFake{store: ls, version: "bank-v2"}
+	store := suggestionsConfigStore{config: &configstore.ComplexityAnalyzerConfig{}, routers: map[string]*configstore.ModelRouter{"unserved": {ID: "unserved", Name: "Unserved"}}}
+	h, err := NewRoutingHandler(manager, store)
+	require.NoError(t, err)
+	r := router.New()
+	h.RegisterRoutes(r)
+	for _, tc := range []struct{ method, path, body string }{
+		{fasthttp.MethodGet, "/suggestions", ""},
+		{fasthttp.MethodGet, "/suggestions/s-1", ""},
+		{fasthttp.MethodPut, "/suggestions/s-1/status", `{"status":"dismissed"}`},
+		{fasthttp.MethodPost, "/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`},
+		{fasthttp.MethodGet, "/suggestions/runs", ""},
+		{fasthttp.MethodGet, "/suggestions/runs/estimate", ""},
+		{fasthttp.MethodPost, "/suggestions/runs", ""},
+		{fasthttp.MethodPost, "/suggestions/runs/run-1/cancel", ""},
+		{fasthttp.MethodPost, "/suggestions/impact", `{"phrases":{}}`},
+	} {
+		code, body := serve(t, r, tc.method, "/api/routing/model-routers/unserved"+tc.path, tc.body)
+		assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "%s %s: %v", tc.method, tc.path, body)
+		assert.Contains(t, errorText(body), "not loaded", tc.path)
+		code, _ = serve(t, r, tc.method, "/api/routing/model-routers/missing"+tc.path, tc.body)
+		assert.Equal(t, fasthttp.StatusNotFound, code, "%s %s", tc.method, tc.path)
+	}
+}
+
+// A router the plugin stops serving after the request's first check (a
+// reload dropped it meanwhile) is answered the same way: 503 while it is
+// still saved, 404 once it is not.
+func TestComplexitySuggestionsRouterUnloadedMidRequest(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name, method, path, body string
+		unload                   func(*suggestionManagerFake)
+	}{
+		{"phrase test", fasthttp.MethodPost, "/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`,
+			func(m *suggestionManagerFake) { m.testErr = routing.ErrUnknownComplexityRouter }},
+		{"estimate", fasthttp.MethodGet, "/suggestions/runs/estimate", "",
+			func(m *suggestionManagerFake) { m.estimateErr = routing.ErrUnknownComplexityRouter }},
+		{"start", fasthttp.MethodPost, "/suggestions/runs", "",
+			func(m *suggestionManagerFake) { m.runErr = routing.ErrUnknownComplexityRouter }},
+		{"cancel", fasthttp.MethodPost, "/suggestions/runs/run-1/cancel", "",
+			func(m *suggestionManagerFake) { m.cancelErr = routing.ErrUnknownComplexityRouter }},
+		{"impact", fasthttp.MethodPost, "/suggestions/impact", `{"phrases":{"SIMPLE":["track my parcel"]}}`,
+			func(m *suggestionManagerFake) { m.impactErr = routing.ErrUnknownComplexityRouter }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, manager := suggestionHandler(t)
+			tc.unload(manager)
+			code, body := serve(t, r, tc.method, "/api/routing/model-routers/default"+tc.path, tc.body)
+			assert.Equal(t, fasthttp.StatusServiceUnavailable, code, body)
+			assert.Contains(t, errorText(body), "not loaded")
+		})
+	}
+	// A run that is not the router's is still 404, whatever the router's state.
+	r, manager := suggestionHandler(t)
+	manager.cancelErr = routing.ErrUnknownComplexitySuggestionRun
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs/run-9/cancel", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code, body)
+}
+
 func TestComplexitySuggestionsList(t *testing.T) {
 	r, _ := suggestionHandler(t)
 	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
@@ -258,7 +333,7 @@ func TestComplexitySuggestionsList(t *testing.T) {
 	assert.NotContains(t, first, "centroid")
 	assert.Equal(t, map[string]any{"none": 31.0, "MEDIUM": 9.0}, first["current_routing"], "where the cluster routes today")
 	assert.Equal(t, map[string]any{"open": 1.0, "dismissed": 1.0, "superseded": 1.0}, body["counts"])
-	assert.Equal(t, true, body["enabled"])
+	assert.Equal(t, true, body["enabled"], "the router's own suggestions setting, not the global config's")
 	assert.NotEmpty(t, body["next_run_at"])
 	assert.Equal(t, "run-1", body["last_run"].(map[string]any)["id"])
 
@@ -355,15 +430,18 @@ func TestComplexitySuggestionsRuns(t *testing.T) {
 }
 
 func TestComplexitySuggestionsNeedALogStore(t *testing.T) {
+	// The router is saved, so the 503 is about the deployment, not a router
+	// that does not exist (that one is 404 on every suggestion endpoint).
+	store := suggestionsConfigStore{routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter()}}
 	manager := &suggestionManagerFake{}
-	h, err := NewRoutingHandler(manager, suggestionsConfigStore{})
+	h, err := NewRoutingHandler(manager, store)
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
 	code, _ := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code)
 
-	h, err = NewRoutingHandler(&mockRoutingManager{}, suggestionsConfigStore{})
+	h, err = NewRoutingHandler(&mockRoutingManager{}, store)
 	require.NoError(t, err)
 	r = router.New()
 	h.RegisterRoutes(r)

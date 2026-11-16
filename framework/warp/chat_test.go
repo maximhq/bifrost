@@ -16,6 +16,7 @@ import (
 // usable configuration, which is the shape both transports run against.
 func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
 	return NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(fake),
@@ -181,6 +182,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
 	service := NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(&fakeLogReader{}),
@@ -360,6 +362,7 @@ func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
 	service := NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(&fakeLogReader{}),
@@ -394,6 +397,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
 	}
 	service := NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithConversationStore(store),
 		// A reader, because CanChat requires one and the route will not dispatch
@@ -450,6 +454,7 @@ func chatServiceWithModels(model *scriptedModel) *Service {
 	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
 	row.AdditionalModels = &additional
 	return NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: row}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(&fakeLogReader{}),

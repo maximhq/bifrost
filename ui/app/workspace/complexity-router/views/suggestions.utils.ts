@@ -9,6 +9,7 @@ import {
 	type Suggestion,
 	type SuggestionCategory,
 	type SuggestionRun,
+	type SuggestionRunEstimate,
 	type SuggestionRunWindow,
 } from "@/lib/types/complexityRouter";
 
@@ -125,6 +126,13 @@ export function categoryCounts(suggestions: Suggestion[], hidden: Set<string>): 
 // one would read vectors that have already been swept.
 export function availableWindows(lookbackDays: number): SuggestionRunWindow[] {
 	return SUGGESTION_RUN_WINDOWS.filter((value) => SUGGESTION_RUN_WINDOW_DAYS[value] <= lookbackDays);
+}
+
+// canStartRun reports whether an estimate leaves a run anything to read: a
+// request in the window, or a backfill from logs that could not be counted
+// (the run plans it again and may find requests there).
+export function canStartRun(estimate: SuggestionRunEstimate): boolean {
+	return estimate.requests > 0 || estimate.backfill_unknown === true;
 }
 
 // proposedTier is the tier a suggestion proposes, or null when the tier
