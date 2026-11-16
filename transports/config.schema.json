@@ -7936,7 +7936,7 @@
     },
     "complexity_llm_config": {
       "type": "object",
-      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when complexity_semantic_config.fallback selects 'llm', where it runs only after semantic classification produces no tier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
       "properties": {
         "provider": {
           "type": "string",
@@ -7946,7 +7946,7 @@
         "model": {
           "type": "string",
           "minLength": 1,
-          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
         },
         "timeout": {
           "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",

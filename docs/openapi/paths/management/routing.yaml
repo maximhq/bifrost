@@ -279,7 +279,7 @@ complexity:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM classifier settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:

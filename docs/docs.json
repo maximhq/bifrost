@@ -1708,10 +1708,7 @@
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
                   "GET /api/governance/users/me/vk-creation-policy",
-                  "PUT /api/governance/users/{user_id}/role",
-                  "POST /api/governance/users/{user_id}/governance",
-                  "PUT /api/governance/users/{user_id}/governance",
-                  "DELETE /api/governance/users/{user_id}/governance"
+                  "PUT /api/governance/users/{user_id}/role"
                 ]
               },
               {
