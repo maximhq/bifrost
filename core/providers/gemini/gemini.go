@@ -2174,6 +2174,8 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 				if completed {
 					// interaction.completed is terminal: stop reading so an upstream that
 					// keeps the body open cannot turn a finished stream into an idle timeout.
+					// The body may still be open, so cleanup must abandon it, not drain it.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 					break
 				}
 				continue
@@ -2195,6 +2197,7 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 			}
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan, postHookSpanFinalizer)
 			if completed {
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 				break
 			}
 		}

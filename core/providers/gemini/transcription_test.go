@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -353,13 +354,26 @@ func TestGeminiInteractionTranscriptionStreamStopsAtCompletedWhileBodyOpen(t *te
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, StreamIdleTimeoutInSeconds: 1},
 	}, testNoopLogger{})
-	stream, bifrostErr := provider.TranscriptionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthroughPostHookRunner, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostTranscriptionRequest{
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := provider.TranscriptionStream(ctx, passthroughPostHookRunner, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostTranscriptionRequest{
 		Provider: schemas.Gemini,
 		Model:    geminiInteractionTranscriptionModel,
 		Input:    &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
 	})
 	require.Nil(t, bifrostErr)
-	chunks := collectTranscriptionStream(stream)
+
+	// The channel closes only after deferred cleanup releases the still-open body. If
+	// cleanup drained it instead of abandoning it, the stream would never close.
+	collected := make(chan []*schemas.BifrostStreamChunk, 1)
+	go func() { collected <- collectTranscriptionStream(stream) }()
+	var chunks []*schemas.BifrostStreamChunk
+	select {
+	case chunks = <-collected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream did not close after interaction.completed: cleanup is draining the still-open body")
+	}
+	parked, _ := ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish).(bool)
+	assert.True(t, parked, "completion with the body open must mark the stream parked")
 
 	require.NotEmpty(t, chunks)
 	last := chunks[len(chunks)-1]
