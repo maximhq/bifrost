@@ -423,3 +423,128 @@ func TestWarpManagementClientsCloseOnceNoTurnUsesThem(t *testing.T) {
 		t.Fatal("a client was built after shutdown")
 	}
 }
+
+// A reload that restricts what the Bifrost MCP serves can leave it unloaded.
+// The client of the earlier load is then retired like a replaced one: open
+// while a turn holds it, closed when that turn ends, and Warp offers nothing.
+func TestWarpManagementUnloadClosesTheClient(t *testing.T) {
+	tools := loadedWarpManagement(t, func(*fasthttp.RequestCtx) {}, false)
+	held, release := tools.LeaseCatalog()
+	if held == nil {
+		t.Fatal("no catalog")
+	}
+	closed := func() bool {
+		tools.mu.Lock()
+		defer tools.mu.Unlock()
+		return held.Binding().(*warpManagementBinding).closed
+	}
+	// Unloaded, as Reload leaves it, with the background retry not yet due.
+	tools.mcp.retryAt.Store(time.Now().Add(time.Hour).UnixNano())
+	tools.mcp.loaded.Store(nil)
+	if tools.Catalog() != nil {
+		t.Fatal("a catalog was offered while the Bifrost MCP is unloaded")
+	}
+	if closed() {
+		t.Fatal("the unload closed a client a turn still holds")
+	}
+	release()
+	if !closed() {
+		t.Fatal("the unloaded load's client stayed open after its last turn")
+	}
+}
+
+// The load a turn sees is read under the adapter's lock. Read before it, a
+// reload that another turn installed while this one waited would look newer
+// than what this turn read, and this turn would retire that binding: dropping
+// it when it read the MCP as unloaded, or rebuilding a client for the earlier
+// spec over it when it read the earlier load.
+func TestWarpManagementStaleLoadDoesNotRetireANewerBinding(t *testing.T) {
+	for _, stale := range []string{"unloaded", "earlier load"} {
+		t.Run(stale, func(t *testing.T) {
+			tools := loadedWarpManagement(t, func(*fasthttp.RequestCtx) {}, false)
+			if tools.Catalog() == nil {
+				t.Fatal("no catalog")
+			}
+			earlier := tools.mcp.loaded.Load()
+			tools.mcp.retryAt.Store(time.Now().Add(time.Hour).UnixNano())
+			if stale == "unloaded" {
+				tools.mcp.loaded.Store(nil)
+			}
+
+			// This turn waits on the lock while another turn installs a reload.
+			tools.mu.Lock()
+			done := make(chan *warp.ManagementCatalog)
+			go func() { done <- tools.Catalog() }()
+			time.Sleep(100 * time.Millisecond)
+			tools.mcp.loaded.Store(earlier)
+			if err := tools.mcp.Reload(context.Background(), tools.mcp.Options()); err != nil {
+				tools.mu.Unlock()
+				t.Fatalf("reload: %v", err)
+			}
+			newer := tools.mcp.loaded.Load()
+			if err := tools.refreshLocked(newer); err != nil {
+				tools.mu.Unlock()
+				t.Fatal(err)
+			}
+			installed := tools.binding
+			tools.mu.Unlock()
+
+			got := <-done
+			tools.mu.Lock()
+			defer tools.mu.Unlock()
+			if installed.retired || tools.binding != installed {
+				t.Fatalf("a turn that read the %s retired the newer binding", stale)
+			}
+			if got == nil || got.Binding() != installed {
+				t.Fatal("the turn did not get the newer load's catalog")
+			}
+		})
+	}
+}
+
+// A management result that embeds virtual keys reaches the model without their
+// values: a customer listed with its keys, a single key, and a refusal whose body
+// follows a status line. Everything else in the result is kept, and a body that
+// names no virtual key is returned as it is.
+func TestWarpManagementRedactsVirtualKeyValues(t *testing.T) {
+	customers := `{"customers":[{"id":"c1","name":"acme","virtual_keys":[{"id":"vk1","name":"acme-key","value":"sk-bf-secret-1"}]}],"count":1}`
+	got := redactVirtualKeyValues(customers)
+	if strings.Contains(got, "sk-bf-secret-1") {
+		t.Fatalf("a customer's key value reached the result: %s", got)
+	}
+	for _, kept := range []string{`"acme"`, `"acme-key"`, `"vk1"`} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%s was dropped: %s", kept, got)
+		}
+	}
+	single := `{"virtual_key":{"id":"vk2","value":{"value":"sk-bf-secret-2","type":"plain_text"},"team":{"id":"t1","value":"kept"}}}`
+	got = redactVirtualKeyValues(single)
+	if strings.Contains(got, "sk-bf-secret-2") {
+		t.Fatalf("a key's value reached the result: %s", got)
+	}
+	if !strings.Contains(got, `"kept"`) {
+		t.Errorf("a value field outside the key itself was dropped: %s", got)
+	}
+	refusal := "HTTP 409 Conflict\n" + customers
+	got = redactVirtualKeyValues(refusal)
+	if strings.Contains(got, "sk-bf-secret-1") || !strings.HasPrefix(got, "HTTP 409 Conflict\n") {
+		t.Fatalf("a refusal's body was not redacted, or lost its status line: %s", got)
+	}
+	// Numbers are carried as written: an id past 2^53 would lose digits as a float.
+	big := `{"virtual_key":{"id":"vk3","value":"sk-bf-secret-3","budget_id":9007199254740993}}`
+	if got := redactVirtualKeyValues(big); !strings.Contains(got, "9007199254740993") || strings.Contains(got, "sk-bf-secret-3") {
+		t.Errorf("a large integer changed, or the value stayed: %s", got)
+	}
+	// A body cut at the response limit no longer parses; it is withheld, not passed on.
+	truncated := customers[:len(customers)-12] + "\n…[response truncated at 65536 bytes]"
+	if got := redactVirtualKeyValues(truncated); strings.Contains(got, "sk-bf-secret-1") || strings.Contains(got, `"value"`) {
+		t.Errorf("a truncated body kept its key value: %s", got)
+	}
+	if got := redactVirtualKeyValues("HTTP 500 Internal Server Error\n" + truncated); strings.Contains(got, "sk-bf-secret-1") || !strings.HasPrefix(got, "HTTP 500 Internal Server Error\n") {
+		t.Errorf("a truncated refusal kept its key value, or lost its status line: %s", got)
+	}
+	plain := `{"providers":[{"name":"openai","value":"x"}]}`
+	if got := redactVirtualKeyValues(plain); got != plain {
+		t.Errorf("a body naming no virtual key changed: %s", got)
+	}
+}

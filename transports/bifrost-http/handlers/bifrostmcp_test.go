@@ -1524,3 +1524,102 @@ func TestBifrostMCPToolsListAsksToolAccess(t *testing.T) {
 		t.Error("without ToolAccess, /api tools are missing from the list")
 	}
 }
+
+// No tool asks a route to stream: a tool result is one message, so a streamed
+// answer would reach the model as its raw event stream. Every operation whose body
+// takes stream loses stream and stream_options from its arguments, and a call that
+// passes stream anyway sends a body without it.
+func TestBifrostMCPToolsNeverStream(t *testing.T) {
+	var sent []byte
+	opts := bifrostMCPTestOptions(true)
+	opts.ExecClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Body != nil {
+			sent, _ = io.ReadAll(req.Body)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[]}`)), Header: http.Header{"Content-Type": {"application/json"}}, Request: req}, nil
+	})}
+	srv, _, err := buildBifrostMCPServer(readRepoSpec(t), "", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := srv.ListTools()
+	streaming := 0
+	var wholeBody []string
+	for _, op := range repoSpecOperations(t) {
+		if op.Body == nil || op.Body.Schema == nil {
+			continue
+		}
+		props, _ := op.Body.Schema["properties"].(map[string]any)
+		if _, ok := props["stream"]; !ok {
+			continue
+		}
+		st, served := tools[op.ID]
+		if !served {
+			continue
+		}
+		streaming++
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(st.Tool.RawInputSchema, &schema); err != nil {
+			t.Fatalf("%s: %v", op.ID, err)
+		}
+		for _, field := range bifrostMCPStreamingFields {
+			if _, ok := schema.Properties[field]; ok {
+				t.Errorf("%s still takes %s", op.ID, field)
+			}
+		}
+		if _, ok := schema.Properties["body"]; ok {
+			wholeBody = append(wholeBody, op.ID)
+		}
+	}
+	if streaming == 0 {
+		t.Fatal("no served operation takes stream; the check proves nothing")
+	}
+	if len(wholeBody) > 0 {
+		t.Logf("operations taking their body whole as one argument, where stream is undeclared: %v", wholeBody)
+	}
+
+	call, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "createChatCompletion", "arguments": map[string]any{
+		"model": "openai/gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "hi"}}, "stream": true, "stream_options": map[string]any{"include_usage": true},
+	}}})
+	srv.HandleMessage(context.Background(), call)
+	if len(sent) == 0 {
+		t.Fatal("createChatCompletion sent no body")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(sent, &body); err != nil {
+		t.Fatalf("body %s: %v", sent, err)
+	}
+	for _, field := range bifrostMCPStreamingFields {
+		if _, ok := body[field]; ok {
+			t.Errorf("createChatCompletion sent %s: %s", field, sent)
+		}
+	}
+	if body["model"] != "openai/gpt-4o-mini" {
+		t.Errorf("the rest of the body was lost: %s", sent)
+	}
+
+	// A body taken whole as one argument declares no stream field, so nothing in
+	// its schema stops a caller sending one; it is dropped from the body sent.
+	if _, ok := tools["cursorCohereChat"]; !ok {
+		t.Fatal("cursorCohereChat is not served; the whole-body check proves nothing")
+	}
+	sent = nil
+	call, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "cursorCohereChat", "arguments": map[string]any{
+		"body": map[string]any{"model": "command-r", "messages": []any{map[string]any{"role": "user", "content": "hi"}}, "stream": true, "stream_options": map[string]any{"include_usage": true}},
+	}}})
+	srv.HandleMessage(context.Background(), call)
+	body = nil
+	if err := json.Unmarshal(sent, &body); err != nil {
+		t.Fatalf("cursorCohereChat body %s: %v", sent, err)
+	}
+	for _, field := range bifrostMCPStreamingFields {
+		if _, ok := body[field]; ok {
+			t.Errorf("cursorCohereChat sent %s: %s", field, sent)
+		}
+	}
+	if body["model"] != "command-r" {
+		t.Errorf("the rest of the whole body was lost: %s", sent)
+	}
+}
