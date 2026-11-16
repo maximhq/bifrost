@@ -329702,14 +329702,15 @@
           "response": []
         },
         {
-          "name": "[EXPECT-4XX] Bedrock invoke: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
+          "name": "[EXPECT-400] Bedrock invoke: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
                   "pm.test('invoke: an unsupported document url scheme is rejected, not dropped - #9308', function () {",
-                  "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'expected the invalid-request body, got: ' + pm.response.text()).to.include('Invalid JSON');",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -329744,14 +329745,15 @@
           "response": []
         },
         {
-          "name": "[EXPECT-4XX] Bedrock invoke-with-response-stream: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
+          "name": "[EXPECT-400] Bedrock invoke-with-response-stream: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
                   "pm.test('invoke-with-response-stream: an unsupported document url scheme is rejected, not dropped - #9308', function () {",
-                  "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'expected the invalid-request body, got: ' + pm.response.text()).to.include('Invalid JSON');",
                   "});"
                 ],
                 "type": "text/javascript"
