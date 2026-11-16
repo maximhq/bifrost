@@ -337773,6 +337773,232 @@
           ]
         }
       ]
+    },
+    {
+      "name": "359. Azure Responses honour openai_config.disable_store (azure disable store)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json, whose Azure provider sets openai_config.disable_store; enable providerErrorFixture=1. The fixture model store-false-required answers only a request whose body carries store: false and refuses any other with a 400 naming the store it received; store-true-required does the same for store: true. Cases 1 to 3 send store: true to Azure on /v1/responses (unary and streamed) and on the OpenAI SDK route /openai/v1/responses: before the Azure provider read disable_store, the request reached the fixture with store: true and came back 400. Case 4 is the control: a chat completion with store: true still reaches Azure with store: true, since disable_store applies to Responses requests only. Setup and scoped run commands are in tests/e2e/api/README.md under Azure disable_store on Responses requests.",
+      "item": [
+        {
+          "name": "359.1 azure azure/store-false-required Responses request goes out with store false (azure disable store)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('Azure receives store false although the client sent store true', function () {",
+                  "  pm.expect(pm.response.code, 'the fixture refused the forwarded store: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture refusal in the response: ' + raw).to.not.include('unexpected_store');",
+                  "});",
+                  "pm.test('the fixture answer comes back', function () {",
+                  "  pm.expect(raw, 'fixture text missing: ' + raw).to.include('hello');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/store-false-required\",\n  \"input\": \"hi\",\n  \"store\": true,\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "359.2 azure azure/store-false-required streamed Responses request goes out with store false (azure disable store)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('Azure receives store false on the streamed request', function () {",
+                  "  pm.expect(pm.response.code, 'the fixture refused the forwarded store: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture refusal in the stream: ' + raw).to.not.include('unexpected_store');",
+                  "});",
+                  "pm.test('the stream carries the fixture text and ends with response.completed', function () {",
+                  "  pm.expect(raw, 'fixture text missing: ' + raw).to.include('hello');",
+                  "  pm.expect(raw, 'response.completed missing: ' + raw).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/store-false-required\",\n  \"input\": \"hi\",\n  \"store\": true,\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "359.3 azure azure/store-false-required OpenAI SDK drop-in /openai/v1/responses request goes out with store false (azure disable store)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('Azure receives store false on the OpenAI SDK route', function () {",
+                  "  pm.expect(pm.response.code, 'the fixture refused the forwarded store: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture refusal in the response: ' + raw).to.not.include('unexpected_store');",
+                  "});",
+                  "pm.test('the fixture answer comes back', function () {",
+                  "  pm.expect(raw, 'fixture text missing: ' + raw).to.include('hello');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/store-false-required\",\n  \"input\": \"hi\",\n  \"store\": true,\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "359.4 azure azure/store-true-required chat completion keeps store true (azure disable store)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('Azure receives the store true the client sent: disable_store leaves chat completions alone', function () {",
+                  "  pm.expect(pm.response.code, 'the fixture refused the forwarded store: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content, raw).to.equal('hello');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/store-true-required\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"store\": true,\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

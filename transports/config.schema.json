@@ -9868,6 +9868,9 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
+        },
+        "openai_config": {
+          "$ref": "#/$defs/openai_config"
         }
       },
       "required": [

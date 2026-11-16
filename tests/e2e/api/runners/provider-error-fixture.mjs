@@ -106,6 +106,29 @@ const responsesFor = (body, count) => {
 	};
 };
 
+// A streamed Responses request (stream: true) gets the same response as server-sent events: the
+// created event, the output items, then response.completed carrying the whole response and its usage.
+const responsesStreamEvents = (response) => {
+	const events = [{ type: "response.created", response: { ...response, status: "in_progress", output: [], usage: undefined } }];
+	response.output.forEach((item, outputIndex) => {
+		events.push({ type: "response.output_item.added", output_index: outputIndex, item: { ...item, status: "in_progress", content: item.content && [] } });
+		if (item.type === "message") {
+			const text = item.content[0].text;
+			events.push({ type: "response.output_text.delta", item_id: item.id, output_index: outputIndex, content_index: 0, delta: text });
+			events.push({ type: "response.output_text.done", item_id: item.id, output_index: outputIndex, content_index: 0, text });
+		}
+		events.push({ type: "response.output_item.done", output_index: outputIndex, item });
+	});
+	events.push({ type: "response.completed", response });
+	return events.map((e, sequence) => `data: ${JSON.stringify({ ...e, sequence_number: sequence })}\n\n`).join("") + "data: [DONE]\n\n";
+};
+
+// store-false-required and store-true-required answer only a request whose body carries exactly that
+// store value, and refuse any other with a 400 naming the value that arrived, so a case reads the store
+// the gateway forwarded off the status. Chat requests to them get upstream-ok's completion, Responses
+// requests the fixed response.
+const storeRequired = { "store-false-required": false, "store-true-required": true };
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -159,7 +182,7 @@ const server = http.createServer((req, res) => {
 		});
 		return;
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/openai/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -243,7 +266,11 @@ const server = http.createServer((req, res) => {
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.
 		const name = model.split("~")[0];
-		if (path === "/v1/responses") {
+		if (Object.hasOwn(storeRequired, name) && parsed.store !== storeRequired[name]) {
+			return send(400, {}, errorBody(`fixture expected store ${storeRequired[name]}, got ${JSON.stringify(parsed.store)}`, "invalid_request_error", "unexpected_store"));
+		}
+		// Direct OpenAI serves Responses under /v1, Azure under /openai/v1.
+		if (path === "/v1/responses" || path === "/openai/v1/responses") {
 			// A Responses request whose model names an error behaviour gets that error; any other model gets the
 			// fixed reasoning response below.
 			const failing = Object.hasOwn(behaviours, name) ? behaviours[name]() : undefined;
@@ -255,9 +282,13 @@ const server = http.createServer((req, res) => {
 				body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			} catch {}
 			const r = responsesFor(body, (k) => { hits[k] = (hits[k] || 0) + 1; });
+			if (body.stream === true && r.status === 200) {
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(responsesStreamEvents(JSON.parse(r.body)));
+			}
 			return send(r.status, r.headers, r.body);
 		}
-		const behaviour = name === "azure-filtered" ? azureFiltered : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;
+		const behaviour = name === "azure-filtered" ? azureFiltered : Object.hasOwn(storeRequired, name) ? behaviours["upstream-ok"] : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;
 		if (!behaviour) {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}

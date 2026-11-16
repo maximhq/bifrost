@@ -48,7 +48,7 @@ export class ProviderSettingsPage extends BasePage {
    * Select a configuration tab
    */
   async selectConfigTab(
-    tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools' | 'passthrough',
+    tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools' | 'passthrough' | 'openai-config',
   ): Promise<void> {
     await this.openConfigSheet()
 

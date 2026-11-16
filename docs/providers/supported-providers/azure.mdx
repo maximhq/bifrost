@@ -497,7 +497,7 @@ The Responses API stores responses by default (`store=true`), so later requests 
 <Tabs>
 <Tab title="Web UI">
 
-Open the Azure provider, go to the **OpenAI Config** tab, turn on **Disable Store**, and click **Save Configuration**.
+Open the Azure provider, go to the **OpenAI Config** tab, turn on **Disable Store**, and click **Save OpenAI Configuration**.
 
 </Tab>
 <Tab title="config.json">
@@ -528,7 +528,7 @@ Open the Azure provider, go to the **OpenAI Config** tab, turn on **Disable Stor
 </Tab>
 </Tabs>
 
-The setting applies to requests sent to Azure's OpenAI-compatible `/openai/v1/responses` endpoint. Chat Completions are sent unchanged, since that endpoint also serves non-OpenAI models, and Responses requests for models that Bifrost serves through chat completions are unaffected too. Anthropic models use the `/anthropic/v1/messages` endpoint, which has no `store` parameter. Clients that continue a conversation with `previous_response_id` need stored responses and cannot be used with this setting.
+The setting applies to every request Bifrost sends to Azure's OpenAI-compatible `/openai/v1/responses` endpoint, including chat completions that Bifrost converts to Responses requests (the compat `convert_chat_to_responses` option, or a model listed as Responses-only). Chat Completions sent to `/openai/v1/chat/completions` go out unchanged, since that endpoint also serves non-OpenAI models, and so do Responses requests for models that Bifrost serves through chat completions. Anthropic models use the `/anthropic/v1/messages` endpoint, which has no `store` parameter. Clients that continue a conversation with `previous_response_id` need stored responses and cannot be used with this setting.
 
 ---
 

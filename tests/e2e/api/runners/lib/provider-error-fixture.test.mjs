@@ -79,3 +79,47 @@ test("filtered Live create checks accounting events and unchanged command permis
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
 });
+
+// store-false-required and store-true-required answer only a request carrying exactly that store, on
+// Azure's /openai/v1 routes as on the direct ones, so a harness case can tell which store the gateway
+// forwarded from the status alone.
+test("store-required models refuse any other store with a 400 naming what arrived", async (t) => {
+  const post = await startFixture(t);
+  const cases = [
+    ["store-false-required", true, "/openai/v1/responses"],
+    ["store-false-required", undefined, "/openai/v1/responses"],
+    ["store-false-required", "false", "/v1/responses"],
+    ["store-true-required", false, "/openai/v1/chat/completions"],
+    ["store-true-required", undefined, "/v1/chat/completions"],
+  ];
+  for (const [model, store, path] of cases) {
+    const res = await post({ model, store, input: "hi", messages: [{ role: "user", content: "hi" }] }, path);
+    const label = `${model} store=${JSON.stringify(store)} on ${path}`;
+    assert.equal(res.status, 400, label);
+    const err = (await res.json()).error;
+    assert.equal(err.code, "unexpected_store", label);
+    assert.ok(err.message.includes(`got ${JSON.stringify(store)}`), `${label}: ${err.message}`);
+  }
+});
+
+test("store-required models answer the matching store, streamed or not", async (t) => {
+  const post = await startFixture(t);
+  const unary = await post({ model: "store-false-required", store: false, input: "hi" }, "/openai/v1/responses");
+  assert.equal(unary.status, 200);
+  assert.equal((await unary.json()).status, "completed");
+
+  const streamed = await post({ model: "store-false-required", store: false, stream: true, input: "hi" }, "/openai/v1/responses");
+  assert.equal(streamed.status, 200);
+  assert.match(streamed.headers.get("content-type"), /text\/event-stream/);
+  const events = (await streamed.text()).split("\n\n").filter((l) => l.startsWith("data: {")).map((l) => JSON.parse(l.slice(6)));
+  assert.equal(events[0].type, "response.created");
+  assert.ok(events.some((e) => e.type === "response.output_text.delta" && e.delta === "hello"), "the text arrives as a delta");
+  const last = events.at(-1);
+  assert.equal(last.type, "response.completed");
+  assert.equal(last.response.usage.total_tokens, 15);
+  assert.deepEqual(events.map((e) => e.sequence_number), events.map((_, i) => i));
+
+  const chat = await post({ model: "store-true-required", store: true, messages: [{ role: "user", content: "hi" }] }, "/openai/v1/chat/completions");
+  assert.equal(chat.status, 200);
+  assert.equal((await chat.json()).choices[0].message.content, "hello");
+});
