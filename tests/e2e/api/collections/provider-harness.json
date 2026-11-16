@@ -259401,13 +259401,34 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex acknowledges the cancel in 212.14 (status \"cancelled\") seconds before the interaction stops: GET",
+                  "// keeps reporting in_progress meanwhile, and a delete in that window answers 400 \"not finished yet\". So the",
+                  "// delete waits until GET reports a final status (about 6s after the cancel when measured), at most 45s.",
+                  "var url = pm.variables.replaceIn(pm.request.url.toString());",
+                  "var apiKey = pm.request.headers.get('x-bf-api-key');",
+                  "function waitUntilFinished(attempt) {",
+                  "  pm.sendRequest({ url: url, method: 'GET', header: { 'x-bf-api-key': apiKey } }, function (err, res) {",
+                  "    var status = null;",
+                  "    if (!err && res.code === 200) { try { status = (res.json() || {}).status; } catch (e) { status = null; } }",
+                  "    if (status === 'in_progress' && attempt < 45) { return setTimeout(function () { waitUntilFinished(attempt + 1); }, 1000); }",
+                  "  });",
+                  "}",
+                  "waitUntilFinished(1);"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
                   "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
-                  "// Vertex deletes only a finished interaction; the cancel above finished it.",
+                  "// Vertex deletes only a finished interaction; the pre-request waits until the cancel above has taken effect.",
                   "var body = pm.response.text();",
                   "pm.test('vertex delete: 200 - genai-interactions-passthrough', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
@@ -308979,7 +309000,7 @@
           ]
         },
         {
-          "name": "bedrock_mantle/anthropic.claude-fable-5-1 /v1/responses codex web search with tool search: web_search and code_interpreter are dropped, not rejected",
+          "name": "bedrock_mantle/anthropic.claude-opus-5-5 /v1/responses codex web search with tool search: web_search and code_interpreter are dropped, not rejected",
           "request": {
             "method": "POST",
             "header": [
@@ -309004,7 +309025,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-fable-5-1\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\"}},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-opus-5-5\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\"}},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
             }
           },
           "event": [
@@ -309031,7 +309052,7 @@
                   "  var weather = tools.filter(function (t) { return t.name === 'get_weather'; })[0];",
                   "  pm.expect(weather, 'get_weather missing upstream: ' + types).to.be.an('object');",
                   "});",
-                  "pm.test('codex web search Mantle: no web_search_* or code_execution_* tool sent, although the catalog marks the model supports_web_search', function () {",
+                  "pm.test('codex web search Mantle: no web_search_* or code_execution_* tool sent (Mantle serves neither server tool)', function () {",
                   "  var server = tools.filter(function (t) { return /^(web_search|code_execution)/.test(String(t.type || '')); });",
                   "  pm.expect(server, 'Mantle Claude serves neither server tool; both must be dropped: ' + types).to.be.empty;",
                   "});"
