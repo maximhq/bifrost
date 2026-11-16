@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
@@ -16,6 +17,7 @@ type TableMCPClient struct {
 	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
 	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
 	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	EndpointSlug            string             `gorm:"column:endpoint_slug;type:varchar(255);uniqueIndex" json:"endpoint_slug"`
 	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
@@ -23,6 +25,8 @@ type TableMCPClient struct {
 	TLSConfigJSON           *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
 	ToolsToExecuteJSON      string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	ToolsToAutoExecuteJSON  string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	PromptsToExposeJSON     string             `gorm:"type:text" json:"-"`                              // JSON serialized []string; "" = all
+	ResourcesToExposeJSON   string             `gorm:"type:text" json:"-"`                              // JSON serialized []string; "" = all
 	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
@@ -40,13 +44,42 @@ type TableMCPClient struct {
 	// Leaving the column plain-nullable is what lets the migration tell
 	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
 	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
-	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
-	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
-	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	RequirePublicTarget    bool   `gorm:"default:false" json:"require_public_target"` // Server-set at registration; never cleared by updates
+	ToolPricingJSON        string `gorm:"type:text" json:"-"`                         // JSON serialized map[string]float64
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`        // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"`    // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int    `gorm:"default:0" json:"max_instructions_length"`   // Per-client cap on forwarded instructions in bytes (0 = use global from tool_manager_config)
+	// PerUserDiscovery: each caller's discovery (tools and instructions) is
+	// made with its own credential and kept in mcp_per_user_discoveries,
+	// instead of every caller sharing the admin's discovery. Only meaningful
+	// for per-user auth types; off for everything else. Nullable like the
+	// schema field: NULL reads as off, and an update that leaves it nil keeps
+	// the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery"`
+	// PendingVerification: the client was created before its one-time admin
+	// step (an OAuth sign-in, or verification of per-user headers or a token
+	// exchange) and is parked in pending_verification until that step passes.
+	// Server-managed, so never read from a request body or config.json. Read
+	// through AwaitsAdminVerification, not directly.
+	PendingVerification bool `gorm:"default:false" json:"-"`
+
+	MaxProtocolVersion string `gorm:"type:varchar(20);default:''" json:"max_protocol_version"` // Per-client MCP protocol version cap ("" = use global, "auto" = newest)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	// ToolNameMappingJSON is no longer written or read. The column stays so existing rows keep
+	// their data and the migration that adds it can still find the field.
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"`
+
+	DiscoveredToolDetailsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.MCPToolDetails, left out of ChatTool's JSON
+	// DiscoveredInstructions is the upstream's initialize `instructions`. Persisted for the
+	// same reason the tools above are: a per-call client holds no connection to re-read it
+	// from, so without this a restart leaves it serving tools with no instructions.
+	DiscoveredInstructions string `gorm:"type:text" json:"-"`
+
+	DiscoveredResourcesJSON         string `gorm:"type:text" json:"-"` // JSON serialized []mcp.Resource
+	DiscoveredResourceTemplatesJSON string `gorm:"type:text" json:"-"` // JSON serialized []mcp.ResourceTemplate
+	DiscoveredPromptsJSON           string `gorm:"type:text" json:"-"` // JSON serialized []mcp.Prompt
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"
@@ -67,8 +100,10 @@ type TableMCPClient struct {
 	// integration at exchange time.
 	TokenExchangeJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPTokenExchangeConfig
 
-	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
-	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
+	// AllowByDefault opens the client to every caller not assigned it explicitly. The column keeps the
+	// name the flag was introduced under; only the wire name moved.
+	AllowByDefault bool `gorm:"column:allow_on_all_virtual_keys;default:false" json:"allow_by_default"`
+	Disabled       bool `gorm:"default:false" json:"disabled"` // Whether the client is intentionally disabled
 
 	// PendingOAuthConfigJSON stashes the inline `oauth_config` block from
 	// config.json for shared-OAuth MCP clients (auth_type='oauth') that have
@@ -85,6 +120,14 @@ type TableMCPClient struct {
 	// addresses the column as pending_oauth_config_json.
 	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
 
+	// OpenAPI-backed clients (connection_type='openapi'). The spec document is
+	// large and carries no secrets, so it has its own plaintext column; the
+	// rest of openapi_config (base URL, security credentials, options and the
+	// server-computed metadata) is one JSON column, encrypted at rest because
+	// the credentials live in it. Both NULL/empty for other connection types.
+	OpenAPISpec       string  `gorm:"column:openapi_spec;type:text" json:"-"`
+	OpenAPIConfigJSON *string `gorm:"column:openapi_config_json;type:text" json:"-"` // JSON serialized schemas.MCPOpenAPIConfig minus Spec
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -95,18 +138,72 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64              `gorm:"-" json:"tool_pricing"`
-	DiscoveredTools           map[string]schemas.ChatTool     `gorm:"-" json:"-"`
-	DiscoveredToolNameMapping map[string]string               `gorm:"-" json:"-"`
-	PerUserHeaderKeys         []string                        `gorm:"-" json:"per_user_header_keys"`
-	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
-	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
+	StdioConfig         *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig           *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute      schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute  schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
+	PromptsToExpose     schemas.WhiteList               `gorm:"-" json:"prompts_to_expose"`
+	ResourcesToExpose   schemas.WhiteList               `gorm:"-" json:"resources_to_expose"`
+	Headers             map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
+	AllowedExtraHeaders schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing         map[string]float64              `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools     map[string]schemas.ChatTool     `gorm:"-" json:"-"`
+	PerUserHeaderKeys   []string                        `gorm:"-" json:"per_user_header_keys"`
+	TokenExchange       *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
+	PendingOAuthConfig  *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
+	OpenAPIConfig       *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
+
+	DiscoveredResources         []mcp.Resource         `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourcesJSON
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourceTemplatesJSON
+	DiscoveredPrompts           []mcp.Prompt           `gorm:"-" json:"-"` // Runtime mirror of DiscoveredPromptsJSON
+
+	// ServerTypeOnSlug is code mode on the client's own /mcp/<slug>; empty inherits is_code_mode_client.
+	ServerTypeOnSlug schemas.MCPServerTypeOnSlug `gorm:"column:server_type_on_slug;type:varchar(16);default:''" json:"server_type_on_slug,omitempty"`
+}
+
+// SplitOpenAPIConfigForStorage separates an openapi_config into its two
+// columns: the raw spec text and the JSON of everything else. Both BeforeSave
+// and the map-based update path use it so the stored shape is identical.
+func SplitOpenAPIConfigForStorage(cfg *schemas.MCPOpenAPIConfig) (spec string, configJSON *string, err error) {
+	if cfg == nil {
+		return "", nil, nil
+	}
+	rest := *cfg
+	rest.Spec = ""
+	stored := storedOpenAPIConfig{MCPOpenAPIConfig: rest}
+	if len(cfg.SecurityCredentials) > 0 {
+		stored.SecurityCredentials = make(map[string]storedOpenAPICredential, len(cfg.SecurityCredentials))
+		for name, cred := range cfg.SecurityCredentials {
+			stored.SecurityCredentials[name] = storedOpenAPICredential{
+				Value:    schemas.SecretVarAsString(cred.Value),
+				Username: schemas.SecretVarAsString(cred.Username),
+				Password: schemas.SecretVarAsString(cred.Password),
+			}
+		}
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to marshal openapi_config: %w", err)
+	}
+	str := string(data)
+	return cfg.Spec, &str, nil
+}
+
+// storedOpenAPIConfig is openapi_config as written to openapi_config_json. Each
+// credential is stored in its wire string form: the reference for an env or
+// vault value, the value itself only for a literal. SecretVar's own JSON form
+// carries the resolved value next to the reference, which would copy a
+// referenced secret into the row. Loading parses the strings back into
+// SecretVars, resolving references again.
+type storedOpenAPIConfig struct {
+	schemas.MCPOpenAPIConfig
+	SecurityCredentials map[string]storedOpenAPICredential `json:"security_credentials,omitempty"`
+}
+
+type storedOpenAPICredential struct {
+	Value    string `json:"value,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -164,6 +261,21 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolsToAutoExecuteJSON = "[]"
 	}
 
+	for _, list := range []struct {
+		field string
+		value schemas.WhiteList
+		into  *string
+	}{
+		{"prompts_to_expose", c.PromptsToExpose, &c.PromptsToExposeJSON},
+		{"resources_to_expose", c.ResourcesToExpose, &c.ResourcesToExposeJSON},
+	} {
+		encoded, err := EncodeExposeList(list.field, list.value)
+		if err != nil {
+			return err
+		}
+		*list.into = encoded
+	}
+
 	if c.Headers != nil {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
@@ -211,14 +323,13 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		c.DiscoveredToolsJSON = string(data)
-	}
-
-	if c.DiscoveredToolNameMapping != nil {
-		data, err := json.Marshal(c.DiscoveredToolNameMapping)
-		if err != nil {
+		if c.DiscoveredToolDetailsJSON, err = EncodeToolDetails(c.DiscoveredTools); err != nil {
 			return err
 		}
-		c.ToolNameMappingJSON = string(data)
+	}
+
+	if err := c.EncodeDiscoveredLists(); err != nil {
+		return err
 	}
 
 	if c.PerUserHeaderKeys != nil {
@@ -255,6 +366,14 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.PendingOAuthConfigJSON = nil
 	}
+
+	// openapi_config: spec text plaintext, remainder (credentials) as JSON.
+	spec, openAPIJSON, err := SplitOpenAPIConfigForStorage(c.OpenAPIConfig)
+	if err != nil {
+		return err
+	}
+	c.OpenAPISpec = spec
+	c.OpenAPIConfigJSON = openAPIJSON
 
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
@@ -295,10 +414,71 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			}
 			c.TokenExchangeJSON = &enc
 		}
+		// openapi_config carries the upstream API credentials.
+		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+			enc, err := encrypt.Encrypt(*c.OpenAPIConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp openapi config: %w", err)
+			}
+			c.OpenAPIConfigJSON = &enc
+		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 
 	return nil
+}
+
+// AwaitsAdminVerification reports whether the stored client still needs its
+// one-time admin step. Call it on a row that has been found, so the decoded
+// fields are set.
+//
+// Only a client with per_user_discovery on is read from PendingVerification.
+// Every other client is read from what its admin step changes (see
+// AdminStepSignalsPending). That is a deliberate transition measure: nodes
+// running a version from before this column keep maintaining only those
+// signals, so in a deployment where such nodes share this database (a rolling
+// upgrade, for one), a client whose step one of them completed, or one it
+// created pending, would otherwise read wrongly from the column. Every write
+// keeps the column in step, and the next versions drop this fallback and read
+// the column for every client, once no node from before it can be running.
+func (c *TableMCPClient) AwaitsAdminVerification() bool {
+	if c.PerUserDiscovery != nil && *c.PerUserDiscovery {
+		return c.PendingVerification
+	}
+	return c.AdminStepSignalsPending()
+}
+
+// AdminStepSignalsPending reports whether what the client's admin step changes
+// still says the step has not run: an OAuth client keeps its bootstrap stash,
+// or a per_user_headers or token_exchange client (not openapi, which has
+// nothing upstream to verify) has stored no tools.
+//
+// A per_user_oauth client with no stash is pending only when it has stored no
+// tools AND PendingVerification records it: turning per_user_discovery off
+// leaves it registered with no admin discovery and records exactly that. The
+// missing tools alone do not count, so a row from before the record reads as
+// it always has.
+func (c *TableMCPClient) AdminStepSignalsPending() bool {
+	switch schemas.MCPAuthType(c.AuthType) {
+	case schemas.MCPAuthTypeOauth:
+		return c.PendingOAuthConfig != nil
+	case schemas.MCPAuthTypePerUserOauth:
+		return c.PendingOAuthConfig != nil || (c.PendingVerification && c.DiscoveredTools == nil)
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		return c.ConnectionType != string(schemas.MCPConnectionTypeOpenAPI) && c.DiscoveredTools == nil
+	}
+	return false
+}
+
+// HasAdminStep reports whether the client's auth type has a one-time admin step
+// at all: every OAuth, per_user_oauth, per_user_headers and token_exchange
+// client, except an openapi one, which has nothing upstream to verify.
+func (c *TableMCPClient) HasAdminStep() bool {
+	switch schemas.MCPAuthType(c.AuthType) {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		return c.ConnectionType != string(schemas.MCPConnectionTypeOpenAPI)
+	}
+	return false
 }
 
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
@@ -333,6 +513,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			}
 			c.PendingOAuthConfigJSON = &decrypted
 		}
+		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.OpenAPIConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp openapi config: %w", err)
+			}
+			c.OpenAPIConfigJSON = &decrypted
+		}
 	}
 	if c.StdioConfigJSON != nil {
 		var config schemas.MCPStdioConfig
@@ -358,6 +545,16 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
+	if c.PromptsToExposeJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.PromptsToExposeJSON), &c.PromptsToExpose); err != nil {
+			return err
+		}
+	}
+	if c.ResourcesToExposeJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.ResourcesToExposeJSON), &c.ResourcesToExpose); err != nil {
+			return err
+		}
+	}
 	if c.HeadersJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
 			return err
@@ -378,8 +575,26 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
-	if c.ToolNameMappingJSON != "" {
-		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
+	if c.DiscoveredToolDetailsJSON != "" {
+		var details map[string]schemas.MCPToolDetails
+		if err := json.Unmarshal([]byte(c.DiscoveredToolDetailsJSON), &details); err != nil {
+			return err
+		}
+		schemas.ApplyToolDetails(c.DiscoveredTools, details)
+	}
+	// encoding/json: resource templates decode through mcp.URITemplate's UnmarshalJSON.
+	if c.DiscoveredResourcesJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredResourcesJSON), &c.DiscoveredResources); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredResourceTemplatesJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredResourceTemplatesJSON), &c.DiscoveredResourceTemplates); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredPromptsJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredPromptsJSON), &c.DiscoveredPrompts); err != nil {
 			return err
 		}
 	}
@@ -402,9 +617,66 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		}
 		c.PendingOAuthConfig = &cfg
 	}
+	if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+		var cfg schemas.MCPOpenAPIConfig
+		if err := json.Unmarshal([]byte(*c.OpenAPIConfigJSON), &cfg); err != nil {
+			return fmt.Errorf("failed to decode mcp openapi config: %w", err)
+		}
+		cfg.Spec = c.OpenAPISpec
+		c.OpenAPIConfig = &cfg
+	} else if c.OpenAPISpec != "" {
+		c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: c.OpenAPISpec}
+	}
 	return nil
 }
 
 // VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
 // callback can compute the vault base path for this model automatically.
 func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }
+
+// EncodeDiscoveredLists fills the resources, templates and prompts columns from their mirrors.
+func (c *TableMCPClient) EncodeDiscoveredLists() error {
+	var err error
+	if c.DiscoveredResourcesJSON, err = marshalListJSON(c.DiscoveredResources); err != nil {
+		return err
+	}
+	if c.DiscoveredResourceTemplatesJSON, err = marshalListJSON(c.DiscoveredResourceTemplates); err != nil {
+		return err
+	}
+	c.DiscoveredPromptsJSON, err = marshalListJSON(c.DiscoveredPrompts)
+	return err
+}
+
+// EncodeToolDetails encodes the annotations and metadata of tools for their column; none is "".
+func EncodeToolDetails(tools map[string]schemas.ChatTool) (string, error) {
+	details := schemas.ToolDetails(tools)
+	if details == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(details)
+	return string(data), err
+}
+
+// marshalListJSON encodes a discovered list for its column; nil (the server offers none) is "".
+func marshalListJSON[T any](list []T) (string, error) {
+	if list == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(list)
+	return string(data), err
+}
+
+// EncodeExposeList stores a prompts or resources allow-list; nil (expose all) is stored as "".
+func EncodeExposeList(field string, list schemas.WhiteList) (string, error) {
+	if list == nil {
+		return "", nil
+	}
+	if err := list.Validate(); err != nil {
+		return "", fmt.Errorf("invalid %s: %w", field, err)
+	}
+	data, err := json.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}

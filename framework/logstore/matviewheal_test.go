@@ -38,6 +38,16 @@ func TestIsMatViewShapeError(t *testing.T) {
 	}
 }
 
+// holdMatViewHeal marks a heal as already in flight so fallBackToRaw still
+// disables the read path but triggerMatViewSelfHeal cannot start the
+// background repair. Without the hold, the repair on a small test database
+// can finish and re-arm matViewsReady before the test observes the disabled
+// state (observed on CI). resetMatViewHeal releases the hold.
+func holdMatViewHeal(s *RDBLogStore) {
+	s.matViewHealInFlight.Store(true)
+	s.matViewHealLastAttempt.Store(0)
+}
+
 // TestMatViewShapeErrorFallsBackAndSelfHeals drops mv_logs_hourly mid-run and
 // verifies that (a) matview-gated reads keep returning correct results from
 // the raw table with no error, (b) the matview read path is disabled
@@ -52,12 +62,13 @@ func TestMatViewShapeErrorFallsBackAndSelfHeals(t *testing.T) {
 	insertCountTestLog(t, db, day.Add(11*time.Hour), "error")
 	refreshTestMatViews(t, db)
 	store.matViewsReady.Store(true)
-	store.resetMatViewHeal()
+	holdMatViewHeal(store)
 
 	require.NoError(t, db.Exec("DROP MATERIALIZED VIEW mv_logs_hourly CASCADE").Error)
 
-	// Unbounded window keeps the fresh-aggregate gate satisfied, so both
-	// calls attempt the matview first and must fall through on 42P01.
+	// Unbounded window keeps the fresh-aggregate gate satisfied, so GetStats
+	// attempts the matview first and must fall through on 42P01. SearchLogs
+	// then sees the disabled read path and serves raw directly.
 	stats, err := store.GetStats(ctx, SearchFilters{})
 	require.NoError(t, err, "GetStats must serve from raw tables when the view is missing")
 	assert.Equal(t, int64(2), stats.TotalRequests)
@@ -68,6 +79,13 @@ func TestMatViewShapeErrorFallsBackAndSelfHeals(t *testing.T) {
 
 	assert.False(t, store.matViewsReady.Load(),
 		"the matview read path must be disabled after a shape error")
+
+	// Release the hold and hit the missing view once more so the shape error
+	// re-triggers the heal through the real dispatch path.
+	store.resetMatViewHeal()
+	store.matViewsReady.Store(true)
+	_, err = store.GetStats(ctx, SearchFilters{})
+	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
 		if !store.matViewsReady.Load() {
@@ -109,7 +127,7 @@ func TestMatViewStaleShapeFallsBackAndSelfHeals(t *testing.T) {
 	// REFRESH succeeds on the stale shape - readiness alone cannot detect it.
 	require.NoError(t, db.Exec("REFRESH MATERIALIZED VIEW mv_logs_hourly").Error)
 	store.matViewsReady.Store(true)
-	store.resetMatViewHeal()
+	holdMatViewHeal(store)
 
 	hist, err := store.GetHistogram(ctx, SearchFilters{}, 3600)
 	require.NoError(t, err, "GetHistogram must serve from raw tables when the view shape is stale")
@@ -119,6 +137,11 @@ func TestMatViewStaleShapeFallsBackAndSelfHeals(t *testing.T) {
 	}
 	assert.Equal(t, int64(1), total)
 	assert.False(t, store.matViewsReady.Load())
+
+	store.resetMatViewHeal()
+	store.matViewsReady.Store(true)
+	_, err = store.GetHistogram(ctx, SearchFilters{}, 3600)
+	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
 		if !store.matViewsReady.Load() {
@@ -152,7 +175,7 @@ func TestFilterMatViewShapeErrorFallsBack(t *testing.T) {
 	insertCountTestLog(t, db, day.Add(10*time.Hour), "success") // model gpt-4
 	refreshTestMatViews(t, db)
 	store.matViewsReady.Store(true)
-	store.resetMatViewHeal()
+	holdMatViewHeal(store)
 
 	require.NoError(t, db.Exec("DROP MATERIALIZED VIEW mv_filter_models CASCADE").Error)
 

@@ -1,5 +1,6 @@
 // Chart utility functions for the dashboard
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import i18n, { getLocale } from "@/lib/i18n";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -7,20 +8,20 @@ export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): s
 
 	if (bucketSizeSeconds >= 86400) {
 		// Daily buckets: "Jan 20"
-		return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+		return date.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 	} else if (bucketSizeSeconds >= 3600) {
 		// Hourly buckets: "10:00"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	} else {
 		// Sub-hourly: "10:15"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	}
 }
 
 // Format full timestamp for tooltip
 export function formatFullTimestamp(timestamp: string): string {
 	const date = new Date(timestamp);
-	return date.toLocaleString("en-US", {
+	return date.toLocaleString(getLocale(), {
 		month: "short",
 		day: "numeric",
 		hour: "2-digit",
@@ -40,44 +41,42 @@ export function formatCost(cost: number): string {
 	return `$${cost.toFixed(2)}`;
 }
 
-// Color palette for models. Length governs TOP_SERIES_LIMIT (top-N rollup cap),
-// so colors and named-series count stay coupled — adding a color expands top-N.
+// Categorical palette for models, providers, apps and users: six hues at
+// matched chroma, assigned by rank so a series keeps its color across every
+// card. Length governs TOP_SERIES_LIMIT (top-N rollup cap), so colors and
+// named-series count stay coupled. Values live in globals.css so dark mode
+// can re-anchor them.
 export const MODEL_COLORS = [
-	"#10b981", // emerald-500
-	"#3b82f6", // blue-500
-	"#f59e0b", // amber-500
-	"#ef4444", // red-500
-	"#8b5cf6", // violet-500
-	"#ec4899", // pink-500
-	"#06b6d4", // cyan-500
-	"#84cc16", // lime-500
-	"#f97316", // orange-500
-	"#14b8a6", // teal-500
-	"#eab308", // yellow-500
-	"#d946ef", // fuchsia-500
+	"var(--chart-cat-1)",
+	"var(--chart-cat-2)",
+	"var(--chart-cat-3)",
+	"var(--chart-cat-4)",
+	"var(--chart-cat-5)",
+	"var(--chart-cat-6)",
 ];
 
-// Get color for a model by index
+// Color for a ranked series. Ranks past the palette are "Other" grey rather
+// than a wrapped hue, so two series in one card never share a color.
 export function getModelColor(index: number): string {
-	return MODEL_COLORS[index % MODEL_COLORS.length];
+	return MODEL_COLORS[index] ?? OTHER_SERIES_COLOR;
 }
 
 // Top-N series rollup: keeps the visible recharts subtree bounded when a
-// dimension (models, providers) grows large. The palette has 8 colors and
-// the legend already says "+N more", so the data path follows the palette.
+// dimension (models, providers) grows large. The legend already says
+// "+N more", so the data path follows the palette.
 export const TOP_SERIES_LIMIT = MODEL_COLORS.length;
 export const OTHER_SERIES_KEY = "__other__";
-export const OTHER_SERIES_LABEL = "Other";
-export const OTHER_SERIES_COLOR = "#94a3b8"; // slate-400
+export const getOtherSeriesLabel = (): string => i18n.t("labels.other", { ns: "observability" });
+export const OTHER_SERIES_COLOR = "var(--chart-cat-other)";
 
-export const UNNAMED_MODEL_LABEL = "(unnamed)";
+export const getUnnamedModelLabel = (): string => i18n.t("labels.unnamed", { ns: "observability" });
 
 // Resolves a raw model value to its display label: the canonical model name
 // when one is known (e.g. Bedrock inference-profile IDs mapped via key
 // aliases), the raw value otherwise.
 export function displayModelLabel(model: string, labels?: Record<string, string>): string {
-	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
-	if (model === "") return UNNAMED_MODEL_LABEL;
+	if (model === OTHER_SERIES_KEY) return getOtherSeriesLabel();
+	if (model === "") return getUnnamedModelLabel();
 	return labels?.[model] ?? model;
 }
 
@@ -122,12 +121,12 @@ export function formatLatency(ms: number): string {
 	return `${ms.toFixed(0)}ms`;
 }
 
-// Latency chart color palette
+// Latency and overhead percentiles: one indigo ramp, darkest is worst.
 export const LATENCY_COLORS = {
-	avg: "#06b6d4", // cyan-500
-	p90: "#3b82f6", // blue-500
-	p95: "#f59e0b", // amber-500
-	p99: "#ef4444", // red-500
+	avg: "var(--chart-ord-1)",
+	p90: "var(--chart-ord-2)",
+	p95: "var(--chart-ord-3)",
+	p99: "var(--chart-ord-4)",
 };
 
 // Format token-generation throughput (tokens/sec) with compact units (1k, 5k, 1M).
@@ -137,22 +136,22 @@ export function formatTokensPerSecond(tps: number): string {
 	return `${formatCompactNumber(tps, 1)} tok/s`;
 }
 
-// Throughput chart color
-export const THROUGHPUT_COLOR = "#10b981"; // emerald-500
+// Throughput chart color: mid step of the teal ramp.
+export const THROUGHPUT_COLOR = "var(--chart-seq-3)";
 
 // Shared CSS class constants for chart card headers
 export const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
 export const CHART_HEADER_LEGEND_CLASS = "flex min-h-5 min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
 export const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
 
-// Chart colors
+// Semantic and token colors. Status hues are never reused for a measure.
 export const CHART_COLORS = {
-	success: "#10b981", // emerald-500
-	error: "#ef4444", // red-500
-	cancelled: "#a1a1aa", // zinc-400
-	promptTokens: "#3b82f6", // blue-500
-	completionTokens: "#10b981", // emerald-500
-	totalTokens: "#8b5cf6", // violet-500
-	cost: "#f59e0b", // amber-500
-	cachedReadTokens: "#06b6d4", // cyan-500
+	success: "var(--chart-success)",
+	error: "var(--chart-error)",
+	cancelled: "var(--chart-neutral)",
+	promptTokens: "var(--chart-token-input)",
+	completionTokens: "var(--chart-token-output)",
+	totalTokens: "var(--chart-seq-1)",
+	cost: "var(--chart-seq-2)",
+	cachedReadTokens: "var(--chart-token-cached)",
 };

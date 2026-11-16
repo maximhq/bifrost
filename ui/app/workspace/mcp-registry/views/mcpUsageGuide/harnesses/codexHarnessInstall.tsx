@@ -1,28 +1,34 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { buildCodexConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { CodexConfigScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for Codex: the generated config or command for the selected MCP servers. */
 export function CodexHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const [configScope, setConfigScope] = useState<CodexConfigScope>("user");
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildCodexConfig({
-			clientConfig,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, selectedServers, serverScope, virtualKey]);
+	const config = useMemo(
+		() =>
+			buildCodexConfig({
+				clientConfig,
+				headers,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, selectedServers, serverScope],
+	);
 
 	const configPath = configScope === "project" ? ".codex/config.toml" : `${getUserHomePrefix(platform)}/.codex/config.toml`;
 
@@ -37,16 +43,16 @@ export function CodexHarnessInstall({
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="user">User</SelectItem>
-							<SelectItem value="project">Project</SelectItem>
+							<SelectItem value="user">{t("usageGuide.scopeUser")}</SelectItem>
+							<SelectItem value="project">{t("usageGuide.scopeProject")}</SelectItem>
 						</SelectContent>
 					</Select>
 				}
-				copySuccessMessage="Config copied"
-				emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+				copySuccessMessage={t("common.configCopied")}
+				emptyMessage={emptyMessage}
 				harnessName="Codex"
 				label="config.toml"
-				logoSrc="/images/harness/codex.svg"
+				logoSrc={withBasePath("/images/harness/codex.svg")}
 				registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 			/>
 		</div>

@@ -59,7 +59,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 				Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
 				ResponsesToolMessage: &ResponsesToolMessage{
 					CallID: Ptr("call_1"),
-					Error:  Ptr("ENOENT: no such file or directory"),
+					Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("ENOENT: no such file or directory")},
 				},
 			},
 		},
@@ -76,11 +76,23 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "empty structured error",
+			msg: ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_1"),
+					Error: &ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cms := ToChatMessages([]ResponsesMessage{tt.msg})
+			cms := ToChatMessages([]ResponsesMessage{tt.msg}, nil)
 			if len(cms) != 1 {
 				t.Fatalf("expected 1 chat message, got %d", len(cms))
 			}
@@ -99,9 +111,10 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 		Status: Ptr("completed"),
 		ResponsesToolMessage: &ResponsesToolMessage{
 			CallID: Ptr("call_2"),
+			Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("")},
 			Output: &ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: Ptr("15 degrees")},
 		},
-	}})
+	}}, nil)
 	if len(okCMs) != 1 {
 		t.Fatalf("expected 1 chat message, got %d", len(okCMs))
 	}
@@ -126,7 +139,7 @@ func TestToolErrorSurvivesSurfaceRoundTrip(t *testing.T) {
 		},
 	}
 
-	roundTripped := ToChatMessages(original.ToResponsesMessages())
+	roundTripped := ToChatMessages(original.ToResponsesMessages(), nil)
 	if len(roundTripped) != 1 {
 		t.Fatalf("expected 1 chat message after round trip, got %d", len(roundTripped))
 	}

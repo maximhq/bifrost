@@ -21,7 +21,7 @@ output "health_check_url" {
   description = "URL to the Bifrost health check endpoint."
   value = (
     var.domain_name != null
-    ? "http://${var.domain_name}/health"
+    ? "http://${var.domain_name}${trimsuffix(var.ingress_path, "/")}${var.health_check_path}"
     : "http://${kubernetes_service_v1.bifrost.metadata[0].name}.${kubernetes_namespace_v1.bifrost.metadata[0].name}.svc.cluster.local/health"
   )
 }

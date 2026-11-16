@@ -81,7 +81,7 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	}
 
 	// This might be a cache hit if semantic similarity is high enough.
-	// Hit/miss is similarity-dependent, but CacheDebug must be stamped either
+	// Hit/miss is similarity-dependent, but cache metadata must be stamped either
 	// way — semantic search ran. This catches a regression where the stamping
 	// stops without making the test flake on similarity scores.
 	if response2.ExtraFields.CacheDebug == nil {
@@ -141,7 +141,7 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	}
 
 	// May or may not be a cache hit depending on semantic similarity, but
-	// CacheDebug must be stamped (regression guard).
+	// Cache metadata must be stamped (regression guard).
 	if response3.ExtraFields.CacheDebug == nil {
 		t.Fatal("expected CacheDebug to be stamped on the response")
 	}
@@ -317,6 +317,10 @@ func (s *directFastPathStore) Ping(ctx context.Context) error { return nil }
 
 func (s *directFastPathStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
 	return nil
+}
+
+func (s *directFastPathStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
 }
 
 func (s *directFastPathStore) DeleteNamespace(ctx context.Context, namespace string) error {
@@ -892,6 +896,87 @@ func TestPostLLMHookUsesDeterministicStorageIDOutsideDirectMode(t *testing.T) {
 	if store.addIDs[0] != directID {
 		t.Fatalf("expected PostLLMHook to use deterministic storage id outside direct mode, got %q", store.addIDs[0])
 	}
+}
+
+// TestCacheSeparatesRequestFamilies covers issue #7560: Chat Completions and
+// Responses requests with the same cache key, input, and params must not share
+// a params_hash (the semantic search filter) or a direct cache ID.
+func TestCacheSeparatesRequestFamilies(t *testing.T) {
+	plugin := &Plugin{
+		store:  newDirectFastPathStore(),
+		config: getDefaultTestConfig(),
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	// Same prompt, model, and temperature, so only the endpoint differs.
+	chat := func(requestType schemas.RequestType) *schemas.BifrostRequest {
+		req := CreateBasicChatRequest("What is Bifrost?", 0.5, 0)
+		req.Params.MaxCompletionTokens = nil
+		return &schemas.BifrostRequest{RequestType: requestType, ChatRequest: req}
+	}
+	responses := func(requestType schemas.RequestType) *schemas.BifrostRequest {
+		req := CreateBasicResponsesRequest("What is Bifrost?", 0.5, 0)
+		req.Model = "gpt-4o-mini"
+		req.Params.MaxOutputTokens = nil
+		return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: req}
+	}
+
+	tests := []struct {
+		name       string
+		a, b       *schemas.BifrostRequest
+		wantShared bool
+	}{
+		{"chat vs responses", chat(schemas.ChatCompletionRequest), responses(schemas.ResponsesRequest), false},
+		{"chat stream vs responses stream", chat(schemas.ChatCompletionStreamRequest), responses(schemas.ResponsesStreamRequest), false},
+		{"websocket vs http responses stream", responses(schemas.WebSocketResponsesRequest), responses(schemas.ResponsesStreamRequest), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateA, _, err := runDirectSearchForTest(t, plugin, newBaseTestContext(), tt.a, "family")
+			if err != nil {
+				t.Fatalf("performDirectSearch failed: %v", err)
+			}
+			stateB, _, err := runDirectSearchForTest(t, plugin, newBaseTestContext(), tt.b, "family")
+			if err != nil {
+				t.Fatalf("performDirectSearch failed: %v", err)
+			}
+			if shared := stateA.ParamsHash == stateB.ParamsHash; shared != tt.wantShared {
+				t.Errorf("params_hash shared = %v, want %v", shared, tt.wantShared)
+			}
+			if shared := stateA.DirectCacheID == stateB.DirectCacheID; shared != tt.wantShared {
+				t.Errorf("direct cache ID shared = %v, want %v", shared, tt.wantShared)
+			}
+		})
+	}
+
+	t.Run("cached chat response is not replayed to responses", func(t *testing.T) {
+		ctx := CreateContextWithCacheKeyAndType(t, "", CacheTypeDirect)
+		if _, _, err := plugin.PreLLMHook(ctx, chat(schemas.ChatCompletionRequest)); err != nil {
+			t.Fatalf("PreLLMHook failed: %v", err)
+		}
+		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+		response.ChatResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+		if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
+			t.Fatalf("PostLLMHook failed: %v", err)
+		}
+		plugin.WaitForPendingOperations()
+
+		_, shortCircuit, err := plugin.PreLLMHook(CreateContextWithCacheKeyAndType(t, "", CacheTypeDirect), responses(schemas.ResponsesRequest))
+		if err != nil {
+			t.Fatalf("PreLLMHook failed: %v", err)
+		}
+		if shortCircuit != nil {
+			t.Fatal("expected a cache miss for the responses request, got the cached chat response")
+		}
+
+		_, shortCircuit, err = plugin.PreLLMHook(CreateContextWithCacheKeyAndType(t, "", CacheTypeDirect), chat(schemas.ChatCompletionRequest))
+		if err != nil {
+			t.Fatalf("PreLLMHook failed: %v", err)
+		}
+		if shortCircuit == nil || shortCircuit.Response == nil || shortCircuit.Response.ChatResponse == nil {
+			t.Fatal("expected the chat request to hit its own cached entry")
+		}
+	})
 }
 
 func TestGetOrCreateStreamAccumulatorUsesSingleAccumulatorPerRequest(t *testing.T) {

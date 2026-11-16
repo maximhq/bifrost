@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -326,4 +327,176 @@ func isForeignKeyRace(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "foreign key") || strings.Contains(msg, "violates foreign key constraint")
+}
+
+// TestPostgresGrantRevocationCatchesConcurrentCodeExchange runs grant revocation and an
+// authorization-code exchange for the same identity on two real connections, with the exchange
+// fired while revocation is paused after its first statement. Whichever way the two interleave,
+// the identity must end with no active refresh token: either the exchange finds its code already
+// revoked, or the token it minted is seen and revoked by revocation's later statement.
+func TestPostgresGrantRevocationCatchesConcurrentCodeExchange(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.DB().Create(&tables.TableOAuth2AuthorizeRequest{
+		ID: "ar-race", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp",
+		Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256",
+		Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-race"),
+		BfMode: "vk", BfSub: "vk-race", ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+	existing := makeRefreshToken("rt-existing", "ar-earlier", "c", "h-existing")
+	existing.BfSub = "vk-race"
+	require.NoError(t, store.DB().Create(existing).Error)
+
+	// Pause revocation right after its first UPDATE and fire the exchange from another
+	// connection during the pause. The exchange may block on a row lock revocation holds;
+	// the pause is long enough for an unblocked exchange to commit before revocation resumes.
+	exchangeDone := make(chan error, 1)
+	var once sync.Once
+	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_revocation", func(db *gorm.DB) {
+		once.Do(func() {
+			minted := makeRefreshToken("rt-minted", "ar-race", "c", "h-minted")
+			minted.BfSub = "vk-race"
+			go func() { exchangeDone <- store.ConsumeOAuth2AuthorizeRequest(ctx, "ar-race", minted) }()
+			time.Sleep(500 * time.Millisecond)
+		})
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_revocation") })
+
+	require.NoError(t, store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race"))
+
+	var exchangeErr error
+	select {
+	case exchangeErr = <-exchangeDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("code exchange did not finish after revocation committed")
+	}
+
+	var active int64
+	require.NoError(t, store.DB().Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", "vk", "vk-race").Count(&active).Error)
+	require.Zero(t, active, "no refresh token of the revoked identity may stay active (exchange error: %v)", exchangeErr)
+	if exchangeErr != nil {
+		require.True(t, errors.Is(exchangeErr, ErrNotFound), "the exchange can only fail because its code was revoked, got: %v", exchangeErr)
+	}
+}
+
+// TestPostgresGrantRevocationCatchesConcurrentTokenRefresh runs grant revocation while a refresh
+// rotation for the same identity is mid-transaction: the rotation has already locked the old token
+// and is about to insert its replacement. However the two interleave, the identity must end with no
+// active refresh token, so the replacement cannot outlive the revocation.
+func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	current := makeRefreshToken("rt-current", "family-refresh", "c", "h-current")
+	current.BfSub = "vk-refresh"
+	require.NoError(t, store.DB().Create(current).Error)
+
+	// Pause the rotation right after it revokes (and so locks) the old token, start revocation
+	// on another connection during the pause, then let the rotation insert and commit.
+	revokeDone := make(chan error, 1)
+	var once sync.Once
+	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_refresh", func(db *gorm.DB) {
+		once.Do(func() {
+			go func() { revokeDone <- store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh") }()
+			time.Sleep(500 * time.Millisecond)
+		})
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_refresh") })
+
+	replacement := makeRefreshToken("rt-replacement", "family-refresh", "c", "h-replacement")
+	replacement.BfSub = "vk-refresh"
+	require.NoError(t, store.RotateOAuth2RefreshToken(ctx, "rt-current", replacement))
+
+	select {
+	case err := <-revokeDone:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("grant revocation did not finish after the refresh committed")
+	}
+
+	var active int64
+	require.NoError(t, store.DB().Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", "vk", "vk-refresh").Count(&active).Error)
+	require.Zero(t, active, "a token minted by a concurrent refresh must not outlive the revocation")
+}
+
+// Nodes creating the same datasheet override target at once all succeed and
+// converge on one row, rather than one losing to the unique target index.
+func TestPostgresDatasheetOverrideConcurrentCreateSameTarget(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		model := fmt.Sprintf("race-%02d", i)
+		start := make(chan struct{})
+		saved := make([]*tables.TableDatasheetOverride, 4)
+		errs := make([]error, len(saved))
+		var wg sync.WaitGroup
+		for j := range saved {
+			saved[j] = &tables.TableDatasheetOverride{
+				ID: fmt.Sprintf("%s-%d", model, j), Provider: "openai", Model: model, Mode: "chat",
+				PricingPatch: json.RawMessage(fmt.Sprintf(`{"context_length":%d}`, 1000+j)),
+			}
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				<-start
+				errs[j] = store.UpsertDatasheetOverride(ctx, saved[j])
+			}(j)
+		}
+		close(start)
+		wg.Wait()
+		for j, err := range errs {
+			require.NoError(t, err, "iteration %d writer %d", i, j)
+		}
+		for j := range saved {
+			require.Equal(t, saved[0].ID, saved[j].ID, "every writer reports the one stored row's ID")
+		}
+	}
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 20)
+}
+
+// Concurrent saves for bedrock and bedrock_mantle carrying the same pricing
+// claim: exactly one is stored, every other writer gets
+// ErrDatasheetPricingClaimTaken, whichever connection commits first.
+func TestPostgresDatasheetOverrideConcurrentPricingClaim(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		model := fmt.Sprintf("claim-%02d", i)
+		claim := model + "|bedrock|chat"
+		providers := []string{"bedrock", "bedrock_mantle", "bedrock", "bedrock_mantle"}
+		start := make(chan struct{})
+		errs := make([]error, len(providers))
+		var wg sync.WaitGroup
+		for j, provider := range providers {
+			row := &tables.TableDatasheetOverride{
+				ID: fmt.Sprintf("%s-%d", model, j), Provider: provider, Model: model, Mode: "chat", PricingClaim: &claim,
+				PricingPatch: json.RawMessage(fmt.Sprintf(`{"input_cost_per_token":%d}`, j+1)),
+			}
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				<-start
+				errs[j] = store.UpsertDatasheetOverride(ctx, row)
+			}(j)
+		}
+		close(start)
+		wg.Wait()
+		for j, err := range errs {
+			if err != nil {
+				require.ErrorIs(t, err, ErrDatasheetPricingClaimTaken, "iteration %d writer %d", i, j)
+			}
+		}
+	}
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 20, "one stored override per folded pricing row")
 }

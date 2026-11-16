@@ -3,7 +3,9 @@ package llmtests
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +83,15 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 			return "2EiwWnXFnvU5JabPnv8n"
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
+		}
+	case schemas.MiniMax:
+		switch voiceType {
+		case "secondary":
+			return "English_Insightful_Speaker"
+		case "tertiary":
+			return "English_Persuasive_Man"
+		default:
+			return "English_Graceful_Lady"
 		}
 	default:
 		// Default to OpenAI voices for other providers
@@ -623,20 +634,49 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 
 // getEmbeddingVector extracts the float64 vector from a BifrostEmbeddingResponse.
 func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float64, error) {
-	if embedding.Embedding.EmbeddingArray != nil {
-		return embedding.Embedding.EmbeddingArray, nil
+	e := embedding.Embedding
+
+	if len(e.EmbeddingArray) > 0 {
+		return e.EmbeddingArray, nil
 	}
 
-	if embedding.Embedding.Embedding2DArray != nil {
-		// For 2D arrays, return the first vector
-		if len(embedding.Embedding.Embedding2DArray) > 0 {
-			return embedding.Embedding.Embedding2DArray[0], nil
+	if len(e.Embedding2DArray) > 0 {
+		return e.Embedding2DArray[0], nil
+	}
+
+	if e.EmbeddingStr != nil {
+		b, err := base64.StdEncoding.DecodeString(*e.EmbeddingStr)
+		if err != nil {
+			b, err = base64.URLEncoding.DecodeString(*e.EmbeddingStr)
+			if err != nil {
+				return nil, fmt.Errorf("base64 embedding decode failed: %w", err)
+			}
 		}
-		return nil, fmt.Errorf("2D embedding array is empty")
+		if len(b)%4 != 0 {
+			return nil, fmt.Errorf("base64 embedding byte length %d is not a multiple of 4", len(b))
+		}
+		out := make([]float64, len(b)/4)
+		for i := range out {
+			bits := binary.LittleEndian.Uint32(b[i*4 : i*4+4])
+			out[i] = float64(math.Float32frombits(bits))
+		}
+		return out, nil
 	}
 
-	if embedding.Embedding.EmbeddingStr != nil {
-		return nil, fmt.Errorf("string embeddings not supported for vector extraction")
+	if len(e.EmbeddingInt8Array) > 0 {
+		out := make([]float64, len(e.EmbeddingInt8Array))
+		for i, v := range e.EmbeddingInt8Array {
+			out[i] = float64(v)
+		}
+		return out, nil
+	}
+
+	if len(e.EmbeddingInt32Array) > 0 {
+		out := make([]float64, len(e.EmbeddingInt32Array))
+		for i, v := range e.EmbeddingInt32Array {
+			out[i] = float64(v)
+		}
+		return out, nil
 	}
 
 	return nil, fmt.Errorf("no valid embedding data found")

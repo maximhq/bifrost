@@ -160,3 +160,83 @@ func TestModelReasoningRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "reasoning")
 }
+
+func pageModels(ids ...string) *BifrostListModelsResponse {
+	data := make([]Model, len(ids))
+	for i, id := range ids {
+		data[i] = Model{ID: id}
+	}
+	return &BifrostListModelsResponse{Data: data}
+}
+
+func modelIDs(r *BifrostListModelsResponse) []string {
+	ids := make([]string, len(r.Data))
+	for i, m := range r.Data {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// collectAllPages pages through each successive listing (one per page request),
+// mimicking ListAllModels re-fetching the provider listing for every page.
+func collectAllPages(pageSize int, listings ...*BifrostListModelsResponse) []string {
+	var got []string
+	token := ""
+	for _, l := range listings {
+		page := l.ApplyPagination(pageSize, token)
+		got = append(got, modelIDs(page)...)
+		token = page.NextPageToken
+		if token == "" {
+			break
+		}
+	}
+	return got
+}
+
+func TestApplyPagination_ResumesAfterLastIDWhenListingShifts(t *testing.T) {
+	first := pageModels("a", "b", "c", "d", "e").ApplyPagination(2, "")
+	require.Equal(t, []string{"a", "b"}, modelIDs(first))
+
+	t.Run("row inserted before cursor", func(t *testing.T) {
+		next := pageModels("a", "a2", "b", "c", "d", "e").ApplyPagination(2, first.NextPageToken)
+		assert.Equal(t, []string{"c", "d"}, modelIDs(next))
+	})
+
+	t.Run("row removed before cursor", func(t *testing.T) {
+		next := pageModels("b", "c", "d", "e").ApplyPagination(2, first.NextPageToken)
+		assert.Equal(t, []string{"c", "d"}, modelIDs(next))
+	})
+
+	t.Run("cursor row itself removed", func(t *testing.T) {
+		next := pageModels("a", "c", "d", "e").ApplyPagination(2, first.NextPageToken)
+		assert.Equal(t, []string{"c", "d"}, modelIDs(next))
+	})
+
+	t.Run("unsorted listing resumes after cursor row new index", func(t *testing.T) {
+		next := pageModels("z", "a", "b", "q", "r").ApplyPagination(2, first.NextPageToken)
+		assert.Equal(t, []string{"q", "r"}, modelIDs(next))
+	})
+
+	t.Run("unsorted listing with cursor row gone keeps offset", func(t *testing.T) {
+		next := pageModels("z", "y", "x", "w", "v").ApplyPagination(2, first.NextPageToken)
+		assert.Equal(t, []string{"x", "w"}, modelIDs(next))
+	})
+}
+
+func TestApplyPagination_CollectsEveryRowOnceAcrossShiftingListings(t *testing.T) {
+	got := collectAllPages(2,
+		pageModels("a", "b", "c", "d", "e", "f"),
+		pageModels("a", "a2", "b", "c", "d", "e", "f"),
+		pageModels("a", "a2", "b", "c", "c2", "d", "e", "f"),
+		pageModels("a", "a2", "b", "c", "c2", "d", "e", "f"),
+		pageModels("a", "a2", "b", "c", "c2", "d", "e", "f"),
+	)
+	// a2 and c2 were inserted behind an already-issued cursor, so a cursor scheme
+	// cannot emit them; every other row must appear exactly once and in order.
+	assert.Equal(t, []string{"a", "b", "c", "d", "e", "f"}, got)
+}
+
+func TestApplyPagination_StableListingUnchanged(t *testing.T) {
+	l := pageModels("a", "b", "c", "d", "e")
+	assert.Equal(t, []string{"a", "b", "c", "d", "e"}, collectAllPages(2, l, l, l))
+}

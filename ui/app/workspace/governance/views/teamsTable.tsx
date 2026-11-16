@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -26,9 +28,12 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -50,6 +55,8 @@ function TeamActionsMenu({
 	onEdit: (team: Team) => void;
 	onDelete: (teamId: string) => void;
 }) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -61,16 +68,16 @@ function TeamActionsMenu({
 						variant="ghost"
 						size="icon"
 						className="h-8 w-8"
-						aria-label={`Team actions for ${team.name}`}
+						aria-label={t("teams.actionsAria", { name: team.name })}
 						data-testid={`team-actions-btn-${team.name}`}
 					>
 						<MoreHorizontal className="h-4 w-4" />
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasUpdateAccess, "edit", "teams")}
 						className="cursor-pointer"
-						disabled={!hasUpdateAccess}
 						data-testid={`team-edit-btn-${team.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -79,18 +86,18 @@ function TeamActionsMenu({
 						}}
 					>
 						<Edit className="h-4 w-4" />
-						Edit
-					</DropdownMenuItem>
+						{t("teams.actions.edit")}
+					</DisabledReasonMenuItem>{" "}
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
 						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
-							View logs
+							{t("teams.actions.viewLogs")}
 						</Link>
 					</DropdownMenuItem>
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasDeleteAccess, "delete", "teams")}
 						variant="destructive"
 						className="cursor-pointer"
-						disabled={!hasDeleteAccess}
 						data-testid={`team-delete-btn-${team.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -99,23 +106,20 @@ function TeamActionsMenu({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
+						{t("teams.actions.delete")}
+					</DisabledReasonMenuItem>{" "}
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Team</AlertDialogTitle>
-						<AlertDialogDescription>
-							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action
-							cannot be undone.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("teams.deleteTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("teams.deleteDescription", { name: team.name })}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? t("teams.deleting") : t("teams.actions.delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -137,7 +141,6 @@ interface TeamsTableProps {
 	onTeamAdd: () => void;
 	onTeamSelect: (team: Team | null) => void;
 	onDialogClose: () => void;
-	isLoading?: boolean;
 }
 
 export default function TeamsTable({
@@ -153,8 +156,9 @@ export default function TeamsTable({
 	onTeamAdd,
 	onTeamSelect,
 	onDialogClose,
-	isLoading,
 }: TeamsTableProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const showTeamSheet = selectedTeamId !== null && selectedTeamId !== "";
 	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
@@ -175,7 +179,7 @@ export default function TeamsTable({
 	const handleDelete = async (teamId: string) => {
 		try {
 			await deleteTeam(teamId).unwrap();
-			toast.success("Team deleted successfully");
+			toast.success(t("teams.deleted"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -184,6 +188,7 @@ export default function TeamsTable({
 	const handleAddTeam = () => {
 		onTeamAdd();
 	};
+	useActionParam("create", handleAddTeam, { isOpen: selectedTeamId !== null, enabled: hasCreateAccess });
 
 	const handleEditTeam = (team: Team) => {
 		onTeamSelect(team);
@@ -198,145 +203,197 @@ export default function TeamsTable({
 	// via a correlated subquery, so neither needs a client-side join.
 	const getCustomerName = (team: Team) => {
 		if (!team.customer_id) return "-";
-		return team.customer?.name ?? "Unknown Customer";
+		return team.customer?.name ?? t("teams.unknownCustomer");
 	};
 
 	const hasActiveFilters = debouncedSearch;
 
-	// Rendered on the empty branch too, not just the populated one: PageTitle
-	// draws nothing inline, and leaving it out drops the topbar to the
-	// route-derived fallback.
-	const pageTitle = <PageTitle title="Teams">Organize users into teams with shared budgets and access controls.</PageTitle>;
+	const [hasLoadedRows, setHasLoadedRows] = useState(false);
+	useEffect(() => {
+		if (totalCount > 0) setHasLoadedRows(true);
+	}, [totalCount]);
 
-	// True empty state: no teams at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters && !isLoading) {
-		return (
-			<>
-				{pageTitle}
-				<TooltipProvider>
-					{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
-					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
-				</TooltipProvider>
-			</>
-		);
-	}
+	// Hoisted above the empty/populated branch: PageTitle draws nothing inline,
+	// and leaving it out of either branch drops the topbar to the route-derived
+	// fallback.
+	const pageTitle = <PageTitle title={t("teams.title")}>{t("teams.description")}</PageTitle>;
+
+	// True empty state: no teams at all (not just filtered to zero). Rendered as a
+	// branch *inside* the tree rather than an early return with a different shape,
+	// because a shape change made React remount TeamSheet and wipe whatever was
+	// being typed. Latched on `hasLoadedRows` rather than the query's in-flight
+	// flag: that flag flips on every background poll, which would toggle the layout
+	// every few seconds on a genuinely empty page, while the latch still suppresses
+	// the empty card during the uncached fetch of a later page.
+	const isTrulyEmpty = totalCount === 0 && !hasActiveFilters && !hasLoadedRows;
 
 	return (
 		<>
+			{pageTitle}
 			<TooltipProvider>
 				{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
-				<div className="flex grow flex-col overflow-y-auto">
-					<div className="mb-4 flex flex-wrap items-center gap-3">
-						{pageTitle}
-						<div className="relative max-w-sm flex-1">
-							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-							<Input
-								aria-label="Search teams by name"
-								placeholder="Search by name..."
-								value={search}
-								onChange={(e) => onSearchChange(e.target.value)}
-								className="pl-9"
-								data-testid="teams-search-input"
-							/>
+				{isTrulyEmpty && <TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />}
+
+				{!isTrulyEmpty && (
+					<div className="flex grow flex-col overflow-y-auto">
+						<div className="mb-4 flex flex-wrap items-center gap-3">
+							<div className="relative max-w-sm flex-1">
+								<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+								<Input
+									aria-label={t("teams.searchAria")}
+									placeholder={t("teams.searchPlaceholder")}
+									value={search}
+									onChange={(e) => onSearchChange(e.target.value)}
+									className="pl-9"
+									data-testid="teams-search-input"
+								/>
+							</div>
+							<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "teams")} className="ml-auto">
+								<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
+									<Plus className="h-4 w-4" />
+									{t("teams.add")}
+								</Button>
+							</DisabledReason>
 						</div>
-						<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
-							<Plus className="h-4 w-4" />
-							Add Team
-						</Button>
-					</div>
 
-					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">
-						<Table className="min-w-[1100px]" containerClassName="h-full">
-							<TableHeader className="bg-background sticky top-0">
-								<TableRow>
-									<TableHead>Name</TableHead>
-									<TableHead>Customer</TableHead>
-									<TableHead>Budget</TableHead>
-									<TableHead>Rate Limit</TableHead>
-									<TableHead>Virtual Keys</TableHead>
-									<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{teams.length === 0 ? (
+						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">
+							<Table className="min-w-[1100px]" containerClassName="h-full">
+								<TableHeader className="bg-background sticky top-0">
 									<TableRow>
-										<TableCell colSpan={6} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">No matching teams found.</span>
-										</TableCell>
+										<TableHead>{t("teams.columns.name")}</TableHead>
+										<TableHead>{t("teams.columns.customer")}</TableHead>
+										<TableHead>{t("teams.columns.budget")}</TableHead>
+										<TableHead>{t("teams.columns.rateLimit")}</TableHead>
+										<TableHead>{t("teams.columns.virtualKeys")}</TableHead>
+										<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 									</TableRow>
-								) : (
-									teams.map((team) => {
-										const vkCount = team.virtual_key_count ?? 0;
-										const customerName = getCustomerName(team);
+								</TableHeader>
+								<TableBody>
+									{teams.length === 0 ? (
+										<TableRow>
+											<TableCell colSpan={6} className="h-24 text-center">
+												<span className="text-muted-foreground text-sm">{t("teams.noMatch")}</span>
+											</TableCell>
+										</TableRow>
+									) : (
+										teams.map((team) => {
+											const vkCount = team.virtual_key_count ?? 0;
+											const customerName = getCustomerName(team);
 
-										// Budget calculations — any of the team's budgets exhausted
-										const teamBudgets = team.budgets ?? [];
-										const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
+											// Budget calculations — any of the team's budgets exhausted
+											const teamBudgets = team.budgets ?? [];
+											const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
-										// Rate limit calculations
-										const isTokenLimitExhausted =
-											team.rate_limit?.token_max_limit &&
-											team.rate_limit.token_max_limit > 0 &&
-											team.rate_limit.token_current_usage >= team.rate_limit.token_max_limit;
-										const isRequestLimitExhausted =
-											team.rate_limit?.request_max_limit &&
-											team.rate_limit.request_max_limit > 0 &&
-											team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit;
-										const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
-										const tokenPercentage =
-											team.rate_limit?.token_max_limit && team.rate_limit.token_max_limit > 0
-												? Math.min((team.rate_limit.token_current_usage / team.rate_limit.token_max_limit) * 100, 100)
-												: 0;
-										const requestPercentage =
-											team.rate_limit?.request_max_limit && team.rate_limit.request_max_limit > 0
-												? Math.min((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100, 100)
-												: 0;
+											// Rate limit calculations
+											const isTokenLimitExhausted =
+												team.rate_limit?.token_max_limit &&
+												team.rate_limit.token_max_limit > 0 &&
+												team.rate_limit.token_current_usage >= team.rate_limit.token_max_limit;
+											const isRequestLimitExhausted =
+												team.rate_limit?.request_max_limit &&
+												team.rate_limit.request_max_limit > 0 &&
+												team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit;
+											const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
+											const tokenPercentage =
+												team.rate_limit?.token_max_limit && team.rate_limit.token_max_limit > 0
+													? Math.min((team.rate_limit.token_current_usage / team.rate_limit.token_max_limit) * 100, 100)
+													: 0;
+											const requestPercentage =
+												team.rate_limit?.request_max_limit && team.rate_limit.request_max_limit > 0
+													? Math.min((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100, 100)
+													: 0;
 
-										const isExhausted = isBudgetExhausted || isRateLimitExhausted;
+											const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
-										return (
-											<TableRow
-												key={team.id}
-												data-testid={`team-row-${team.name}`}
-												className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
-											>
-												<TableCell className="max-w-[200px] py-4">
-													<div className="flex flex-col gap-2">
-														<span className="truncate font-medium">{team.name}</span>
-														{isExhausted && (
-															<Badge variant="destructive" className="w-fit text-xs">
-																Limit Reached
-															</Badge>
+											return (
+												<TableRow
+													key={team.id}
+													data-testid={`team-row-${team.name}`}
+													className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
+												>
+													<TableCell className="max-w-[200px] py-4">
+														<div className="flex flex-col gap-2">
+															<span className="truncate font-medium">{team.name}</span>
+															{isExhausted && (
+																<Badge variant="destructive" className="w-fit text-xs">
+																	{t("teams.limitReached")}
+																</Badge>
+															)}
+														</div>
+													</TableCell>
+													<TableCell data-testid={`team-row-${team.name}-customer`}>
+														<div className="flex items-center gap-2">
+															<Badge variant={team.customer_id ? "secondary" : "outline"}>{customerName}</Badge>
+														</div>
+													</TableCell>
+													<TableCell className="min-w-[180px]">
+														{teamBudgets.length > 0 ? (
+															<div className="space-y-2.5">
+																{teamBudgets.map((b) => {
+																	const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																	const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
+																	return (
+																		<Tooltip key={b.id}>
+																			<TooltipTrigger asChild>
+																				<div className="space-y-1.5">
+																					<div className="flex items-center justify-between gap-4">
+																						<span className="font-medium">{formatCurrency(b.max_limit)}</span>
+																						<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
+																					</div>
+																					<Progress
+																						aria-label={t("usage.budgetAria")}
+																						value={budgetPercentage}
+																						className={cn(
+																							"bg-muted/70 dark:bg-muted/30 h-1.5",
+																							isExhausted
+																								? "[&>div]:bg-red-500/70"
+																								: budgetPercentage > 80
+																									? "[&>div]:bg-amber-500/70"
+																									: "[&>div]:bg-emerald-500/70",
+																						)}
+																					/>
+																				</div>
+																			</TooltipTrigger>
+																			<TooltipContent>
+																				<p className="font-medium">
+																					{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																				</p>
+																				<p className="text-primary-foreground/80 text-xs">
+																					{t("usage.resets", { period: formatResetDuration(b.reset_duration) })}
+																				</p>
+																			</TooltipContent>
+																		</Tooltip>
+																	);
+																})}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
 														)}
-													</div>
-												</TableCell>
-												<TableCell data-testid={`team-row-${team.name}-customer`}>
-													<div className="flex items-center gap-2">
-														<Badge variant={team.customer_id ? "secondary" : "outline"}>{customerName}</Badge>
-													</div>
-												</TableCell>
-												<TableCell className="min-w-[180px]">
-													{teamBudgets.length > 0 ? (
-														<div className="space-y-2.5">
-															{teamBudgets.map((b) => {
-																const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
-																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
-																return (
-																	<Tooltip key={b.id}>
+													</TableCell>
+													<TableCell className="min-w-[180px]">
+														{team.rate_limit ? (
+															<div className="space-y-2.5">
+																{team.rate_limit.token_max_limit && (
+																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
-																				<div className="flex items-center justify-between gap-4">
-																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("usage.tokens", { value: team.rate_limit.token_max_limit.toLocaleString(getLocale()) })}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
+																					</span>
 																				</div>
 																				<Progress
-																					value={budgetPercentage}
+																					aria-label={t("usage.tokenAria")}
+																					value={tokenPercentage}
 																					className={cn(
-																						"bg-muted/70 dark:bg-muted/30 h-1.5",
-																						isExhausted
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						isTokenLimitExhausted
 																							? "[&>div]:bg-red-500/70"
-																							: budgetPercentage > 80
+																							: tokenPercentage > 80
 																								? "[&>div]:bg-amber-500/70"
 																								: "[&>div]:bg-emerald-500/70",
 																					)}
@@ -345,165 +402,136 @@ export default function TeamsTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																				{t("usage.tokenTooltip", {
+																					used: team.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																				})}
 																			</p>
-																			<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration)}</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				{t("usage.resets", { period: formatResetDuration(team.rate_limit.token_reset_duration || "1h") })}
+																			</p>
 																		</TooltipContent>
 																	</Tooltip>
-																);
-															})}
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell className="min-w-[180px]">
-													{team.rate_limit ? (
-														<div className="space-y-2.5">
-															{team.rate_limit.token_max_limit && (
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{team.rate_limit.token_max_limit.toLocaleString()} tokens</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
-																				</span>
+																)}
+																{team.rate_limit.request_max_limit && (
+																	<Tooltip>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("usage.req", { value: team.rate_limit.request_max_limit.toLocaleString(getLocale()) })}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
+																					</span>
+																				</div>
+																				<Progress
+																					aria-label={t("usage.requestAria")}
+																					value={requestPercentage}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						isRequestLimitExhausted
+																							? "[&>div]:bg-red-500/70"
+																							: requestPercentage > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
 																			</div>
-																			<Progress
-																				value={tokenPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					isTokenLimitExhausted
-																						? "[&>div]:bg-red-500/70"
-																						: tokenPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{team.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																			{team.rate_limit.token_max_limit.toLocaleString()} tokens
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															)}
-															{team.rate_limit.request_max_limit && (
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{team.rate_limit.request_max_limit.toLocaleString()} req</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
-																				</span>
-																			</div>
-																			<Progress
-																				value={requestPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					isRequestLimitExhausted
-																						? "[&>div]:bg-red-500/70"
-																						: requestPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{team.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																			{team.rate_limit.request_max_limit.toLocaleString()} requests
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															)}
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell>
-													{vkCount > 0 ? (
-														<div className="flex items-center gap-2">
-															<Badge variant="outline" className="text-xs">
-																{vkCount} {vkCount === 1 ? "key" : "keys"}
-															</Badge>
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell
-													className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
-												>
-													<TeamActionsMenu
-														team={team}
-														hasUpdateAccess={hasUpdateAccess}
-														hasDeleteAccess={hasDeleteAccess}
-														isDeleting={isDeleting}
-														onEdit={handleEditTeam}
-														onDelete={handleDelete}
-													/>
-												</TableCell>
-											</TableRow>
-										);
-									})
-								)}
-							</TableBody>
-						</Table>
-					</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{t("usage.requestTooltip", {
+																					used: team.rate_limit.request_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																				})}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				{t("usage.resets", { period: formatResetDuration(team.rate_limit.request_reset_duration || "1h") })}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																)}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell>
+														{vkCount > 0 ? (
+															<div className="flex items-center gap-2">
+																<Badge variant="outline" className="text-xs">
+																	{t("usage.keyCount", { count: vkCount })}
+																</Badge>
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell
+														className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+													>
+														<TeamActionsMenu
+															team={team}
+															hasUpdateAccess={hasUpdateAccess}
+															hasDeleteAccess={hasDeleteAccess}
+															isDeleting={isDeleting}
+															onEdit={handleEditTeam}
+															onDelete={handleDelete}
+														/>
+													</TableCell>
+												</TableRow>
+											);
+										})
+									)}
+								</TableBody>
+							</Table>
+						</div>
 
-					{/* Pagination */}
-					{totalCount > 0 && (
-						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-							<div className="text-muted-foreground flex items-center gap-2">
-								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-								entries
-							</div>
-
-							<div className="flex items-center gap-2">
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-									disabled={offset === 0}
-									data-testid="teams-pagination-prev-btn"
-									aria-label="Previous page"
-								>
-									<ChevronLeft className="size-3" />
-								</Button>
-
-								<div className="flex items-center gap-1">
-									<span>Page</span>
-									<span>{Math.floor(offset / limit) + 1}</span>
-									<span>of {Math.ceil(totalCount / limit)}</span>
+						{/* Pagination */}
+						{totalCount > 0 && (
+							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+								<div className="text-muted-foreground flex items-center gap-2">
+									{t("webhooks.pagination.entries", {
+										from: (offset + 1).toLocaleString(getLocale()),
+										to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
+									})}
 								</div>
 
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(offset + limit)}
-									disabled={offset + limit >= totalCount}
-									data-testid="teams-pagination-next-btn"
-									aria-label="Next page"
-								>
-									<ChevronRight className="size-3" />
-								</Button>
+								<div className="flex items-center gap-2">
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+										disabled={offset === 0}
+										data-testid="teams-pagination-prev-btn"
+										aria-label={t("webhooks.pagination.previousPage")}
+									>
+										<ChevronLeft className="size-3" />
+									</Button>
+
+									<div className="flex items-center gap-1">
+										<span>{t("webhooks.pagination.page")}</span>
+										<span>{Math.floor(offset / limit) + 1}</span>
+										<span>{t("webhooks.pagination.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
+									</div>
+
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => onOffsetChange(offset + limit)}
+										disabled={offset + limit >= totalCount}
+										data-testid="teams-pagination-next-btn"
+										aria-label={t("webhooks.pagination.nextPage")}
+									>
+										<ChevronRight className="size-3" />
+									</Button>
+								</div>
 							</div>
-						</div>
-					)}
-				</div>
+						)}
+					</div>
+				)}
 			</TooltipProvider>
 		</>
 	);

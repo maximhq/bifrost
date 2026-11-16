@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"slices"
 	"sort"
@@ -18,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -162,6 +163,12 @@ func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can publish notifications")
 		return
 	}
+	// JSON only: a form or text/plain POST needs no CORS preflight, so a page on
+	// another site could send one with admin Basic credentials the browser cached.
+	if mediaType, _, err := mime.ParseMediaType(string(ctx.Request.Header.ContentType())); err != nil || mediaType != "application/json" {
+		SendError(ctx, fasthttp.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
 	var input schemas.NotificationInput
 	if err := sonic.Unmarshal(ctx.PostBody(), &input); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -176,6 +183,15 @@ func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, status, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "notification.published", "notification", notification.ID, notification.Title, nil, map[string]any{
+		"audience":     notification.Audience,
+		"role_ids":     notification.RoleIDs,
+		"severity":     notification.Severity,
+		"title":        notification.Title,
+		"message":      notification.Message,
+		"action_label": notification.ActionLabel,
+		"action_path":  notification.ActionPath,
+	})
 	SendJSONWithStatus(ctx, notification, fasthttp.StatusCreated)
 }
 

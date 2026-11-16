@@ -1,9 +1,13 @@
 import type { MCPCostHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatCost, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface MCPCostChartProps {
 	data: MCPCostHistogramResponse | null;
@@ -13,6 +17,7 @@ interface MCPCostChartProps {
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -25,7 +30,7 @@ function CustomTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cost }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Cost</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cost")}</span>
 					</span>
 					<span className="font-medium">{formatCost(data.total_cost)}</span>
 				</div>
@@ -35,6 +40,7 @@ function CustomTooltip({ active, payload }: any) {
 }
 
 function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -48,7 +54,7 @@ function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartP
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
@@ -58,7 +64,7 @@ function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartP
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${chartType}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -82,14 +88,7 @@ function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartP
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="total_cost"
-							fill={CHART_COLORS.cost}
-							fillOpacity={0.9}
-							radius={[2, 2, 0, 0]}
-							barSize={30}
-						/>
+						<Bar isAnimationActive={false} dataKey="total_cost" fill={CHART_COLORS.cost} fillOpacity={0.9} shape={barShape} barSize={30} />
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

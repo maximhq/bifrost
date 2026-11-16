@@ -27,6 +27,19 @@ export type MCPSessionStatus = "active" | "orphaned" | "pending" | "needs_reauth
 export interface MCPClientSummary {
 	client_id: string;
 	name: string;
+	// per_user_discovery: session rows only. Each caller keeps their own
+	// discovery on this server; absent when the server keeps one shared one.
+	per_user_discovery?: boolean;
+}
+
+// MCPSessionDiscovery is what Bifrost discovered with a credential row's
+// binding on a server with per_user_discovery on.
+export interface MCPSessionDiscovery {
+	discovered_at: string;
+	tool_count: number;
+	prompt_count: number;
+	// resource_count counts resources and resource templates together.
+	resource_count: number;
 }
 
 export interface VirtualKeySummary {
@@ -64,6 +77,14 @@ export interface MCPSessionRow {
 	// last submission/edit. OAuth rows omit this field.
 	updated_at?: string | null;
 	oauth_config_id?: string;
+	// scopes: token rows only. What the provider reported when it issued the
+	// token; absent when the provider omitted scopes from its token response,
+	// which many do when granted equals requested.
+	scopes?: string[];
+	// has_refresh_token: token rows only. Whether the provider issued a
+	// refresh token; without one the access token cannot be renewed at use
+	// time and the row needs re-auth once it expires.
+	has_refresh_token?: boolean;
 	// can_reauth mirrors the server-side identity gate on POST /reauth. For
 	// user-bound rows it's true only when the calling user matches the row's
 	// bound user; for vk/session rows it's always true. The UI hides the
@@ -71,6 +92,13 @@ export interface MCPSessionRow {
 	// kind === "flow" rows — those are completed via /api/oauth/per-user/
 	// flows/{id}/start, not /reauth, and the UI's flow branch ignores this field.
 	can_reauth: boolean;
+	// can_refresh mirrors what POST /refresh accepts for this row: an active token or header
+	// credential of a user or virtual-key caller on a server with per_user_discovery on, refreshable
+	// by the same callers as can_reauth. The UI offers Refresh tools only when true.
+	can_refresh?: boolean;
+	// discovery: token and header rows of user and virtual-key callers on a
+	// server with per_user_discovery on, when the binding holds one.
+	discovery?: MCPSessionDiscovery | null;
 }
 
 export interface MCPSessionsListResponse {
@@ -116,6 +144,14 @@ export interface MCPSessionReauthResponse {
 	submit_url?: string;
 	session_id: string;
 	kind?: "oauth" | "headers";
+}
+
+// MCPSessionRefreshResponse is what POST /refresh found with the row's stored credential.
+export interface MCPSessionRefreshResponse {
+	status: string;
+	tool_count: number;
+	prompt_count: number;
+	resource_count: number; // resources plus resource templates
 }
 
 export interface MCPFlowDetail {

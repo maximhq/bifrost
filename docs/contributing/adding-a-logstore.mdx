@@ -6,7 +6,7 @@ icon: "database"
 
 The Log store in Bifrost is designed to be extensible, allowing support for different database backends. This guide outlines the philosophy, architecture, and steps to add support for a new database.
 
-This guide will help you add a new custom backend for the log store. Currently, Bifrost supports PostgreSQL and SQLite.
+This guide will help you add a new custom backend for the log store. Currently, Bifrost supports PostgreSQL, SQLite, and ClickHouse.
 
 ## Setup
 
@@ -22,7 +22,7 @@ The system is built around a few key components:
 
 ## Log store structure
 
-The log store is used to persist all request/response logs from your Bifrost proxy. This can be a lightweight SQLite database or a production-grade Postgres database. Bifrost exposes a single interface (`LogStore`) for all logging operations.
+The log store is used to persist all request/response logs from your Bifrost proxy. This can be a lightweight SQLite database, a production-grade Postgres database, or a ClickHouse cluster for high-volume analytics. Bifrost exposes a single interface (`LogStore`) for all logging operations.
 
 Any custom backend for log store should implement the `LogStore` interface. The interface is defined in [logstore/store.go](https://github.com/maximhq/bifrost/blob/main/framework/logstore/store.go).
 

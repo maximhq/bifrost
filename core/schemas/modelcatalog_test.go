@@ -6,12 +6,13 @@ import (
 
 // stubModelInfoProvider records what the context delegated to it.
 type stubModelInfoProvider struct {
-	model    *Model
-	cost     float64
-	gotProv  ModelProvider
-	gotModel string
-	gotCtx   *BifrostContext
-	calls    int
+	model     *Model
+	cost      float64
+	breakdown *BifrostCost
+	gotProv   ModelProvider
+	gotModel  string
+	gotCtx    *BifrostContext
+	calls     int
 }
 
 func (s *stubModelInfoProvider) GetModelInfo(provider ModelProvider, model string) *Model {
@@ -27,6 +28,12 @@ func (s *stubModelInfoProvider) CalculateRequestCost(ctx *BifrostContext, resp *
 	return s.cost
 }
 
+func (s *stubModelInfoProvider) CalculateRequestCostBreakdown(ctx *BifrostContext, resp *BifrostResponse) *BifrostCost {
+	s.calls++
+	s.gotCtx = ctx
+	return s.breakdown
+}
+
 // A context with no catalog wired must stay silently inert rather than panic;
 // core is usable as a standalone SDK without the framework, and plugins run
 // unchanged in both setups.
@@ -39,11 +46,27 @@ func TestModelInfoAccessorsNoCatalogWired(t *testing.T) {
 	if got := ctx.CalculateCost(&BifrostResponse{}); got != 0 {
 		t.Fatalf("CalculateCost with no catalog = %v, want 0", got)
 	}
+	if got := ctx.CalculateCostBreakdown(&BifrostResponse{}); got != nil {
+		t.Fatalf("CalculateCostBreakdown with no catalog = %v, want nil", got)
+	}
 }
 
 func TestModelInfoAccessorsDelegate(t *testing.T) {
 	want := &Model{ID: "claude-opus-5"}
-	stub := &stubModelInfoProvider{model: want, cost: 1.25}
+	// Cache read / write are categories of the input side, mirroring how
+	// PromptTokensDetails carries CachedReadTokens / CachedWriteTokens.
+	wantBreakdown := &BifrostCost{
+		InputCost: 1,
+		InputCostDetails: &InputCostDetails{
+			TextCost:        0.5,
+			CachedReadCost:  0.2,
+			CachedWriteCost: 0.3,
+		},
+		OutputCost:        0.25,
+		OutputCostDetails: &OutputCostDetails{TextCost: 0.25},
+		TotalCost:         1.25,
+	}
+	stub := &stubModelInfoProvider{model: want, cost: 1.25, breakdown: wantBreakdown}
 
 	ctx := NewBifrostContext(nil, NoDeadline)
 	ctx.SetValue(BifrostContextKeyModelCatalog, stub)
@@ -59,12 +82,20 @@ func TestModelInfoAccessorsDelegate(t *testing.T) {
 	if cost := ctx.CalculateCost(&BifrostResponse{}); cost != 1.25 {
 		t.Fatalf("CalculateCost = %v, want 1.25", cost)
 	}
+	breakdown := ctx.CalculateCostBreakdown(&BifrostResponse{})
+	if breakdown != wantBreakdown {
+		t.Fatalf("CalculateCostBreakdown = %v, want %v", breakdown, wantBreakdown)
+	}
+	if breakdown.InputCostDetails.CachedReadCost != 0.2 || breakdown.InputCostDetails.CachedWriteCost != 0.3 {
+		t.Fatalf("cache costs = read %v / write %v, want 0.2 / 0.3",
+			breakdown.InputCostDetails.CachedReadCost, breakdown.InputCostDetails.CachedWriteCost)
+	}
 }
 
 // Guard the arguments that make the delegate call pointless, so a catalog
 // never sees an empty model or a nil response.
 func TestModelInfoAccessorsSkipEmptyArgs(t *testing.T) {
-	stub := &stubModelInfoProvider{model: &Model{ID: "x"}, cost: 9}
+	stub := &stubModelInfoProvider{model: &Model{ID: "x"}, cost: 9, breakdown: &BifrostCost{TotalCost: 9}}
 	ctx := NewBifrostContext(nil, NoDeadline)
 	ctx.SetValue(BifrostContextKeyModelCatalog, stub)
 
@@ -73,6 +104,9 @@ func TestModelInfoAccessorsSkipEmptyArgs(t *testing.T) {
 	}
 	if got := ctx.CalculateCost(nil); got != 0 {
 		t.Fatalf("CalculateCost with nil response = %v, want 0", got)
+	}
+	if got := ctx.CalculateCostBreakdown(nil); got != nil {
+		t.Fatalf("CalculateCostBreakdown with nil response = %v, want nil", got)
 	}
 	if stub.calls != 0 {
 		t.Fatalf("delegated %d times for empty args, want 0", stub.calls)
@@ -84,7 +118,8 @@ func TestModelInfoAccessorsSkipEmptyArgs(t *testing.T) {
 // minted from it must see the handle without any extra wiring.
 func TestModelInfoVisibleFromPluginScope(t *testing.T) {
 	want := &Model{ID: "gpt-5"}
-	stub := &stubModelInfoProvider{model: want, cost: 2}
+	wantBreakdown := &BifrostCost{TotalCost: 2}
+	stub := &stubModelInfoProvider{model: want, cost: 2, breakdown: wantBreakdown}
 
 	root := NewBifrostContext(nil, NoDeadline)
 	root.SetValue(BifrostContextKeyModelCatalog, stub)
@@ -103,6 +138,14 @@ func TestModelInfoVisibleFromPluginScope(t *testing.T) {
 	// governance scope lookup reads request identity from.
 	if stub.gotCtx != scoped {
 		t.Fatal("CalculateRequestCost did not receive the scoped context")
+	}
+
+	stub.gotCtx = nil
+	if got := scoped.CalculateCostBreakdown(&BifrostResponse{}); got != wantBreakdown {
+		t.Fatalf("CalculateCostBreakdown from plugin scope = %v, want %v", got, wantBreakdown)
+	}
+	if stub.gotCtx != scoped {
+		t.Fatal("CalculateRequestCostBreakdown did not receive the scoped context")
 	}
 
 	// Nested scopes (plugin pipelines that re-scope) must still resolve.

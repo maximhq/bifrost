@@ -2,8 +2,10 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"mime"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -177,4 +179,212 @@ func urlSourceScheme(rawURL string) string {
 		return ""
 	}
 	return strings.ToLower(parsed.Scheme)
+}
+
+// fileDataAsDataURL folds Bifrost's file_type extension into file_data, because the OpenAI
+// wire has no file_type field and MarshalJSON strips it. OpenAI and OpenAI-shaped surfaces
+// (Databricks among them) require file_data as a data URL, so bare base64 with its media type
+// named only in file_type used to go upstream with no media type at all and be rejected
+// ("Invalid base64 data URL format"). Native converters read file_type directly and never
+// hit this.
+//
+// Follows the conventions the native converters already apply to the same fields: a
+// text/plain (or "txt") file_type means file_data is plain text, and anything else without a
+// data: prefix is base64. A data URL is left as it is, and so is a payload that is not valid
+// base64, since there is no basis to guess what it is.
+//
+// An empty text/plain payload is still a document (Anthropic accepts a text source with
+// data ""), so it becomes the empty data URL rather than a bare "" no OpenAI surface parses.
+func fileDataAsDataURL(fileData string, fileType *string) string {
+	if strings.HasPrefix(fileData, "data:") {
+		return fileData
+	}
+
+	mediaType := ""
+	if fileType != nil {
+		mediaType = normalizeFileType(*fileType)
+	}
+	if mediaType == "text/plain" {
+		return "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(fileData))
+	}
+	if fileData == "" {
+		return fileData
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(fileData)
+	if err != nil {
+		return fileData
+	}
+	if mediaType == "" {
+		mediaType = sniffFileMediaType(decoded)
+	}
+	return "data:" + mediaType + ";base64," + fileData
+}
+
+// normalizeFileType turns a caller's file_type into a bare, lowercase media type. It accepts
+// both MIME types ("application/pdf; charset=binary") and the short extension names some
+// callers send ("pdf", "txt"). Returns "" when neither reading yields a media type.
+func normalizeFileType(fileType string) string {
+	fileType = strings.ToLower(strings.TrimSpace(fileType))
+	if fileType == "" {
+		return ""
+	}
+	if strings.Contains(fileType, "/") {
+		if parsed, _, err := mime.ParseMediaType(fileType); err == nil && parsed != "" {
+			return parsed
+		}
+		return fileType
+	}
+	if fileType == "txt" {
+		return "text/plain"
+	}
+	if byExt := mime.TypeByExtension("." + fileType); byExt != "" {
+		if parsed, _, err := mime.ParseMediaType(byExt); err == nil && parsed != "" {
+			return parsed
+		}
+	}
+	return ""
+}
+
+// sniffFileMediaType infers the media type of decoded file bytes when the caller named none.
+// PDF is the default when sniffing finds nothing specific, matching the Anthropic and Gemini
+// converters: documents are the dominant use of file blocks.
+func sniffFileMediaType(data []byte) string {
+	detected := http.DetectContentType(data)
+	if parsed, _, err := mime.ParseMediaType(detected); err == nil {
+		detected = parsed
+	}
+	if detected == "" || detected == "application/octet-stream" {
+		return "application/pdf"
+	}
+	return detected
+}
+
+// isEmptyInlineTextFile reports whether file data is an empty text document: file_data ""
+// with a text/plain file_type, or the empty text data URL. Anthropic accepts such a document,
+// but OpenAI-shaped surfaces reject "data:text/plain;base64," ("missing mime type or base64
+// content"), so the marshalers drop it when the message has anything else to send. Callers
+// check the block carries no file_id or file_url first, so a reference is never dropped.
+func isEmptyInlineTextFile(fileData, fileType *string) bool {
+	if fileData == nil {
+		return false
+	}
+	if *fileData == "data:text/plain;base64," {
+		return true
+	}
+	return *fileData == "" && fileType != nil && normalizeFileType(*fileType) == "text/plain"
+}
+
+// isEmptyChatTextFile reports whether a chat file block is an empty text document with no
+// file reference beside it.
+func isEmptyChatTextFile(f *schemas.ChatInputFile) bool {
+	return f != nil && (f.FileID == nil || *f.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// isEmptyResponsesTextFile is isEmptyChatTextFile for Responses blocks, which carry file_id on
+// the block rather than inside the file object.
+func isEmptyResponsesTextFile(block *schemas.ResponsesMessageContentBlock) bool {
+	f := block.ResponsesInputMessageContentBlockFile
+	return f != nil && (block.FileID == nil || *block.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// chatEmptyTextFilesToDrop reports whether blocks hold an empty text document and something
+// else, i.e. whether the document can be dropped without leaving the message empty.
+func chatEmptyTextFilesToDrop(blocks []schemas.ChatContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for _, block := range blocks {
+		if isEmptyChatTextFile(block.File) {
+			sawEmpty = true
+		} else {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
+// responsesEmptyTextFilesToDrop is chatEmptyTextFilesToDrop for Responses blocks. rendered_content
+// does not count as something else: the marshaler always removes it.
+func responsesEmptyTextFilesToDrop(blocks []schemas.ResponsesMessageContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for i := range blocks {
+		block := &blocks[i]
+		if isEmptyResponsesTextFile(block) {
+			sawEmpty = true
+		} else if block.Type != schemas.ResponsesOutputMessageContentTypeRenderedContent {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
+// fileDataNeedsDataURL reports whether file_data is set without a data: prefix, so the
+// marshal gates copy the block even when the caller sent no file_type to strip.
+func fileDataNeedsDataURL(fileData *string) bool {
+	return fileData != nil && *fileData != "" && !strings.HasPrefix(*fileData, "data:")
+}
+
+// fileNeedsWireRewrite reports whether a file block carries something openAIWireFile has to
+// change before it can go out: a file_type to fold into file_data, bare file_data, or inline
+// file_data with no filename beside it.
+func fileNeedsWireRewrite(fileData, filename, fileType *string) bool {
+	return fileType != nil || fileDataNeedsDataURL(fileData) ||
+		(fileData != nil && *fileData != "" && (filename == nil || *filename == ""))
+}
+
+// openAIWireFile returns file_data as a data URL and a filename to go with it. OpenAI rejects
+// inline file_data without a filename, and validates the filename's extension against the
+// payload, so a missing name is synthesized from the data URL's media type. Ingress converters
+// leave a missing name missing, so a document routed to a provider without the requirement
+// (Anthropic, where it would surface as a title) keeps the shape the client sent.
+func openAIWireFile(fileData, filename, fileType *string) (*string, *string) {
+	if fileData == nil {
+		return nil, filename
+	}
+	data := fileDataAsDataURL(*fileData, fileType)
+	if data != "" && (filename == nil || *filename == "") {
+		filename = schemas.Ptr(defaultInlineFilename(data, fileType))
+	}
+	return &data, filename
+}
+
+// officeDocumentExtensions maps Office media types, whose subtypes are not usable extensions,
+// onto the extensions OpenAI accepts for file inputs.
+var officeDocumentExtensions = map[string]string{
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   ".docx",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         ".xlsx",
+	"application/msword":            ".doc",
+	"application/vnd.ms-powerpoint": ".ppt",
+	"application/vnd.ms-excel":      ".xls",
+}
+
+// defaultInlineFilename names an inline file after its media type: the data URL's when it has
+// one, otherwise the caller's file_type, otherwise PDF, which is what the native converters
+// assume for an untyped document.
+func defaultInlineFilename(fileData string, fileType *string) string {
+	mediaType := ""
+	if rest, ok := strings.CutPrefix(fileData, "data:"); ok {
+		mediaType, _, _ = strings.Cut(rest, ",")
+		mediaType, _, _ = strings.Cut(mediaType, ";")
+		mediaType = normalizeFileType(mediaType)
+	}
+	if mediaType == "" && fileType != nil {
+		mediaType = normalizeFileType(*fileType)
+	}
+	if ext, ok := mediaTypeExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	if ext, ok := officeDocumentExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	// "application/vnd.ms-excel+xml" -> ".xml", "image/png" -> ".png".
+	if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
+		if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
+			subtype = suffix
+		}
+		return "document." + subtype
+	}
+	return "document.pdf"
 }

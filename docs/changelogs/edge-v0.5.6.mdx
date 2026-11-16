@@ -1,0 +1,26 @@
+---
+title: "v0.5.6"
+description: "Edge v0.5.6 changelog - 2026-08-27"
+---
+
+<Update label="Bifrost Edge" description="v0.5.6">
+
+## Changelog
+
+This release makes device trust fully server-managed and self-explanatory: the agent holds no private signing material at all, asks for clear user consent before any system prompt appears, and enables secure traffic inspection the moment trust is approved. A new Diagnostics window in the tray shows the full agent state, streams live logs, and offers one-click fixes for common problems.
+
+## ✨ Features
+
+- **Diagnostics Window** - A new Diagnostics entry in the tray menu opens a local status page for the device. It shows the full agent state (connection, configuration, service, and trust status), streams live logs, and offers one-click remedies for common problems, including a guided "Approve certificate" action that only appears when approval is actually needed.
+- **Consent Before Trust Prompts** - Device trust setup now waits until a user signs in, and shows a clear consent dialog that explains what is being asked before any system prompt appears. If the user chooses "Not now", the agent remembers that answer and does not ask again until the next sign-in.
+- **Fully Server-Managed Trust** - Trust setup is now completely driven by the server. The agent no longer generates any placeholder trust material on the device, holds no private signing material at all, and never removes or modifies existing entries in the system trust store. Secure traffic inspection turns on the moment trust is approved, with no restart needed.
+- **Smarter Server URL Handling** - Changing the Bifrost server URL now takes effect immediately without stale cached values. URLs are normalized consistently, and plain http URLs are upgraded to https where safe.
+- **Config Sync Visibility** - The agent now records when it last reached the server for configuration and shows it in diagnostics, so an unchanged poll can be told apart from a sync loop that never connected. Config fetches from sign-in, token refresh, and the periodic loop are serialized so responses can no longer apply out of order, and unexpected sync responses are detected and reported instead of failing silently.
+
+## 🐞 Fixed
+
+- **macOS Trust Approval Loop** - Fixed a macOS case where trust setup raised a system authorization prompt over and over, and approving it never completed; the approval now finishes correctly from the signed-in user's session.
+- **Stale Trust Status After Rotation** - The agent now rechecks trust when the server delivers new trust material instead of reusing a cached answer for the old material.
+- **Repeated Data Directory Migration** - The data directory migration is now keyed on the saved configuration, so it runs once instead of re-evaluating on every start.
+
+</Update>

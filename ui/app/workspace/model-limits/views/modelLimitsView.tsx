@@ -1,15 +1,20 @@
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useDebouncedValue } from "@/hooks/useDebounce";
-import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
+import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
+import { getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import ModelLimitsTable from "./modelLimitsTable";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function ModelLimitsView() {
+	const { t } = useTranslation("models");
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const [search, setSearch] = useState("");
@@ -19,23 +24,28 @@ export default function ModelLimitsView() {
 
 	const debouncedSearch = useDebouncedValue(search, 300);
 
+	// One filter option can cover several scope values, so send the whole group as
+	// a comma-separated list rather than the option's own value.
+	const scopeQueryValue = scope ? (getModelLimitScopeFilterOptions().find((o) => o.value === scope)?.scopes ?? [scope]).join(",") : "";
+
 	// Reset to first page when any filter changes
 	useEffect(() => {
 		setOffset(0);
 	}, [debouncedSearch, scope, provider]);
 
-	const { data: providers } = useGetProvidersQuery();
-
 	const {
 		data: modelConfigsData,
 		error: modelConfigsError,
 		isLoading: isModelConfigsLoading,
+		refetch: refetchModelConfigs,
 	} = useGetModelConfigsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
 			search: debouncedSearch || undefined,
-			scope: scope || undefined,
+			// The filter option's value names one scope, but it may cover several (an
+			// enterprise access-profile row is still a user's limit) — send them all.
+			scope: scopeQueryValue || undefined,
 			provider: provider || undefined,
 		},
 		{
@@ -58,9 +68,9 @@ export default function ModelLimitsView() {
 	// Handle query errors
 	useEffect(() => {
 		if (modelConfigsError) {
-			toast.error(`Failed to load model configs: ${getErrorMessage(modelConfigsError)}`);
+			toast.error(t("modelLimits.failedLoadConfigs", { message: getErrorMessage(modelConfigsError) }));
 		}
-	}, [modelConfigsError]);
+	}, [modelConfigsError, t]);
 
 	// The table chrome renders "Loading limits..." while the first request is in
 	// flight, then collapses to the full-page empty state once it resolves to zero
@@ -70,11 +80,21 @@ export default function ModelLimitsView() {
 		return <FullPageLoader />;
 	}
 
+	if (showLoadError(modelConfigsError, modelConfigsData)) {
+		return (
+			<LoadErrorView
+				entity="model limits"
+				error={modelConfigsError}
+				onRetry={() => void refetchModelConfigs()}
+				testId="model-limits-load-error"
+			/>
+		);
+	}
+
 	return (
 		<ModelLimitsTable
 			modelConfigs={modelConfigsData?.model_configs || []}
 			totalCount={modelConfigsData?.total_count || 0}
-			providers={providers ?? []}
 			search={search}
 			debouncedSearch={debouncedSearch}
 			onSearchChange={setSearch}

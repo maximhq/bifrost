@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -100,13 +102,13 @@ func (c *passwordCache) get(ctx context.Context, config *PasswordCommandConfig) 
 
 // Config is the shared Postgres connection configuration used by framework stores.
 type Config struct {
-	Host            *schemas.SecretVar        `json:"host"`
-	Port            *schemas.SecretVar        `json:"port"`
-	User            *schemas.SecretVar        `json:"user"`
-	Password        *schemas.SecretVar        `json:"password"`
+	Host            *schemas.SecretVar     `json:"host"`
+	Port            *schemas.SecretVar     `json:"port"`
+	User            *schemas.SecretVar     `json:"user"`
+	Password        *schemas.SecretVar     `json:"password"`
 	PasswordCommand *PasswordCommandConfig `json:"password_command,omitempty"`
-	DBName          *schemas.SecretVar        `json:"db_name"`
-	SSLMode         *schemas.SecretVar        `json:"ssl_mode"`
+	DBName          *schemas.SecretVar     `json:"db_name"`
+	SSLMode         *schemas.SecretVar     `json:"ssl_mode"`
 	MaxIdleConns    int                    `json:"max_idle_conns"`
 	MaxOpenConns    int                    `json:"max_open_conns"`
 	ConnMaxLifetime string                 `json:"conn_max_lifetime,omitempty"`
@@ -115,7 +117,34 @@ type Config struct {
 	// size, so every burst above MaxIdleConns closes connections on return and
 	// reopens them on the next query — each reopen forks a Postgres backend.
 	ConnMaxIdleTime string `json:"conn_max_idle_time,omitempty"`
+	// StatementTimeout is the server-side statement_timeout set on every runtime
+	// pool connection (Go duration string, default 120s; "0" or a negative value
+	// leaves the server default). It bounds a runaway query so it cannot hold a
+	// pooled connection and its locks indefinitely. Migration pools never get it:
+	// they run long index builds and backfills.
+	StatementTimeout string `json:"statement_timeout,omitempty"`
+	// IdleInTransactionSessionTimeout is the server-side
+	// idle_in_transaction_session_timeout set on every runtime pool connection
+	// (Go duration string, default 120s; "0" or a negative value leaves the server
+	// default). It ends a session left idle inside an open transaction, which
+	// otherwise holds row locks and blocks vacuum for as long as it stays open.
+	IdleInTransactionSessionTimeout string `json:"idle_in_transaction_session_timeout,omitempty"`
+	// MigrationLockRetryBudget is how long a schema migration step keeps
+	// retrying after lock timeouts before the process gives up and exits (Go
+	// duration string, default 10m). On a rolling upgrade a step that needs a
+	// table lock retries while older replicas' long queries hold the table; raise
+	// this on large deployments so the budget outlasts those queries, and keep
+	// the startup probe at least as long.
+	MigrationLockRetryBudget string `json:"migration_lock_retry_budget,omitempty"`
 }
+
+const (
+	// defaultStatementTimeout bounds a single statement on runtime pools.
+	defaultStatementTimeout = 120 * time.Second
+	// defaultIdleInTransactionSessionTimeout bounds how long a runtime session
+	// may sit idle inside an open transaction.
+	defaultIdleInTransactionSessionTimeout = 120 * time.Second
+)
 
 // Validate checks required Postgres connection fields.
 func Validate(config *Config, requireStaticPassword bool) error {
@@ -143,6 +172,12 @@ func Validate(config *Config, requireStaticPassword bool) error {
 	if _, err := parseConnMaxIdleTime(config); err != nil {
 		return err
 	}
+	if _, err := parseStatementTimeout(config); err != nil {
+		return err
+	}
+	if _, err := parseIdleInTransactionSessionTimeout(config); err != nil {
+		return err
+	}
 	if config.PasswordCommand != nil {
 		if err := validatePasswordCommand(config.PasswordCommand); err != nil {
 			return err
@@ -167,6 +202,46 @@ func Validate(config *Config, requireStaticPassword bool) error {
 	return nil
 }
 
+// applicationNameBase is the process-wide application_name prefix set by
+// SetApplicationName; empty leaves DSNs without one.
+var applicationNameBase atomic.Value
+
+// maxApplicationNameLen is Postgres's NAMEDATALEN-1 limit; longer names are
+// truncated server-side, so they are cut here to keep the role suffix.
+const maxApplicationNameLen = 63
+
+// SetApplicationName sets the application_name prefix every store pool opened
+// after this call reports to Postgres, e.g. "bifrost-ip-10-0-1-13". Each store
+// appends its role ("-config", "-logs") so pg_stat_activity can attribute a
+// session to a node and a store. Empty disables it, which is the default.
+func SetApplicationName(base string) {
+	applicationNameBase.Store(base)
+}
+
+// WithApplicationName appends application_name=<base>-<role> to a libpq DSN
+// when SetApplicationName has set a base. The base is trimmed so the role
+// suffix survives the 63-byte limit. Postgres hex-escapes anything outside
+// printable ASCII, which would lengthen the name past that limit and cut the
+// role off server-side, so such characters become '_' before the byte cut;
+// that also means the cut can never split a multibyte rune.
+func WithApplicationName(dsn, role string) string {
+	base, _ := applicationNameBase.Load().(string)
+	if base == "" {
+		return dsn
+	}
+	base = strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return '_'
+		}
+		return r
+	}, base)
+	suffix := "-" + role
+	if len(base)+len(suffix) > maxApplicationNameLen {
+		base = base[:max(0, maxApplicationNameLen-len(suffix))]
+	}
+	return dsn + " application_name=" + quoteLibpqValue(base+suffix)
+}
+
 // BuildDSN assembles a libpq-style DSN from the validated config.
 func BuildDSN(config *Config) string {
 	password := ""
@@ -179,8 +254,18 @@ func BuildDSN(config *Config) string {
 }
 
 // Open opens a *gorm.DB against the configured Postgres instance.
+//
+// A runtime pool gets the configured statement_timeout and
+// idle_in_transaction_session_timeout on every physical connection. A migration
+// pool does not: configstore and logstore build their migration DSN by forcing
+// default_query_exec_mode=simple_protocol, and that is how Open tells the two
+// apart (see runtimeSessionSettingsSQL).
 func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, error) {
-	if config.PasswordCommand == nil {
+	sessionSQL, err := runtimeSessionSettingsSQL(dsn, config)
+	if err != nil {
+		return nil, err
+	}
+	if config.PasswordCommand == nil && sessionSQL == "" {
 		return gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{
 			Logger: logger,
 		})
@@ -190,18 +275,161 @@ func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, er
 	if err != nil {
 		return nil, err
 	}
-	// One cache per pool. BeforeConnect runs for every new physical connection, so
-	// without this a bursty workload forks the password command once per connection.
-	cache := &passwordCache{}
-	sqlDB := stdlib.OpenDB(*pgxConfig, stdlib.OptionBeforeConnect(func(ctx context.Context, connConfig *pgx.ConnConfig) error {
-		password, err := cache.get(ctx, config.PasswordCommand)
-		if err != nil {
-			return err
-		}
-		connConfig.Password = password
-		return nil
-	}))
+	var options []stdlib.OptionOpenDB
+	if config.PasswordCommand != nil {
+		// One cache per pool. BeforeConnect runs for every new physical connection, so
+		// without this a bursty workload forks the password command once per connection.
+		cache := &passwordCache{}
+		options = append(options, stdlib.OptionBeforeConnect(func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+			password, err := cache.get(ctx, config.PasswordCommand)
+			if err != nil {
+				return err
+			}
+			connConfig.Password = password
+			return nil
+		}))
+	}
+	if sessionSQL != "" {
+		// Applied with SET semantics after connecting rather than as startup
+		// parameters, because connection poolers such as PgBouncer reject unknown
+		// startup parameters and would refuse every connection.
+		options = append(options, stdlib.OptionAfterConnect(func(ctx context.Context, conn *pgx.Conn) error {
+			if _, err := conn.Exec(ctx, sessionSQL); err != nil {
+				return fmt.Errorf("failed to apply postgres session timeouts: %w", err)
+			}
+			return nil
+		}))
+	}
+	connector := stdlib.GetConnector(*pgxConfig, options...)
+	sqlDB := sql.OpenDB(poolConnector{connector})
 	return openGormFromSQLDB(sqlDB, logger)
+}
+
+// poolConnector opens a pool's connections. The driver it reports carries it,
+// so ConnectUnpooled can reach it from the pool.
+type poolConnector struct{ driver.Connector }
+
+func (c poolConnector) Driver() driver.Driver {
+	return poolDriver{Driver: c.Connector.Driver(), connector: c.Connector}
+}
+
+type poolDriver struct {
+	driver.Driver
+	connector driver.Connector
+}
+
+// ConnectUnpooled opens a connection that sqlDB does not manage, the same way
+// sqlDB opens its own: the password command runs again and the session
+// settings apply. The caller closes it. ok is false when sqlDB was not opened
+// that way; its connections then need nothing beyond the settings an existing
+// one was opened with.
+func ConnectUnpooled(ctx context.Context, sqlDB *sql.DB) (conn *pgx.Conn, ok bool, err error) {
+	d, ok := sqlDB.Driver().(poolDriver)
+	if !ok {
+		return nil, false, nil
+	}
+	dc, err := d.connector.Connect(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	sc, isPgx := dc.(*stdlib.Conn)
+	if !isPgx {
+		_ = dc.Close()
+		return nil, true, fmt.Errorf("postgres driver connection %T", dc)
+	}
+	return sc.Conn(), true, nil
+}
+
+// runtimeSessionSettingsSQL returns the statement that applies the runtime
+// session timeouts to a new connection, or "" when none apply: both are
+// disabled, or dsn is a migration DSN (simple query protocol).
+func runtimeSessionSettingsSQL(dsn string, config *Config) (string, error) {
+	statementTimeout, err := parseStatementTimeout(config)
+	if err != nil {
+		return "", err
+	}
+	idleTimeout, err := parseIdleInTransactionSessionTimeout(config)
+	if err != nil {
+		return "", err
+	}
+	if statementTimeout <= 0 && idleTimeout <= 0 {
+		return "", nil
+	}
+	pgxConfig, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return "", err
+	}
+	if pgxConfig.DefaultQueryExecMode == pgx.QueryExecModeSimpleProtocol {
+		return "", nil
+	}
+	var settings []string
+	if statementTimeout > 0 {
+		settings = append(settings, fmt.Sprintf("set_config('statement_timeout', '%d', false)", durationMillis(statementTimeout)))
+	}
+	if idleTimeout > 0 {
+		settings = append(settings, fmt.Sprintf("set_config('idle_in_transaction_session_timeout', '%d', false)", durationMillis(idleTimeout)))
+	}
+	return "SELECT " + strings.Join(settings, ", "), nil
+}
+
+// durationMillis converts a positive duration to whole milliseconds, rounding a
+// sub-millisecond value up to 1 so it never turns into "disabled".
+func durationMillis(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms < 1 {
+		return 1
+	}
+	return ms
+}
+
+// sqlExecQueryer is the subset of *sql.Conn (and *sql.Tx) the statement-timeout
+// escape hatch needs.
+type sqlExecQueryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// DisableStatementTimeout lifts statement_timeout on one dedicated connection
+// for runtime work that legitimately runs long (index builds, materialized view
+// creation and refresh). It returns a function that restores the connection's
+// previous value; call it before the connection goes back to the pool, or close
+// the connection instead. RESET is not a substitute: the pool's timeout is set
+// after connect, so RESET would drop the connection to the server default.
+func DisableStatementTimeout(ctx context.Context, conn sqlExecQueryer) (func(context.Context) error, error) {
+	var previous string
+	if err := conn.QueryRowContext(ctx, "SELECT current_setting('statement_timeout')").Scan(&previous); err != nil {
+		return nil, fmt.Errorf("failed to read statement_timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT set_config('statement_timeout', '0', false)"); err != nil {
+		return nil, fmt.Errorf("failed to disable statement_timeout: %w", err)
+	}
+	return func(ctx context.Context) error {
+		if _, err := conn.ExecContext(ctx, "SELECT set_config('statement_timeout', $1, false)", previous); err != nil {
+			return fmt.Errorf("failed to restore statement_timeout: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+// rawConn is the subset of *sql.Conn needed to drop a physical connection.
+type rawConn interface {
+	Raw(f func(driverConn any) error) error
+}
+
+// RestoreStatementTimeoutOrDiscard runs restore, the function returned by
+// DisableStatementTimeout, and enforces that function's contract: when the
+// restore fails, conn is dropped (a Raw callback returning driver.ErrBadConn)
+// so database/sql closes the physical connection instead of pooling it with
+// statement_timeout lifted. The restore runs under timeout and ignores the
+// cancellation of ctx, which is often already done when cleanup runs.
+func RestoreStatementTimeoutOrDiscard(ctx context.Context, conn rawConn, restore func(context.Context) error, timeout time.Duration) error {
+	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	if err := restore(restoreCtx); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		return err
+	}
+	return nil
 }
 
 // openGormFromSQLDB opens a GORM connection over an existing sql.DB.
@@ -229,7 +457,10 @@ const (
 
 	// Migration pools run strictly serial DDL, so they need almost nothing. Left
 	// untuned they inherit database/sql's defaults, where MaxOpenConns is unlimited.
-	migrationMaxOpenConns = 2
+	// Three covers the dedicated migration-lock connection, the dedicated
+	// connection that pauses matview refreshes for the run (see
+	// logstore.PauseMatViewMaintenance), and the one the DDL itself runs on.
+	migrationMaxOpenConns = 3
 	migrationMaxIdleConns = 1
 )
 
@@ -378,6 +609,8 @@ func passwordCommandError(err error, stderr string) error {
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
 }
 
+// quoteLibpqValue single-quotes a libpq keyword/value DSN value, escaping
+// backslashes and quotes.
 func quoteLibpqValue(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `'`, `\'`)
@@ -449,6 +682,44 @@ func parseConnMaxIdleTime(config *Config) (time.Duration, error) {
 		return 0, fmt.Errorf("postgres conn_max_idle_time must be positive")
 	}
 	return idleTime, nil
+}
+
+// parseStatementTimeout parses the runtime statement_timeout, falling back to
+// defaultStatementTimeout when unset. Zero or negative disables it (returns 0).
+func parseStatementTimeout(config *Config) (time.Duration, error) {
+	if config == nil {
+		return defaultStatementTimeout, nil
+	}
+	return parseSessionTimeout(config.StatementTimeout, defaultStatementTimeout, "statement_timeout")
+}
+
+// parseIdleInTransactionSessionTimeout parses the runtime
+// idle_in_transaction_session_timeout, falling back to
+// defaultIdleInTransactionSessionTimeout when unset. Zero or negative disables it.
+func parseIdleInTransactionSessionTimeout(config *Config) (time.Duration, error) {
+	if config == nil {
+		return defaultIdleInTransactionSessionTimeout, nil
+	}
+	return parseSessionTimeout(config.IdleInTransactionSessionTimeout, defaultIdleInTransactionSessionTimeout, "idle_in_transaction_session_timeout")
+}
+
+// parseSessionTimeout parses one optional session timeout. "" takes fallback;
+// "0" (with or without a unit) or a negative duration returns 0, meaning off.
+func parseSessionTimeout(raw string, fallback time.Duration, name string) (time.Duration, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	if raw == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid postgres %s %q: %w", name, raw, err)
+	}
+	if d <= 0 {
+		return 0, nil
+	}
+	return d, nil
 }
 
 // parsePasswordCommandTimeout parses the optional password command timeout.

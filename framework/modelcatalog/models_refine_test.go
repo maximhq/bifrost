@@ -39,6 +39,57 @@ func TestRefineModelForProvider(t *testing.T) {
 		{"own prefix on non-nested provider is stripped", schemas.OpenAI, "openai/gpt-oss-120b", "gpt-oss-120b"},
 		{"foreign prefix on non-nested provider unchanged", schemas.OpenAI, "anthropic/claude-opus-4-6", "anthropic/claude-opus-4-6"},
 		{"non-nested provider bare unchanged", schemas.Anthropic, "claude-opus-4-6", "claude-opus-4-6"},
+		{"databricks short name gains the system.ai prefix", schemas.Databricks, "claude-opus-5", "system.ai.claude-opus-5"},
+		{"databricks short name with a version dot gains the prefix", schemas.Databricks, "gpt-5.5", "system.ai.gpt-5.5"},
+		{"databricks system.ai name is unchanged", schemas.Databricks, "system.ai.gpt-5.5", "system.ai.gpt-5.5"},
+		{"databricks unity catalog fqn is unchanged", schemas.Databricks, "main.default.my-service", "main.default.my-service"},
+		{"databricks pay-per-token endpoint is unchanged", schemas.Databricks, "databricks-claude-sonnet-4-5", "databricks-claude-sonnet-4-5"},
+		{"databricks own-prefixed short name is stripped and refined", schemas.Databricks, "databricks/claude-opus-5", "system.ai.claude-opus-5"},
+		{"databricks refinement is idempotent", schemas.Databricks, "system.ai.claude-opus-5", "system.ai.claude-opus-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mc.RefineModelForProvider(tc.provider, tc.model)
+			if err != nil {
+				t.Fatalf("RefineModelForProvider(%s, %q) returned error: %v", tc.provider, tc.model, err)
+			}
+			if got != tc.want {
+				t.Fatalf("RefineModelForProvider(%s, %q) = %q, want %q", tc.provider, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefineModelForProviderKeepsDatabricksKeyAliases pins that a name matching a Databricks
+// key alias does not gain the system.ai. prefix. Alias resolution runs after load balancing and
+// looks the alias up by the name it receives, so "system.ai.my-alias" would miss the alias and
+// be sent upstream as a literal model. Other providers keep their refinement unchanged.
+func TestRefineModelForProviderKeepsDatabricksKeyAliases(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
+		ID:      "dbx-key",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"my-alias": {ModelID: "my-provisioned-endpoint"}},
+	}})
+	mc.UpsertLive(schemas.Groq, "groq-key", false, []string{"openai/gpt-oss-120b"})
+	mc.SetKeyConfigForProvider(schemas.Groq, []schemas.Key{{
+		ID:      "groq-key",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"gpt-oss-120b": {ModelID: "openai/gpt-oss-120b"}},
+	}})
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     string
+	}{
+		{"databricks alias is unchanged", schemas.Databricks, "my-alias", "my-alias"},
+		{"databricks alias matches case-insensitively", schemas.Databricks, "My-Alias", "My-Alias"},
+		{"databricks own-prefixed alias is stripped but not refined", schemas.Databricks, "databricks/my-alias", "my-alias"},
+		{"databricks non-alias short name still gains the prefix", schemas.Databricks, "gpt-5.5", "system.ai.gpt-5.5"},
+		{"alias on another provider does not shield refinement", schemas.Databricks, "gpt-oss-120b", "system.ai.gpt-oss-120b"},
+		{"non-databricks alias is still refined", schemas.Groq, "gpt-oss-120b", "openai/gpt-oss-120b"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

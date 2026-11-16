@@ -108,7 +108,7 @@ func TestMidConversationSystemReminderPreservesCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -146,7 +146,7 @@ func TestMidConversationDeveloperReminderPreservesCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -166,7 +166,7 @@ func TestMidConversationSystemReminderContentStrAddsNoCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -191,7 +191,7 @@ func TestMidConversationSystemRemindersRespectCheckpointBudget(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -211,7 +211,7 @@ func TestLeadingSystemRunCachePointsUnaffected(t *testing.T) {
 		cachedRoleMsg(schemas.ResponsesInputMessageRoleUser, "Reminder: stay concise."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -247,7 +247,7 @@ func claudeCodeShape(reminderRole schemas.ResponsesMessageRoleType) []schemas.Re
 // cachePoints must reach Bedrock: 2 hoisted into system, 1 on the inlined reminder.
 func TestInlinedSystemReminder_KeepsCachePoint(t *testing.T) {
 	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -260,7 +260,7 @@ func TestInlinedSystemReminder_KeepsCachePoint(t *testing.T) {
 // so it must come after the text it closes over, never before and never first.
 func TestInlinedSystemReminder_CachePointFollowsText(t *testing.T) {
 	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
 	require.NoError(t, err)
 
 	for _, msg := range messages {
@@ -278,7 +278,7 @@ func TestInlinedSystemReminder_CachePointFollowsText(t *testing.T) {
 // it already worked and must keep working identically.
 func TestInlinedSystemReminder_UserRoleTailUnchanged(t *testing.T) {
 	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleUser), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleUser), true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -303,7 +303,7 @@ func TestInlinedSystemReminder_MultipleBreakpointsEmitOne(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	_, inMessages := countCachePoints(messages, nil)
@@ -329,7 +329,7 @@ func TestInlinedSystemReminder_PreservesOneHourTTL(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	var checked bool
@@ -389,7 +389,7 @@ func TestMidconvAnthropicWireShapeReachesBedrockWithAllBreakpoints(t *testing.T)
 		require.NotNil(t, bifrostReq)
 
 		messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-			context.Background(), bifrostReq.Input, true)
+			context.Background(), anthropicModel, bifrostReq.Input, true)
 		require.NoError(t, err)
 		return messages, systemMessages
 	}
@@ -423,4 +423,604 @@ func TestMidconvAnthropicWireShapeReachesBedrockWithAllBreakpoints(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, string(first), string(second),
 		"two conversions of one request body must be byte-identical, or Bedrock re-writes the cache every turn")
+}
+
+// TestMidconvNonAnthropicWireShapeKeepsConversePrefixStable reproduces the Claude Code ->
+// /anthropic/v1/messages -> bedrock/global.openai.gpt-5.6-luna captures from the field: Claude
+// Code (mid-conversation-system beta) appends a trailing role:"system"
+// <total_tokens>...</total_tokens> reminder after every turn. On Converse, GPT-5.6 gets Bedrock's
+// Implicit Prompt Caching, which is exact-prefix ("Changes to a prompt prefix in subsequent
+// requests result in cache misses", AWS prompt-caching guide). Hoisting each new reminder into the
+// top-level `system` block grows the very front of the prompt every turn, so the previous turn's
+// cache can never be read back. The Converse `system` block must therefore be identical between
+// turn N and turn N+1, turn N's messages must be a byte-identical prefix of turn N+1's, and the
+// reminders must ride inline as user turns - exactly what the Anthropic-family branch already does.
+func TestMidconvNonAnthropicWireShapeKeepsConversePrefixStable(t *testing.T) {
+	const model = "bedrock/global.openai.gpt-5.6-luna"
+	cc := map[string]any{"type": "ephemeral"}
+	reminder := map[string]any{"role": "system", "content": "<total_tokens>15000000 tokens left</total_tokens>"}
+	turn1 := []map[string]any{
+		{"role": "user", "content": []map[string]any{{"type": "text", "text": "first user turn", "cache_control": cc}}},
+		{"role": "system", "content": "Available agent types for the Agent tool: claude, Explore, Plan."},
+		{"role": "assistant", "content": "ok"},
+		{"role": "user", "content": []map[string]any{{"type": "text", "text": "second user turn", "cache_control": cc}}},
+		reminder,
+	}
+	turn2 := append(append([]map[string]any{}, turn1...),
+		map[string]any{"role": "assistant", "content": "done"},
+		map[string]any{"role": "user", "content": []map[string]any{{"type": "text", "text": "third user turn", "cache_control": cc}}},
+		reminder,
+	)
+
+	convert := func(msgs []map[string]any) *bedrock.BedrockConverseRequest {
+		body, err := providerUtils.MarshalSorted(map[string]any{
+			"model":      model,
+			"max_tokens": 32,
+			"system":     []map[string]any{{"type": "text", "text": "You are Claude Code.", "cache_control": cc}},
+			"messages":   msgs,
+		})
+		require.NoError(t, err)
+		var ingress anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal(body, &ingress))
+		ctx := &schemas.BifrostContext{}
+		req, err := bedrock.ToBedrockResponsesRequest(ctx, ingress.ToBifrostResponsesRequest(ctx))
+		require.NoError(t, err)
+		return req
+	}
+	r1, r2 := convert(turn1), convert(turn2)
+
+	// 1. Only the leading system prompt belongs in `system`, and it must not grow between turns.
+	require.Len(t, r1.System, 1, "only the leading system prompt belongs in the Converse system block; mid-conversation reminders must not be hoisted")
+	assert.Equal(t, r1.System, r2.System, "turn N+1 must not grow the system block (the prefix front) with the new trailing reminder")
+
+	// 2. Turn N's messages are a byte-identical prefix of turn N+1's.
+	require.GreaterOrEqual(t, len(r2.Messages), len(r1.Messages))
+	m1, err := providerUtils.MarshalSorted(r1.Messages)
+	require.NoError(t, err)
+	m2, err := providerUtils.MarshalSorted(r2.Messages[:len(r1.Messages)])
+	require.NoError(t, err)
+	assert.Equal(t, string(m1), string(m2), "Converse messages of turn N must be a byte-identical prefix of turn N+1, or the prompt cache misses every turn")
+
+	// 3. Every reminder rides inline, wrapped, as a user turn - none hoisted.
+	inline := 0
+	for _, msg := range r2.Messages {
+		for _, block := range msg.Content {
+			if block.Text != nil && strings.Contains(*block.Text, "<system-reminder>\n<total_tokens>") {
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, msg.Role, "inlined reminder must be a user turn")
+				inline++
+			}
+		}
+	}
+	assert.Equal(t, 2, inline, "both trailing <total_tokens> reminders must be inlined in place, none hoisted into system")
+}
+
+// TestToBedrockChatCompletionRequest_MidConversationSystemInlinedForEveryFamily is the Chat
+// Completions twin of TestMidconvNonAnthropicWireShapeKeepsConversePrefixStable. convertMessages
+// (bedrock/utils.go) hoisted every system/developer message into the Converse `system` block for
+// every model, so a client that injects a role:"system" reminder mid-conversation grew the prompt
+// front each turn and lost the prefix cache. Claude is in the table because the chat path never
+// had the Anthropic-only inlining the Responses path had.
+func TestToBedrockChatCompletionRequest_MidConversationSystemInlinedForEveryFamily(t *testing.T) {
+	str := func(role schemas.ChatMessageRole, text string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	const reminder = "<total_tokens>15000000 tokens left</total_tokens>"
+	turn1 := []schemas.ChatMessage{
+		str(schemas.ChatMessageRoleSystem, "You are Claude Code."),
+		str(schemas.ChatMessageRoleUser, "first user turn"),
+		str(schemas.ChatMessageRoleSystem, "Available agent types for the Agent tool: claude, Explore, Plan."),
+		str(schemas.ChatMessageRoleAssistant, "ok"),
+		str(schemas.ChatMessageRoleUser, "second user turn"),
+		str(schemas.ChatMessageRoleSystem, reminder),
+	}
+	turn2 := append(append([]schemas.ChatMessage{}, turn1...),
+		str(schemas.ChatMessageRoleAssistant, "done"),
+		str(schemas.ChatMessageRoleUser, "third user turn"),
+		str(schemas.ChatMessageRoleSystem, reminder),
+	)
+
+	for _, model := range []string{"global.openai.gpt-5.6-luna", anthropicModel} {
+		t.Run(model, func(t *testing.T) {
+			convert := func(msgs []schemas.ChatMessage) *bedrock.BedrockConverseRequest {
+				req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock, Model: model, Input: msgs,
+				})
+				require.NoError(t, err)
+				return req
+			}
+			r1, r2 := convert(turn1), convert(turn2)
+
+			require.Len(t, r1.System, 1, "only the leading system prompt belongs in the Converse system block")
+			assert.Equal(t, r1.System, r2.System, "turn N+1 must not grow the system block with the new trailing reminder")
+
+			require.GreaterOrEqual(t, len(r2.Messages), len(r1.Messages))
+			m1, err := providerUtils.MarshalSorted(r1.Messages)
+			require.NoError(t, err)
+			m2, err := providerUtils.MarshalSorted(r2.Messages[:len(r1.Messages)])
+			require.NoError(t, err)
+			assert.Equal(t, string(m1), string(m2), "Converse messages of turn N must be a byte-identical prefix of turn N+1")
+
+			inline := 0
+			for i, msg := range r2.Messages {
+				if i > 0 {
+					assert.NotEqual(t, r2.Messages[i-1].Role, msg.Role, "Converse turns must alternate; an inlined reminder must fold into the preceding user turn")
+				}
+				for _, block := range msg.Content {
+					if block.Text != nil && strings.Contains(*block.Text, "<system-reminder>\n<total_tokens>") {
+						assert.Equal(t, bedrock.BedrockMessageRoleUser, msg.Role)
+						inline++
+					}
+				}
+			}
+			assert.Equal(t, 2, inline, "both trailing reminders must be inlined in place, none hoisted")
+		})
+	}
+}
+
+// TestToBedrockChatCompletionRequest_ReminderWithNoPrecedingUserTurn — a mid-conversation reminder
+// folds into the preceding user turn when there is one. After an assistant turn there is none, and
+// giving the reminder a turn of its own then reads as assistant, user, user once the next user
+// message lands. Converse turns have to alternate (see convertMessages), so a reminder with no
+// user turn behind it folds forward into the next user-role turn instead, and only takes a turn of
+// its own when what follows is not one.
+func TestToBedrockChatCompletionRequest_ReminderWithNoPrecedingUserTurn(t *testing.T) {
+	str := func(role schemas.ChatMessageRole, text string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	toolResult := func(id, text string) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text)},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(id)},
+		}
+	}
+	const reminder = "<total_tokens>15000000 tokens left</total_tokens>"
+	const wrapped = "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
+
+	// Leading system prompt, a user turn, an assistant turn, then the reminder. In every case
+	// below the reminder has no preceding user turn to fold back into.
+	lead := func(tail ...schemas.ChatMessage) []schemas.ChatMessage {
+		return append([]schemas.ChatMessage{
+			str(schemas.ChatMessageRoleSystem, "You are Claude Code."),
+			str(schemas.ChatMessageRoleUser, "first user turn"),
+			str(schemas.ChatMessageRoleAssistant, "ok"),
+			str(schemas.ChatMessageRoleSystem, reminder),
+		}, tail...)
+	}
+
+	// textOf returns the text blocks of a turn in order. toolResult blocks carry their text nested
+	// inside the result, so they do not show up here.
+	textOf := func(msg bedrock.BedrockMessage) []string {
+		var out []string
+		for _, block := range msg.Content {
+			if block.Text != nil {
+				out = append(out, *block.Text)
+			}
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name   string
+		input  []schemas.ChatMessage
+		verify func(t *testing.T, messages []bedrock.BedrockMessage)
+	}{
+		{
+			name:  "folds into the following user turn",
+			input: lead(str(schemas.ChatMessageRoleUser, "second user turn")),
+			verify: func(t *testing.T, messages []bedrock.BedrockMessage) {
+				require.Len(t, messages, 3, "user, assistant, user")
+				last := messages[2]
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, last.Role)
+				assert.Equal(t, []string{wrapped, "second user turn"}, textOf(last),
+					"the reminder leads the turn it preceded in the input")
+			},
+		},
+		{
+			name:  "folds into the following tool results",
+			input: lead(toolResult("tooluse_Yl388l8ES0G_3TQtDcKq_g", "tool output")),
+			verify: func(t *testing.T, messages []bedrock.BedrockMessage) {
+				require.Len(t, messages, 3, "user, assistant, user")
+				last := messages[2]
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, last.Role)
+				require.NotEmpty(t, last.Content)
+				assert.NotNil(t, last.Content[0].ToolResult,
+					"toolResult blocks stay at the front of the turn they answer")
+				assert.Equal(t, []string{wrapped}, textOf(last), "the reminder trails the tool results")
+			},
+		},
+		{
+			name:  "takes a turn of its own before another assistant turn",
+			input: lead(str(schemas.ChatMessageRoleAssistant, "more")),
+			verify: func(t *testing.T, messages []bedrock.BedrockMessage) {
+				require.Len(t, messages, 4, "user, assistant, user, assistant")
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[2].Role)
+				assert.Equal(t, []string{wrapped}, textOf(messages[2]))
+				assert.Equal(t, bedrock.BedrockMessageRoleAssistant, messages[3].Role)
+			},
+		},
+		{
+			name:  "becomes the final turn when nothing follows",
+			input: lead(),
+			verify: func(t *testing.T, messages []bedrock.BedrockMessage) {
+				require.Len(t, messages, 3, "user, assistant, user")
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[2].Role)
+				assert.Equal(t, []string{wrapped}, textOf(messages[2]))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock, Model: anthropicModel, Input: tc.input,
+			})
+			require.NoError(t, err)
+			require.Len(t, req.System, 1, "only the leading system prompt belongs in the Converse system block")
+			for i := 1; i < len(req.Messages); i++ {
+				assert.NotEqual(t, req.Messages[i-1].Role, req.Messages[i].Role,
+					"Converse turns must alternate; a reminder must never open a second user turn")
+			}
+			tc.verify(t, req.Messages)
+		})
+	}
+}
+
+// TestToBedrockChatCompletionRequest_MidConversationReminderKeepsStandaloneCachePoint — a
+// Converse-native client marks a breakpoint with a standalone cachePoint block after the content it
+// closes over, not with a cache_control on that content (see the `messages` example under
+// https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html). Both dialects land on
+// the same schemas.ChatContentBlock, and convertSystemMessages honours both on the hoisted path, so
+// the inlined path has to honour both as well. Dropping the standalone form loses the cache boundary
+// the client asked for and re-reads the conversation prefix uncached.
+func TestToBedrockChatCompletionRequest_MidConversationReminderKeepsStandaloneCachePoint(t *testing.T) {
+	str := func(role schemas.ChatMessageRole, text string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	textBlock := func(text string) schemas.ChatContentBlock {
+		return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text)}
+	}
+	cachedText := func(text, ttl string) schemas.ChatContentBlock {
+		block := textBlock(text)
+		block.CacheControl = &schemas.CacheControl{Type: "ephemeral", TTL: schemas.Ptr(ttl)}
+		return block
+	}
+	standalone := func(ttl *string) schemas.ChatContentBlock {
+		return schemas.ChatContentBlock{CachePoint: &schemas.CachePoint{Type: "default", TTL: ttl}}
+	}
+	reminder := func(blocks ...schemas.ChatContentBlock) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		}
+	}
+
+	// cachePointsOf returns every cachePoint in `messages`, paired with whether it terminates a text
+	// block. A cachePoint that leads a message or follows another cachePoint closes over nothing.
+	cachePointsOf := func(messages []bedrock.BedrockMessage) (points []*bedrock.BedrockCachePoint, allFollowText bool) {
+		allFollowText = true
+		for _, msg := range messages {
+			for i, block := range msg.Content {
+				if block.CachePoint == nil {
+					continue
+				}
+				points = append(points, block.CachePoint)
+				if i == 0 || msg.Content[i-1].Text == nil {
+					allFollowText = false
+				}
+			}
+		}
+		return points, allFollowText
+	}
+
+	for _, tc := range []struct {
+		name    string
+		blocks  []schemas.ChatContentBlock
+		wantTTL *string
+	}{
+		{
+			name:    "standalone cachePoint block",
+			blocks:  []schemas.ChatContentBlock{textBlock("reminder body"), standalone(nil)},
+			wantTTL: nil,
+		},
+		{
+			name:    "standalone cachePoint block carries its ttl",
+			blocks:  []schemas.ChatContentBlock{textBlock("reminder body"), standalone(schemas.Ptr("1h"))},
+			wantTTL: schemas.Ptr("1h"),
+		},
+		{
+			name:    "cache_control on the text block is the control",
+			blocks:  []schemas.ChatContentBlock{cachedText("reminder body", "1h")},
+			wantTTL: schemas.Ptr("1h"),
+		},
+		{
+			name: "the last breakpoint wins across dialects",
+			blocks: []schemas.ChatContentBlock{
+				cachedText("reminder one", "5m"),
+				textBlock("reminder two"),
+				standalone(schemas.Ptr("1h")),
+			},
+			wantTTL: schemas.Ptr("1h"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    anthropicModel,
+				Input: []schemas.ChatMessage{
+					str(schemas.ChatMessageRoleSystem, "You are Claude Code."),
+					str(schemas.ChatMessageRoleUser, "first user turn"),
+					reminder(tc.blocks...),
+				},
+			})
+			require.NoError(t, err)
+
+			points, allFollowText := cachePointsOf(req.Messages)
+			require.Len(t, points, 1, "one breakpoint in, exactly one cachePoint out; extra markers burn the 4-checkpoint budget")
+			assert.True(t, allFollowText, "a cachePoint must terminate a text block, never lead the message")
+			assert.Equal(t, bedrock.BedrockCachePointTypeDefault, points[0].Type)
+			if tc.wantTTL == nil {
+				assert.Nil(t, points[0].TTL, "no ttl asked for means Bedrock's default 5m applies")
+			} else {
+				require.NotNil(t, points[0].TTL)
+				assert.Equal(t, *tc.wantTTL, *points[0].TTL, "the ttl on the breakpoint must survive the inlining")
+			}
+		})
+	}
+}
+
+// Claude Code marks its token-budget reminder and sends a one-line nudge after it in the same
+// system run, then drops the nudge on the next turn. Live on Bedrock (Converse and InvokeModel)
+// the next turn reads 0 cached tokens unless (a) the cachePoint closes over the marked block, not
+// the nudge, and (b) the marked text does not end in whitespace. Both twins are covered.
+func TestInlinedSystemReminder_CachePointStaysOnMarkedBlock(t *testing.T) {
+	const budget = "<total_tokens>812345 tokens left</total_tokens>"
+	const nudge = "keep going"
+
+	// reminderMessage returns the converted message carrying the budget reminder.
+	reminderMessage := func(t *testing.T, messages []bedrock.BedrockMessage) bedrock.BedrockMessage {
+		t.Helper()
+		for _, msg := range messages {
+			for _, block := range msg.Content {
+				if block.Text != nil && strings.Contains(*block.Text, budget) {
+					return msg
+				}
+			}
+		}
+		t.Fatalf("no converted message carries the budget reminder")
+		return bedrock.BedrockMessage{}
+	}
+	assertShape := func(t *testing.T, msg bedrock.BedrockMessage) {
+		t.Helper()
+		var at, cachePoints int
+		at = -1
+		for i, block := range msg.Content {
+			if block.Text != nil {
+				assert.False(t, strings.HasSuffix(*block.Text, "\n"), "an inlined reminder must not end in whitespace: %q", *block.Text)
+				if strings.Contains(*block.Text, budget) {
+					at = i
+				}
+			}
+			if block.CachePoint != nil {
+				cachePoints++
+			}
+		}
+		require.Equal(t, 1, cachePoints, "one breakpoint in, one cachePoint out")
+		require.GreaterOrEqual(t, at, 0)
+		require.Greater(t, len(msg.Content), at+2, "the nudge must still follow the cachePoint")
+		assert.NotNil(t, msg.Content[at+1].CachePoint, "the cachePoint must close over the marked block, not the nudge")
+		require.NotNil(t, msg.Content[at+2].Text)
+		assert.Contains(t, *msg.Content[at+2].Text, nudge)
+	}
+
+	t.Run("responses", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			leadingSystemMsg(),
+			userReminderTextMsg("Analyze this."),
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					cachedTextBlock(budget),
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(nudge)},
+				}},
+			},
+		}
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
+		require.NoError(t, err)
+		assertShape(t, reminderMessage(t, messages))
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    anthropicModel,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are Claude Code.")}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Analyze this.")}},
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(budget), CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(nudge)},
+				}}},
+			},
+		})
+		require.NoError(t, err)
+		assertShape(t, reminderMessage(t, req.Messages))
+	})
+}
+
+// Claude 5 models drop trailing whitespace from the text that ends a user turn but keep it
+// mid-turn. A marked user block ending in "\n" is mid-turn while an inlined reminder follows it and
+// ends the turn once the reminder is dropped, so the next turn read 0 cached tokens, live on
+// Bedrock; the breakpoint text is trimmed ahead of its cachePoint. Claude 4 models keep the
+// whitespace everywhere, so there it goes out as sent. The input is never modified.
+func TestInlinedSystemReminder_TrimsTheUserTextItJoins(t *testing.T) {
+	const marked = "<system-reminder>\ncontext\n</system-reminder>\n"
+	const nudge = "keep going"
+	const claude5 = "global.anthropic.claude-haiku-5-5"
+
+	assertJoined := func(t *testing.T, messages []bedrock.BedrockMessage, want string) {
+		t.Helper()
+		for _, msg := range messages {
+			for i, block := range msg.Content {
+				if block.Text == nil || strings.TrimRight(*block.Text, " \n") != strings.TrimRight(want, " \n") {
+					continue
+				}
+				require.Equal(t, bedrock.BedrockMessageRoleUser, msg.Role)
+				assert.Equal(t, want, *block.Text)
+				require.Greater(t, len(msg.Content), i+1)
+				rest := msg.Content[i+1:]
+				if rest[0].CachePoint != nil {
+					rest = rest[1:]
+				}
+				require.NotEmpty(t, rest, "the reminder must follow in the same user turn")
+				require.NotNil(t, rest[0].Text)
+				assert.Contains(t, *rest[0].Text, nudge)
+				return
+			}
+		}
+		t.Fatalf("no converted block carries %q", want)
+	}
+
+	trimmed := strings.TrimSuffix(marked, "\n")
+	for _, tc := range []struct {
+		name, model string
+		row         *schemas.ModelCapabilities // datasheet row; nil ⇒ name detection
+		want        string
+	}{
+		{"claude 5 trims", claude5, nil, trimmed},
+		{"claude 4 keeps", anthropicModel, nil, marked},
+		{"unrecognised model keeps", "global.anthropic.claude-opus-6", nil, marked},
+		{"datasheet trims an unrecognised model", "global.anthropic.claude-opus-6", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}, trimmed},
+		{"datasheet keeps a claude 5 model", claude5, &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(false)}, marked},
+	} {
+		if tc.row != nil {
+			schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return tc.row })
+		}
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			userBlock := cachedTextBlock(marked)
+			input := []schemas.ResponsesMessage{
+				leadingSystemMsg(),
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{userBlock}},
+				},
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(nudge)},
+				},
+			}
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), tc.model, input, true)
+			require.NoError(t, err)
+			assertJoined(t, messages, tc.want)
+			assert.Equal(t, marked, *userBlock.Text, "the caller's request must not be modified")
+		})
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			user := marked
+			req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    tc.model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are Claude Code.")}},
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: &user, CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+					}}},
+					{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(nudge)}},
+				},
+			})
+			require.NoError(t, err)
+			assertJoined(t, req.Messages, tc.want)
+			assert.Equal(t, marked, user, "the caller's request must not be modified")
+		})
+		schemas.SetCapabilityResolver(nil)
+	}
+
+	// The marker does not decide the trim: an unmarked block is inside a later checkpoint's prefix.
+	t.Run("unmarked text trimmed too", func(t *testing.T) {
+		req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    claude5,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are Claude Code.")}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Analyze this.\n")}},
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(nudge)}},
+			},
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, req.Messages)
+		require.NotNil(t, req.Messages[0].Content[0].Text)
+		assert.Equal(t, "Analyze this.", *req.Messages[0].Content[0].Text)
+	})
+}
+
+// A client that keeps the reminder in history and moves the breakpoint to a later turn sends the
+// earlier block unmarked, still followed by the reminder. Its bytes must not change between the
+// request that marked it and the next one, or the checkpoint written at it never matches again.
+func TestInlinedSystemReminder_TrimIsStableAsTheBreakpointMoves(t *testing.T) {
+	const marked = "<system-reminder>\ncontext\n</system-reminder>\n"
+	const nudge = "keep going"
+	blockText := func(t *testing.T, messages []bedrock.BedrockMessage) string {
+		t.Helper()
+		for _, msg := range messages {
+			for _, block := range msg.Content {
+				if block.Text != nil && strings.HasPrefix(*block.Text, "<system-reminder>\ncontext") {
+					return *block.Text
+				}
+			}
+		}
+		t.Fatalf("the reminder-bearing user block is missing")
+		return ""
+	}
+	for _, tc := range []struct{ name, model, want string }{
+		{"claude 5", "global.anthropic.claude-haiku-5-5", strings.TrimSuffix(marked, "\n")},
+		{"claude 4", anthropicModel, marked},
+	} {
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			msg := func(role schemas.ResponsesMessageRoleType, blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+				return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(role), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+			}
+			text := func(t string) schemas.ResponsesMessageContentBlock {
+				return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(t)}
+			}
+			reminder := msg(schemas.ResponsesInputMessageRoleSystem, text(nudge))
+			first := []schemas.ResponsesMessage{leadingSystemMsg(), msg(schemas.ResponsesInputMessageRoleUser, cachedTextBlock(marked)), reminder}
+			second := []schemas.ResponsesMessage{leadingSystemMsg(), msg(schemas.ResponsesInputMessageRoleUser, text(marked)), reminder,
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("ACKNOWLEDGED")},
+				}}},
+				msg(schemas.ResponsesInputMessageRoleUser, cachedTextBlock("Turn 2.")),
+			}
+			out1, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), tc.model, first, true)
+			require.NoError(t, err)
+			out2, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), tc.model, second, true)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, blockText(t, out1))
+			assert.Equal(t, blockText(t, out1), blockText(t, out2), "the block's bytes changed once the breakpoint moved off it")
+		})
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			convert := func(input []schemas.ChatMessage) []bedrock.BedrockMessage {
+				t.Helper()
+				req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: tc.model, Input: input})
+				require.NoError(t, err)
+				return req.Messages
+			}
+			userTurn := func(text string, cc *schemas.CacheControl) schemas.ChatMessage {
+				return schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc},
+				}}}
+			}
+			lead := schemas.ChatMessage{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are Claude Code.")}}
+			reminder := schemas.ChatMessage{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(nudge)}}
+			cc := &schemas.CacheControl{Type: "ephemeral"}
+			out1 := convert([]schemas.ChatMessage{lead, userTurn(marked, cc), reminder})
+			out2 := convert([]schemas.ChatMessage{lead, userTurn(marked, nil), reminder,
+				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ACKNOWLEDGED")}},
+				userTurn("Turn 2.", cc),
+			})
+			assert.Equal(t, tc.want, blockText(t, out1))
+			assert.Equal(t, blockText(t, out1), blockText(t, out2), "the block's bytes changed once the breakpoint moved off it")
+		})
+	}
 }

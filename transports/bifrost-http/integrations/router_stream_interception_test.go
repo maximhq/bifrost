@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -59,7 +60,7 @@ func newStreamInterceptionError(message string) *schemas.StreamInterceptionError
 	}
 }
 
-func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interceptErr error) (string, bool) {
+func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interceptErr error) (string, *cancelRecorder) {
 	t.Helper()
 
 	stream := make(chan *schemas.BifrostStreamChunk, 1)
@@ -70,16 +71,14 @@ func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interce
 		mockHandlerStore: &mockHandlerStore{},
 		interceptor:      &stubChunkInterceptor{err: interceptErr},
 	}
-	router := NewGenericRouter(nil, handlerStore, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
-	cancelCalled := false
-	router.handleStreaming(ctx, nil, config, stream, func() {
-		cancelCalled = true
-	})
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, nil, config, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
-	return string(body), cancelCalled
+	return string(body), rec
 }
 
 // A StreamInterceptionError must be emitted through the integration's error
@@ -99,7 +98,7 @@ func Test_handleStreamingInterceptionErrorUsesErrorConverter(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	assert.Contains(t, body, `data: `)
@@ -107,7 +106,7 @@ func Test_handleStreamingInterceptionErrorUsesErrorConverter(t *testing.T) {
 	assert.Contains(t, body, `"type":"guardrail_intervention"`)
 	assert.NotContains(t, body, "failed to intercept chunk",
 		"structured interception errors must not leak the internal plugin wrap")
-	assert.True(t, cancelCalled, "stream must be terminated after an interception error")
+	rec.requireCancelled(t, "stream must be terminated after an interception error")
 }
 
 // On Anthropic-style routes the converter returns a complete SSE string with
@@ -122,14 +121,14 @@ func Test_handleStreamingInterceptionErrorAnthropicSSEFraming(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	assert.True(t, strings.HasPrefix(body, "event: error\ndata: "),
 		"Anthropic streaming errors use the provider's native SSE framing, got: %q", body)
 	assert.Contains(t, body, `"Response blocked by content policy"`)
 	assert.NotContains(t, body, "failed to intercept chunk")
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }
 
 // Structured interception errors must be sanitized like upstream provider
@@ -164,7 +163,7 @@ func Test_handleStreamingInterceptionErrorBedrockEventStream(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	require.NotEmpty(t, body)
@@ -177,7 +176,7 @@ func Test_handleStreamingInterceptionErrorBedrockEventStream(t *testing.T) {
 	assert.Equal(t, "guardrail_intervention", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
 	assert.JSONEq(t, `{"__type":"guardrail_intervention","message":"Response blocked by content policy"}`, string(msg.Payload))
 	assert.NotContains(t, string(msg.Payload), "failed to intercept chunk")
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }
 
 // Plain (non-structured) interceptor errors keep the existing flat behavior.
@@ -191,10 +190,113 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(fmt.Errorf("plugin exploded")))
 
 	assert.Contains(t, body, "event: error\ndata: ")
 	assert.Contains(t, body, `{"error":"failed to intercept chunk with plugin test-plugin: plugin exploded"}`)
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
+}
+
+// A route configuration bug must produce a stream error instead of calling a
+// nil converter and crashing the process.
+func Test_handleStreamingMissingSpeechConverterReturnsError(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
+			Type:  schemas.SpeechStreamResponseTypeDelta,
+			Audio: []byte{0x01, 0x02},
+		},
+	}
+	close(stream)
+
+	config := RouteConfig{
+		StreamConfig: &StreamConfig{
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return map[string]string{"message": err.Error.Message}
+			},
+		},
+	}
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, bifrostCtx, config, "", stream, rec.cancel)
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
+}
+
+// rawAudioConfig is a speech route that streams its audio as the response body, the way ElevenLabs' stream endpoint
+// does: no SSE framing, so a client plays the bytes it receives.
+func rawAudioConfig() RouteConfig {
+	return RouteConfig{
+		StreamConfig: &StreamConfig{
+			RawAudio: true,
+			SpeechStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				if len(resp.Audio) == 0 {
+					return "", nil, nil // the final chunk carries no audio
+				}
+				return "", resp.Audio, nil
+			},
+		},
+	}
+}
+
+func speechAudioChunk(audio string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte(audio)}}
+}
+
+func speechDoneChunk() *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Audio: []byte{}}}
+}
+
+// A raw audio stream is the audio and nothing else: no data lines, no [DONE] marker, and nothing for the final chunk.
+func Test_handleStreamingRawAudioWritesTheAudioAlone(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- speechAudioChunk("audio-")
+	stream <- speechAudioChunk("bytes")
+	stream <- speechDoneChunk()
+	close(stream)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+
+	router.handleStreaming(ctx, nil, rawAudioConfig(), schemas.SpeechStreamRequest, stream, func() {})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Equal(t, "audio-bytes", string(body))
+}
+
+// Audio already on the wire cannot be followed by an error frame, which the client would play as sound, so a stream
+// that fails midway just ends.
+func Test_handleStreamingRawAudioErrorEndsTheStreamWithoutAFrame(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- speechAudioChunk("audio-")
+	stream <- &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream reset"}}}
+	stream <- speechAudioChunk("never sent")
+	close(stream)
+	config := rawAudioConfig()
+	config.StreamConfig.ErrorConverter = func(*schemas.BifrostContext, *schemas.BifrostError) interface{} {
+		t.Error("a raw audio stream must not convert an error into a frame")
+		return nil
+	}
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+
+	router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Equal(t, "audio-", string(body))
+}
+
+// A plugin that ends the stream does it the same way: no error event inside the audio.
+func Test_handleStreamingRawAudioInterceptionErrorWritesNoFrame(t *testing.T) {
+	body, rec := runHandleStreamingWithInterceptor(t, rawAudioConfig(), wrapInterceptionError(fmt.Errorf("plugin exploded")))
+
+	assert.Empty(t, body)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }

@@ -7,6 +7,7 @@ set -euo pipefail
 echo "📦 Installing cross-compilation toolchains for Go + CGO..."
 
 # Install all required packages
+"$(dirname "${BASH_SOURCE[0]}")/apt-sources-https.sh"
 sudo apt-get update
 sudo apt-get install -y \
   gcc-x86-64-linux-gnu \

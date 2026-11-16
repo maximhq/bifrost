@@ -48,8 +48,7 @@ bifrost:
           }
           # Optional key-scoped config blocks (provider specific)
           # azure_key_config:
-          #   endpoint: "https://your-resource.openai.azure.com"
-          #   api_version: "2024-02-15-preview"
+          #   endpoint: "https://your-resource.openai.azure.com"  # Azure v1 API — no api_version needed
           # bedrock_key_config:
           #   region: "us-east-1"
           # vertex_key_config:
@@ -85,8 +84,7 @@ bifrost:
           aliases: {}
           # Optional key-scoped config blocks (provider specific)
           # azure_key_config:
-          #   endpoint: "https://your-resource.openai.azure.com"
-          #   api_version: "2024-02-15-preview"
+          #   endpoint: "https://your-resource.openai.azure.com"  # Azure v1 API — no api_version needed
           # bedrock_key_config:
           #   region: "us-east-1"
           # vertex_key_config:

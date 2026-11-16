@@ -17,15 +17,20 @@ import (
 
 // Harness defines a coding assistant CLI that Bifrost can launch and manage.
 type Harness struct {
-	ID               string
-	Label            string
-	Binary           string
-	InstallPkg       string
-	VersionArgs      []string
-	BasePath         string
-	BaseURLEnv       string
-	APIKeyEnv        string
-	AuthTokenEnv     string
+	ID           string
+	Label        string
+	Binary       string
+	InstallPkg   string
+	InstallURL   string // manual install instructions when InstallPkg is empty
+	VersionArgs  []string
+	BasePath     string
+	BaseURLEnv   string
+	APIKeyEnv    string
+	AuthTokenEnv string
+	// AgentTokenEnv is the environment variable through which this harness can
+	// send a Bifrost Enterprise agent bearer. Empty means the harness cannot use
+	// an SSO session directly and still requires a virtual key.
+	AgentTokenEnv    string
 	ModelEnv         string
 	SupportsMCP      bool
 	SupportsWorktree bool
@@ -56,6 +61,7 @@ var all = map[string]Harness{
 		BaseURLEnv:       "ANTHROPIC_BASE_URL",
 		APIKeyEnv:        "ANTHROPIC_API_KEY",
 		AuthTokenEnv:     "ANTHROPIC_AUTH_TOKEN",
+		AgentTokenEnv:    "ANTHROPIC_AUTH_TOKEN",
 		SupportsMCP:      true,
 		SupportsWorktree: true,
 		RunArgsForMod: func(model string) []string {
@@ -83,10 +89,11 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/openai",
-		BaseURLEnv: "OPENAI_BASE_URL",
-		APIKeyEnv:  "OPENAI_API_KEY",
-		ModelEnv:   "OPENAI_MODEL",
+		BasePath:      "/openai",
+		BaseURLEnv:    "OPENAI_BASE_URL",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		AgentTokenEnv: "OPENAI_API_KEY",
+		ModelEnv:      "OPENAI_MODEL",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
@@ -95,7 +102,7 @@ var all = map[string]Harness{
 		},
 		PreLaunch:         codexPreLaunch,
 		WriteNativeConfig: codexWriteNativeConfig,
-		NativeConfigPath:  "~/.codex/auth.json, ~/.codex/config.toml",
+		NativeConfigPath:  "~/.codex/config.toml",
 	},
 	"gemini": {
 		ID:         "gemini",
@@ -105,10 +112,12 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/genai",
-		BaseURLEnv: "GOOGLE_GEMINI_BASE_URL",
-		APIKeyEnv:  "GEMINI_API_KEY",
-		ModelEnv:   "GEMINI_MODEL",
+		WriteNativeConfig: geminiWriteNativeConfig,
+		NativeConfigPath:  "~/.gemini/settings.json and ~/.gemini/.env",
+		BasePath:          "/genai",
+		BaseURLEnv:        "GOOGLE_GEMINI_BASE_URL",
+		APIKeyEnv:         "GEMINI_API_KEY",
+		ModelEnv:          "GEMINI_MODEL",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
@@ -124,21 +133,42 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/openai",
-		BaseURLEnv: "OPENAI_BASE_URL",
-		APIKeyEnv:  "OPENAI_API_KEY",
+		BasePath:      "/openai",
+		BaseURLEnv:    "OPENAI_BASE_URL",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		AgentTokenEnv: "OPENAI_API_KEY",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
 			}
 			return []string{"--model", opencodeModelRef(model)}
 		},
-		PreLaunch: opencodePreLaunch,
+		PreLaunch:         opencodePreLaunch,
+		WriteNativeConfig: opencodeWriteNativeConfig,
+		NativeConfigPath:  "~/.config/opencode/opencode.json",
+	},
+	"pi": {
+		ID: "pi", Label: "Pi", Binary: "pi", InstallPkg: "@earendil-works/pi-coding-agent",
+		VersionArgs: []string{"--version"}, BasePath: "/openai", BaseURLEnv: "OPENAI_BASE_URL", APIKeyEnv: "OPENAI_API_KEY", AgentTokenEnv: "OPENAI_API_KEY",
+		RunArgsForMod: func(model string) []string {
+			if strings.TrimSpace(model) == "" {
+				return nil
+			}
+			return []string{"--provider", "bifrost", "--model", model}
+		},
+		PreLaunch: piPreLaunch, WriteNativeConfig: piWriteNativeConfig, NativeConfigPath: "~/.pi/agent/{models,settings,auth}.json",
+	},
+	"antigravity": {
+		ID: "antigravity", Label: "Antigravity CLI", Binary: "agy", InstallURL: "https://antigravity.google/docs/cli/install/", VersionArgs: []string{"--version"},
+		BasePath: "/genai", BaseURLEnv: "GOOGLE_GEMINI_BASE_URL", APIKeyEnv: "GEMINI_API_KEY",
+		RunArgsForMod: antigravityRunArgs,
+		PreLaunch:     antigravityPreLaunch, WriteNativeConfig: antigravityWriteNativeConfig, NativeConfigPath: "~/.gemini/antigravity-cli/settings.json and shell startup file",
 	},
 }
 
 // Get returns the harness with the given ID and whether it exists.
 func Get(id string) (Harness, bool) {
+	id = CanonicalID(id)
 	h, ok := all[id]
 	return h, ok
 }
@@ -244,7 +274,7 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
       }
     }
   }
-}`, modelRef, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey), model, model)
+}`, modelRef, openAIBaseURL(baseURL), strings.TrimSpace(apiKey), model, model)
 
 	f, err := os.CreateTemp("", "bifrost-opencode-*.json")
 	if err != nil {
@@ -370,6 +400,7 @@ func stripJSONComments(data []byte) []byte {
 	escape := false
 	inLineComment := false
 	inBlockComment := false
+	blockStart := 0
 
 	for i := 0; i < len(data); i++ {
 		ch := data[i]
@@ -415,12 +446,17 @@ func stripJSONComments(data []byte) []byte {
 				continue
 			case '*':
 				inBlockComment = true
+				blockStart = i
 				i++
 				continue
 			}
 		}
 
 		out = append(out, ch)
+	}
+	if inBlockComment {
+		// Keep an unclosed comment so the JSON parser rejects the file.
+		out = append(out, data[blockStart:]...)
 	}
 
 	return out
@@ -474,4 +510,13 @@ func stripTrailingCommas(data []byte) []byte {
 	}
 
 	return out
+}
+
+// CanonicalID normalizes public aliases without consulting the harness registry.
+func CanonicalID(id string) string {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "anti-gravity", "agy", "agui", "antigravity":
+		return "antigravity"
+	}
+	return id
 }

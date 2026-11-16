@@ -1,0 +1,369 @@
+---
+title: "Complexity Router"
+description: "Deprecated: classify requests into complexity tiers for routing rules. Routers replace it in v3.0.0."
+tag: "Beta"
+icon: "sliders"
+---
+
+<Warning>
+**Deprecated.** The Complexity Router, the `complexity_tier` routing-rule variable, `governance.complexity_analyzer_config` in `config.json`, the Helm `complexityAnalyzerConfig` value, and the `/api/routing/complexity-analyzer-*` endpoints will be replaced by [Routers](/features/routers) in Bifrost v3.0.0. With Routers, you can create multiple routers, each with its own classifier and models, and each tier goes to its own model with no routing rules to write.
+
+Your current setup keeps working until then, and v3.0.0 will migrate it to routers. We recommend moving to Routers for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+</Warning>
+
+## Overview
+
+The Complexity Router assigns each incoming request a **Simple**, **Medium**, or **Complex** tier, using a decision model, semantic reference phrases, or an LLM classifier.
+
+The tier is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
+
+```cel
+complexity_tier == "COMPLEX"
+complexity_tier in ["MEDIUM", "COMPLEX"]
+```
+
+Classification runs only when a routing rule references `complexity_tier`. If it produces no tier (the classifier is unavailable, times out, or finds no match), the complexity rule does not match and the request continues through normal routing.
+
+<Note>
+[Routers](/features/routers) do not set `complexity_tier`. Rules that use it keep reading it from the Complexity Router until you move them. When a request matches such a rule and a router also takes it, the request is classified twice.
+</Note>
+
+---
+
+## Classifiers
+
+The Complexity Router uses the same classifiers and settings as Routers. They are documented on the Routers page:
+
+- [Choosing a classifier](/features/routers#choosing-a-classifier): the decision model, Semantic, and the LLM classifier compared.
+- [Decision model classifier](/features/routers#decision-model-classifier): [choosing the decision model](/features/routers#choosing-the-decision-model), [tier guidance](/features/routers#tier-guidance), and [timeout, confidence, and cost](/features/routers#conversation-window-timeout-and-cost).
+- [Semantic classifier](/features/routers#semantic-classifier): [reference phrases](/features/routers#reference-phrases) and how much conversation to embed.
+- [LLM classifier](/features/routers#llm-classifier): a chat model that names the tier from a prompt you can edit.
+- [Fallback classifiers](/features/routers#fallback-classifiers): the decision model or an LLM answering when no phrase matches.
+- [Session-aware routing](/features/routers#session-aware-routing): keeping a session on its highest tier.
+- [Which requests can be classified](/features/routers#which-requests-can-be-classified).
+
+---
+
+## Configuration
+
+Pick a classifier, then configure it. The decision model needs its provider configured with an enabled key (or keyless). Semantic needs an embedding provider and model with an enabled key. The dashboard warns about missing or broken keys.
+
+<Tabs group="complexity-config">
+<Tab title="Web UI">
+
+Navigate to **Models > Complexity Router**. On **Classifier**, choose **Decision model**, **Semantic**, or **LLM classifier**, then select **Next**. Switching later keeps the other classifier's saved settings.
+
+<Frame>
+  <img src="/media/ui-complexity-router-classifier.png" alt="Complexity Router classifier step with Decision model selected and Semantic as the alternative" />
+</Frame>
+
+**Decision model configuration**
+
+<Frame>
+  <img src="/media/ui-complexity-router-jev-configuration.png" alt="Decision model configuration step showing the definition, signals, and examples editors for the Simple, Medium, and Complex tiers" />
+</Frame>
+
+- **Tier guidance**: each tier's card shows its definition, **Signals**, and **Examples**, pre-filled with the defaults. Use the pencil icon to edit a definition; type and press Enter to add an entry, or **×** to remove one. A reset icon appears beside a changed field and restores it.
+- **Restore defaults** (footer) resets all three tiers.
+- **Edit model configuration** (header) opens **Model configuration**: the provider and decision model, **Max messages to send** (`previous_message_count`), **Classification timeout (ms)**, and **Confidence threshold** (`min_confidence`). If the provider is missing, failing, or has no enabled key, a warning links to the fix and **Save** stays disabled.
+
+**Semantic configuration**
+
+<Frame>
+  <img src="/media/ui-complexity-router-semantic.png" alt="Semantic configuration step showing 150 reference phrases across Simple, Medium, and Complex, session-aware routing, and Fallback Tier Guidance" />
+</Frame>
+
+- **Phrase to Tier Mapping**: edit each tier's reference phrases. **Restore defaults** (footer) restores the 150 shipped phrases.
+- **Edit embedding configuration** opens provider, model, similarity floor, history, timeout, budgets, and phrase storage. The **Classifier ready** badge shows warmup state.
+- **When no phrase matches confidently** (same sheet): choose **Decision model** or **LLM classifier** to set up a fallback. **None** keeps the saved fallback settings for later.
+- **Fallback Tier Guidance** (main page, decision-model fallback): the same tier guidance as above. **Reset all** restores the defaults.
+- **Fallback Classification Prompt** (main page, LLM fallback): **Reset to default** restores the shipped prompt.
+
+<Frame>
+  <img src="/media/ui-complexity-router-embedding-configuration.png" alt="Complexity Router embedding configuration panel showing provider, model, similarity threshold, timeout, storage, and a decision model fallback on Cloudflare clef-flash" />
+</Frame>
+
+**Both classifiers**
+
+- **Session-aware routing**: retains the highest tier reached by each identified session for 24 hours of inactivity. The toggle is off by default.
+
+</Tab>
+<Tab title="API">
+
+<Info>The `/api/routing/*` endpoints are available in **Bifrost v2.0.0 and above**. On earlier versions use the `/api/governance/*` paths. The `/api/routing/complexity-analyzer-*` endpoints are deprecated and will be replaced in v3.0.0; routers use [`/api/routing/model-routers`](/features/routers#configuration).</Info>
+
+```bash
+# Get current configuration
+curl http://localhost:8080/api/routing/complexity-analyzer-config
+
+# Use the decision model as the primary classifier, overriding the Complex tier's definition
+curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "classifier": "decision",
+    "decision": {
+      "provider": "typesafe",
+      "model": "jev-latest",
+      "previous_message_count": 1,
+      "timeout": "1.5s",
+      "criteria": {
+        "COMPLEX": {
+          "definition": "Advanced expertise combined with substantial reasoning, design, or changes that must stay consistent across several components."
+        }
+      }
+    },
+    "session": { "enabled": true },
+    "keywords": {
+      "simple_keywords": ["fix the grammar in this sentence."],
+      "medium_keywords": ["apply a standard method to this technical question."],
+      "complex_keywords": ["design a solution under several competing constraints."]
+    }
+  }'
+
+# Update embedding configuration and reference phrases
+curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semantic": {
+      "provider": "openai",
+      "embedding_model": "text-embedding-3-small",
+      "timeout": "1.5s",
+      "min_similarity": 0,
+      "message_history_count": 1,
+      "count_toward_budgets": false,
+      "vector_store": "embedded",
+      "fallback": "none"
+    },
+    "session": {
+      "enabled": true
+    },
+    "keywords": {
+      "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
+      "medium_keywords": ["add api-key auth: hash the keys, reject revoked ones, and never log them."],
+      "complex_keywords": ["balance testing, prescribing rules, and staffing against rising resistant infections."]
+    }
+  }'
+
+# Enable the LLM fallback classifier: set semantic.fallback to "llm" and add an llm block
+curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semantic": {
+      "provider": "openai",
+      "embedding_model": "text-embedding-3-small",
+      "fallback": "llm"
+    },
+    "llm": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "timeout": "4s",
+      "message_history_count": 1,
+      "count_toward_budgets": false
+    },
+    "keywords": {
+      "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
+      "medium_keywords": ["add api-key auth: hash the keys, reject revoked ones, and never log them."],
+      "complex_keywords": ["balance testing, prescribing rules, and staffing against rising resistant infections."]
+    }
+  }'
+
+# Check semantic warmup status, LLM readiness, the default LLM prompt, and the default decision-model tier guidance
+curl http://localhost:8080/api/routing/complexity-analyzer-status
+
+# Restore built-in reference phrases (embedding configuration and decision-model tier guidance are preserved)
+curl -X POST http://localhost:8080/api/routing/complexity-analyzer-config/reset
+```
+
+The update endpoint replaces the whole configuration:
+
+- All three `keywords` lists (the reference phrases) are required, even when the decision model is primary. Keep your saved phrases if you may switch back to Semantic.
+- Leaving out `decision.criteria` resets every tier to the shipped guidance. To change one field, `GET` the configuration, edit it, and `PUT` it back.
+- The reset endpoint restores only the reference phrases.
+
+</Tab>
+<Tab title="config.json">
+
+Use `governance.complexity_analyzer_config`. It is deprecated and will be replaced in v3.0.0; routers use the top-level [`model_routers`](/features/routers#configuration) list, which takes the same settings.
+
+```json
+{
+  "governance": {
+    "complexity_analyzer_config": {
+      "classifier": "decision",
+      "decision": {
+        "provider": "typesafe",
+        "model": "jev-latest",
+        "previous_message_count": 1,
+        "timeout": "1.5s"
+      },
+      "session": { "enabled": true },
+      "keywords": {
+        "simple_keywords": ["fix the grammar in this sentence."],
+        "medium_keywords": ["apply a standard method to this technical question."],
+        "complex_keywords": ["design a solution under several competing constraints."]
+      }
+    }
+  }
+}
+```
+
+Semantic with an LLM fallback (for a decision-model fallback, set `semantic.fallback` to `decision` and drop the `llm` block):
+
+```json
+{
+  "governance": {
+    "complexity_analyzer_config": {
+      "semantic": {
+        "provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        "timeout": "1.5s",
+        "min_similarity": 0,
+        "message_history_count": 1,
+        "count_toward_budgets": false,
+        "vector_store": "embedded",
+        "fallback": "llm"
+      },
+      "llm": {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "timeout": "4s",
+        "prompt": "",
+        "message_history_count": 1,
+        "count_toward_budgets": false
+      },
+      "session": {
+        "enabled": true
+      },
+      "keywords": {
+        "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
+        "medium_keywords": ["add api-key auth: hash the keys, reject revoked ones, and never log them."],
+        "complex_keywords": ["balance testing, prescribing rules, and staffing against rising resistant infections."]
+      }
+    }
+  }
+}
+```
+
+Every field is described in the [classifier settings reference](/features/routers#classifier-settings-reference).
+
+</Tab>
+</Tabs>
+
+---
+
+## Classifier status and warmup
+
+`GET /api/routing/complexity-analyzer-status` and the badge in the page header report Semantic's warmup state (`disabled`, `warming`, `ready`, or `failed`), whether an `llm` block is configured, the shipped LLM fallback prompt (`llm_default_prompt`), and the shipped tier guidance (`decision_defaults`). `POST /api/routing/complexity-analyzer-status/retry` restarts a failed warmup. The decision model has no warmup and is not covered by the status.
+
+The states work as they do for routers. See [Status and warmup](/features/routers#status-and-warmup).
+
+---
+
+## Routing with `complexity_tier`
+
+Once a classifier is ready, use `complexity_tier` in any CEL routing rule, on its own or combined with headers, request type, scope, or any other condition.
+
+<Note>
+Complexity Router only sets `complexity_tier`; it does not create rules. Add a rule for each tier you want to route. A [router](/features/routers) does both in one place.
+</Note>
+
+### Available operators
+
+| Operator | CEL syntax | Example |
+|---|---|---|
+| Equal | `==` | `complexity_tier == "COMPLEX"` |
+| Not equal | `!=` | `complexity_tier != "SIMPLE"` |
+| In list | `in` | `complexity_tier in ["MEDIUM", "COMPLEX"]` |
+| Not in list | `!(x in [...])` | `!(complexity_tier in ["SIMPLE", "MEDIUM"])` |
+
+### Combining with other rule conditions
+
+For example:
+
+```cel
+headers["x-tier"] == "premium" && complexity_tier == "COMPLEX"
+headers["x-region"] == "us-east" && complexity_tier in ["MEDIUM", "COMPLEX"]
+request_type == "chat_completion" && complexity_tier != "SIMPLE"
+team_name == "ml-research" && headers["x-env"] == "prod" && complexity_tier == "COMPLEX"
+```
+
+### Use case examples
+
+#### Complex carve-out
+
+Route only frontier-worthy requests to your strongest model and let everything else keep using your existing routing:
+
+```json
+{
+  "id": "complexity-complex",
+  "name": "Complex → Frontier model",
+  "enabled": true,
+  "cel_expression": "complexity_tier == \"COMPLEX\"",
+  "targets": [{ "provider": "anthropic", "model": "claude-opus-4-5", "weight": 1 }],
+  "scope": "global",
+  "priority": 0
+}
+```
+
+#### Full three-tier ladder
+
+See [Example: a three-tier ladder](/features/routers#example-a-three-tier-ladder) for the three rules and the single router that replaces them.
+
+---
+
+## Observability
+
+When a routing rule references `complexity_tier`, the request log records `complexity_tier`, `complexity_mechanism` (`semantic`, `decision`, `llm`, `session`, or `skipped`), and `complexity_score` (Semantic only). Filter the log explorer by tier and mechanism, or call the logs API:
+
+```bash
+curl "http://localhost:8080/api/logs?complexity_tiers=COMPLEX&complexity_mechanisms=semantic"
+```
+
+Requests that never touched a complexity rule carry no complexity fields. `complexity_score` is shown but not filterable, and old `REASONING` rows are still filterable. The routing decision log lines, spans, and Prometheus metrics are the same as for routers; see [Observability](/features/routers#observability).
+
+---
+
+## Troubleshooting
+
+### Rule not matching when complexity_tier is set
+
+First check that the classifier publishes a tier: classification runs only when a routing rule references `complexity_tier`, and the request needs user text (a system prompt alone is not enough). When classification is unavailable (unsupported input, provider failure, timeout, or a semantic match below `min_similarity`), the rule does not match and evaluation moves to the next rule, unless session state supplies a tier.
+
+For classifier problems (everything `skipped`, wrong tiers, fallbacks not running), see [Troubleshooting](/features/routers#troubleshooting) on the Routers page. The checks are the same, using `GET /api/routing/complexity-analyzer-status` for the status.
+
+### Latency doubled after adding a router
+
+A request that matches a `complexity_tier` rule and is then taken by a router is classified twice. Move the rule into the router and turn the rule off. See [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+
+---
+
+## Lexical keyword classifier (retired)
+
+<Warning>
+**Retired.** Earlier versions classified requests with weighted keyword lists for four tiers (`simple_keywords`, `code_keywords`, `technical_keywords`, `reasoning_keywords`). That scorer no longer runs, and `tier_boundaries`, conversation blending, and Complex overrides no longer apply. Old `tier_boundaries` are still accepted so existing configurations load.
+</Warning>
+
+What this means for existing deployments:
+
+- **Upgrades are safe.** Old configurations still load. Until you configure Semantic or a decision model, no tier is published (`complexity_mechanism: skipped`).
+- **Keyword lists became phrase lists.** Your entries are kept and mapped to three tiers: Simple stays Simple, Code and Technical become Medium, Reasoning becomes Complex. They are now reference phrases to embed, so short keywords like `"debug"` or `"api"` classify poorly; replace them with full example requests.
+- **Old logs are unchanged.** Historical `REASONING` rows stay filterable, but update any routing rule that still matches `"REASONING"`.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Routers" icon="arrows-split-up-and-left" href="/features/routers">
+    The replacement: classify requests and send each tier to its own model
+  </Card>
+  <Card title="Moving from the Complexity Router" icon="arrow-right-arrow-left" href="/features/routers#moving-from-the-complexity-router">
+    Move your settings and complexity_tier rules to routers
+  </Card>
+  <Card title="Routing Rules" icon="chart-diagram" href="/providers/routing-rules">
+    Full reference for CEL expressions, scope hierarchy, and rule chaining
+  </Card>
+  <Card title="Provider Routing" icon="route" href="/providers/provider-routing">
+    Understand how complexity routing fits into the full request routing pipeline
+  </Card>
+</CardGroup>

@@ -10,9 +10,14 @@
 		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
 		"start": "vite preview",
 		"lint": "oxlint",
+		"lint:a11y": "oxlint -c .oxlintrc.a11y.json",
+		"lint:a11y:enterprise": "oxlint -c .oxlintrc.a11y.json app/enterprise/",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
-		"format:enterprise": "oxfmt app/enterprise/"
+		"format:changed": "sh scripts/formatChanged.sh",
+		"format:changed:check": "sh scripts/formatChanged.sh --check",
+		"format:enterprise": "oxfmt app/enterprise/",
+		"i18n:check": "node scripts/i18nCheck.mjs"
 	},
 	"dependencies": {
 		"@bprogress/core": "1.3.4",
@@ -44,16 +49,18 @@
 		"@radix-ui/react-tabs": "1.1.13",
 		"@radix-ui/react-tooltip": "1.2.8",
 		"@reduxjs/toolkit": "2.8.2",
-		"@tanstack/react-router": "1.168.10",
+		"@tanstack/react-router": "1.170.5",
 		"@tanstack/react-table": "8.21.3",
 		"@xyflow/react": "12.10.1",
-		"axios": "1.19.0",
+		"axios": "1.20.0",
 		"canvas-confetti": "1.9.3",
 		"class-variance-authority": "0.7.1",
 		"clsx": "2.1.1",
 		"cmdk": "1.1.1",
 		"date-fns": "4.1.0",
 		"html2canvas-pro": "2.0.2",
+		"i18next": "26.4.1",
+		"i18next-browser-languagedetector": "8.2.1",
 		"jspdf": "4.2.1",
 		"lodash.isequal": "4.5.0",
 		"lucide-react": "0.552.0",
@@ -66,6 +73,7 @@
 		"react-dom": "19.2.3",
 		"react-hook-form": "7.62.0",
 		"react-hotkeys-hook": "5.2.4",
+		"react-i18next": "17.0.13",
 		"react-querybuilder": "8.11.1",
 		"react-resizable-panels": "4.5.3",
 		"react-select": "5.10.2",
@@ -77,13 +85,14 @@
 		"tailwind-merge": "3.3.1",
 		"tw-animate-css": "1.3.7",
 		"uuid": "14.0.0",
-		"zod": "4.2.1"
+		"yaml": "2.9.1",
+		"zod": "4.6.7"
 	},
 	"devDependencies": {
 		"@tailwindcss/postcss": "4.2.1",
 		"@tailwindcss/vite": "4.2.2",
 		"@tanstack/router-devtools": "1.166.11",
-		"@tanstack/router-plugin": "1.167.12",
+		"@tanstack/router-plugin": "1.168.7",
 		"@types/canvas-confetti": "1.9.0",
 		"@types/lodash.isequal": "4.5.8",
 		"@types/node": "20.19.39",
@@ -94,14 +103,21 @@
 		"oxlint": "1.60.0",
 		"tailwindcss": "4.1.12",
 		"typescript": "5.9.2",
-		"vite": "8.0.16",
+		"vite": "8.1.6",
 		"vite-plugin-monaco-editor": "1.1.0",
-		"vitest": "4.1.6"
+		"vitest": "4.1.12"
 	},
 	"overrides": {
-		"dompurify": "3.4.13",
+		"dompurify": "3.4.17",
 		"esbuild": "0.28.1",
-		"follow-redirects": "1.16.0",
-		"tar": "7.5.3"
+		"follow-redirects": "1.16.2",
+		"seroval": "1.6.11",
+		"tar": "7.5.3",
+		"tinypool": "2.1.2",
+		"zod": "$zod"
+	},
+	"allowScripts": {
+		"core-js@3.49.0": true,
+		"esbuild@0.28.1": true
 	}
 }

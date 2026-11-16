@@ -412,3 +412,58 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForRequiredToolChoice(t *t
 		t.Fatalf("thinking.type = %v, want disabled", got)
 	}
 }
+
+// TestChatCompletion_AliasOverrideUsesAnthropicEndpoint pins the alias branch of
+// ResolveUseAnthropicEndpoints: a key with no use_anthropic_endpoints of its own
+// still routes through /anthropic/v1/messages when the resolved alias carries the
+// flag. This is the shape the provider harness relies on (#7610): the shared
+// DeepSeek key stays on the OpenAI-compatible wire and only the *-anthropic
+// aliases opt into the Anthropic-compatible endpoint.
+func TestChatCompletion_AliasOverrideUsesAnthropicEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var gotPath, gotAPIKey, gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, newAnthropicResponse())
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key:    "deepseek-v4-flash-anthropic",
+		Config: &schemas.AliasConfig{ModelID: "deepseek-v4-flash", UseAnthropicEndpoints: new(true)},
+	})
+	msg := "hello"
+	resp, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &msg},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatalf("expected chat response, got %#v", resp)
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Fatalf("path = %q, want /anthropic/v1/messages (alias-level use_anthropic_endpoints was ignored)", gotPath)
+	}
+	if gotAPIKey != "test-api-key" {
+		t.Fatalf("x-api-key = %q, want test-api-key", gotAPIKey)
+	}
+	if gotAuthorization != "" {
+		t.Fatalf("Authorization = %q, want empty (bearer auth belongs to the OpenAI-compatible wire)", gotAuthorization)
+	}
+}

@@ -2,11 +2,26 @@ package otel
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/resource"
 )
 
 // TestConfigUnmarshalLegacySingleObject verifies that a legacy single-object config
@@ -181,6 +196,7 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 				"collector_url": "env.OTEL_URL",
 				"trace_type": "genai_extension",
 				"protocol": "grpc",
+				"overhead_breakdown_enabled": true,
 				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"}
 			},
 			{
@@ -224,6 +240,13 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 	}
 	if len(back.Profiles) != 2 {
 		t.Fatalf("round-trip profiles len = %d, want 2", len(back.Profiles))
+	}
+	// overhead_breakdown_enabled must survive the storage whitelist (profileForStorage).
+	if !back.Profiles[0].OverheadBreakdownEnabled {
+		t.Errorf("round-trip profile 0 overhead_breakdown_enabled = false, want true (dropped by storage whitelist)")
+	}
+	if back.Profiles[1].OverheadBreakdownEnabled {
+		t.Errorf("round-trip profile 1 overhead_breakdown_enabled = true, want false")
 	}
 	if back.PluginSpanFilter == nil || back.PluginSpanFilter.Mode != PluginSpanFilterModeExclude {
 		t.Fatalf("round-trip plugin_span_filter = %+v, want exclude", back.PluginSpanFilter)
@@ -612,4 +635,168 @@ func (testLogger) SetLevel(schemas.LogLevel)              {}
 func (testLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+// oneMetric is the smallest payload that produces a real OTLP upload.
+func oneMetric() *metricdata.ResourceMetrics {
+	return &metricdata.ResourceMetrics{
+		Resource: resource.Empty(),
+		ScopeMetrics: []metricdata.ScopeMetrics{{
+			Scope: instrumentation.Scope{Name: "test"},
+			Metrics: []metricdata.Metrics{{
+				Name: "probe",
+				Data: metricdata.Gauge[int64]{
+					DataPoints: []metricdata.DataPoint[int64]{{Value: 1}},
+				},
+			}},
+		}},
+	}
+}
+
+// insecure defaults to true, which forced plaintext and silently dropped every metric
+// sent to an https:// endpoint (#7446).
+func TestHTTPMetricsExporterHonoursEndpointScheme(t *testing.T) {
+	ctx := context.Background()
+
+	newReceiver := func(t *testing.T, tls bool) (string, *atomic.Int32) {
+		t.Helper()
+		var hits atomic.Int32
+		h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		})
+		var srv *httptest.Server
+		if tls {
+			srv = httptest.NewTLSServer(h)
+		} else {
+			srv = httptest.NewServer(h)
+		}
+		t.Cleanup(srv.Close)
+		return srv.URL + "/v1/metrics", &hits
+	}
+
+	t.Run("https endpoint with insecure default exports over TLS", func(t *testing.T) {
+		endpoint, hits := newReceiver(t, true)
+		// insecure is the default; for https:// it must mean skip-verify, not plaintext.
+		exp, err := createHTTPExporter(ctx, &MetricsConfig{Endpoint: endpoint, Insecure: true})
+		if err != nil {
+			t.Fatalf("createHTTPExporter: %v", err)
+		}
+		defer func() { _ = exp.Shutdown(ctx) }()
+
+		if err := exp.Export(ctx, oneMetric()); err != nil {
+			t.Fatalf("Export over TLS failed: %v", err)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Errorf("TLS receiver saw %d requests, want 1", got)
+		}
+	})
+
+	// Positive control: guards against a fix that just disables verification everywhere.
+	t.Run("insecure false still verifies the certificate", func(t *testing.T) {
+		endpoint, hits := newReceiver(t, true)
+		exp, err := createHTTPExporter(ctx, &MetricsConfig{Endpoint: endpoint, Insecure: false})
+		if err != nil {
+			t.Fatalf("createHTTPExporter: %v", err)
+		}
+		defer func() { _ = exp.Shutdown(ctx) }()
+
+		// The test server's cert is self-signed, so a verifying client must reject it.
+		if err := exp.Export(ctx, oneMetric()); err == nil {
+			t.Error("Export succeeded against a self-signed certificate, want a verification failure")
+		}
+		if got := hits.Load(); got != 0 {
+			t.Errorf("receiver saw %d requests, want 0 (handshake must fail)", got)
+		}
+	})
+
+	// A self-signed collector verifies when its certificate is pinned via tls_ca_cert,
+	// which is the secure alternative to leaving insecure at its default.
+	t.Run("self-signed collector verifies against a pinned CA", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		caPath := filepath.Join(t.TempDir(), "ca.pem")
+		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+		if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
+			t.Fatalf("write CA: %v", err)
+		}
+
+		exp, err := createHTTPExporter(ctx, &MetricsConfig{
+			Endpoint:  srv.URL + "/v1/metrics",
+			TLSCACert: caPath,
+			Insecure:  false,
+		})
+		if err != nil {
+			t.Fatalf("createHTTPExporter: %v", err)
+		}
+		defer func() { _ = exp.Shutdown(ctx) }()
+
+		if err := exp.Export(ctx, oneMetric()); err != nil {
+			t.Errorf("Export against a pinned self-signed CA failed: %v", err)
+		}
+	})
+
+	// tls_ca_cert outranks insecure: pinning a CA must enforce verification even though
+	// insecure defaults to true, otherwise pinning would silently degrade to skip-verify.
+	t.Run("pinned CA outranks the insecure default", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber:          big.NewInt(1),
+			Subject:               pkix.Name{CommonName: "unrelated-ca"},
+			NotBefore:             time.Now().Add(-time.Hour),
+			NotAfter:              time.Now().Add(time.Hour),
+			IsCA:                  true,
+			KeyUsage:              x509.KeyUsageCertSign,
+			BasicConstraintsValid: true,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+		if err != nil {
+			t.Fatalf("create cert: %v", err)
+		}
+		caPath := filepath.Join(t.TempDir(), "unrelated.pem")
+		if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+			t.Fatalf("write CA: %v", err)
+		}
+
+		exp, err := createHTTPExporter(ctx, &MetricsConfig{
+			Endpoint:  srv.URL + "/v1/metrics",
+			TLSCACert: caPath,
+			Insecure:  true,
+		})
+		if err != nil {
+			t.Fatalf("createHTTPExporter: %v", err)
+		}
+		defer func() { _ = exp.Shutdown(ctx) }()
+
+		if err := exp.Export(ctx, oneMetric()); err == nil {
+			t.Error("Export succeeded against a CA that did not sign the server certificate")
+		}
+	})
+
+	t.Run("plain http endpoint still exports over plaintext", func(t *testing.T) {
+		endpoint, hits := newReceiver(t, false)
+		exp, err := createHTTPExporter(ctx, &MetricsConfig{Endpoint: endpoint, Insecure: true})
+		if err != nil {
+			t.Fatalf("createHTTPExporter: %v", err)
+		}
+		defer func() { _ = exp.Shutdown(ctx) }()
+
+		if err := exp.Export(ctx, oneMetric()); err != nil {
+			t.Fatalf("Export over plaintext failed: %v", err)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Errorf("plaintext receiver saw %d requests, want 1", got)
+		}
+	})
 }

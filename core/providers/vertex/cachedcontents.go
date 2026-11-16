@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -67,12 +68,19 @@ func validateVertexTTLExpireMutex(ttl, expireTime *string) *schemas.BifrostError
 // expandVertexCachedContentName ensures the name is the full Vertex resource path.
 // If the user passes "abc123" or "cachedContents/abc123", rewrite to
 // "projects/{p}/locations/{l}/cachedContents/abc123". Idempotent for already-full paths.
-func expandVertexCachedContentName(name, projectID, region string) string {
+func expandVertexCachedContentName(name, projectID, region string) (string, *schemas.BifrostError) {
 	if strings.HasPrefix(name, "projects/") {
-		return name
+		parts, bifrostErr := parseVertexResourceName(name, "name", "projects", "", "locations", "", "cachedContents", "")
+		if bifrostErr != nil {
+			return "", bifrostErr
+		}
+		return strings.Join(parts, "/"), nil
 	}
-	id := strings.TrimPrefix(name, "cachedContents/")
-	return fmt.Sprintf("projects/%s/locations/%s/cachedContents/%s", projectID, region, id)
+	escapedID, bifrostErr := providerUtils.EscapeResourceID(strings.TrimPrefix(name, "cachedContents/"), "name")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return fmt.Sprintf("projects/%s/locations/%s/cachedContents/%s", projectID, region, escapedID), nil
 }
 
 // expandVertexModelPath rewrites a bare model id ("gemini-2.5-pro") to the full
@@ -90,12 +98,12 @@ func expandVertexModelPath(model, projectID, region string) string {
 // the Gemini generation endpoints) and any Authorization header already set from
 // context extra headers is left intact. Otherwise an OAuth bearer token is fetched
 // from the key credentials and set on the Authorization header.
-func vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
+func (provider *VertexProvider) vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
 	if key.Value.GetValue() != "" {
 		req.URI().QueryArgs().Set("key", key.Value.GetValue())
 		return nil
 	}
-	tokenSource, err := getAuthTokenSource(key)
+	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("error creating auth token source", err)
 	}
@@ -175,7 +183,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, authErr
 	}
 	req.SetBody(jsonBody)
@@ -248,7 +256,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -314,14 +322,17 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := expandVertexCachedContentName(request.Name, projectID, region)
+	name, idErr := expandVertexCachedContentName(request.Name, projectID, region)
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -414,7 +425,10 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := expandVertexCachedContentName(request.Name, projectID, region)
+	name, idErr := expandVertexCachedContentName(request.Name, projectID, region)
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
 	if len(updateMaskFields) > 0 {
 		requestURL += "?updateMask=" + strings.Join(updateMaskFields, ",")
@@ -424,7 +438,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPatch)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 	req.SetBody(jsonBody)
@@ -504,13 +518,16 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := expandVertexCachedContentName(request.Name, projectID, region)
+	name, idErr := expandVertexCachedContentName(request.Name, projectID, region)
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -549,14 +566,21 @@ func (provider *VertexProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 	return nil, lastErr
 }
 
-// parseVertexCachedContentError parses a Vertex API error response into a BifrostError.
+// parseVertexCachedContentError parses a Vertex API error response into a BifrostError, with
+// the retry hint from a google.rpc.RetryInfo error detail or the response headers.
 func parseVertexCachedContentError(resp *fasthttp.Response) *schemas.BifrostError {
 	respBody := resp.Body()
 	statusCode := resp.StatusCode()
 
+	// Fallback to the raw body, replaced below when the body carries a message.
+	message := string(respBody)
 	var errorResp VertexError
 	if err := sonic.Unmarshal(respBody, &errorResp); err == nil && errorResp.Error.Message != "" {
-		return providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil)
+		message = errorResp.Error.Message
 	}
-	return providerUtils.NewProviderAPIError(string(respBody), nil, statusCode, nil, nil)
+
+	bifrostErr := providerUtils.NewProviderAPIError(message, nil, statusCode, nil, nil)
+	gemini.ApplyRetryInfo(bifrostErr, errorResp.Error.Details)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }

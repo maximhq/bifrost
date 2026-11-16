@@ -15,11 +15,34 @@ import (
 // responses-API models and omits the Sonar chat family, which is still callable
 // via /chat/completions. For these, the datasheet (not the live list) is the
 // authoritative superset, so live must be unioned with the full allowed
-// datasheet set rather than only the deprecated backfill.
+// datasheet set rather than only the deprecated backfill. Databricks lists only
+// the key's configured models and aliases, so the datasheet carries the rest.
 var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
+	schemas.Databricks: true,
+	schemas.Elevenlabs: true, // Include catalog-known STT models absent from live discovery.
+}
+
+// providersWithListModelsOnly enumerates providers whose unfiltered model list
+// is their own /models response alone. The datasheet carries Cloudflare's models
+// under several ID shapes (@cf/..., workers-ai/@cf/..., bare clef), so unioning
+// it with the live list shows the same model more than once.
+var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
+	schemas.Cloudflare: true,
+}
+
+// GetModelCreatedTimes returns the creation time, in Unix seconds, that the
+// provider last reported for each of its listed models, taken from the cached
+// list-models responses in the given mode, so times line up with the listing
+// read in that mode. It never calls the provider. Models the provider gave no
+// time for are absent. The returned map is owned by the caller.
+func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider, unfiltered bool) map[string]int64 {
+	if mc == nil || mc.live == nil {
+		return map[string]int64{}
+	}
+	return mc.live.CreatedForProvider(provider, unfiltered)
 }
 
 // GetModelsForProvider returns the effective allowed model set for the
@@ -74,7 +97,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			continue
 		}
 		for alias := range e.Aliases {
-			if blacklisted.IsBlocked(alias) {
+			if schemas.IsRegexEntry(alias) || blacklisted.IsBlocked(alias) {
 				continue
 			}
 			if allowed == nil || !allowed.IsAllowed(alias) {
@@ -87,7 +110,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			if m == "*" || blacklisted.IsBlocked(m) {
+			if m == "*" || schemas.IsRegexEntry(m) || blacklisted.IsBlocked(m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -129,6 +152,9 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 // applied): union of live unfiltered entries and the datasheet view.
 func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
 	liveModels := mc.live.UnfilteredModelsForProvider(provider)
+	if providersWithListModelsOnly[provider] {
+		return liveModels
+	}
 	datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider)
 	if len(liveModels) == 0 {
 		return datasheetModels
@@ -175,6 +201,7 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 func (mc *ModelCatalog) initCaches() {
 	mc.providersForModel = newProvidersForModelCache(mc)
 	mc.modelsForProvider = newModelsForProviderCache(mc)
+	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
 }
 
 // Clone-on-return: the resolver sorts the result in place.
@@ -319,8 +346,8 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
-	// Bare-name match needs no catalog access and covers most allowlists.
-	if slices.Contains(allowedModels, model) {
+	// Bare-name match (exact or regex:) needs no catalog access and covers most allowlists.
+	if allowedModels.Contains(model) {
 		return true
 	}
 
@@ -377,8 +404,40 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	switch provider {
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		// A key alias is resolved later, against the name it is given, so prefixing it here
+		// would turn "my-alias" into a name no key alias matches.
+		if _, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+			return model, nil
+		}
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Key aliases never reach here (the Databricks case returns them unchanged). Explicit
+// `api_format` is handled by the provider and is not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

@@ -39,8 +39,11 @@ This plugin demonstrates how context flows through different hooks:
 1. **HTTPTransportPreHook** → Stores HTTP metadata
 2. **PreLLMHook/PreMCPHook** → Accesses HTTP metadata, stores LLM/MCP metadata
 3. **PostLLMHook/PostMCPHook** → Accesses stored timing data
-4. **HTTPTransportPostHook** → Adds final headers
-5. **Inject** → Receives complete trace asynchronously
+4. **HTTPTransportPostHook** → Processes the completed response
+5. **HTTPTransportResponseHeadersHook** → Adds final headers before commit, including for streams
+6. **Inject** → Receives complete trace asynchronously
+
+For streaming responses, `HTTPTransportResponseHeadersHook` runs before headers are committed, while `HTTPTransportPostHook` runs later from the stream-completion callback. Don't rely on post-hook state inside the headers hook.
 
 ## Use Cases
 
@@ -153,13 +156,23 @@ Add to your Bifrost config:
 
 ## Hook Execution Order
 
-For a typical LLM request:
+For a typical (non-streaming) LLM request:
 
 1. `HTTPTransportPreHook` (HTTP layer entry)
 2. `PreLLMHook` (Before LLM provider)
 3. *LLM Provider Call*
 4. `PostLLMHook` (After LLM provider)
 5. `HTTPTransportPostHook` (HTTP layer exit)
+6. `HTTPTransportResponseHeadersHook` (pre-commit response headers)
+7. `Inject` (Asynchronous trace delivery)
+
+For a streaming LLM request:
+
+1. `HTTPTransportPreHook` (HTTP layer entry)
+2. `PreLLMHook` (Before LLM provider)
+3. `HTTPTransportResponseHeadersHook` (pre-commit response headers)
+4. *Stream chunks* (`PostLLMHook` and `HTTPTransportStreamChunkHook` per chunk)
+5. `HTTPTransportPostHook` (stream-completion callback)
 6. `Inject` (Asynchronous trace delivery)
 
 For an MCP request:
@@ -169,7 +182,8 @@ For an MCP request:
 3. *MCP Server Call*
 4. `PostMCPHook` (After MCP server)
 5. `HTTPTransportPostHook` (HTTP layer exit)
-6. `Inject` (Asynchronous trace delivery)
+6. `HTTPTransportResponseHeadersHook` (pre-commit response headers)
+7. `Inject` (Asynchronous trace delivery)
 
 ## Notes
 

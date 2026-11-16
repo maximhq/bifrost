@@ -1,18 +1,21 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
+import {
+	CheckboxFilterItem,
+	EntityFilter,
+	FilterSection,
+	SearchableCheckboxList,
+	useAutoFocusOnOpen,
+} from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
-import { Skeleton } from "@/components/ui/skeleton";
-import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Statuses } from "@/lib/constants/logs";
-import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
+import { MCPStatuses } from "@/lib/constants/logs";
+import { useGetAgentsQuery, useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
-import { cn } from "@/lib/utils";
-import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
-import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "mcp-filter-sidebar-collapsed";
 
@@ -26,6 +29,8 @@ interface MCPFilterSidebarProps {
 }
 
 export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarProps) {
+	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
@@ -76,15 +81,22 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">{t("filters.filters")}</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button variant="outline" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={handleReset}>
 							<RotateCcw className="size-3" />
-							Reset
+							{t("filters.reset")}
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters">
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-7"
+						onClick={toggleCollapsed}
+						title={t("filters.hideFilters")}
+						aria-label={t("filters.hideFilters")}
+					>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -95,11 +107,106 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ToolNamesFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ToolNamesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<ServersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentsFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="session_id"
+						title={tObs("filters.sessionID")}
+						placeholder={tObs("filters.exactSessionID")}
+						testId="mcp-session-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="agent_correlation_id"
+						title={tObs("filters.agentCorrelationID")}
+						placeholder={tObs("filters.exactAgentCorrelationID")}
+						testId="mcp-agent-correlation-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="round_trip_id"
+						title={tObs("filters.roundTripID")}
+						placeholder={tObs("filters.exactRoundTripID")}
+						testId="mcp-round-trip-id-filter"
+					/>
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="user_ids"
+						dimension="users"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.users")}
+						placeholder={tObs("filters.searchOrAddAUser")}
+						testIdPrefix="mcp-user-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="team_ids"
+						dimension="teams"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.teams")}
+						placeholder={tObs("filters.searchOrAddATeam")}
+						testIdPrefix="mcp-teams-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="customer_ids"
+						dimension="customers"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.customers")}
+						placeholder={tObs("filters.searchOrAddACustomer")}
+						testIdPrefix="mcp-customers-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="business_unit_ids"
+						dimension="business_units"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.businessUnits")}
+						placeholder={tObs("filters.searchOrAddABusinessUnit")}
+						testIdPrefix="mcp-business-units-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="project_ids"
+						dimension="projects"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.projects")}
+						placeholder={tObs("filters.searchOrAddAProject")}
+						testIdPrefix="mcp-projects-filter"
+						allowCustom
+					/>
+					{/* Devices have no filter options yet, so a device filter set from a log's link only shows how many are set. */}
+					{filters.device_ids?.length ? (
+						<FilterSection title={t("filters.devices")} defaultOpen>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="w-full justify-between"
+								data-testid="mcp-clear-device_ids"
+								onClick={() => onFiltersChange({ ...filters, device_ids: [] })}
+							>
+								<span>{t("filters.selectedCount", { count: filters.device_ids.length })}</span>
+								<RotateCcw className="size-3" />
+							</Button>
+						</FilterSection>
+					) : null}
 				</div>
 			</ScrollArea>
 		</div>
@@ -116,210 +223,60 @@ interface FilterComponentProps {
 	defaultOpen?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// FilterSection – collapsible wrapper
-// ---------------------------------------------------------------------------
-
-function FilterSectionSkeleton({ rows = 3 }: { rows?: number }) {
+function AgentsFilter({ filters, onFiltersChange }: FilterComponentProps) {
+	const { t } = useTranslation("observability");
+	const selected = filters.agent_names ?? [];
+	const hasActive = selected.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const { data, isLoading } = useGetAgentsQuery(undefined, { skip: !opened && !hasActive });
+	const items = useMemo(
+		() =>
+			[...new Set([...(data?.agents.map((agent) => agent.name) ?? []), ...(filters.agent_names ?? [])])]
+				.sort()
+				.map((name) => ({ key: name, label: name })),
+		[data?.agents, filters.agent_names],
+	);
 	return (
-		<>
-			{Array.from({ length: rows }).map((_, i) => (
-				<div key={i} className="flex items-center gap-2.5 px-3 py-2">
-					<Skeleton className="size-4 shrink-0 rounded-[4px]" />
-					<Skeleton className="h-3.5 w-full rounded" />
-				</div>
-			))}
-		</>
+		<FilterSection title={t("filters.agent")} defaultOpen={hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder={t("filters.searchAgents")}
+				items={items}
+				isSelected={(name) => selected.includes(name)}
+				onToggle={(name) => {
+					const next = selected.includes(name) ? selected.filter((agentName) => agentName !== name) : [...selected, name];
+					onFiltersChange({ ...filters, agent_names: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="mcp-agent-filter"
+				normalizeTestIdKey
+			/>
+		</FilterSection>
 	);
 }
 
-function FilterSection({
-	title,
-	children,
-	defaultOpen = false,
-	loading = false,
-	onOpenChange,
-	testId,
-}: {
+interface ExactIDFilterProps extends FilterComponentProps {
+	filterKey: "session_id" | "agent_correlation_id" | "round_trip_id";
 	title: string;
-	children: React.ReactNode;
-	defaultOpen?: boolean;
-	loading?: boolean;
-	onOpenChange?: (open: boolean) => void;
-	testId?: string;
-}) {
-	const [open, setOpen] = useState(defaultOpen);
-
-	useEffect(() => {
-		if (defaultOpen) setOpen(true);
-	}, [defaultOpen]);
-
-	const handleOpenChange = (next: boolean) => {
-		setOpen(next);
-		onOpenChange?.(next);
-	};
-
-	return (
-		<Collapsible open={open} onOpenChange={handleOpenChange} className="last:pb-2">
-			<CollapsibleTrigger
-				className="flex h-8 w-full cursor-pointer items-center gap-1.5 px-2 py-2 text-sm font-medium hover:opacity-80"
-				data-testid={testId}
-			>
-				<ChevronDown className={cn("size-3.5 transition-transform", open ? "rotate-0" : "-rotate-90")} />
-				<span>{title}</span>
-			</CollapsibleTrigger>
-			<CollapsibleContent className="pt-1">
-				<div className="divide-border divide-y overflow-hidden rounded-sm border">{loading ? <FilterSectionSkeleton /> : children}</div>
-			</CollapsibleContent>
-		</Collapsible>
-	);
+	placeholder: string;
+	testId: string;
 }
 
-// ---------------------------------------------------------------------------
-// CheckboxFilterItem
-// ---------------------------------------------------------------------------
-
-function CheckboxFilterItem({
-	label,
-	checked,
-	onCheckedChange,
-	labelClassName,
-	testId,
-}: {
-	label: string;
-	checked: boolean;
-	onCheckedChange: (checked: boolean) => void;
-	labelClassName?: string;
-	testId?: string;
-}) {
+function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder, testId }: ExactIDFilterProps) {
+	const hasActive = !!filters[filterKey];
 	return (
-		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm" data-testid={testId}>
-			<Checkbox checked={checked} onCheckedChange={onCheckedChange} />
-			<TruncatedLabel className={labelClassName}>{label}</TruncatedLabel>
-		</label>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// SearchableCheckboxList – list of checkbox rows with a search input.
-// Caller passes `inputRef` to control focus (see `useAutoFocusOnOpen`).
-// ---------------------------------------------------------------------------
-
-function useAutoFocusOnOpen(isOpen: boolean) {
-	const ref = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		if (isOpen) ref.current?.focus({ preventScroll: true });
-	}, [isOpen]);
-	return ref;
-}
-
-function SearchableCheckboxList({
-	items,
-	isSelected,
-	onToggle,
-	placeholder = "Search...",
-	inputRef,
-	testIdPrefix,
-	normalizeTestIdKey = false,
-	allowCustom = false,
-	onSearch,
-	fetching,
-}: {
-	items: { key: string; label: string }[];
-	isSelected: (key: string) => boolean;
-	onToggle: (key: string) => void;
-	placeholder?: string;
-	inputRef?: Ref<HTMLInputElement>;
-	testIdPrefix?: string;
-	// When true, item keys are slugified before composing the per-row data-testid
-	// (e.g. "Claude Desktop" -> "claude-desktop"). Use for free-form keys like app
-	// names so E2E selectors stay space/case-stable; leave off for already-safe keys.
-	normalizeTestIdKey?: boolean;
-	allowCustom?: boolean;
-	onSearch?: (query: string) => void;
-	fetching?: boolean;
-}) {
-	const [query, setQuery] = useState("");
-	const normalized = query.trim().toLowerCase();
-	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
-	const trimmed = query.trim();
-	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
-	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
-
-	useEffect(() => {
-		if (!onSearch) return;
-		const timer = setTimeout(() => {
-			onSearch(query.trim());
-		}, 300);
-		return () => clearTimeout(timer);
-	}, [query, onSearch]);
-
-	const commitCustom = () => {
-		if (!showAddCustom) return;
-		onToggle(trimmed);
-		setQuery("");
-	};
-
-	return (
-		<>
-			<div className="relative border-b">
-				{fetching ? (
-					<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
-				) : (
-					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-				)}
+		<FilterSection title={title} defaultOpen={hasActive}>
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
 				<Input
-					ref={inputRef}
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") {
-							e.preventDefault();
-							commitCustom();
-						}
-					}}
+					value={filters[filterKey] || ""}
+					onChange={(event) => onFiltersChange({ ...filters, [filterKey]: event.target.value })}
 					placeholder={placeholder}
-					className="h-8 border-0 pl-8 text-xs"
-					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid={testId}
 				/>
 			</div>
-			{filtered.map((item) => (
-				<CheckboxFilterItem
-					key={item.key}
-					label={item.label}
-					checked={isSelected(item.key)}
-					onCheckedChange={() => onToggle(item.key)}
-					testId={
-						testIdPrefix
-							? `${testIdPrefix}-checkbox-${
-									normalizeTestIdKey
-										? item.key
-												.toLowerCase()
-												.replace(/[^a-z0-9]+/g, "-")
-												.replace(/^-+|-+$/g, "")
-										: item.key
-								}`
-							: undefined
-					}
-				/>
-			))}
-			{filtered.length === 0 && !showAddCustom && (
-				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
-			)}
-			{showAddCustom && (
-				<button
-					type="button"
-					onClick={commitCustom}
-					className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left text-sm"
-					data-testid={testIdPrefix ? `${testIdPrefix}-add-custom` : undefined}
-				>
-					<Plus className="text-muted-foreground size-3.5 shrink-0" />
-					<span className="truncate">
-						Use <span className="font-medium">&quot;{trimmed}&quot;</span>
-					</span>
-				</button>
-			)}
-		</>
+		</FilterSection>
 	);
 }
 
@@ -328,15 +285,18 @@ function SearchableCheckboxList({
 // ---------------------------------------------------------------------------
 
 function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const hasActive = (filters.status || []).length > 0;
 
 	return (
-		<FilterSection title="Status" defaultOpen={defaultOpen || hasActive}>
-			{Statuses.map((status) => (
+		<FilterSection title={t("filters.status")} defaultOpen={defaultOpen || hasActive}>
+			{[...MCPStatuses, "unknown"].map((status) => (
 				<CheckboxFilterItem
 					key={status}
 					labelClassName="capitalize"
-					label={status}
+					label={tObs(`logs.statuses.${status}`, { defaultValue: status })}
+					testId={`mcp-status-filter-${status}`}
 					checked={(filters.status || []).includes(status)}
 					onCheckedChange={() => {
 						const current = filters.status || [];
@@ -354,6 +314,7 @@ function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 // ---------------------------------------------------------------------------
 
 function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const hasActive = (filters.tool_names || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -374,10 +335,10 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	if (!isUninitialized && !isLoading && availableToolNames.length === 0 && !hasActive && !opened) return null;
 
 	return (
-		<FilterSection title="Tool Names" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+		<FilterSection title={t("filters.toolNames")} defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search or add a tool"
+				placeholder={t("filters.searchOrAddATool")}
 				items={items}
 				allowCustom
 				isSelected={(name) => (filters.tool_names || []).includes(name)}
@@ -398,6 +359,7 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 // ---------------------------------------------------------------------------
 
 function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const hasActive = (filters.server_labels || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -418,10 +380,10 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	if (!isUninitialized && !isLoading && availableServerLabels.length === 0 && !hasActive && !opened) return null;
 
 	return (
-		<FilterSection title="Servers" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+		<FilterSection title={t("filters.servers")} defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search or add a server"
+				placeholder={t("filters.searchOrAddAServer")}
 				items={items}
 				allowCustom
 				isSelected={(label) => (filters.server_labels || []).includes(label)}
@@ -442,6 +404,7 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 // ---------------------------------------------------------------------------
 
 function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const hasActive = (filters.apps || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -462,7 +425,7 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 
 	return (
 		<FilterSection
-			title="App"
+			title={t("filters.app")}
 			defaultOpen={defaultOpen || hasActive}
 			loading={isLoading}
 			onOpenChange={setOpened}
@@ -470,7 +433,7 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search apps"
+				placeholder={t("filters.searchApps")}
 				items={items}
 				isSelected={(appName) => selectedSet.has(appName)}
 				onToggle={(appName) => {
@@ -490,6 +453,7 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 // ---------------------------------------------------------------------------
 
 function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -518,10 +482,10 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	};
 
 	return (
-		<FilterSection title="Virtual Keys" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+		<FilterSection title={t("filters.virtualKeys")} defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
+				placeholder={t("filters.searchVirtualKeys")}
 				items={availableVirtualKeys.map((key) => ({ key: key.name, label: key.name }))}
 				isSelected={isSelected}
 				onToggle={toggle}

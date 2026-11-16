@@ -31,12 +31,15 @@ var TestModels = map[string]ModelCost{
 		MaxInputTokens:     128000,
 		MaxOutputTokens:    16384,
 	},
-	"anthropic/claude-3-7-sonnet-20250219": {
+	// claude-3-7-sonnet-20250219 was retired by Anthropic (the API now returns
+	// 404 not_found_error for it); claude-sonnet-4-5 keeps the same $3/$15
+	// per-MTok pricing.
+	"anthropic/claude-sonnet-4-5": {
 		Provider:           "anthropic",
 		InputCostPerToken:  0.000003,
 		OutputCostPerToken: 0.000015,
 		MaxInputTokens:     200000,
-		MaxOutputTokens:    128000,
+		MaxOutputTokens:    64000,
 	},
 	"anthropic/claude-4-opus-20250514": {
 		Provider:           "anthropic",
@@ -86,6 +89,7 @@ type APIResponse struct {
 	StatusCode int
 	Body       map[string]interface{}
 	RawBody    []byte
+	Headers    http.Header // response headers, e.g. x-request-id for follow-up log lookups
 }
 
 // MakeRequest makes an HTTP request to the Bifrost API
@@ -100,6 +104,18 @@ func baseURL() string {
 		return strings.TrimSuffix(override, "/")
 	}
 	return "http://localhost:8080"
+}
+
+// setupToken returns the OSS setup token the governance test server is configured with
+// (tests/governance/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	if v := os.Getenv("BIFROST_E2E_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	if v := os.Getenv("BIFROST_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	return "bifrost-e2e-setup-token"
 }
 
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
@@ -121,6 +137,8 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add virtual key header if provided
 	if req.VKHeader != nil {
@@ -151,6 +169,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 		StatusCode: resp.StatusCode,
 		Body:       responseBody,
 		RawBody:    rawBody,
+		Headers:    resp.Header,
 	}
 }
 
@@ -175,6 +194,8 @@ func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders ma
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add custom headers
 	for key, value := range customHeaders {
@@ -221,15 +242,18 @@ func generateRandomID() string {
 
 // CreateVirtualKeyRequest represents a request to create a virtual key
 type CreateVirtualKeyRequest struct {
-	Name            string                  `json:"name"`
-	Description     string                  `json:"description,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
-	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	IsActive          *bool                   `json:"is_active,omitempty"`
+	TeamID            *string                 `json:"team_id,omitempty"`
+	CustomerID        *string                 `json:"customer_id,omitempty"`
+	Budgets           []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ProviderConfigs   []ProviderConfigRequest `json:"provider_configs,omitempty"`
+	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`
+	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"`
+	// DisableContentLogging is tri-state: nil inherits the client setting, true forces content off.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key

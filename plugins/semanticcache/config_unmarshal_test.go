@@ -51,7 +51,8 @@ func TestUnmarshalJSON_AllFields(t *testing.T) {
 		"conversation_history_threshold": 5,
 		"cache_by_model": false,
 		"cache_by_provider": false,
-		"exclude_system_prompt": true
+		"exclude_system_prompt": true,
+		"cache_tool_call_responses": true
 	}`
 
 	var config Config
@@ -91,6 +92,9 @@ func TestUnmarshalJSON_AllFields(t *testing.T) {
 	}
 	if config.ExcludeSystemPrompt == nil || *config.ExcludeSystemPrompt != true {
 		t.Errorf("ExcludeSystemPrompt: expected true, got %v", config.ExcludeSystemPrompt)
+	}
+	if !config.CacheToolCallResponses {
+		t.Errorf("CacheToolCallResponses: expected true, got %v", config.CacheToolCallResponses)
 	}
 }
 

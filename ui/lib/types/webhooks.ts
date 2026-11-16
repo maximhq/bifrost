@@ -1,12 +1,31 @@
+import i18n from "@/lib/i18n";
 import { SecretVar } from "./schemas";
 
 // Wire shapes for the /api/webhooks admin API.
 
 export type WebhookEvent = "async_job.completed" | "async_job.failed";
 
+// Labels and descriptions resolve through i18n when read (getters), so the shared lists
+// follow the active locale for every consumer.
 export const WEBHOOK_EVENTS: { value: WebhookEvent; label: string; description: string }[] = [
-	{ value: "async_job.completed", label: "Async job completed", description: "An async inference job finished successfully." },
-	{ value: "async_job.failed", label: "Async job failed", description: "An async inference job reached a terminal failure." },
+	{
+		value: "async_job.completed",
+		get label() {
+			return i18n.t("webhooks.events.async_job.completed.label", { ns: "governance" });
+		},
+		get description() {
+			return i18n.t("webhooks.events.async_job.completed.description", { ns: "governance" });
+		},
+	},
+	{
+		value: "async_job.failed",
+		get label() {
+			return i18n.t("webhooks.events.async_job.failed.label", { ns: "governance" });
+		},
+		get description() {
+			return i18n.t("webhooks.events.async_job.failed.description", { ns: "governance" });
+		},
+	},
 ];
 
 export interface WebhookEndpoint {
@@ -115,6 +134,70 @@ export interface GetWebhookDeliveriesResponse {
 export interface RedeliverWebhookResponse {
 	status: string;
 	webhook_id: string;
+}
+
+export type WebhookDeliveryStatusClass = "2xx" | "4xx" | "5xx" | "none";
+
+export const WEBHOOK_DELIVERY_OUTCOMES: { value: WebhookDeliveryOutcome; label: string }[] = [
+	{
+		value: "delivered",
+		get label() {
+			return i18n.t("webhooks.outcomes.deliveredLabel", { ns: "governance" });
+		},
+	},
+	{
+		value: "retryable_failure",
+		get label() {
+			return i18n.t("webhooks.outcomes.retryingLabel", { ns: "governance" });
+		},
+	},
+	{
+		value: "permanent_failure",
+		get label() {
+			return i18n.t("webhooks.outcomes.failedLabel", { ns: "governance" });
+		},
+	},
+	{
+		value: "exhausted",
+		get label() {
+			return i18n.t("webhooks.outcomes.exhaustedLabel", { ns: "governance" });
+		},
+	},
+];
+
+export const WEBHOOK_DELIVERY_STATUS_CLASSES: { value: WebhookDeliveryStatusClass; label: string }[] = (
+	["2xx", "4xx", "5xx", "none"] as const
+).map((value) => ({
+	value,
+	get label() {
+		return i18n.t(`webhooks.statusClass.${value}`, { ns: "governance" });
+	},
+}));
+
+/**
+ * Filters for the dedicated delivery history page.
+ *
+ * Naming: `endpoint_ids` are webhook endpoints — what the UI calls "webhooks",
+ * and what the page's `?webhook_id=` URL param maps to. `delivery_id` is the
+ * delivery-run id (`WebhookDelivery.webhook_id`), shared by every attempt of
+ * one delivery. Keeping the two apart matters; the wire names are the source
+ * of truth.
+ */
+export interface WebhookDeliveryFilters {
+	endpoint_ids?: string[];
+	events?: WebhookEvent[];
+	outcomes?: WebhookDeliveryOutcome[];
+	status_class?: WebhookDeliveryStatusClass[];
+	request_id?: string;
+	delivery_id?: string;
+	start_time?: string;
+	end_time?: string;
+	period?: string;
+}
+
+export interface SearchWebhookDeliveriesParams extends WebhookDeliveryFilters {
+	limit?: number;
+	offset?: number;
 }
 
 // Delivery worker defaults, shown as placeholders for unset (0) knobs.

@@ -57,6 +57,7 @@ function InputGroupAddon({
 	...props
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
 	return (
+		// oxlint-disable-next-line jsx-a11y/click-events-have-key-events -- click only forwards focus to the sibling input; keyboard users already reach the input directly
 		<div
 			role="group"
 			data-slot="input-group-addon"

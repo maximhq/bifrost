@@ -16,6 +16,7 @@ import {
 	type EntitySelectorCommonProps,
 	type EntityLabelResolverProps,
 	type EntitySelectorModeProps,
+	useEntitySelectorPages,
 	useEntitySelectorSearch,
 } from "@/components/entitySelectors/entitySelector";
 import { useGetTeamQuery, useGetTeamsQuery } from "@/lib/store";
@@ -44,38 +45,28 @@ interface TeamSelectorOwnProps extends EntitySelectorCommonProps {
 export type TeamSelectorProps = TeamSelectorOwnProps & EntitySelectorModeProps;
 
 export function TeamSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, filters, ...props }: TeamSelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch, skip, isDebouncing } = useEntitySelectorSearch();
+	const search = useEntitySelectorSearch();
 
-	const { data: teamsData, isFetching, isError } = useGetTeamsQuery({ ...filters, limit, search: debouncedSearch || undefined }, { skip });
+	const { currentData, isFetching, isError, refetch } = useGetTeamsQuery(
+		{ ...filters, limit, offset: search.offset, search: search.debouncedSearch || undefined },
+		{ skip: search.skip },
+	);
 
-	// Memoized because multi mode hands this to react-select as defaultOptions,
-	// which re-syncs on identity change.
-	const options = useMemo(
+	// Memoized because multi mode hands the merged list to react-select as
+	// defaultOptions, which re-syncs on identity change.
+	const entries = useMemo(
 		() =>
-			(teamsData?.teams ?? []).map((team) => ({
+			currentData?.teams?.map((team) => ({
 				value: team.id,
 				label: team.name || team.id,
 				// The customer a team rolls up to is the only thing that
 				// disambiguates two teams sharing a name.
 				description: team.customer?.name,
 			})),
-		[teamsData],
+		[currentData],
 	);
 
-	return (
-		<EntitySelector
-			{...props}
-			LabelResolver={TeamLabelResolver}
-			entityLabel="team"
-			entityLabelPlural="teams"
-			options={options}
-			isFetching={isFetching}
-			isError={isError}
-			open={open}
-			onOpenChange={setOpen}
-			onSearchChange={setSearch}
-			isSearching={isDebouncing || (isFetching && !!debouncedSearch)}
-			debouncedSearch={debouncedSearch}
-		/>
-	);
+	const listProps = useEntitySelectorPages(search, { entries, totalCount: currentData?.total_count, isFetching, isError, refetch });
+
+	return <EntitySelector {...props} LabelResolver={TeamLabelResolver} entityLabel="team" entityLabelPlural="teams" {...listProps} />;
 }

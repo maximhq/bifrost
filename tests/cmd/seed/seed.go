@@ -83,8 +83,10 @@ func DefaultOptions() Options {
 		ConfigDialect:   "postgres",
 		LogsDialect:     "postgres",
 		LogRowsPerShape: 30,
-		BatchSize:       1000,
-		OutputEnvPath:   "tmp/e2e-seed.env",
+		// Postgres allows 65535 bind parameters per statement, and every log row binds
+		// one per column, so this has to leave room for the log tables to grow.
+		BatchSize:     200,
+		OutputEnvPath: "tmp/e2e-seed.env",
 	}
 }
 
@@ -827,10 +829,12 @@ func buildLog(prefix string, shape Shape, index int) logstore.Log {
 	if index%17 == 0 {
 		status = "error"
 	}
+	// Object is the request type, as the gateway's logging plugin writes it - not
+	// the OpenAI response object "chat.completion", which no objects filter matches.
 	return logstore.Log{
 		ID:               fmt.Sprintf("%s-log-%06d", prefix, index),
 		Timestamp:        timestamp,
-		Object:           "chat.completion",
+		Object:           string(schemas.ChatCompletionRequest),
 		Provider:         "openai",
 		Model:            "gpt-4o-mini",
 		SelectedKeyID:    prefix + "-openai-key",

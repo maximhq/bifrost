@@ -6,6 +6,40 @@ import (
 	"strings"
 )
 
+// RawRequestBodyTextRewriter synchronizes runtime literal replacements, from redaction or provider-managed
+// transformations, into provider-native JSON.
+// Integrations implement this contract because only they know which native fields correspond to
+// guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
+// slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
+// A literal found in no owned field is reported as a *RawRequestLiteralsNotFoundError.
+type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
+
+// RawRequestLiteralsNotFoundError reports the replacement literals a RawRequestBodyTextRewriter found in none of the
+// fields it owns, so a caller can tell which redactions the raw body could not carry. Its message never includes the
+// literals, which are the values being redacted.
+type RawRequestLiteralsNotFoundError struct {
+	Literals []string
+}
+
+// Error describes the failure without naming any literal.
+func (e *RawRequestLiteralsNotFoundError) Error() string {
+	return "one or more runtime replacement literals were not found in an integration-owned content path"
+}
+
+// DecodedJSONLiteral returns literal with its JSON string escapes decoded, and whether that differs from literal. A
+// literal cut from JSON text, such as a tool call's arguments, holds a value with escapes that a body carrying the same
+// value as a decoded JSON string holds without them.
+func DecodedJSONLiteral(literal string) (string, bool) {
+	if strings.IndexByte(literal, '\\') < 0 {
+		return "", false
+	}
+	var decoded string
+	if err := Unmarshal([]byte(`"`+literal+`"`), &decoded); err != nil || decoded == "" || decoded == literal {
+		return "", false
+	}
+	return decoded, true
+}
+
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string
 
@@ -104,11 +138,266 @@ func IsContentAttribute(key string) bool {
 	return traceContentAttributeScopeForKey(key) != traceContentAttributeScopeNone
 }
 
+// AllContentAttributeKeys returns every key IsContentAttribute treats as content.
+// Exported so callers and tests derive the set instead of hand-copying it.
+func AllContentAttributeKeys() []string {
+	return []string{
+		AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
+		AttrPrompt, AttrInstructions, AttrSuffix,
+		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
+		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
+		AttrOutputMessages, AttrRespReasoningText,
+		AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType,
+		AttrBifrostRawRequest, AttrBifrostRawResponse,
+	}
+}
+
+// StripSpanContent returns a copy of span without its content attributes, per
+// IsContentAttribute. LLM is dropped entirely — it is content by construction.
+//
+// Connectors serializing a whole trace must use this rather than a local key
+// list. The copy is explicit because Span embeds a sync.Mutex; attribute values
+// are shared by reference and must be treated as read-only.
+func StripSpanContent(src *Span) *Span {
+	if src == nil {
+		return nil
+	}
+	attrs := make(map[string]any, len(src.Attributes))
+	for k, v := range src.Attributes {
+		if IsContentAttribute(k) {
+			continue
+		}
+		attrs[k] = v
+	}
+	events := src.Events
+	if len(events) > 0 {
+		events = make([]SpanEvent, 0, len(src.Events))
+		for _, e := range src.Events {
+			events = append(events, SpanEvent{
+				Name:       e.Name,
+				Timestamp:  e.Timestamp,
+				Attributes: stripContentAttrs(e.Attributes),
+			})
+		}
+	}
+	return &Span{
+		SpanID:     src.SpanID,
+		ParentID:   src.ParentID,
+		TraceID:    src.TraceID,
+		Name:       src.Name,
+		Kind:       src.Kind,
+		StartTime:  src.StartTime,
+		EndTime:    src.EndTime,
+		Status:     src.Status,
+		StatusMsg:  src.StatusMsg,
+		Attributes: attrs,
+		Enrichment: src.Enrichment,
+		Events:     events,
+	}
+}
+
+// stripContentAttrs filters one attribute map, returning nil rather than an empty
+// map so a content-only event serializes as if it had no attributes.
+func stripContentAttrs(attrs map[string]any) map[string]any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
+		if IsContentAttribute(k) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// StripTraceAttributes copies src without the named attributes, on spans and span
+// events. Names match exactly; an empty deny list returns src unchanged.
+func StripTraceAttributes(src *Trace, deny []string) *Trace {
+	if src == nil || len(deny) == 0 {
+		return src
+	}
+	denied := make(map[string]struct{}, len(deny))
+	for _, k := range deny {
+		if k != "" {
+			denied[k] = struct{}{}
+		}
+	}
+	if len(denied) == 0 {
+		return src
+	}
+	out := &Trace{
+		RequestID:      src.RequestID,
+		TraceID:        src.TraceID,
+		InternalID:     src.InternalID,
+		ParentID:       src.ParentID,
+		StartTime:      src.StartTime,
+		EndTime:        src.EndTime,
+		Attributes:     denyAttrs(src.Attributes, denied),
+		RequestHeaders: src.RequestHeaders,
+		PluginLogs:     src.PluginLogs,
+	}
+	if src.Spans != nil {
+		copies := make(map[*Span]*Span, len(src.Spans))
+		out.Spans = make([]*Span, len(src.Spans))
+		for i, sp := range src.Spans {
+			cp := StripSpanAttributes(sp, denied)
+			copies[sp] = cp
+			out.Spans[i] = cp
+		}
+		if cp, ok := copies[src.RootSpan]; ok {
+			out.RootSpan = cp
+		} else {
+			out.RootSpan = StripSpanAttributes(src.RootSpan, denied)
+		}
+	} else {
+		out.RootSpan = StripSpanAttributes(src.RootSpan, denied)
+	}
+	return out
+}
+
+// StripSpanAttributes copies src without the denied keys, carrying the typed LLM
+// and Enrichment payloads over untouched.
+func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
+	if src == nil {
+		return nil
+	}
+	events := src.Events
+	if len(events) > 0 {
+		events = make([]SpanEvent, 0, len(src.Events))
+		for _, e := range src.Events {
+			events = append(events, SpanEvent{
+				Name:       e.Name,
+				Timestamp:  e.Timestamp,
+				Attributes: denyAttrs(e.Attributes, denied),
+			})
+		}
+	}
+	// Raw payloads sit on LLM but export under attribute names, so denying a name
+	// must clear the field too. Copy-on-write: the source is pooled.
+	llm := src.LLM
+	a2a := src.A2A
+	if a2a != nil {
+		_, denyRequest := denied[AttrBifrostRawRequest]
+		_, denyResponse := denied[AttrBifrostRawResponse]
+		if denyRequest || denyResponse {
+			cp := *a2a
+			if denyRequest {
+				cp.RawRequest = ""
+			}
+			if denyResponse {
+				cp.RawResponse = ""
+			}
+			a2a = &cp
+		}
+	}
+	if llm != nil {
+		_, denyRequest := denied[AttrBifrostRawRequest]
+		_, denyResponse := denied[AttrBifrostRawResponse]
+		denyRequest = denyRequest && llm.RawRequest != ""
+		denyResponse = denyResponse && llm.RawResponse != ""
+		// Nothing to clear means no copy: raw export is opt-in, so a standing
+		// denylist entry would otherwise copy 408 bytes per span for nothing.
+		if denyRequest || denyResponse {
+			cp := *llm
+			if denyRequest {
+				cp.RawRequest = ""
+			}
+			if denyResponse {
+				cp.RawResponse = ""
+			}
+			llm = &cp
+		}
+	}
+	return &Span{
+		SpanID:     src.SpanID,
+		ParentID:   src.ParentID,
+		TraceID:    src.TraceID,
+		Name:       src.Name,
+		Kind:       src.Kind,
+		StartTime:  src.StartTime,
+		EndTime:    src.EndTime,
+		Status:     src.Status,
+		StatusMsg:  src.StatusMsg,
+		Attributes: denyAttrs(src.Attributes, denied),
+		LLM:        llm,
+		A2A:        a2a,
+		Enrichment: src.Enrichment,
+		Events:     events,
+	}
+}
+
+// denyAttrs copies attrs without the denied keys. Nil stays nil; an all-denied map
+// returns empty rather than nil, so the span still serializes an attribute set.
+func denyAttrs(attrs map[string]any, denied map[string]struct{}) map[string]any {
+	if attrs == nil {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
+		if _, bad := denied[k]; bad {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// StripTraceContent strips every span in the trace, preserving RootSpan/Spans
+// pointer identity.
+func StripTraceContent(src *Trace) *Trace {
+	if src == nil {
+		return nil
+	}
+	stripped := &Trace{
+		RequestID:      src.RequestID,
+		TraceID:        src.TraceID,
+		InternalID:     src.InternalID,
+		ParentID:       src.ParentID,
+		StartTime:      src.StartTime,
+		EndTime:        src.EndTime,
+		Attributes:     src.Attributes,
+		RequestHeaders: src.RequestHeaders,
+		PluginLogs:     src.PluginLogs,
+	}
+	if src.Spans != nil {
+		copies := make(map[*Span]*Span, len(src.Spans))
+		stripped.Spans = make([]*Span, len(src.Spans))
+		for i, s := range src.Spans {
+			cp := StripSpanContent(s)
+			copies[s] = cp
+			stripped.Spans[i] = cp
+		}
+		if cp, ok := copies[src.RootSpan]; ok {
+			stripped.RootSpan = cp
+		} else {
+			stripped.RootSpan = StripSpanContent(src.RootSpan)
+		}
+	} else {
+		stripped.RootSpan = StripSpanContent(src.RootSpan)
+	}
+	return stripped
+}
+
 // ApplyLiteralReplacements performs deterministic best-effort string redaction.
 func ApplyLiteralReplacements(text string, replacements map[string]string) string {
 	if text == "" || len(replacements) == 0 {
 		return text
 	}
+	redacted := text
+	for _, raw := range literalReplacementOrder(replacements) {
+		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
+	}
+	return redacted
+}
+
+// literalReplacementOrder returns the non-empty keys of replacements in the order ApplyLiteralReplacements applies
+// them: longest first, so a value wins over a shorter one it contains, and alphabetically among equal lengths.
+func literalReplacementOrder(replacements map[string]string) []string {
 	keys := make([]string, 0, len(replacements))
 	for raw := range replacements {
 		if raw != "" {
@@ -121,11 +410,7 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		}
 		return len(keys[i]) > len(keys[j])
 	})
-	redacted := text
-	for _, raw := range keys {
-		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
-	}
-	return redacted
+	return keys
 }
 
 // RedactAttributeValue applies literal replacements to supported attribute value shapes.

@@ -81,6 +81,33 @@ func TestAnthropicMessageRequestUnmarshalJSONDuplicateAndReuseSemantics(t *testi
 	assertRawExtraParam(t, req.ExtraParams, "client_extension", `{"last":true}`)
 }
 
+// Claude Code auto-mode classifier: the safeguards request field must survive
+// an unmarshal→marshal round trip so the gateway forwards it unchanged (Claude
+// Code gateway compatibility guide, feature pass-through).
+func TestAnthropicMessageRequestSafeguardsRoundTrip(t *testing.T) {
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":1024,
+		"messages":[{"role":"user","content":"hello"}],
+		"safeguards": { "z": 1, "a": { "b": true } }
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	if _, ok := req.ExtraParams["safeguards"]; ok {
+		t.Error("safeguards must decode into the typed field, not ExtraParams")
+	}
+
+	out, err := sonic.Marshal(&req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if want := `"safeguards":{"z":1,"a":{"b":true}}`; !strings.Contains(string(out), want) {
+		t.Fatalf("marshaled request lost safeguards: %s", string(out))
+	}
+}
+
 func TestAnthropicMessageRequestUnmarshalJSONMalformedInput(t *testing.T) {
 	var req AnthropicMessageRequest
 	if err := sonic.Unmarshal([]byte(`{"model":"claude-sonnet-4-20250514"`), &req); err == nil {

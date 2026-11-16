@@ -9,6 +9,7 @@ import { useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "mcp-clients-filter-sidebar-collapsed";
 const VK_PAGE_SIZE = 25;
@@ -27,7 +28,7 @@ export interface MCPClientFilters {
 	states: string[]; // subset of ["healthy", "unstable"]
 	code_mode: string[]; // subset of ["true", "false"] → is_code_mode_client
 	status: string[]; // subset of ["false", "true"] → disabled column value
-	only_all_vks: boolean; // VK access toggle → allow_on_all_virtual_keys
+	only_allowed_by_default: boolean; // access toggle → allow_by_default
 	virtual_keys: string[]; // explicit VK IDs the client must be assigned to
 }
 
@@ -37,7 +38,7 @@ export const EMPTY_FILTERS: MCPClientFilters = {
 	states: [],
 	code_mode: [],
 	status: [],
-	only_all_vks: false,
+	only_allowed_by_default: false,
 	virtual_keys: [],
 };
 
@@ -52,33 +53,7 @@ const CONNECTION_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "http", label: "HTTP" },
 	{ value: "sse", label: "SSE" },
 	{ value: "stdio", label: "STDIO" },
-];
-
-const AUTH_TYPE_OPTIONS: FilterOption[] = [
-	{ value: "none", label: "None" },
-	{ value: "headers", label: "Headers" },
-	{ value: "oauth", label: "OAuth" },
-	{ value: "per_user_oauth", label: "Per-User OAuth" },
-	{ value: "per_user_headers", label: "Per-User Headers" },
-	{ value: "token_exchange", label: "Token Exchange" },
-];
-
-// Connection state is runtime, not a column — the backend resolves these
-// against live engine state. "unstable" covers everything not healthy.
-const STATE_OPTIONS: FilterOption[] = [
-	{ value: "healthy", label: "Healthy" },
-	{ value: "unstable", label: "Unstable" },
-];
-
-const CODE_MODE_OPTIONS: FilterOption[] = [
-	{ value: "true", label: "Enabled" },
-	{ value: "false", label: "Disabled" },
-];
-
-// Status maps to the `disabled` column: an enabled client has disabled=false.
-const STATUS_OPTIONS: FilterOption[] = [
-	{ value: "false", label: "Enabled" },
-	{ value: "true", label: "Disabled" },
+	{ value: "openapi", label: "OpenAPI" }, // i18n-ignore
 ];
 
 interface SidebarProps {
@@ -91,6 +66,7 @@ interface SidebarProps {
 // ---------------------------------------------------------------------------
 
 export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarProps) {
+	const { t } = useTranslation("mcp");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
@@ -122,9 +98,43 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			(filters.code_mode.length === 1 ? 1 : 0) +
 			(filters.status.length === 1 ? 1 : 0) +
 			filters.virtual_keys.length +
-			(filters.only_all_vks ? 1 : 0)
+			(filters.only_allowed_by_default ? 1 : 0)
 		);
 	}, [filters]);
+
+	const connectionTypeOptions = useMemo(() => CONNECTION_TYPE_OPTIONS.map((o) => ({ ...o })), []);
+	const authTypeOptions = useMemo(
+		() => [
+			{ value: "none", label: t("registry.filter.none") },
+			{ value: "headers", label: t("registry.filter.headers") },
+			{ value: "oauth", label: "OAuth" }, // i18n-ignore
+			{ value: "per_user_oauth", label: t("registry.filter.perUserOauth") },
+			{ value: "per_user_headers", label: t("registry.filter.perUserHeaders") },
+			{ value: "token_exchange", label: t("registry.filter.tokenExchange") },
+		],
+		[t],
+	);
+	const stateOptions = useMemo(
+		() => [
+			{ value: "healthy", label: t("registry.filter.healthy") },
+			{ value: "unstable", label: t("registry.filter.unstable") },
+		],
+		[t],
+	);
+	const codeModeOptions = useMemo(
+		() => [
+			{ value: "true", label: t("common.enabled") },
+			{ value: "false", label: t("common.disabled") },
+		],
+		[t],
+	);
+	const statusOptions = useMemo(
+		() => [
+			{ value: "false", label: t("common.enabled") },
+			{ value: "true", label: t("common.disabled") },
+		],
+		[t],
+	);
 
 	const handleReset = useCallback(() => {
 		onFiltersChange(EMPTY_FILTERS);
@@ -139,7 +149,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 	return (
 		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">{t("common.filters")}</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -150,7 +160,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							data-testid="mcpClientsFilterSidebar-reset-button"
 						>
 							<RotateCcw className="size-3" />
-							Reset
+							{t("common.reset")}
 						</Button>
 					)}
 					<Button
@@ -158,8 +168,8 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 						size="icon"
 						className="size-7"
 						onClick={toggleCollapsed}
-						title="Hide filters"
-						aria-label="Hide filters"
+						title={t("common.hideFilters")}
+						aria-label={t("common.hideFilters")}
 						data-testid="mcpClientsFilterSidebar-toggle-hide"
 					>
 						<PanelLeftClose className="size-4" />
@@ -170,37 +180,37 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					<CheckboxFilterSection
-						title="Connection Type"
-						options={CONNECTION_TYPE_OPTIONS}
+						title={t("registry.filter.connectionType")}
+						options={connectionTypeOptions}
 						selected={filters.connection_types}
 						defaultOpen
 						onChange={(connection_types) => onFiltersChange({ ...filters, connection_types })}
 						testIdPrefix="mcp-clients-filter-connection-type"
 					/>
 					<CheckboxFilterSection
-						title="Auth Type"
-						options={AUTH_TYPE_OPTIONS}
+						title={t("registry.filter.authType")}
+						options={authTypeOptions}
 						selected={filters.auth_types}
 						onChange={(auth_types) => onFiltersChange({ ...filters, auth_types })}
 						testIdPrefix="mcp-clients-filter-auth-type"
 					/>
 					<CheckboxFilterSection
-						title="State"
-						options={STATE_OPTIONS}
+						title={t("registry.filter.state")}
+						options={stateOptions}
 						selected={filters.states}
 						onChange={(states) => onFiltersChange({ ...filters, states })}
 						testIdPrefix="mcp-clients-filter-state"
 					/>
 					<CheckboxFilterSection
-						title="Code Mode"
-						options={CODE_MODE_OPTIONS}
+						title={t("registry.filter.codeMode")}
+						options={codeModeOptions}
 						selected={filters.code_mode}
 						onChange={(code_mode) => onFiltersChange({ ...filters, code_mode })}
 						testIdPrefix="mcp-clients-filter-code-mode"
 					/>
 					<CheckboxFilterSection
-						title="Status"
-						options={STATUS_OPTIONS}
+						title={t("registry.filter.status")}
+						options={statusOptions}
 						selected={filters.status}
 						onChange={(status) => onFiltersChange({ ...filters, status })}
 						testIdPrefix="mcp-clients-filter-status"
@@ -334,6 +344,8 @@ function CheckboxFilterSection({
 // filtering is applied on top of the (debounced) onSearch callback so the caller
 // can fetch server-side results. Mirrors the logs filter sidebar pattern.
 function SearchableCheckboxList({
+	// i18n for empty-state copy
+
 	items,
 	pinnedItems = [],
 	isSelected,
@@ -356,6 +368,7 @@ function SearchableCheckboxList({
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
 }) {
+	const { t } = useTranslation("mcp");
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
 	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
@@ -401,24 +414,25 @@ function SearchableCheckboxList({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">{t("common.noResults")}</div>}
 		</>
 	);
 }
 
 // ---------------------------------------------------------------------------
 // VKAccessFilterSection – a single checkbox list whose pinned first option is
-// "All virtual keys" (allow_on_all_virtual_keys); the rest are individual VKs
+// "Allowed by default" (allow_by_default); the rest are individual VKs
 // resolved via server-side search. They OR together server-side: a client
-// matches if it is open to all VKs OR assigned to one of the selected VKs.
+// matches if it is allowed by default OR assigned to one of the selected VKs.
 // ---------------------------------------------------------------------------
 
-// Reserved key for the pinned "All virtual keys" row — namespaced so it can
+// Reserved key for the pinned "Allowed by default" row, namespaced so it can
 // never collide with a real virtual key id.
-const ALL_VKS_KEY = "__all_virtual_keys__";
+const ALLOWED_BY_DEFAULT_KEY = "__allowed_by_default__";
 
 function VKAccessFilterSection({ filters, onFiltersChange }: SidebarProps) {
-	const hasActive = filters.only_all_vks || filters.virtual_keys.length > 0;
+	const { t } = useTranslation("mcp");
+	const hasActive = filters.only_allowed_by_default || filters.virtual_keys.length > 0;
 	const [opened, setOpened] = useState(hasActive);
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -429,11 +443,12 @@ function VKAccessFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	);
 	const virtualKeys = data?.virtual_keys || [];
 
-	const isSelected = (key: string) => (key === ALL_VKS_KEY ? filters.only_all_vks : filters.virtual_keys.includes(key));
+	const isSelected = (key: string) =>
+		key === ALLOWED_BY_DEFAULT_KEY ? filters.only_allowed_by_default : filters.virtual_keys.includes(key);
 
 	const toggle = (key: string) => {
-		if (key === ALL_VKS_KEY) {
-			onFiltersChange({ ...filters, only_all_vks: !filters.only_all_vks });
+		if (key === ALLOWED_BY_DEFAULT_KEY) {
+			onFiltersChange({ ...filters, only_allowed_by_default: !filters.only_allowed_by_default });
 			return;
 		}
 		const current = filters.virtual_keys;
@@ -442,11 +457,16 @@ function VKAccessFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="VK Access" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-clients-filter-vk-access-toggle">
+		<FilterSection
+			title={t("registry.filter.access")}
+			defaultOpen={hasActive}
+			onOpenChange={setOpened}
+			testId="mcp-clients-filter-vk-access-toggle"
+		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
-				pinnedItems={[{ key: ALL_VKS_KEY, label: "All virtual keys" }]}
+				placeholder={t("registry.filter.searchVirtualKeys")}
+				pinnedItems={[{ key: ALLOWED_BY_DEFAULT_KEY, label: t("registry.filter.allowedByDefault") }]}
 				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name }))}
 				isSelected={isSelected}
 				onToggle={toggle}

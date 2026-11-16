@@ -1,9 +1,13 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -116,6 +120,46 @@ result = {
 	assert.NotNil(t, returnObj["uuid"], "should have uuid from GoTestServer")
 	assert.NotNil(t, returnObj["echo"], "should have echo from InProcess")
 	assert.Equal(t, float64(3), returnObj["servers_used"], "should use 3 servers")
+}
+
+// Nested tool calls inside code mode block on the tool's socket just like direct calls, so their
+// wait belongs in the request's upstream total. Missing it reports the wait as Bifrost overhead.
+func TestCodeMode_NestedToolWaitCountsAsUpstream(t *testing.T) {
+	t.Parallel()
+	const toolDelay = 200 * time.Millisecond
+
+	manager := setupMCPManager(t)
+	slow := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+		Name:       "slow",
+		Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+	}}
+	require.NoError(t, manager.RegisterTool("slow", "Waits, then answers", func(any) (string, error) {
+		time.Sleep(toolDelay)
+		return "done", nil
+	}, slow))
+	for _, client := range manager.GetClients() {
+		if client.ExecutionConfig.ID == "bifrostInternal" {
+			config := client.ExecutionConfig
+			config.IsCodeModeClient = true
+			config.ToolsToExecute = []string{"*"}
+			require.NoError(t, manager.UpdateClient(config.ID, config))
+		}
+	}
+	client := setupBifrost(t)
+	client.SetMCPManager(manager)
+
+	ctx := createTestContext()
+	ctx.ResetUpstreamLatency()
+	toolCall := CreateExecuteToolCodeCall("call-nested-wait", "a = bifrostInternal.slow()\nb = bifrostInternal.slow()\nresult = [a, b]")
+	result, bifrostErr := client.ExecuteChatMCPTool(ctx, &toolCall)
+	require.Nil(t, bifrostErr, "code mode execution failed")
+	require.NotNil(t, result)
+	_, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+	require.False(t, hasError, "code mode script failed: %s", errorMsg)
+
+	upstream, ok := schemas.GetUpstreamLatency(ctx)
+	require.True(t, ok, "no upstream accumulator on the context")
+	assert.GreaterOrEqual(t, upstream, 2*toolDelay, "upstream = %v, want >= %v: the nested tool waits were reported as Bifrost overhead", upstream, 2*toolDelay)
 }
 
 // TestCodeMode_MultiServer_ParallelExecution tests parallel execution across multiple servers
@@ -598,4 +642,47 @@ func mustJSONString(s string) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+// TestCodeMode_LimitsFromConfig pins that code mode limits set in the MCP config
+// reach executions at startup, and that a hot reload replaces them.
+func TestCodeMode_LimitsFromConfig(t *testing.T) {
+	t.Parallel()
+
+	b, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &testAccount{},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		MCPConfig: &schemas.MCPConfig{
+			ToolManagerConfig: &schemas.MCPToolManagerConfig{CodeModeLimits: &schemas.MCPCodeModeLimits{MaxSourceBytes: 16}},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(b.Shutdown)
+
+	execute := func() string {
+		call := CreateExecuteToolCodeCall("call-1", "result = 1 + 2 + 3 + 4")
+		msg, bifrostErr := b.ExecuteChatMCPTool(createTestContext(), &call)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, msg)
+		require.NotNil(t, msg.Content)
+		require.NotNil(t, msg.Content.ContentStr)
+		return *msg.Content.ContentStr
+	}
+
+	assert.Contains(t, execute(), "source limit", "startup limits must apply")
+
+	require.NoError(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSourceBytes: 64}))
+	assert.NotContains(t, execute(), "source limit", "a hot reload must replace the limits")
+
+	require.NoError(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSourceBytes: 8}))
+	assert.Contains(t, execute(), "source limit", "a hot reload must tighten the limits")
+
+	require.NoError(t, b.UpdateToolManagerConfig(schemas.DefaultMaxAgentDepth, 30, string(schemas.CodeModeBindingLevelServer), false, 0, 0))
+	assert.Contains(t, execute(), "source limit", "a tool manager update must not reset the limits")
+
+	require.Error(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSteps: -1}))
+	assert.Contains(t, execute(), "source limit", "rejected limits must leave the current limits in place")
+
+	require.NoError(t, b.UpdateCodeModeLimits(nil))
+	assert.NotContains(t, execute(), "source limit", "nil must restore the defaults")
 }

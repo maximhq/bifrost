@@ -47,3 +47,16 @@ func TestGeminiIncompleteReasonFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// An incomplete response with neither a stop reason nor incomplete_details (upstream sent no
+// finish reason) must not read as a clean STOP; OTHER is Gemini's "unknown reason" value.
+func TestGeminiIncompleteWithoutReasonFinishReasonOther(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{Status: schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)}
+	if got := geminiFinishReasonFromResponses(resp); got != FinishReasonOther {
+		t.Errorf("finish reason = %q, want %q", got, FinishReasonOther)
+	}
+	completed := &schemas.BifrostResponsesResponse{Status: schemas.Ptr(schemas.ResponsesResponseStatusCompleted)}
+	if got := geminiFinishReasonFromResponses(completed); got != FinishReasonStop {
+		t.Errorf("completed finish reason = %q, want %q", got, FinishReasonStop)
+	}
+}

@@ -63,8 +63,10 @@ func TestContentlessCandidateStillYieldsAChoice(t *testing.T) {
 
 	t.Run("stream", func(t *testing.T) {
 		state := gemini.NewGeminiStreamState()
-		bifrostResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		chunks, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
 		require.Nil(t, bifrostErr)
+		require.Len(t, chunks, 1, "the terminal chunk must still be emitted")
+		bifrostResp := chunks[0]
 		require.NotNil(t, bifrostResp)
 		assert.True(t, isLast, "a finish reason with usage closes the stream")
 		require.Len(t, bifrostResp.Choices, 1, "the terminal chunk must still carry a choice")

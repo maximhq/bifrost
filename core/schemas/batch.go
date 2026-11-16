@@ -104,6 +104,11 @@ type BatchAccountingDebug struct {
 	// be parsed at all. Their usage is unrecoverable — the raw results are not
 	// persisted — so the count is kept as the record of how much the row omits.
 	ParseErrorCount int `json:"parse_error_count,omitempty"`
+	// Echo marks a read-only copy of another row's settled price, written onto the
+	// log row of a /results call that did not settle the batch. Such a row is never
+	// billed, so its NULL cost is final rather than pending: without this marker it
+	// looks like an unpriced row to every missing-cost query and recovery pass.
+	Echo bool `json:"echo,omitempty"`
 	// Incomplete marks a total that is known to under-state the batch: some
 	// usage-bearing row failed to price, or rows were lost to parse errors. It is
 	// only ever set, never cleared by a repricing pass — usage that never reached

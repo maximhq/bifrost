@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func (pricingOverrideTestGovernanceManager) ReloadModelConfig(context.Context, s
 func (pricingOverrideTestGovernanceManager) RemoveModelConfig(context.Context, string) error {
 	return nil
 }
-func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider, bool) (*configstoreTables.TableProvider, error) {
 	return nil, nil
 }
 func (pricingOverrideTestGovernanceManager) RemoveProvider(context.Context, schemas.ModelProvider) error {
@@ -152,4 +153,61 @@ func TestUpdatePricingOverride_ReplacesFullBody(t *testing.T) {
 	// Omitted field must be cleared — patch is always fully replaced, not merged.
 	assert.Nil(t, patch.OutputCostPerToken)
 	assert.Empty(t, stored.ConfigHash)
+}
+
+func TestUpdatePricingOverride_CacheCreationAbove12hrFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+
+	now := time.Now().UTC()
+	override := configstoreTables.TablePricingOverride{
+		ID: "override-1hr", Name: "12h", ScopeKind: string(modelcatalog.ScopeKindGlobal),
+		MatchType: string(modelcatalog.MatchTypeExact), Pattern: "gpt-5.6-sol", CreatedAt: now, UpdatedAt: now,
+		PricingPatchJSON: `{"input_cost_per_token":1}`, RequestTypes: []schemas.RequestType{schemas.ResponsesRequest},
+	}
+	require.NoError(t, store.CreatePricingOverride(context.Background(), &override))
+
+	cases := []struct {
+		key  string
+		want float64
+		get  func(modelcatalog.PricingOptions) *float64
+	}{
+		{"cache_creation_input_token_cost_above_12hr", 0.00001, func(p modelcatalog.PricingOptions) *float64 { return p.CacheCreationInputTokenCostAbove12hr }},
+		{"cache_creation_input_token_cost_above_12hr_above_272k_tokens", 0.00002, func(p modelcatalog.PricingOptions) *float64 {
+			return p.CacheCreationInputTokenCostAbove12hrAbove272kTokens
+		}},
+		{"cache_creation_input_token_cost_above_12hr_priority", 0.00003, func(p modelcatalog.PricingOptions) *float64 { return p.CacheCreationInputTokenCostAbove12hrPriority }},
+		{"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority", 0.00004, func(p modelcatalog.PricingOptions) *float64 {
+			return p.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority
+		}},
+		{"cache_creation_input_token_cost_above_12hr_flex", 0.000005, func(p modelcatalog.PricingOptions) *float64 { return p.CacheCreationInputTokenCostAbove12hrFlex }},
+		{"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex", 0.00001, func(p modelcatalog.PricingOptions) *float64 {
+			return p.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex
+		}},
+		{"cache_creation_input_token_cost_above_12hr_ultrafast", 0.00015, func(p modelcatalog.PricingOptions) *float64 { return p.CacheCreationInputTokenCostAbove12hrUltrafast }},
+		{"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast", 0.0003, func(p modelcatalog.PricingOptions) *float64 {
+			return p.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			ctx := newTestRequestCtx(`{"patch":{"` + tc.key + `":` + strconv.FormatFloat(tc.want, 'g', -1, 64) + `}}`)
+			ctx.SetUserValue("id", override.ID)
+			handler.updatePricingOverride(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			stored, err := store.GetPricingOverrideByID(context.Background(), override.ID)
+			require.NoError(t, err)
+			var patch modelcatalog.PricingOptions
+			require.NoError(t, json.Unmarshal([]byte(stored.PricingPatchJSON), &patch))
+			got := tc.get(patch)
+			require.NotNil(t, got, stored.PricingPatchJSON)
+			assert.Equal(t, tc.want, *got)
+		})
+	}
+}
+
+func (pricingOverrideTestGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	return governance.CanonicalModelConfigName(model, provider)
 }

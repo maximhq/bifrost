@@ -231,6 +231,10 @@ legacy-teams:
     operationId: listTeamsLegacy
     x-bifrost-successor: '/api/governance/teams'
     x-bifrost-removal: following-major-release
+    description: |
+      Legacy alias that lists teams one page at a time. `page` is 1-based and `limit`
+      defaults to 20 with a maximum of 100. Use `/api/governance/teams` for new
+      integrations.
     parameters:
       - name: page
         in: query
@@ -433,6 +437,11 @@ legacy-user-virtual-keys:
     operationId: listUserVirtualKeysLegacy
     x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
     x-bifrost-removal: following-major-release
+  post:
+    $ref: './governanceextensions.yaml#/user-virtual-keys/post'
+    operationId: addUserVirtualKeyLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
 
 legacy-user-access-profile-budget-override:
   put:
@@ -457,7 +466,7 @@ legacy-users-access-profile-virtual-keys:
   post:
     $ref: './accessprofiles.yaml#/users-access-profile-virtual-keys/post'
     operationId: addUserAccessProfileVirtualKeyLegacy
-    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys'
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
     x-bifrost-removal: following-major-release
 
 legacy-users-access-profile-virtual-key-by-id:

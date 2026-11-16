@@ -1,12 +1,12 @@
 package rules
 
 import (
-	"context"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -29,23 +29,49 @@ type ScopeLevel struct {
 // Decision is the output of routing rule evaluation
 // Represents which provider/model to route to and fallback chain
 type Decision struct {
-	Provider        string   // Primary provider (e.g., "openai", "azure")
-	Model           string   // Model to use (or empty to use original)
-	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
-	Fallbacks       []string // Fallback chain: ["provider/model", ...]
-	MatchedRuleID   string   // ID of the rule that matched
-	MatchedRuleName string   // Name of the rule that matched
+	Provider        string                              // Primary provider (e.g., "openai", "azure")
+	Model           string                              // Model to use (or empty to use original)
+	KeyID           string                              // Optional: pin a specific API key by UUID ("" = no pin)
+	Fallbacks       []configstoreTables.RoutingFallback // Fallback chain, each optionally pinning a provider key
+	TTFTTimeout     time.Duration                       // TTFT deadline for streaming attempts (0 = none); comes from the selected target
+	MatchedRuleID   string                              // ID of the rule that matched
+	MatchedRuleName string                              // Name of the rule that matched
+}
+
+// targetTTFTTimeout converts a target's ttft_timeout_ms into a duration; unset or
+// non-positive means no deadline.
+func targetTTFTTimeout(target configstoreTables.TableRoutingTarget) time.Duration {
+	if target.TTFTTimeoutMs == nil || *target.TTFTTimeoutMs <= 0 {
+		return 0
+	}
+	return time.Duration(*target.TTFTTimeoutMs) * time.Millisecond
+}
+
+// GovernanceScope is who a request is governed as: the identifiers the access it carries was resolved
+// under, stamped on the context at that moment. Rules match on them as scopes and read them as variables.
+//
+// Identifiers rather than the credential row they came from. A rule asks which key, team or customer a
+// request belongs to, never anything else about them, and a request granted access by something other
+// than a key has those answers too, which a credential row could not have supplied.
+//
+// An empty field means the request has no such scope, which is what a rule scoped to one must not match.
+type GovernanceScope struct {
+	VirtualKeyID   string
+	VirtualKeyName string
+	UserID         string
+	TeamID         string
+	TeamName       string
+	CustomerID     string
+	CustomerName   string
 }
 
 // EvaluationContext holds all data needed for routing rule evaluation
-// Reuses existing configstore table types for VirtualKey, Team, Customer
 type EvaluationContext struct {
-	VirtualKey               *configstoreTables.TableVirtualKey   // nil if no VK
-	UserID                   string                               // Resolved calling user id; empty when the request carries no user identity
+	Scope                    GovernanceScope                      // who the request is governed as
 	Provider                 schemas.ModelProvider                // Current provider
 	Model                    string                               // Current model
 	RequestType              string                               // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
-	Fallbacks                []string                             // Fallback chain: ["provider/model", ...]
+	Fallbacks                []configstoreTables.RoutingFallback  // Fallback chain, each optionally pinning a provider key
 	Headers                  map[string]string                    // Request headers for dynamic routing
 	QueryParams              map[string]string                    // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *governance.BudgetAndRateLimitStatus // Budget and rate limit status by provider/model
@@ -60,8 +86,7 @@ type EvaluationContext struct {
 // evaluating them against a missing governance store would silently answer those variables
 // with zero values instead of real usage.
 type GovernanceStore interface {
-	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus
+	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus
 }
 
 type Engine struct {
@@ -123,7 +148,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 	// Build scope chain once — it's based on the immutable VirtualKey and user
 	// identity and won't change across chain steps.
-	scopeChain := buildScopeChain(routingCtx.VirtualKey, routingCtx.UserID)
+	scopeChain := buildScopeChain(routingCtx.Scope)
 
 	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
 	// and we re-evaluate the scope hierarchy on subsequent steps.
@@ -169,7 +194,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		iterCtx.Model = currentModel
 		// Refresh budget/rate-limit status for the current provider/model so chained
 		// rules that test budget_used, tokens_used, or request see fresh data.
-		iterCtx.BudgetAndRateLimitStatus = re.governance.GetBudgetAndRateLimitStatus(ctx, currentModel, currentProvider, routingCtx.VirtualKey, nil, nil, nil)
+		iterCtx.BudgetAndRateLimitStatus = re.governance.GetBudgetAndRateLimitStatus(ctx, currentProvider, currentModel, nil, nil, nil)
 
 		variables, err := extractRoutingVariables(&iterCtx)
 		if err != nil {
@@ -212,20 +237,20 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
 
-				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
-				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity {
-					complexityResult = ComputeComplexity()
-					ComputeComplexity = nil // compute at most once
-					if complexityResult != nil {
-						variables["complexity_tier"] = complexityResult.Tier
-					}
-				}
-
 				program, err := re.rules.GetProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[Engine] Failed to compile rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 					continue
+				}
+
+				// Lazy complexity: compute only when the rule's outcome depends on complexity and it hasn't been computed yet
+				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity && celOutcomeDependsOn(program, variables, "complexity_tier") {
+					complexityResult = ComputeComplexity()
+					ComputeComplexity = nil // compute at most once
+					if complexityResult != nil {
+						variables["complexity_tier"] = complexityResult.Tier
+					}
 				}
 
 				var unknowns []*cel.AttributePatternType
@@ -275,6 +300,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					Model:           model,
 					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
+					TTFTTimeout:     targetTTFTTimeout(target),
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}
@@ -294,12 +320,16 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
 
+		ttftSuffix := ""
+		if stepDecision.TTFTTimeout > 0 {
+			ttftSuffix = fmt.Sprintf(", ttft_timeout=%s", stepDecision.TTFTTimeout)
+		}
 		chainSuffix := ""
 		if matchedRule.ChainRule {
 			chainSuffix = " [chain_rule=true, continuing]"
 		}
-		re.logger.Debug("[Engine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix)
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedRule.Name, matchedRule.CelExpression, matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix))
+		re.logger.Debug("[Engine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedTargetWeight, stepDecision.Provider, stepDecision.Model, configstoreTables.RoutingFallbackStrings(stepDecision.Fallbacks), chainSuffix)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s%s", matchedRule.Name, matchedRule.CelExpression, matchedTargetWeight, stepDecision.Provider, stepDecision.Model, configstoreTables.RoutingFallbackStrings(stepDecision.Fallbacks), ttftSuffix, chainSuffix))
 
 		// TERMINATION 2: Rule is terminal (chain_rule=false, the default).
 		if !matchedRule.ChainRule {
@@ -320,33 +350,39 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 	return finalDecision, nil
 }
 
-// selectWeightedTarget picks one target from the slice using weighted random selection.
-// Each target's Weight contributes proportionally to its probability of being chosen.
+// selectWeightedTarget picks one routing rule target by weight; see pickWeighted.
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+	return pickWeighted(targets, func(t configstoreTables.TableRoutingTarget) float64 { return t.Weight })
+}
+
+// pickWeighted picks one target from the slice using weighted random selection.
+// Each target's weight contributes proportionally to its probability of being chosen.
 // Weights do not need to be normalised to 100; the function normalises internally.
 // Returns ok=false only when len(targets)==0 or all targets have negative weights (filtered out).
 // When all valid targets have weight==0 the function falls back to uniform random selection
 // and still returns ok=true, so zero-weight targets are valid and handled.
-func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+func pickWeighted[T any](targets []T, weight func(T) float64) (T, bool) {
+	var zero T
 	if len(targets) == 0 {
-		return configstoreTables.TableRoutingTarget{}, false
+		return zero, false
 	}
 
 	// Filter out negative weights as a precaution against malformed DB data.
 	// Negative weights are blocked at write time by validateRoutingTargets, but
 	// we guard here defensively so a bad row cannot corrupt the cumulative range.
-	valid := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
+	valid := make([]T, 0, len(targets))
 	for _, t := range targets {
-		if t.Weight >= 0 {
+		if weight(t) >= 0 {
 			valid = append(valid, t)
 		}
 	}
 	if len(valid) == 0 {
-		return configstoreTables.TableRoutingTarget{}, false
+		return zero, false
 	}
 
 	total := 0.0
 	for _, t := range valid {
-		total += t.Weight
+		total += weight(t)
 	}
 
 	// All weights are 0 — select uniformly at random among valid targets.
@@ -361,7 +397,7 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 	r := rand.Float64() * total
 	cumulative := 0.0
 	for _, t := range valid {
-		cumulative += t.Weight
+		cumulative += weight(t)
 		if r < cumulative {
 			return t, true
 		}
@@ -369,61 +405,41 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 	return valid[len(valid)-1], true
 }
 
-// buildScopeChain builds the scope evaluation chain based on organizational hierarchy
-// Returns scope levels in precedence order (highest to lowest)
-// VirtualKey > User > Team > Customer > Global
-func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey, userID string) []ScopeLevel {
+// buildScopeChain orders the scopes a request matches rules at, most specific first:
+// VirtualKey > User > Team > Customer > Global. First match within an iteration wins.
+//
+// A scope is present when the request has an identifier for it, and every identifier arrives the same
+// way: the user level is independent of the others, so a session-authenticated request carrying no
+// credential still matches user-scoped rules.
+func buildScopeChain(scope GovernanceScope) []ScopeLevel {
 	var chain []ScopeLevel
-
-	// VirtualKey level (highest precedence)
-	if virtualKey != nil {
-		chain = append(chain, ScopeLevel{
-			ScopeName: "virtual_key",
-			ScopeID:   virtualKey.ID,
-		})
-	}
-
-	// User level: the resolved calling user. Independent of VK presence so
-	// session-authenticated requests without a virtual key still match
-	// user-scoped rules.
-	if userID != "" {
-		chain = append(chain, ScopeLevel{
-			ScopeName: "user",
-			ScopeID:   userID,
-		})
-	}
-
-	if virtualKey != nil {
-		// Team level
-		if virtualKey.Team != nil {
-			chain = append(chain, ScopeLevel{
-				ScopeName: "team",
-				ScopeID:   virtualKey.Team.ID,
-			})
-
-			// Customer level (from Team)
-			if virtualKey.Team.Customer != nil {
-				chain = append(chain, ScopeLevel{
-					ScopeName: "customer",
-					ScopeID:   virtualKey.Team.Customer.ID,
-				})
-			}
-		} else if virtualKey.Customer != nil {
-			// Customer level (VK attached directly to customer, no Team)
-			chain = append(chain, ScopeLevel{
-				ScopeName: "customer",
-				ScopeID:   virtualKey.Customer.ID,
-			})
+	appendScope := func(name, id string) {
+		if id == "" {
+			return
 		}
+		chain = append(chain, ScopeLevel{ScopeName: name, ScopeID: id})
 	}
 
-	// Global level (lowest precedence)
-	chain = append(chain, ScopeLevel{
-		ScopeName: "global",
-		ScopeID:   "",
-	})
+	appendScope("virtual_key", scope.VirtualKeyID)
+	appendScope("user", scope.UserID)
+	appendScope("team", scope.TeamID)
+	appendScope("customer", scope.CustomerID)
 
-	return chain
+	// Global level (lowest precedence), and the only one every request matches at.
+	return append(chain, ScopeLevel{ScopeName: "global", ScopeID: ""})
+}
+
+// celOutcomeDependsOn reports whether the program's result is undecided with identifier
+// marked unknown, so an expensive variable is only computed when the rule needs it
+// (e.g. model == "x" && complexity_tier == "SIMPLE" is already false for other models).
+// Evaluation errors report true, keeping the compute-then-evaluate path unchanged.
+func celOutcomeDependsOn(program cel.Program, variables map[string]any, identifier string) bool {
+	partial, err := cel.PartialVars(variables, cel.AttributePattern(identifier))
+	if err != nil {
+		return true
+	}
+	out, _, err := program.Eval(partial)
+	return err != nil || types.IsUnknown(out)
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
@@ -501,43 +517,16 @@ func extractRoutingVariables(ctx *EvaluationContext) (map[string]interface{}, er
 	}
 	variables["params"] = normalizedParams
 
-	// Extract VirtualKey context if available
-	if ctx.VirtualKey != nil {
-		variables["virtual_key_id"] = ctx.VirtualKey.ID
-		variables["virtual_key_name"] = ctx.VirtualKey.Name
-	} else {
-		variables["virtual_key_id"] = ""
-		variables["virtual_key_name"] = ""
-	}
-
-	// Resolved calling user id; empty when the request carries no user identity
-	variables["user_id"] = ctx.UserID
-
-	// Extract Team context if available (from VirtualKey)
-	if ctx.VirtualKey != nil && ctx.VirtualKey.Team != nil {
-		variables["team_id"] = ctx.VirtualKey.Team.ID
-		variables["team_name"] = ctx.VirtualKey.Team.Name
-	} else {
-		variables["team_id"] = ""
-		variables["team_name"] = ""
-	}
-
-	// Extract Customer context if available (from Team or directly from VirtualKey)
-	if ctx.VirtualKey != nil {
-		if ctx.VirtualKey.Team != nil && ctx.VirtualKey.Team.Customer != nil {
-			variables["customer_id"] = ctx.VirtualKey.Team.Customer.ID
-			variables["customer_name"] = ctx.VirtualKey.Team.Customer.Name
-		} else if ctx.VirtualKey.Customer != nil {
-			variables["customer_id"] = ctx.VirtualKey.Customer.ID
-			variables["customer_name"] = ctx.VirtualKey.Customer.Name
-		} else {
-			variables["customer_id"] = ""
-			variables["customer_name"] = ""
-		}
-	} else {
-		variables["customer_id"] = ""
-		variables["customer_name"] = ""
-	}
+	// Who the request is governed as. Absent scopes are the empty string, which is what a rule comparing
+	// against one has always seen: the branching this replaced existed only to reach through a
+	// credential row for the same six values.
+	variables["virtual_key_id"] = ctx.Scope.VirtualKeyID
+	variables["virtual_key_name"] = ctx.Scope.VirtualKeyName
+	variables["user_id"] = ctx.Scope.UserID
+	variables["team_id"] = ctx.Scope.TeamID
+	variables["team_name"] = ctx.Scope.TeamName
+	variables["customer_id"] = ctx.Scope.CustomerID
+	variables["customer_name"] = ctx.Scope.CustomerName
 
 	// Populate budget and rate limit variables for current provider/model combination
 	if ctx.BudgetAndRateLimitStatus != nil {

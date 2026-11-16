@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="A10 Guardrails">
+  <style>.bg { fill: #ffffff; } @media (prefers-color-scheme: dark) { .bg { fill: #090d0d; } }</style>
+  <rect class="bg" width="200" height="200"/>
+  <g fill="#07C983" transform="translate(7.86 62.96) scale(0.4875)">
+    <path fill-rule="evenodd" d="M79 9H149L213.4 143H148.5L132 107H65L45.5 143H8.5ZM99.5 40L120.5 84H76.5Z"/>
+    <path d="M228 9H251V143H213V55H187V30.5Z"/>
+    <path fill-rule="evenodd" d="M292 9H339C360.3 9 369 20.6 369 49V107C369 132.56 360.3 143 339 143H292C270.7 143 262 132.56 262 107V49C262 20.6 270.7 9 292 9ZM308 32H323A7 7 0 0 1 330 39V114A7 7 0 0 1 323 121H308A7 7 0 0 1 301 114V39A7 7 0 0 1 308 32Z"/>
+  </g>
+</svg>

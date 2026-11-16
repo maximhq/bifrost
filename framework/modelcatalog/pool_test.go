@@ -1,16 +1,126 @@
 package modelcatalog
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
+
+func elevenlabsScribeCatalog(tb testing.TB) *ModelCatalog {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), "pricing.json")
+	pricing := []byte(`{
+		"elevenlabs/scribe_v1": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v1"},
+		"elevenlabs/scribe_v1_experimental": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v1_experimental"},
+		"elevenlabs/scribe_v2": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v2"},
+		"elevenlabs/eleven_turbo_v2_5": {"provider":"elevenlabs","mode":"audio_speech","base_model":"eleven_turbo_v2_5"},
+		"openai/gpt-4o-mini": {"provider":"openai","mode":"chat","base_model":"gpt-4o-mini"}
+	}`)
+	if err := os.WriteFile(path, pricing, 0o600); err != nil {
+		tb.Fatal(err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
+		tb.Fatal(err)
+	}
+	return NewTestCatalogWithDatasheet(ds)
+}
+
+// A successful TTS-only live listing must not remove callable Scribe models
+// from the effective catalog that wildcard virtual-key authorization uses.
+func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allowed schemas.WhiteList
+		blocked schemas.BlackList
+		want    []string
+	}{
+		{"wildcard", schemas.WhiteList{"*"}, nil, []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2"}},
+		{"explicit scribe", schemas.WhiteList{"scribe_v2"}, nil, []string{"scribe_v2"}},
+		{"tts only", schemas.WhiteList{"eleven_turbo_v2_5"}, nil, []string{"eleven_turbo_v2_5"}},
+		{"empty denies all", schemas.WhiteList{}, nil, []string{}},
+		{"blacklist wins", schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental"}},
+		{"regex allow", schemas.WhiteList{"regex:^scribe_.*$"}, nil, []string{"scribe_v1", "scribe_v1_experimental", "scribe_v2"}},
+		{"regex block", schemas.WhiteList{"*"}, schemas.BlackList{"regex:^scribe_.*$"}, []string{"eleven_turbo_v2_5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := elevenlabsScribeCatalog(t)
+			key := schemas.Key{ID: "key-1", Models: tc.allowed, BlacklistedModels: tc.blocked}
+			mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{key})
+			upstream := elevenlabs.ElevenlabsListModelsResponse{{ModelID: "eleven_turbo_v2_5", Name: "Turbo"}}
+			mc.UpsertLiveFromResponse(schemas.Elevenlabs, key.ID, true,
+				upstream.ToBifrostListModelsResponse(schemas.Elevenlabs, key.Models, key.BlacklistedModels, nil, true))
+			mc.UpsertLiveFromResponse(schemas.Elevenlabs, key.ID, false,
+				upstream.ToBifrostListModelsResponse(schemas.Elevenlabs, key.Models, key.BlacklistedModels, nil, false))
+			got := mc.GetModelsForProvider(schemas.Elevenlabs)
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("effective catalog = %v, want %v", got, tc.want)
+			}
+			for _, model := range []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2", "nonexistent-scribe", "gpt-4o-mini"} {
+				want := slices.Contains(tc.want, model)
+				if allowed := mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, schemas.WhiteList{"*"}); allowed != want {
+					t.Errorf("wildcard authorization for %s = %t, want %t", model, allowed, want)
+				}
+			}
+			// The management view is unfiltered, not an authorization grant.
+			if !slices.Contains(mc.GetUnfilteredModelsForProvider(schemas.Elevenlabs), "scribe_v2") {
+				t.Error("Scribe missing from unfiltered management catalog")
+			}
+			mc.UpsertLive(schemas.OpenAI, "openai-key", false, []string{"gpt-4o-mini"})
+			if mc.IsModelAllowedForProvider(schemas.OpenAI, "scribe_v2", nil, schemas.WhiteList{"*"}) {
+				t.Error("ElevenLabs Scribe must not be granted on OpenAI")
+			}
+		})
+	}
+}
+
+// Key-config updates invalidate the composed catalog without changing upstream
+// discovery. A stale wildcard memo must not authorize a newly restricted key.
+func TestElevenlabsScribeCatalogReconcilesKeyChanges(t *testing.T) {
+	mc := elevenlabsScribeCatalog(t)
+	mc.UpsertLive(schemas.Elevenlabs, "key-1", false, []string{"eleven_turbo_v2_5"})
+	for _, tc := range []struct {
+		allowed schemas.WhiteList
+		blocked schemas.BlackList
+		want    bool
+	}{
+		{schemas.WhiteList{"*"}, nil, true},
+		{schemas.WhiteList{"eleven_turbo_v2_5"}, nil, false},
+		{schemas.WhiteList{"*"}, nil, true},
+		{schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, false},
+	} {
+		mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: tc.allowed, BlacklistedModels: tc.blocked}})
+		if got := mc.IsModelAllowedForProvider(schemas.Elevenlabs, "scribe_v2", nil, schemas.WhiteList{"*"}); got != tc.want {
+			t.Fatalf("authorization after key update = %t, want %t", got, tc.want)
+		}
+	}
+}
+
+func BenchmarkElevenlabsScribeWildcardAuthorization(b *testing.B) {
+	mc := elevenlabsScribeCatalog(b)
+	mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: schemas.WhiteList{"*"}}})
+	mc.UpsertLive(schemas.Elevenlabs, "key-1", false, []string{"eleven_turbo_v2_5"})
+	allowed := schemas.WhiteList{"*"}
+	for _, model := range []string{"scribe_v2", "eleven_turbo_v2_5"} {
+		b.Run(model, func(b *testing.B) {
+			_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+			}
+		})
+	}
+}
 
 // TestUpsertLiveFromResponse_NilRespIsNoop guards the API surface: handing a
 // nil response into UpsertLiveFromResponse must not clear an existing cache
@@ -49,6 +159,91 @@ func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
 	want := []string{"gpt-4o", "o1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("GetModelsForProvider = %v, want %v", got, want)
+	}
+}
+
+// TestGetUnfilteredModelsForProvider_UsesDatabricksPricing verifies the management catalog
+// still returns Databricks models when the provider intentionally publishes no live models.
+func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", true, []string{})
+
+	got := mc.GetUnfilteredModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetUnfilteredModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
+// TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases verifies that live alias entries
+// do not shadow the datasheet, which stays the source of Databricks' callable models.
+func TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", false, []string{"my-claude"})
+
+	got := mc.GetModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model", "my-claude"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
+// TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly verifies the
+// unfiltered Cloudflare catalog is its live /models response alone. The datasheet
+// carries the same Workers AI models under other ID shapes, which would otherwise
+// show up as duplicates in the allowed models dropdown.
+func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"cloudflare/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/clef": {"provider":"cloudflare","mode":"chat","base_model":"clef"}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	live := []string{"@cf/cloudflare/clef", "@cf/meta/llama-3.1-8b-instruct-fp8"}
+	mc.UpsertLive(schemas.Cloudflare, "k1", true, live)
+
+	if got := mc.GetUnfilteredModelsForProvider(schemas.Cloudflare); !slices.Equal(got, live) {
+		t.Errorf("GetUnfilteredModelsForProvider(Cloudflare) = %v, want %v", got, live)
 	}
 }
 
@@ -199,6 +394,90 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 }
 
 // ptrBool returns a pointer to b, for building schemas.Key fixtures.
+// TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate pins that a
+// custom provider that is not keyless and has no keys (its only key was
+// rejected at save) does not claim a bare model name. Before the fix it did,
+// and the resolver's alphabetical pick routed text-embedding-005 to it ahead
+// of vertex, failing with no_key_supports_model.
+func TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "harness-oauthkey-run"
+	vertexKeys := []schemas.Key{{ID: "v1", Models: schemas.WhiteList{"text-embedding-005"}}}
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{schemas.Vertex: vertexKeys, custom: nil})
+		},
+		"SetKeyConfigForProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForProvider(schemas.Vertex, vertexKeys)
+			mc.SetKeyConfigForProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			got := mc.GetProvidersForModel("text-embedding-005")
+			if !slices.Equal(got, []schemas.ModelProvider{schemas.Vertex}) {
+				t.Fatalf("GetProvidersForModel = %v, want [vertex] (zero-key custom provider must not be a candidate)", got)
+			}
+		})
+	}
+}
+
+// TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate pins the
+// other side: a keyless custom provider (is_key_less) with no keys keeps
+// claiming any model, since it authenticates without a key.
+func TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "keyless-custom"
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+		},
+		"SetKeyConfigForKeylessProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForKeylessProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			if got := mc.GetProvidersForModel("any-model"); !slices.Equal(got, []schemas.ModelProvider{custom}) {
+				t.Fatalf("GetProvidersForModel = %v, want [%s]", got, custom)
+			}
+		})
+	}
+}
+
+// TestGetProvidersForModel_PatternAliasCandidate pins when a pattern alias makes a provider a candidate for a bare model its upstream does not list.
+func TestGetProvidersForModel_PatternAliasCandidate(t *testing.T) {
+	pattern := schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}}
+	all := schemas.WhiteList{"*"}
+	keys := map[schemas.ModelProvider][]schemas.Key{
+		"pattern":       {{ID: "k1", Models: all, Aliases: pattern}},
+		"exact":         {{ID: "k2", Models: all, Aliases: schemas.KeyAliases{"claude-opus-5": {ModelID: "us.anthropic.claude-opus-5"}}}},
+		"no-alias":      {{ID: "k3", Models: all}},
+		"allow-refuses": {{ID: "k4", Models: schemas.WhiteList{"regex:gpt-.*"}, Aliases: pattern}},
+		"blocked":       {{ID: "k5", Models: all, BlacklistedModels: schemas.BlackList{"claude-opus-5"}, Aliases: pattern}},
+	}
+	mc := NewTestCatalog(nil)
+	mc.ReplaceKeyConfig(keys)
+	// A listed model keeps a wildcard key from claiming every name, so only the alias can add one.
+	for provider, ks := range keys {
+		mc.UpsertLive(provider, ks[0].ID, false, []string{"listed-by-" + string(provider)})
+		mc.UpsertLive(provider, ks[0].ID, true, []string{"listed-by-" + string(provider)})
+	}
+	for model, want := range map[string][]schemas.ModelProvider{
+		"claude-opus-5":     {"exact", "pattern"},
+		"CLAUDE-OPUS-5":     {"exact", "pattern"},
+		"claude-sonnet-5":   {"blocked", "pattern"},
+		"mistral-large":     nil,
+		"regex:(claude-.*)": nil,
+	} {
+		got := mc.GetProvidersForModel(model)
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("GetProvidersForModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
 func ptrBool(b bool) *bool { return &b }
 
 // TestExtractModelIDs_StripsOwningProviderPrefix verifies the canonical
@@ -211,7 +490,7 @@ func TestExtractModelIDs_StripsOwningProviderPrefix(t *testing.T) {
 			{ID: "openai/o1"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	slices.Sort(got)
 	want := []string{"gpt-4o", "o1"}
 	if !slices.Equal(got, want) {
@@ -230,7 +509,7 @@ func TestExtractModelIDs_KeepsNestedProviderForGateway(t *testing.T) {
 			{ID: "openrouter/anthropic/claude-sonnet-4"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenRouter)
+	got, _ := extractModelIDs(resp, schemas.OpenRouter)
 	slices.Sort(got)
 	want := []string{"anthropic/claude-sonnet-4", "openai/gpt-4"}
 	if !slices.Equal(got, want) {
@@ -251,7 +530,7 @@ func TestExtractModelIDs_DropsForeignPrefix(t *testing.T) {
 			{ID: "anthropic/claude-sonnet"}, // foreign — should be dropped
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	slices.Sort(got)
 	want := []string{"gpt-4o"}
 	if !slices.Equal(got, want) {
@@ -262,7 +541,7 @@ func TestExtractModelIDs_DropsForeignPrefix(t *testing.T) {
 // TestExtractModelIDs_NilResp returns nil — the public wrapper relies on
 // this to short-circuit cleanly when a list-models call returns no body.
 func TestExtractModelIDs_NilResp(t *testing.T) {
-	if got := extractModelIDs(nil, schemas.OpenAI); got != nil {
+	if got, _ := extractModelIDs(nil, schemas.OpenAI); got != nil {
 		t.Errorf("extractModelIDs(nil) = %v, want nil", got)
 	}
 }
@@ -277,9 +556,28 @@ func TestExtractModelIDs_Dedup(t *testing.T) {
 			{ID: "openai/gpt-4o"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	if len(got) != 1 || got[0] != "gpt-4o" {
 		t.Errorf("extractModelIDs = %v, want [gpt-4o] (deduped)", got)
+	}
+}
+
+// TestExtractModelIDs_DedupKeepsLatestCreated reads the creation time from
+// every row of a duplicated model, not only the first, and keeps the latest.
+func TestExtractModelIDs_DedupKeepsLatestCreated(t *testing.T) {
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{
+			{ID: "openai/gpt-4o"},
+			{ID: "gpt-4o", Created: new(int64(100))},
+			{ID: "openai/gpt-4o", Created: new(int64(200))},
+		},
+	}
+	got, created := extractModelIDs(resp, schemas.OpenAI)
+	if !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("extractModelIDs = %v, want [gpt-4o]", got)
+	}
+	if want := map[string]int64{"gpt-4o": 200}; !maps.Equal(created, want) {
+		t.Errorf("created = %v, want %v", created, want)
 	}
 }
 
@@ -378,5 +676,44 @@ func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
 	}
 	if got := mc.GetModelsForProvider(schemas.OpenAI); !slices.Equal(got, []string{"gpt-4o"}) {
 		t.Errorf("after nil-resp guarded upsert = %v, want [gpt-4o] (entry must survive)", got)
+	}
+}
+
+// TestGetModelCreatedTimes keeps the provider creation time from cached
+// list-models responses, takes the latest time across keys, skips models with
+// no time, and drops times when the key is invalidated.
+func TestGetModelCreatedTimes(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "openai/model-a", Created: new(int64(100))},
+		{ID: "openai/model-b"},
+		{ID: "anthropic/other-provider", Created: new(int64(900))},
+	}})
+	gen := mc.LiveGeneration(schemas.OpenAI)
+	if !mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k2", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "model-a", Created: new(int64(200))},
+		{ID: "model-c", Created: new(int64(0))},
+	}}, gen) {
+		t.Fatal("current generation write was dropped")
+	}
+	want := map[string]int64{"model-a": 200}
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, want) {
+		t.Fatalf("created = %v, want %v", got, want)
+	}
+	mc.InvalidateLive(schemas.OpenAI, "k2")
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, map[string]int64{"model-a": 100}) {
+		t.Fatalf("after invalidation created = %v", got)
+	}
+	if got := mc.GetModelCreatedTimes(schemas.Anthropic, false); len(got) != 0 {
+		t.Fatalf("other providers' rows must not leak: %v", got)
+	}
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", true, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "model-hidden", Created: new(int64(500))},
+	}})
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, true); !maps.Equal(got, map[string]int64{"model-hidden": 500}) {
+		t.Fatalf("unfiltered created = %v, want only the unfiltered entry's times", got)
+	}
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, map[string]int64{"model-a": 100}) {
+		t.Fatalf("unfiltered times must not leak into filtered reads: %v", got)
 	}
 }

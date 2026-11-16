@@ -1,0 +1,31 @@
+---
+title: "v0.9.0"
+description: "Edge v0.9.0 changelog - 2026-09-19"
+---
+
+<Update label="Bifrost Edge" description="v0.9.0">
+
+## Changelog
+
+v0.9.0 makes pass-through mode a first-class routing state. A single per-application routing policy now governs every request path, and applications left in pass-through are continuously cleaned of stale Edge credentials instead of only once at startup. Cursor gains context-limit recovery through tool-output compaction and rolling conversation summarization. On macOS, administrators get a fleet-level capture kill switch that can be toggled at runtime without restarting anything. Across all supported coding tools, unknown provider event types now pass through as-is instead of failing the request, so new provider features keep working before Edge learns about them.
+
+## ✨ Features
+
+- **Per-Application Routing Policy** - A single immutable policy snapshot now decides gateway versus pass-through mode for every request path: HTTP, HTTP/2, WebSocket, model catalog, and Claude Cowork. Application aliases are folded consistently (`codex` resolves to `codex-desktop`, `claude-code-cli` to `claude-code`), an in-flight turn keeps the policy it started with even if the policy changes mid-turn, and the tray and diagnostics now show the applied routing state with its version, last sync time, and any reconciliation error.
+- **Continuous Pass-Through Credential Cleanup** - Applications in pass-through mode (Claude Code, Codex, OpenCode, Gemini CLI) are now watched continuously, so a stale Edge credential restored by a client after the policy switch is removed on the next reconcile cycle rather than persisting until the next restart. Cleanup strips only the Edge-planted credential and never claims ownership of, alters, or deletes the user's own settings files.
+- **Fleet Capture Kill Switch on macOS** - Administrators can now disable Edge's macOS network capture fleet-wide at runtime. The daemon pushes the policy to the capture extension live, flows are declined and passed through normally while capture is disabled, and re-enabling requires no reinstall, restart, or re-approval. Older agent versions ignore the new field and behave as before.
+- **Cursor Context-Limit Recovery** - When a Cursor conversation grows past the model's input limit, Edge now recovers instead of failing the turn: older completed research tool outputs are compacted into explicitly incomplete previews and the request is retried once, and if that is not enough a bounded rolling summary of the conversation is generated through the same governed model. Summaries are checkpointed atomically, so cold resumes stay durable, and accepted streams and partial tool calls are never retried.
+- **Gemini CLI Tool Delivery Gate with Incremental Streaming** - Gemini CLI requests now flow through the shared tool delivery gate: text, reasoning, and lifecycle events stream to the client immediately, while function calls are held until they pass policy inspection. A heartbeat keeps the connection alive during upstream and policy waits, and fixed response deadlines across the agent are replaced by request cancellation so long-running turns no longer hit arbitrary cutoffs.
+- **Forward Compatibility with Unknown Provider Events** - Unknown streaming event types, content block variants, output item types, and finish reasons are now passed through as opaque data instead of being rejected, across all supported coding tools. Only recognized tool-call shapes enter policy inspection, and an unknown event can never complete or approve a pending tool call.
+- **Unknown MCP Calls Continue as Observations** - A tool call for an MCP server that cannot be matched to the device inventory (stale inventory, removed server, unrecognized name) is now logged as an observation with full attribution instead of being hard-denied, and the rest of the batch continues under normal enforcement. Explicit policy denials are still enforced strictly.
+
+## 🐞 Fixed
+
+- **Cursor Short Model Aliases Failed to Resolve** - Selecting a short alias from Cursor's model picker could fail model resolution; unresolved names are now matched against the live model catalog's alias lists instead of guessing a provider.
+- **Malformed Policy Messages Could Re-Enable Capture** - A capture policy message with a missing or wrongly typed field could unintentionally re-enable capture, and a policy update racing a connection handshake could leave a stale policy state; both paths are now hardened and covered by conformance tests.
+- **Unknown Cursor Tool Calls Ended the Conversation** - A tool call Edge could not resolve terminated the Cursor run; it now returns an inline `tool_unavailable` result so the conversation continues, ambiguous tool names are no longer resolved by guessing, and an unconfirmed mutating tool on resume receives an explicit unknown-outcome message instead of failing closed.
+- **Cursor Error Messages Buried Under Diagnostics** - Upstream error responses that append large diagnostic payloads after the structured message are now parsed for the message first, so the actual explanation is preserved without draining multi-megabyte bodies.
+- **Model Catalog Fetch Timeouts Too Aggressive** - Model catalog fetches now allow 30 seconds instead of 5 to 10, fixing empty model pickers on slow networks.
+- **Startup Log Noise** - Removed repetitive daemon log bursts emitted during startup on macOS and Linux.
+
+</Update>

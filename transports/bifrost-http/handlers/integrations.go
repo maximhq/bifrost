@@ -6,45 +6,66 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // IntegrationHandler manages HTTP requests for AI provider integrations
 type IntegrationHandler struct {
 	extensions            []integrations.ExtensionRouter
 	wsResponses           *WSResponsesHandler
+	wsCodexPassthrough    *WSCodexPassthroughHandler
 	wsRealtime            *WSRealtimeHandler
 	webrtcRealtime        *WebRTCRealtimeHandler
 	realtimeClientSecrets *RealtimeClientSecretsHandler
 }
 
+// AccessResolver narrows the provider fan-out of a models listing to what the request may reach
+type AccessResolver interface {
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
+}
+
 // NewIntegrationHandler creates a new integration handler instance.
 // WebSocket handlers may be nil if WebSocket support is not configured.
-func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
+// accessResolver answers what a request may reach, the same way the inference handler's models
+// manager does; nil leaves every listing with the fan-out it already had.
+func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
-		integrations.NewOpenAIRouter(client, handlerStore, logger),
-		integrations.NewAnthropicRouter(client, handlerStore, logger),
-		integrations.NewGenAIRouter(client, handlerStore, logger),
-		integrations.NewLiteLLMRouter(client, handlerStore, logger),
-		integrations.NewCohereRouter(client, handlerStore, logger),
-		integrations.NewLangChainRouter(client, handlerStore, logger),
-		integrations.NewPydanticAIRouter(client, handlerStore, logger),
-		integrations.NewBedrockRouter(client, handlerStore, logger),
+		integrations.NewOpenAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAnthropicRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewGenAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewLiteLLMRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewCohereRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAzureRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewElevenlabsRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewLangChainRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewPydanticAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewBedrockRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewTypesafeRouter(client, handlerStore, accessResolver, logger),
 		// passthrough routers
-		integrations.NewGenAIPassthroughRouter(client, handlerStore, logger),
-		integrations.NewChatGPTPassthroughRouter(client, handlerStore, logger),
-		integrations.NewOpenAIPassthroughRouter(client, handlerStore, logger),
-		integrations.NewAnthropicPassthroughRouter(client, handlerStore, logger),
-		integrations.NewAzurePassthroughRouter(client, handlerStore, logger),
-		integrations.NewRunwarePassthroughRouter(client, handlerStore, logger),
-		integrations.NewCursorRouter(client, handlerStore, logger),
+		integrations.NewGenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewChatGPTPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewOpenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAnthropicPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAzurePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewBedrockPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewSageMakerPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewElevenlabsPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
+	}
+
+	// The Codex relay is a Responses WebSocket too, so it is served wherever that one is.
+	var wsCodexPassthrough *WSCodexPassthroughHandler
+	if wsResponses != nil {
+		wsCodexPassthrough = newWSCodexPassthroughHandler(wsResponses.client, wsResponses.config, wsResponses.handlerStore)
 	}
 
 	return &IntegrationHandler{
 		extensions:            extensions,
 		wsResponses:           wsResponses,
+		wsCodexPassthrough:    wsCodexPassthrough,
 		wsRealtime:            wsRealtime,
 		webrtcRealtime:        webrtcRealtime,
 		realtimeClientSecrets: realtimeClientSecrets,
@@ -60,6 +81,9 @@ func (h *IntegrationHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	// Register WebSocket routes (base path + integration paths)
 	if h.wsResponses != nil {
 		h.wsResponses.RegisterRoutes(r, middlewares...)
+	}
+	if h.wsCodexPassthrough != nil {
+		h.wsCodexPassthrough.RegisterRoutes(r, middlewares...)
 	}
 	if h.wsRealtime != nil {
 		h.wsRealtime.RegisterRoutes(r, middlewares...)
@@ -78,6 +102,9 @@ func (h *IntegrationHandler) Close() {
 	}
 	if h.wsResponses != nil {
 		h.wsResponses.Close()
+	}
+	if h.wsCodexPassthrough != nil {
+		h.wsCodexPassthrough.Close()
 	}
 	if h.wsRealtime != nil {
 		h.wsRealtime.Close()

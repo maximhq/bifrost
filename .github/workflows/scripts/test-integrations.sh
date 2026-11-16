@@ -39,12 +39,38 @@ case "$TEST_MAX_PARALLEL" in
     ;;
 esac
 
+# Optional narrowing to a single integration, e.g. INTEGRATION_TEST_FILTER=openai to run
+# test_openai.py and test-openai.test.ts and nothing else.
+#
+# An environment variable rather than a second argument: the argument parsing above rejects
+# `$# -gt 1`, and the two CI callers (run-core-tests.yml with no argument, release-pipeline.yml
+# with --parallel-files) must keep working unchanged.
+#
+# Restricted to the characters that actually appear in the test file names. The value is
+# interpolated into a glob, so anything else - a path separator, a glob metacharacter, a `..` -
+# would let the filter reach files outside the two tests/ directories.
+# Attach to a gateway that is already serving TEST_HOST:TEST_PORT instead of starting one.
+# Set by `make test-integrations` when its health probe answers. Unset in CI, where the
+# runner is always a clean host and the script owns the gateway's whole lifecycle.
+SKIP_GATEWAY_START="${SKIP_GATEWAY_START:-0}"
+
+TEST_FILTER="${INTEGRATION_TEST_FILTER:-}"
+case "$TEST_FILTER" in
+  ''|*[!A-Za-z0-9_-]*)
+    if [ -n "$TEST_FILTER" ]; then
+      echo "❌ INTEGRATION_TEST_FILTER may contain only letters, digits, '_' and '-', got '$TEST_FILTER'" >&2
+      exit 2
+    fi
+    ;;
+esac
+
 # wait_for_test_slot frees a slot with `wait -f -n -p`, and -p arrived in bash
 # 5.1. Checked explicitly so an older shell fails here with a readable message
 # instead of misbehaving inside the throttle. The script already needs 4.4+ for
 # `"${TEST_PIDS[@]}"` on an empty array under `set -u`.
 if [ "${BASH_VERSINFO[0]}" -lt 5 ] || { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
   echo "❌ bash 5.1 or newer is required, got ${BASH_VERSION}" >&2
+  echo "   macOS ships bash 3.2; install a newer one (brew install bash) and put it ahead of /bin in PATH." >&2
   exit 2
 fi
 
@@ -69,10 +95,24 @@ TEST_PORT="${PORT:-8080}"
 TEST_HOST="${HOST:-localhost}"
 BIFROST_PID=""
 TEST_FAILED=0
-LOG_FILE="$(mktemp /tmp/bifrost-integrations.XXXXXX.log)"
+# No ".log" suffix on these templates: BSD/macOS mktemp substitutes only TRAILING X's,
+# so "/tmp/name.XXXXXX.log" is created literally and the next run dies with "File exists".
+# GNU mktemp accepts a suffix, which is why this only bites outside CI.
+LOG_FILE="$(mktemp /tmp/bifrost-integrations.XXXXXX)"
 TEST_LOG_DIR="$(mktemp -d /tmp/bifrost-integration-tests.XXXXXX)"
 TEST_PIDS=()
+STREAM_PREFIX=0
 TEST_STATUSES=()
+# Final per-index exit status, filled once each job is accounted for. TEST_STATUSES is
+# the throttle's bookkeeping and is empty for jobs the final wait reaped, so the report
+# cannot read verdicts from it.
+TEST_FINAL_STATUS=()
+
+# Failure artifacts have to outlive the run: TEST_LOG_DIR is a mktemp dir that cleanup()
+# removes on exit, so anything worth reading afterwards is copied into test-reports/ -
+# gitignored, and already where the Go targets write their XML.
+REPORT_DIR="$REPO_ROOT/${TEST_REPORTS_DIR:-test-reports}"
+REPORT_FILE="$REPORT_DIR/integration-failures.md"
 TEST_LABELS=()
 TEST_LOG_FILES=()
 
@@ -102,7 +142,7 @@ cleanup() {
       wait "$test_pid" 2>/dev/null || true
     fi
   done
-  
+
   # Kill Bifrost server if running
   if [ -n "${BIFROST_PID:-}" ]; then
     echo "   Stopping Bifrost server (PID: $BIFROST_PID)..."
@@ -141,7 +181,11 @@ cd "$REPO_ROOT"
 # for core/framework/plugins. That resolves published versions, so any change
 # spanning transports and an unreleased framework fails to compile here while
 # building fine on a developer machine.
-if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+if [ "$SKIP_GATEWAY_START" = "1" ]; then
+  # Reusing a gateway someone else started: no binary is needed, so do not build one
+  # and do not demand that a stale tmp/bifrost-http exists.
+  echo "⏭️  Reusing an already-running gateway; skipping build"
+elif [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
   if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
     echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http" >&2
     exit 1
@@ -162,12 +206,13 @@ else
   (cd "$REPO_ROOT" && make LOCAL=1 build)
 fi
 
-if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
-  echo "❌ Error: bifrost-http binary not found at $REPO_ROOT/tmp/bifrost-http"
-  exit 1
+if [ "$SKIP_GATEWAY_START" != "1" ]; then
+  if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
+    echo "❌ Error: bifrost-http binary not found at $REPO_ROOT/tmp/bifrost-http"
+    exit 1
+  fi
+  echo "✅ Build complete: $REPO_ROOT/tmp/bifrost-http"
 fi
-
-echo "✅ Build complete: $REPO_ROOT/tmp/bifrost-http"
 
 # Step 1b: Start the local MCP fixture backing config.json's sse_mcp client.
 #
@@ -181,13 +226,18 @@ echo "✅ Build complete: $REPO_ROOT/tmp/bifrost-http"
 # on, exactly as it did with the dead remote, and none of the provider
 # integration tests assert on MCP.
 MCP_TEST_SERVER="$REPO_ROOT/examples/mcps/remote-test-server/bin/remote-test-server"
-if [ -x "$MCP_TEST_SERVER" ]; then
+if [ "$SKIP_GATEWAY_START" = "1" ]; then
+  # The reused gateway resolved its MCP clients when it booted; standing a fixture up now
+  # would not attach to it, and 3011/3012 may already belong to whoever started it.
+  echo ""
+  echo "⏭️  Reusing an already-running gateway; not starting the MCP fixture"
+elif [ -x "$MCP_TEST_SERVER" ]; then
   echo ""
   echo "🔌 Starting local MCP test server (SSE on 3012)..."
   # mktemp rather than a fixed /tmp path, matching LOG_FILE above: a predictable name in a
   # world-writable directory can be pre-created as a symlink by another local process, and this
   # redirect would then truncate whatever it points at with the runner's permissions.
-  if ! MCP_SERVER_LOG_FILE="$(mktemp /tmp/mcp-test-server.XXXXXX.log)"; then
+  if ! MCP_SERVER_LOG_FILE="$(mktemp /tmp/mcp-test-server.XXXXXX)"; then
     echo "❌ Failed to create MCP test server log file" >&2
     exit 1
   fi
@@ -207,63 +257,76 @@ else
 fi
 
 # Step 2: Start Bifrost server with Python integration test config
-echo ""
-echo "🚀 Starting Bifrost server..."
-echo "   Config: tests/integrations/python/config.json"
-echo "   Host: $TEST_HOST"
-echo "   Port: $TEST_PORT"
-
-# Start server in background with Python config directory
-"$REPO_ROOT/tmp/bifrost-http" \
-  -host "$TEST_HOST" \
-  -port "$TEST_PORT" \
-  -log-style json \
-  -log-level info \
-  -app-dir "$REPO_ROOT/tests/integrations/python" \
-  > "$LOG_FILE" 2>&1 &
-
-BIFROST_PID=$!
-echo "   Started with PID: $BIFROST_PID"
-
-
-# The gateway's own stdout/stderr goes to $LOG_FILE, which cleanup() deletes on exit. A
-# bootstrap failure (bad config path, unopenable store, port in use) is therefore invisible
-# in CI - the job reports only "process died unexpectedly". Dump the tail before exiting.
-dump_server_log() {
+if [ "$SKIP_GATEWAY_START" = "1" ]; then
   echo ""
-  echo "----- last 50 lines of bifrost server log ($LOG_FILE) -----"
-  tail -n 50 "$LOG_FILE" 2>/dev/null || echo "   (log file unreadable)"
-  echo "-----------------------------------------------------------"
-}
-
-# Wait for server to be ready
-echo "⏳ Waiting for Bifrost to be ready..."
-MAX_WAIT=30
-ELAPSED=0
-SERVER_READY=false
-
-while [ $ELAPSED -lt $MAX_WAIT ]; do
-  if curl --connect-timeout 10 --max-time 20 -sf "http://$TEST_HOST:$TEST_PORT/health" > /dev/null 2>&1; then
-    SERVER_READY=true
-    echo "✅ Bifrost is ready (took ${ELAPSED}s)"
-    break
+  echo "♻️  Reusing the gateway already serving http://$TEST_HOST:$TEST_PORT"
+  # Re-probe rather than trusting the caller: the server may have gone away between the
+  # caller's check and now. BIFROST_PID stays empty, so cleanup() leaves it running - we
+  # did not start it and it is not ours to stop.
+  if ! curl --connect-timeout 10 --max-time 20 -sf "http://$TEST_HOST:$TEST_PORT/health" > /dev/null 2>&1; then
+    echo "❌ SKIP_GATEWAY_START=1 but nothing healthy answers http://$TEST_HOST:$TEST_PORT/health" >&2
+    exit 1
   fi
-  
-  # Check if server process is still running
-  if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
-    echo "❌ Bifrost process died unexpectedly"
+  echo "   Its config is whatever it was started with, not necessarily tests/integrations/python"
+else
+  echo ""
+  echo "🚀 Starting Bifrost server..."
+  echo "   Config: tests/integrations/python/config.json"
+  echo "   Host: $TEST_HOST"
+  echo "   Port: $TEST_PORT"
+
+  # Start server in background with Python config directory
+  "$REPO_ROOT/tmp/bifrost-http" \
+    -host "$TEST_HOST" \
+    -port "$TEST_PORT" \
+    -log-style json \
+    -log-level info \
+    -app-dir "$REPO_ROOT/tests/integrations/python" \
+    > "$LOG_FILE" 2>&1 &
+
+  BIFROST_PID=$!
+  echo "   Started with PID: $BIFROST_PID"
+
+
+  # The gateway's own stdout/stderr goes to $LOG_FILE, which cleanup() deletes on exit. A
+  # bootstrap failure (bad config path, unopenable store, port in use) is therefore invisible
+  # in CI - the job reports only "process died unexpectedly". Dump the tail before exiting.
+  dump_server_log() {
+    echo ""
+    echo "----- last 50 lines of bifrost server log ($LOG_FILE) -----"
+    tail -n 50 "$LOG_FILE" 2>/dev/null || echo "   (log file unreadable)"
+    echo "-----------------------------------------------------------"
+  }
+
+  # Wait for server to be ready
+  echo "⏳ Waiting for Bifrost to be ready..."
+  MAX_WAIT=30
+  ELAPSED=0
+  SERVER_READY=false
+
+  while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if curl --connect-timeout 10 --max-time 20 -sf "http://$TEST_HOST:$TEST_PORT/health" > /dev/null 2>&1; then
+      SERVER_READY=true
+      echo "✅ Bifrost is ready (took ${ELAPSED}s)"
+      break
+    fi
+
+    # Check if server process is still running
+    if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+      echo "❌ Bifrost process died unexpectedly"
+      dump_server_log
+      exit 1
+    fi
+
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+  done
+
+  if [ "$SERVER_READY" = false ]; then
+    echo "❌ Bifrost failed to start within ${MAX_WAIT}s"
     dump_server_log
     exit 1
   fi
-  
-  sleep 1
-  ELAPSED=$((ELAPSED + 1))
-done
-
-if [ "$SERVER_READY" = false ]; then
-  echo "❌ Bifrost failed to start within ${MAX_WAIT}s"
-  dump_server_log
-  exit 1
 fi
 
 # Set environment variable for tests
@@ -281,19 +344,17 @@ install_python_dependencies() {
   echo "="
   cd "$PYTHON_TEST_DIR"
 
-  if command -v uv >/dev/null 2>&1; then
-    echo "📦 Installing Python dependencies with uv..."
-    uv sync --frozen --quiet
-    PYTHON_TEST_COMMAND=(uv run pytest)
-  else
-    echo "⚠️  uv not found, trying pip..."
-    if [ ! -d ".venv" ]; then
-      python3 -m venv .venv
-    fi
-    source .venv/bin/activate
-    pip install -q -e .
-    PYTHON_TEST_COMMAND=(pytest)
+  # uv is the only supported installer: `uv sync --frozen` is the locked,
+  # reproducible path, and tests/integrations/python is a dependency manifest
+  # rather than a package, so a `pip install -e .` fallback cannot build it anyway.
+  # Every CI workflow that runs this script installs uv first.
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "❌ uv not found. Install it from https://docs.astral.sh/uv/ and re-run."
+    exit 1
   fi
+  echo "📦 Installing Python dependencies with uv..."
+  uv sync --frozen --quiet
+  PYTHON_TEST_COMMAND=(uv run pytest)
 }
 
 install_typescript_dependencies() {
@@ -336,11 +397,33 @@ launch_test_file() {
   echo "   Starting $label"
   (
     cd "$working_directory"
-    if "$@" > "$log_file" 2>&1; then
-      test_status=0
+    # Stream each line as it happens AND keep a copy, rather than redirecting to the log
+    # and showing nothing until the job ends. A long file used to sit silent for minutes,
+    # which reads as a hang; the retained copy is still what replays failures at the end.
+    #
+    # awk, not `sed -u`: line-buffered output is `-u` on GNU sed and `-l` on BSD, while
+    # awk's fflush() is the same everywhere. It also carries the label, so concurrent
+    # files stay attributable - with one file there is nothing to disambiguate, so the
+    # prefix is dropped and pytest's own output comes through untouched.
+    #
+    # pipefail (set at the top) makes the pipeline report the test command's status, not
+    # tee's or awk's, so a failing run is still recorded as one.
+    if [ "$STREAM_PREFIX" = "1" ]; then
+      if "$@" 2>&1 | tee "$log_file" | awk -v lbl="$label" '{ print "[" lbl "] " $0; fflush() }'; then
+        test_status=0
+      else
+        test_status=$?
+      fi
+    else
+      if "$@" 2>&1 | tee "$log_file"; then
+        test_status=0
+      else
+        test_status=$?
+      fi
+    fi
+    if [ "$test_status" -eq 0 ]; then
       echo "   ✅ Finished $label"
     else
-      test_status=$?
       echo "   ❌ Finished $label (exit $test_status)"
     fi
     exit "$test_status"
@@ -432,9 +515,147 @@ wait_for_test_slot() {
   done
 }
 
+# pytest runs with --color=yes (pyproject addopts), so the retained log is full of ANSI
+# escapes - which a plain grep would not match and which belong in no markdown file.
+strip_ansi() { sed -E $'s/\[[0-9;]*[A-Za-z]//g'; }
+
+# Failed case names out of one job's log. One format per suite:
+#   pytest -v : "tests/test_x.py::TestC::test_01[param] FAILED"
+#   vitest    : "  × suite > case name  123ms"
+# RERUN is deliberately unmatched: only a terminal FAILED counts, so a test that fails
+# twice and passes on the third try never reaches the report.
+extract_failed_cases() {
+  strip_ansi < "$1" | awk '
+    /::.*[[:space:]]FAILED([[:space:]]|$)/ {
+      sub(/[[:space:]]+FAILED.*$/, ""); sub(/^[^:]*::/, ""); print; next
+    }
+    /^[[:space:]]*×[[:space:]]/ {
+      sub(/^[[:space:]]*×[[:space:]]+/, ""); sub(/[[:space:]]+[0-9.]+m?s$/, ""); print
+    }
+  ' | sort -u
+}
+
+# Markdown digest of the run, plus a copy of each failed job's full log. Written on every
+# run, including a clean one, so a stale report from a previous red run cannot outlive a
+# green one and be mistaken for current.
+write_failure_report() {
+  local index status log_file slug cases case_count excerpt
+  local failed_files=0 passed_files=0 total_cases=0
+
+  if ! mkdir -p "$REPORT_DIR" 2>/dev/null; then
+    echo "⚠️  Could not create $REPORT_DIR; skipping the failure report" >&2
+    return 0
+  fi
+
+  # Clear the previous run's per-file logs before writing this run's. Without this a green
+  # run leaves the last red run's logs sitting next to a report that says "No failures",
+  # and the first person to open one reads a stale failure as current. rm -f tolerates the
+  # unmatched glob on a first run.
+  rm -f "$REPORT_DIR"/integration-*.log 2>/dev/null || true
+
+  for index in "${!TEST_LABELS[@]}"; do
+    if [ "${TEST_FINAL_STATUS[$index]:-0}" -eq 0 ]; then
+      passed_files=$((passed_files + 1))
+    else
+      failed_files=$((failed_files + 1))
+    fi
+  done
+
+  excerpt="$TEST_LOG_DIR/.excerpt"
+
+  # Braces, not a subshell: the counters updated below have to survive for the closing
+  # message, and `{ ...; } > file` runs in the current shell.
+  {
+    printf '# Integration test failures
+
+'
+    printf -- '- **Run:** %s
+' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    printf -- '- **Gateway:** %s
+' "${BIFROST_BASE_URL:-unknown}"
+    printf -- '- **Filter:** %s
+' "${TEST_FILTER:-(none - full matrix)}"
+    printf -- '- **Result:** %d of %d files failed (%d passed)
+
+'       "$failed_files" "${#TEST_LABELS[@]}" "$passed_files"
+
+    if [ "$failed_files" -eq 0 ]; then
+      printf 'No failures.
+'
+    else
+      for index in "${!TEST_LABELS[@]}"; do
+        status="${TEST_FINAL_STATUS[$index]:-0}"
+        if [ "$status" -eq 0 ]; then
+          continue
+        fi
+        log_file="${TEST_LOG_FILES[$index]}"
+        # "Python: test_openai.py" -> "python-test_openai.py"
+        slug="$(printf '%s' "${TEST_LABELS[$index]}" | tr '[:upper:]' '[:lower:]'           | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+        cp "$log_file" "$REPORT_DIR/integration-$slug.log" 2>/dev/null || true
+
+        cases="$(extract_failed_cases "$log_file")"
+        case_count=0
+        if [ -n "$cases" ]; then
+          case_count=$(printf '%s
+' "$cases" | wc -l | tr -d ' ')
+        fi
+        total_cases=$((total_cases + case_count))
+
+        printf '## %s - exit %s
+
+' "${TEST_LABELS[$index]}" "$status"
+        printf '%s failed case(s). Full log: `%s`
+
+'           "$case_count" "${TEST_REPORTS_DIR:-test-reports}/integration-$slug.log"
+        if [ -n "$cases" ]; then
+          printf '%s
+' "$cases" | sed 's/^/- `/; s/$/`/'
+          printf '
+'
+        fi
+
+        # pytest opens its failure section with "= FAILURES =", vitest with "Failed Tests".
+        # head closing the pipe would SIGPIPE awk and trip set -e, hence the || true; the
+        # tail fallback covers a job that died before either marker was printed.
+        strip_ansi < "$log_file" | awk '
+          /=+ FAILURES =+/ || /Failed Tests/ { found = 1 }
+          found { print }
+        ' | head -200 > "$excerpt" 2>/dev/null || true
+
+        printf '<details><summary>Failure output</summary>
+
+```text
+'
+        if [ -s "$excerpt" ]; then
+          cat "$excerpt"
+        else
+          strip_ansi < "$log_file" | tail -60
+        fi
+        printf '```
+
+</details>
+
+'
+      done
+      printf -- '---
+
+**%d failed case(s) across %d file(s).**
+' "$total_cases" "$failed_files"
+    fi
+  } > "$REPORT_FILE"
+
+  echo ""
+  if [ "$failed_files" -eq 0 ]; then
+    echo "📄 Failure report: ${TEST_REPORTS_DIR:-test-reports}/integration-failures.md (no failures)"
+  else
+    echo "📄 Failure report: ${TEST_REPORTS_DIR:-test-reports}/integration-failures.md ($total_cases case(s) across $failed_files file(s))"
+  fi
+}
+
 run_test_files_in_parallel() {
   local python_test_files=()
   local typescript_test_files=()
+  local kept=()
   local test_file
   local index
   local test_status
@@ -448,6 +669,70 @@ run_test_files_in_parallel() {
     echo "❌ Expected both Python and TypeScript integration test files" >&2
     return 1
   fi
+
+  # Optional narrowing to one integration, e.g. INTEGRATION_TEST_FILTER=openai from
+  # `make test-integrations INTEGRATION=openai`. Unset in CI - both callers there want
+  # the whole matrix - so the globs above are what CI still sees.
+  #
+  # Applied by filtering the globbed lists, NOT by interpolating the filter into the
+  # glob. A filter with no glob metacharacter makes the path a literal rather than a
+  # pattern, so nullglob does not drop it: a typo would survive as a nonexistent path
+  # and reach pytest, which exits 4 (usage error) and reads as a test failure.
+  #
+  # Kept after the guard above on purpose: that guard asserts the repo still ships both
+  # suites, while a filter may legitimately select from only one.
+  if [ -n "$TEST_FILTER" ]; then
+    kept=()
+    for test_file in "${python_test_files[@]}"; do
+      if [ "$(basename "$test_file")" = "test_$TEST_FILTER.py" ]; then
+        kept+=("$test_file")
+      fi
+    done
+    python_test_files=("${kept[@]}")
+
+    kept=()
+    for test_file in "${typescript_test_files[@]}"; do
+      if [ "$(basename "$test_file")" = "test-$TEST_FILTER.test.ts" ]; then
+        kept+=("$test_file")
+      fi
+    done
+    typescript_test_files=("${kept[@]}")
+
+    # A filtered run legitimately covers one suite only: cohere, litellm and
+    # pydanticai have Python tests with no TypeScript counterpart. Only a filter
+    # matching nothing anywhere is an error - otherwise a typo would run zero tests
+    # and still report success.
+    if [ "${#python_test_files[@]}" -eq 0 ] && [ "${#typescript_test_files[@]}" -eq 0 ]; then
+      echo "❌ INTEGRATION_TEST_FILTER='$TEST_FILTER' matched no test file in either suite" >&2
+      # The filter is a file stem, not a friendly name - test_pydanticai.py answers to
+      # "pydanticai" and not "pydantic". Listing what actually exists turns that from a
+      # confusing empty run into a one-line correction.
+      {
+        printf '   Available integrations:'
+        for test_file in "$PYTHON_TEST_DIR"/tests/test_*.py; do
+          test_file="$(basename "$test_file")"
+          test_file="${test_file#test_}"
+          printf ' %s' "${test_file%.py}"
+        done
+        printf '\n'
+      } >&2
+      return 1
+    fi
+    echo "🔎 Filtered to integration '$TEST_FILTER'"
+  fi
+
+  # Label every line only when more than one file runs - with a single file there is
+  # nothing to disambiguate and the prefix is pure noise on top of pytest's own output.
+  if [ $(( ${#python_test_files[@]} + ${#typescript_test_files[@]} )) -gt 1 ]; then
+    STREAM_PREFIX=1
+  else
+    STREAM_PREFIX=0
+  fi
+
+  # Python block-buffers stdout when it is a pipe, and the streaming above makes stdout a
+  # pipe. Without this, pytest's per-test lines would pile up in the buffer and arrive in
+  # bursts - the silence this change exists to remove.
+  export PYTHONUNBUFFERED=1
 
   echo ""
   echo "🏃 Running ${#python_test_files[@]} Python and ${#typescript_test_files[@]} TypeScript test files,"
@@ -491,17 +776,24 @@ run_test_files_in_parallel() {
     if [ "$test_status" -ne 0 ]; then
       TEST_FAILED=1
     fi
+    TEST_FINAL_STATUS[$index]="$test_status"
     TEST_PIDS[$index]=""
 
-    echo ""
-    echo "----- ${TEST_LABELS[$index]} -----"
-    cat "${TEST_LOG_FILES[$index]}" || true
+    # Everything already streamed as it happened, so only failures are replayed - and only
+    # those, contiguous and unprefixed, so a failure interleaved with 14 other files is
+    # still readable in one piece. Replaying the passes too would just double the output.
     if [ "$test_status" -eq 0 ]; then
       echo "✅ ${TEST_LABELS[$index]} passed"
     else
+      echo ""
+      echo "----- ${TEST_LABELS[$index]} (failed, exit $test_status) -----"
+      cat "${TEST_LOG_FILES[$index]}" || true
+      echo "----- end ${TEST_LABELS[$index]} -----"
       echo "❌ ${TEST_LABELS[$index]} failed (exit $test_status)"
     fi
   done
+
+  write_failure_report
 
   set +m
   TEST_PIDS=()
@@ -519,6 +811,14 @@ if [ "$PARALLEL_FILES" = true ]; then
 else
   # Preserve the original sequential behavior for local and reusable-workflow
   # callers unless they explicitly opt into file-level parallelism.
+  #
+  # The filter only has a meaning in the parallel path, which drives the suites
+  # file by file; the sequential path hands each suite its own runner and lets
+  # that runner collect everything. Say so rather than silently running the full
+  # suite the caller thought they had narrowed.
+  if [ -n "$TEST_FILTER" ]; then
+    echo "⚠️  INTEGRATION_TEST_FILTER='$TEST_FILTER' is ignored without --parallel-files; running both full suites" >&2
+  fi
   run_python_tests
   install_typescript_dependencies
   run_typescript_tests

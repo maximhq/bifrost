@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Regression tests for URL-sourced documents being dropped on the OpenAI/Azure chat path.
@@ -254,4 +256,272 @@ func TestResolveChatFileURLsForwardsUnfetchableSchemes(t *testing.T) {
 			assert.Contains(t, string(body), rawURL, "file_url must not be silently stripped")
 		})
 	}
+}
+
+// Regression tests for bare-base64 file_data reaching OpenAI-shaped wires with no media type.
+//
+// Callers may send file_data as bare base64 and name the media type in Bifrost's file_type
+// extension. Native converters (Gemini, Anthropic, Bedrock) read file_type, but the OpenAI
+// wire has no such field, so MarshalJSON stripped it and shipped bare base64. OpenAI and
+// Databricks both require a data URL there, and a Vertex -> Databricks fallback failed with
+// "INVALID_PARAMETER_VALUE: Invalid base64 data URL format. Expected format:
+// data:{mimeType};base64,...". file_type has to be folded into file_data before it is dropped.
+
+var barePDFBase64 = base64.StdEncoding.EncodeToString([]byte("%PDF-1.2\r\n1 0 obj\r\n<<>>\r\nendobj\r\n"))
+
+func TestFileDataAsDataURL(t *testing.T) {
+	plain := "Invoice 42\nTotal: 10 USD"
+	cases := []struct {
+		name     string
+		fileData string
+		fileType *string
+		want     string
+	}{
+		{"file_type names the media type", barePDFBase64, schemas.Ptr("application/pdf"), "data:application/pdf;base64," + barePDFBase64},
+		{"file_type parameters are dropped", barePDFBase64, schemas.Ptr("Application/PDF; charset=binary"), "data:application/pdf;base64," + barePDFBase64},
+		{"short extension file_type resolves", barePDFBase64, schemas.Ptr("pdf"), "data:application/pdf;base64," + barePDFBase64},
+		{"no file_type sniffs the bytes", barePDFBase64, nil, "data:application/pdf;base64," + barePDFBase64},
+		{"existing data URL is untouched", "data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("application/pdf"), "data:image/png;base64,iVBORw0KGgo="},
+		{"plain text file_type is encoded as text", plain, schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(plain))},
+		{"txt shorthand is encoded as text", plain, schemas.Ptr("txt"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(plain))},
+		// text/plain means raw text even when the text happens to be valid base64: it is the same
+		// convention the Anthropic converters apply, and guessing would misread real text such as "Hello".
+		{"text/plain payload that looks like base64 is still raw text", "SGVsbG8=", schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("SGVsbG8="))},
+		{"text/plain word that is valid base64 is still raw text", "Hello", schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("Hello"))},
+		{"non-base64 without a text type is left alone", "not base64 at all!", schemas.Ptr("application/pdf"), "not base64 at all!"},
+		{"empty stays empty", "", schemas.Ptr("application/pdf"), ""},
+		// An empty text document is valid on Anthropic's wire; "" is not a data URL on OpenAI's.
+		{"empty text/plain becomes the empty data URL", "", schemas.Ptr("text/plain"), "data:text/plain;base64,"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fileDataAsDataURL(tc.fileData, tc.fileType))
+		})
+	}
+}
+
+// Ingress converters leave an untitled document untitled, so OpenAI egress names inline
+// file_data itself; the extension has to agree with the payload's media type.
+func TestDefaultInlineFilename(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fileData string
+		fileType *string
+		want     string
+	}{
+		{"pdf data URL", "data:application/pdf;base64,JVBERi0=", nil, "document.pdf"},
+		{"empty text data URL", "data:text/plain;base64,", nil, "document.txt"},
+		{"markdown data URL", "data:text/markdown;base64,IyBh", nil, "document.md"},
+		{"structured suffix", "data:application/har+json;base64,e30=", nil, "document.json"},
+		{"unknown subtype", "data:image/png;base64,iVBORw0KGgo=", nil, "document.png"},
+		{"docx data URL", "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA==", nil, "document.docx"},
+		{"pptx data URL", "data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,UEsDBA==", nil, "document.pptx"},
+		{"xlsx data URL", "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBA==", nil, "document.xlsx"},
+		{"legacy doc data URL", "data:application/msword;base64,0M8R4A==", nil, "document.doc"},
+		{"legacy xls file_type", "not base64 at all!", schemas.Ptr("application/vnd.ms-excel"), "document.xls"},
+		{"legacy ppt data URL", "data:application/vnd.ms-powerpoint;base64,0M8R4A==", nil, "document.ppt"},
+		{"non data URL uses file_type", "not base64 at all!", schemas.Ptr("text/csv"), "document.csv"},
+		{"nothing to go on", "not base64 at all!", nil, "document.pdf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, defaultInlineFilename(tc.fileData, tc.fileType))
+		})
+	}
+}
+
+func TestChatMarshalDefaultsInlineFilename(t *testing.T) {
+	file := &schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: file},
+		}},
+	}}}
+
+	body, err := req.MarshalJSON()
+	require.NoError(t, err)
+
+	wire := gjson.GetBytes(body, "messages.0.content.0.file")
+	assert.Equal(t, "data:text/plain;base64,", wire.Get("file_data").String())
+	assert.Equal(t, "document.txt", wire.Get("filename").String(), "OpenAI rejects inline file_data without a filename")
+	assert.Nil(t, file.Filename, "the caller's request is reused by fallbacks and must not change")
+}
+
+func TestChatMarshalFoldsFileTypeIntoFileData(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fileType *string
+	}{
+		{"with file_type", schemas.Ptr("application/pdf")},
+		{"without file_type", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.ChatInputFile{
+				FileData: schemas.Ptr(barePDFBase64),
+				Filename: schemas.Ptr("invoice.pdf"),
+				FileType: tc.fileType,
+			}
+			req := &OpenAIChatRequest{Model: "databricks-gemini-3-8-flash", Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Extract the bill.")},
+					{Type: schemas.ChatContentBlockTypeFile, File: file},
+				}},
+			}}}
+
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+
+			wire := gjson.GetBytes(body, "messages.0.content.1.file")
+			assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String(),
+				"the OpenAI wire has no file_type, so the media type must travel in file_data")
+			assert.False(t, wire.Get("file_type").Exists(), "file_type is a Bifrost extension and must not reach the wire")
+			assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request is reused by fallbacks and must not change")
+		})
+	}
+}
+
+func TestResponsesMarshalFoldsFileTypeIntoFileData(t *testing.T) {
+	file := &schemas.ResponsesInputMessageContentBlockFile{
+		FileData: schemas.Ptr(barePDFBase64),
+		Filename: schemas.Ptr("invoice.pdf"),
+		FileType: schemas.Ptr("application/pdf"),
+	}
+	input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: file,
+		}}},
+	}}}
+
+	body, err := input.MarshalJSON()
+	require.NoError(t, err)
+
+	wire := gjson.GetBytes(body, "0.content.0")
+	assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String())
+	assert.False(t, wire.Get("file_type").Exists())
+	assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request must not change")
+}
+
+// An empty text document beside other content is dropped on OpenAI-shaped chat egress:
+// "data:text/plain;base64," is rejected upstream and the document carries no bytes. Alone in
+// its message it stays, so the message never goes out empty.
+func TestChatMarshalDropsEmptyTextDocumentBesideContent(t *testing.T) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+		}},
+	}}}
+
+	body, err := req.MarshalJSON()
+	require.NoError(t, err)
+
+	content := gjson.GetBytes(body, "messages.0.content").Array()
+	require.Len(t, content, 1, "the empty document must be dropped: %s", body)
+	assert.Equal(t, "Say ok.", content[0].Get("text").String())
+	assert.Len(t, req.Messages[0].Content.ContentBlocks, 2, "the caller's request is reused by fallbacks and must not change")
+}
+
+// The empty-document drop must fire for a block that needs no other rewrite (the empty data URL
+// with a filename and no file_type), must never take a file reference with it, and must leave a
+// message whose only block is the empty document unchanged.
+func TestMarshalEmptyTextDocumentShapes(t *testing.T) {
+	emptyURL := "data:text/plain;base64,"
+	cases := []struct {
+		name     string
+		chat     schemas.ChatInputFile
+		resp     *schemas.ResponsesInputMessageContentBlockFile // nil: no Responses equivalent
+		alone    bool
+		wantKept bool
+	}{
+		{name: "formed empty data url with a filename is dropped beside text",
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "formed empty data url alone stays", alone: true, wantKept: true,
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "empty file_data beside a file_id keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileID: schemas.Ptr("file-abc")}},
+		{name: "empty file_data beside a file_url keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")}},
+	}
+	for _, tc := range cases {
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			file := tc.chat
+			blocks := []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "messages.0.content").Array() {
+				kept = kept || b.Get("type").String() == "file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+		if tc.resp == nil {
+			continue
+		}
+		t.Run("responses/"+tc.name, func(t *testing.T) {
+			file := *tc.resp
+			blocks := []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := input.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "0.content").Array() {
+				kept = kept || b.Get("type").String() == "input_file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+	}
+
+	// Responses carries file_id on the block, not inside the file object.
+	t.Run("responses/empty file_data beside a block file_id keeps the reference", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, FileID: schemas.Ptr("file-abc"),
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "file-abc", gjson.GetBytes(body, `0.content.#(type=="input_file").file_id`).String(), "file reference dropped: %s", body)
+	})
+
+	// rendered_content is always removed, so it is not content the empty document can be dropped beside.
+	t.Run("responses/empty document beside only rendered_content stays", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+				{Type: schemas.ResponsesOutputMessageContentTypeRenderedContent},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		content := gjson.GetBytes(body, "0.content").Array()
+		require.Len(t, content, 1, "the message must not go out empty: %s", body)
+		assert.Equal(t, "input_file", content[0].Get("type").String())
+	})
 }

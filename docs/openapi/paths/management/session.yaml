@@ -1,6 +1,15 @@
 login:
   post:
     operationId: login
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Login
     description: |
       Authenticates a user and returns a session token.
@@ -43,14 +52,25 @@ login:
 logout:
   post:
     operationId: logout
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Logout
-    description: Logs out the current user and invalidates the session token.
+    description: |
+      Logs out the current user and invalidates the session token.
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the
     # dashboard additionally calls it with its HTTPOnly session cookie.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':
@@ -66,11 +86,75 @@ logout:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+session-me:
+  get:
+    operationId: getCaller
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Describe the caller
+    description: |
+      Returns who this request acts for and what it may read: whether a known
+      user is identified, their user ID, whether anything narrows what the
+      caller may read, and for a restricted caller which slice of the
+      deployment they may see.
+
+      Call it before answering "my" or "our" questions about traffic. For the
+      caller's own traffic, pass `user_id` in the `user_ids` filter of the log
+      endpoints. An unrestricted caller reads the whole deployment, so a total
+      with no filter is everyone's. A restricted caller's reads are narrowed by
+      the server whatever filters are passed.
+
+      An admin login, the setup token, or a deployment without dashboard
+      authentication is unrestricted and identifies no user.
+    tags:
+      - Session
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/session.yaml#/CallerResponse'
+      '401':
+        description: No valid credential
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '403':
+        description: Wrong setup token in X-Bifrost-Setup-Token (OSS, while dashboard auth is not active)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 is-auth-enabled:
   get:
     operationId: isAuthEnabled
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check if authentication is enabled
-    description: Returns whether authentication is enabled and if the current token is valid.
+    description: |
+      Returns whether authentication is enabled and if the current token is valid.
     tags:
       - Session
     # Public: callable before login so the UI can decide whether to prompt for
@@ -89,6 +173,15 @@ is-auth-enabled:
 ws-ticket:
   post:
     operationId: issueWSTicket
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Issue WebSocket ticket
     description: |
       Issues a short-lived ticket for authenticating WebSocket connections.
@@ -100,6 +193,7 @@ ws-ticket:
     # opening a WebSocket connection.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':
@@ -120,3 +214,69 @@ ws-ticket:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+setup:
+  post:
+    operationId: startSetupSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | The setup token itself - OSS only, while dashboard auth is not active |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start a setup session
+    description: |
+      OSS only. While dashboard auth is not active (no admin account, or auth disabled),
+      trades the operator's setup token, sent in the `X-Bifrost-Setup-Token` header, for an
+      HttpOnly, `SameSite=Strict` cookie named `bifrost_setup_session`. The cookie carries no
+      part of the token. It authenticates management API calls in place of the header for
+      12 hours, until dashboard auth is enabled, or until `POST /api/session/logout` clears it.
+      Changing the setup token invalidates every issued cookie.
+    tags:
+      - Session
+    parameters:
+      - name: X-Bifrost-Setup-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: The setup token configured via `setup_token` in config.json or `BIFROST_SETUP_TOKEN`.
+    security: []
+    responses:
+      '200':
+        description: Setup session started; the cookie is set with `Set-Cookie`.
+        headers:
+          Set-Cookie:
+            schema:
+              type: string
+            description: '`bifrost_setup_session=<signed value>; Path=/; HttpOnly; SameSite=Strict` (plus `Secure` over TLS).'
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: When the setup session cookie expires.
+      '401':
+        description: The setup token header is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '403':
+        description: The setup token is wrong, or no setup token is configured on the server.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: The setup lock is not active (dashboard auth is enabled, or this is Bifrost Enterprise).
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'

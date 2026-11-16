@@ -1,0 +1,277 @@
+# API Keys Management API
+
+api-keys:
+  get:
+    operationId: listAPIKeys
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `APIKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List API keys
+    description: |
+      Returns the management API keys, including their scopes and expiry. Key values
+      are never returned — only the truncated `key_prefix`.
+
+      Supplying any of `limit`, `offset`, or `search` returns a page with
+      `total_count` set to the number of matching keys; with no parameters every key
+      is returned in one response.
+    tags:
+      - API Keys
+    parameters:
+      - name: search
+        in: query
+        required: false
+        description: Case-insensitive match against the key name.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of keys to return.
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        required: false
+        description: Number of keys to skip.
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: The API keys
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/apikeys.yaml#/APIKeyList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  post:
+    operationId: createAPIKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `APIKeys:Create` | RBAC role or API key scope |
+        | every permission named in `scopes` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create an API key
+    description: |
+      Creates a management API key and returns its value. The value is shown only in
+      this response and cannot be retrieved afterwards, so store it immediately.
+
+      A key's access comes from its `scopes` alone — it does not inherit the
+      creator's role. Beyond `APIKeys:Create`, the caller must already hold every
+      permission being granted; requesting one they lack returns 403 and creates
+      nothing. A local admin is exempt from that ceiling.
+    tags:
+      - API Keys
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/apikeys.yaml#/APIKeyCreateRequest'
+    responses:
+      '200':
+        description: Key created. The full key value is returned once.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/apikeys.yaml#/APIKeyCreatedResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+api-keys-by-id:
+  get:
+    operationId: getAPIKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `APIKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get an API key
+    description: |
+      Returns one API key by id. The key value is not included — only the truncated
+      `key_prefix`.
+    tags:
+      - API Keys
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: API key id.
+        schema:
+          type: integer
+          format: uint
+    responses:
+      '200':
+        description: The API key
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/apikeys.yaml#/APIKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  put:
+    operationId: updateAPIKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `APIKeys:Update` | RBAC role or API key scope |
+        | every permission named in `scopes` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update an API key
+    description: |
+      Updates a key's name, description, scopes, or expiry. The key value itself is
+      never changed — rotating a credential means deleting the key and creating a
+      new one.
+
+      Omitted fields keep their current value, with one exception: `description` is
+      always applied, so leaving it out clears any existing description. Sending
+      `scopes` replaces the existing list, and the same ceiling as creation applies:
+      the caller must hold every permission being granted. Send `expires_at` as an
+      empty string to remove an existing expiry.
+    tags:
+      - API Keys
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: API key id.
+        schema:
+          type: integer
+          format: uint
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/apikeys.yaml#/APIKeyUpdateRequest'
+    responses:
+      '200':
+        description: The updated API key
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/apikeys.yaml#/APIKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  delete:
+    operationId: deleteAPIKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `APIKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete an API key
+    description: |
+      Permanently deletes an API key. The key stops authenticating requests across
+      the cluster once the change propagates. This cannot be undone.
+    tags:
+      - API Keys
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: API key id.
+        schema:
+          type: integer
+          format: uint
+    responses:
+      '200':
+        description: Key deleted
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  example: API key deleted successfully
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []

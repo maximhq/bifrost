@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Bifrost V1 - Virtual Key Expiry",
-    "description": "Virtual key expiry tests. Covers create/update validation (future-only timestamps, RFC3339 parsing, empty-string clear, omit-leaves-unchanged) and runtime enforcement (unexpired passes, expired blocks with 403 virtual_key_blocked, inactive wins before expired, clearing expiry restores access). Self-provisions VKs and cleans up.",
+    "description": "Virtual key expiry tests. Covers create/update validation (future-only timestamps, RFC3339 parsing, empty-string clear, omit-leaves-unchanged) and runtime enforcement (unexpired passes, expired blocks with 403 access_blocked, inactive wins before expired, clearing expiry restores access). Self-provisions VKs and cleans up.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -1038,7 +1038,7 @@
                   "// guards that governance does not reject an unexpired VK.",
                   "pm.test('Response carries no expiry rejection', function() {",
                   "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_blocked');",
                   "});"
                 ]
               }
@@ -1083,7 +1083,7 @@
                 "exec": [
                   "if (!pm.collectionVariables.get('mcp_tool_name')) { pm.test('Skipped: no connected MCP client with tools', function() { pm.expect(true).to.be.true; }); } else {",
                   "  pm.test('Unexpired VK MCP execution carries no governance rejection', function() {",
-                  "    pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "    pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('access_blocked');",
                   "  });",
                   "}"
                 ]
@@ -1201,8 +1201,8 @@
                   "pm.test('Expired VK inference returns 403', function() {",
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
                   "});",
-                  "pm.test('Rejection is virtual_key_blocked with expired reason', function() {",
-                  "  pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "pm.test('Rejection is access_blocked with expired reason', function() {",
+                  "  pm.expect(pm.response.text()).to.include('access_blocked');",
                   "  pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
                   "});"
                 ]
@@ -1250,8 +1250,8 @@
                   "  pm.test('Expired VK MCP execution returns 403', function() {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
                   "  });",
-                  "  pm.test('Rejection is virtual_key_blocked with expired reason', function() {",
-                  "    pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "  pm.test('Rejection is access_blocked with expired reason', function() {",
+                  "    pm.expect(pm.response.text()).to.include('access_blocked');",
                   "    pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
                   "  });",
                   "}"
@@ -1558,7 +1558,7 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
                   "});",
                   "pm.test('Rejection is still the expired reason', function() {",
-                  "  pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.include('access_blocked');",
                   "  pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
                   "});"
                 ]
@@ -1691,7 +1691,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Extension restores access (no expiry rejection)', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_blocked');",
                   "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
                   "});"
                 ]
@@ -1775,7 +1775,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Response carries no governance rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_blocked');",
                   "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
                   "});"
                 ]

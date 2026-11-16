@@ -1,3 +1,5 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useTranslation } from "react-i18next";
 import type { ProviderTokenHistogramResponse } from "@/lib/types/logs";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
@@ -10,10 +12,13 @@ import {
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
-	OTHER_SERIES_LABEL,
+	getOtherSeriesLabel,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface ProviderTokenChartProps {
 	data: ProviderTokenHistogramResponse | null;
@@ -41,7 +46,9 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : provider}</span>
+								<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">
+									{isOther ? getOtherSeriesLabel() : provider}
+								</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{formatCompactNumber(tokens)}</span>
 						</div>
@@ -53,6 +60,7 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 }
 
 function SingleProviderTooltip({ active, payload, provider }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -68,19 +76,19 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Input</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.input")}</span>
 					</span>
 					<span className="font-medium">{formatCompactNumber(stats.prompt_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Output</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.output")}</span>
 					</span>
 					<span className="font-medium">{formatCompactNumber(stats.completion_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
 					<span className="font-medium">{formatCompactNumber(stats.total_tokens || 0)}</span>
 				</div>
 			</div>
@@ -89,6 +97,7 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 }
 
 function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderTokenChartProps) {
+	useLocale();
 	const { chartData, mode, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], mode: "all" as const, displayProviders: [] };
@@ -137,7 +146,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 	}, [data, selectedProvider]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
@@ -147,7 +156,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -173,24 +182,16 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar
-									isAnimationActive={false}
-									dataKey="prompt_tokens"
-									stackId="tokens"
-									fill={CHART_COLORS.promptTokens}
-									fillOpacity={0.9}
-									barSize={30}
-									radius={[0, 0, 0, 0]}
-								/>
-								<Bar
-									isAnimationActive={false}
-									dataKey="completion_tokens"
-									stackId="tokens"
-									fill={CHART_COLORS.completionTokens}
-									fillOpacity={0.9}
-									barSize={30}
-									radius={[2, 2, 0, 0]}
-								/>
+								<CappedBarStack buckets={chartData.length}>
+									<Bar isAnimationActive={false} dataKey="prompt_tokens" fill={CHART_COLORS.promptTokens} fillOpacity={0.9} barSize={30} />
+									<Bar
+										isAnimationActive={false}
+										dataKey="completion_tokens"
+										fill={CHART_COLORS.completionTokens}
+										fillOpacity={0.9}
+										barSize={30}
+									/>
+								</CappedBarStack>
 							</>
 						) : (
 							<>
@@ -198,18 +199,18 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 									content={<AllProvidersTooltip displayProviders={displayProviders} />}
 									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 								/>
-								{displayProviders.map((provider, idx) => (
-									<Bar
-										isAnimationActive={false}
-										key={provider}
-										dataKey={`provider_${idx}`}
-										stackId="tokens"
-										fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-										fillOpacity={0.9}
-										barSize={30}
-										radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-									/>
-								))}
+								<CappedBarStack buckets={chartData.length}>
+									{displayProviders.map((provider, idx) => (
+										<Bar
+											isAnimationActive={false}
+											key={provider}
+											dataKey={`provider_${idx}`}
+											fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+											fillOpacity={0.9}
+											barSize={30}
+										/>
+									))}
+								</CappedBarStack>
 							</>
 						)}
 					</BarChart>

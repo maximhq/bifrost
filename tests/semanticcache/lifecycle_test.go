@@ -100,7 +100,7 @@ func TestLifecycle(t *testing.T) {
 	t.Run("3.2_request_after_disable_no_cache_debug", func(t *testing.T) {
 		lc := newLogCtx("lifecycle", "3.2_request_after_disable_no_cache_debug")
 		resp := postChat(t, lc, 1, simpleChat(cfg.OpenAIModel, "What's 2+2?"), cacheHeaders{Key: "phase3-k2"})
-		assertNoCacheDebug(t, lc, 2, resp)
+		assertNoCacheMetadata(t, lc, 2, resp)
 	})
 
 	// 3.3 clear_endpoints_when_plugin_disabled — the cache-clear handler must
@@ -158,7 +158,7 @@ func TestLifecycle(t *testing.T) {
 	t.Run("3.8_request_after_delete", func(t *testing.T) {
 		lc := newLogCtx("lifecycle", "3.8_request_after_delete")
 		resp := postChat(t, lc, 1, simpleChat(cfg.OpenAIModel, "What's 3+3?"), cacheHeaders{Key: "phase3-k8"})
-		assertNoCacheDebug(t, lc, 2, resp)
+		assertNoCacheMetadata(t, lc, 2, resp)
 	})
 
 	// 3.9 re_create_clean — POST with the SAME config (and therefore the

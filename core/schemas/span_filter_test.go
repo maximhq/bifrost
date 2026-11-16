@@ -177,3 +177,47 @@ func TestPluginSpanFilter_BuildReparentMap(t *testing.T) {
 		_ = f.BuildReparentMap(spans) // must terminate
 	})
 }
+
+func TestShouldExportSpanWithOverhead(t *testing.T) {
+	llm := &Span{SpanID: "llm", ParentID: "root", Name: "chat", Kind: SpanKindLLMCall}
+	internalChild := &Span{SpanID: "ov", ParentID: "root", Name: "key.selection", Kind: SpanKindInternal}
+	internalRoot := &Span{SpanID: "root", ParentID: "", Name: "request", Kind: SpanKindInternal}
+	pluginKept := pluginSpan("pk", "root", "plugin.governance.prehook")
+
+	cases := []struct {
+		name           string
+		span           *Span
+		exportOverhead bool
+		want           bool
+	}{
+		{"internal child dropped by default", internalChild, false, false},
+		{"internal child kept when enabled", internalChild, true, true},
+		{"parentless internal (root) always kept", internalRoot, false, true},
+		{"llm span unaffected", llm, false, true},
+		{"plugin span unaffected by overhead toggle", pluginKept, false, true},
+	}
+	var f *PluginSpanFilter // nil filter: overhead toggle still applies
+	for _, tc := range cases {
+		if got := f.ShouldExportSpanWithOverhead(tc.span, tc.exportOverhead); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildReparentMapWithOverhead_ReparentsInternalChildren(t *testing.T) {
+	// root(http) -> phase(internal, dropped) -> llm(kept). llm must reparent to root.
+	spans := []*Span{
+		{SpanID: "root", ParentID: "", Name: "request", Kind: SpanKindHTTPRequest},
+		{SpanID: "phase", ParentID: "root", Name: "key.selection", Kind: SpanKindInternal},
+		{SpanID: "llm", ParentID: "phase", Name: "chat", Kind: SpanKindLLMCall},
+	}
+	var f *PluginSpanFilter
+	reparent := f.BuildReparentMapWithOverhead(spans, false)
+	if reparent["phase"] != "root" {
+		t.Fatalf("dropped internal span should map to root, got %q", reparent["phase"])
+	}
+	// With overhead export enabled, nothing is dropped.
+	if m := f.BuildReparentMapWithOverhead(spans, true); m != nil {
+		t.Fatalf("exportOverhead=true should drop nothing, got %v", m)
+	}
+}

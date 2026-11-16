@@ -1,0 +1,1642 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Object Ownership",
+    "description": "client.enforce_vk_object_ownership end to end. Two virtual keys share one provider key. With the setting on, a file the owner uploads is a 404 to the other key on retrieve, download and delete and is missing from its list, while the owner still reaches it. Turned off, the other key retrieves, downloads and lists the file, and the owner uploads a second file. Turned back on, both files are a 404 to the other key and missing from its list, which shows the creator is recorded while the setting is off. Teardown deletes both files and both keys and restores the client config snapshot. Files are the probe because they are free; the same setting covers batches, videos, containers, cached contents and live sessions. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot raises it to 30 and Teardown restores 30. If a run is killed before Teardown and leaves ownership off, the next run's first check (enforce_vk_object_ownership is on by default) fails.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "client_config_snapshot",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "owner_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "owner_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "other_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "other_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "file_1_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "file_2_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Snapshot client config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function () { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config;",
+                  "pm.test('client_config present', function () { pm.expect(cc).to.be.an('object'); });",
+                  "// Config PUTs replace the whole client_config, so every PUT here edits this snapshot",
+                  "// and Teardown restores it verbatim.",
+                  "var snap = cc || {};",
+                  "// A fresh install reports log_retention_days 0, which the PUT validator rejects (must be >= 1).",
+                  "if (!snap.log_retention_days || snap.log_retention_days < 1) { snap.log_retention_days = 30; }",
+                  "pm.collectionVariables.set('client_config_snapshot', JSON.stringify(snap));",
+                  "// The setting is on unless an operator turned it off; an omitted value means on.",
+                  "pm.test('enforce_vk_object_ownership is on by default', function () { pm.expect(cc.enforce_vk_object_ownership, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.not.equal(false); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create owner VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var uniqueName = 'VK Object Ownership owner ' + Date.now();",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create owner VK returns 200 or 201', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var j = pm.response.json();",
+                  "  var vk = (j && (j.virtual_key || j)) || {};",
+                  "  pm.test('Create owner VK has id and value', function () {",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('owner_vk_id', vk.id);",
+                  "  pm.collectionVariables.set('owner_vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create other VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var uniqueName = 'VK Object Ownership other ' + Date.now();",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create other VK returns 200 or 201', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var j = pm.response.json();",
+                  "  var vk = (j && (j.virtual_key || j)) || {};",
+                  "  pm.test('Create other VK has id and value', function () {",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('other_vk_id', vk.id);",
+                  "  pm.collectionVariables.set('other_vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner uploads file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('file_1_id');",
+                  "var missing = [\"owner_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner uploads file 1 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Owner uploads file 1 has a file id', function () { pm.expect(body.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty; });",
+                  "if (body.id) { pm.collectionVariables.set('file_1_id', body.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.jsonl"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Enforced - Objects Belong To The Creating Key",
+      "item": [
+        {
+          "name": "Turn ownership on",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"client_config_snapshot\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.enforce_vk_object_ownership = true;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Turn ownership on returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Config reports ownership on",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Config reports ownership on returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var cc = (pm.response.json() || {}).client_config || {};",
+                  "pm.test('enforce_vk_object_ownership reads back true', function () { pm.expect(cc.enforce_vk_object_ownership, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot retrieve file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK retrieve of file 1 returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK retrieve of file 1 says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot download file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK download of file 1 returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK download of file 1 says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}/content?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot delete file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK delete of file 1 returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK delete of file 1 says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK file list omits file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK file list returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('Other VK file list omits file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files?provider={{provider}}&limit=10000&order=desc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10000"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner VK retrieves file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner VK retrieve of file 1 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Owner VK retrieve of file 1 returns that file', function () { pm.expect(body.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner VK file list includes file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner VK file list returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('Owner VK file list includes file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.include(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files?provider={{provider}}&limit=10000&order=desc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10000"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Disabled - Every Key Reaches Every Object",
+      "item": [
+        {
+          "name": "Turn ownership off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"client_config_snapshot\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.enforce_vk_object_ownership = false;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Turn ownership off returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Config reports ownership off",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Config reports ownership off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var cc = (pm.response.json() || {}).client_config || {};",
+                  "pm.test('enforce_vk_object_ownership reads back false', function () { pm.expect(cc.enforce_vk_object_ownership, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.equal(false); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK retrieves file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK retrieve of file 1 while off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK retrieve of file 1 while off returns that file', function () { pm.expect(body.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK downloads file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK download of file 1 while off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Other VK download of file 1 while off has content', function () { pm.expect(pm.response.text().length, 'empty body').to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}/content?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK file list includes file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK file list while off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('Other VK file list while off includes file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.include(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files?provider={{provider}}&limit=10000&order=desc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10000"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner uploads file 2 while ownership is off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('file_2_id');",
+                  "var missing = [\"owner_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner uploads file 2 while ownership is off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Owner uploads file 2 while ownership is off has a file id', function () { pm.expect(body.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty; });",
+                  "if (body.id) { pm.collectionVariables.set('file_2_id', body.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.jsonl"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Re-Enabled - Creators Recorded While Off Are Enforced",
+      "item": [
+        {
+          "name": "Turn ownership back on",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"client_config_snapshot\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.enforce_vk_object_ownership = true;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Turn ownership back on returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Config reports ownership back on",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Config reports ownership back on returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var cc = (pm.response.json() || {}).client_config || {};",
+                  "pm.test('enforce_vk_object_ownership reads back true again', function () { pm.expect(cc.enforce_vk_object_ownership, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot retrieve file 1 again",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK retrieve of file 1 after re-enabling returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK retrieve of file 1 after re-enabling says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot retrieve file 2 uploaded while off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_2_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK retrieve of file 2 returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK retrieve of file 2 says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_2_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_2_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot download file 2 uploaded while off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_2_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK download of file 2 returns 404', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK download of file 2 says not found', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_2_id}}/content?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_2_id}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK file list omits both files",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_1_id\", \"file_2_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK file list after re-enabling returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('Other VK file list after re-enabling omits file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_1_id')); });",
+                  "pm.test('Other VK file list after re-enabling omits file_2_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_2_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files?provider={{provider}}&limit=10000&order=desc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10000"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner VK retrieves file 2",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"other_vk_value\", \"file_2_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner VK retrieve of file 2 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Owner VK retrieve of file 2 returns that file', function () { pm.expect(body.id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('file_2_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_2_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_2_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown",
+      "item": [
+        {
+          "name": "Owner deletes file 1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner delete of file 1 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_1_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner deletes file 2",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\", \"file_2_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner delete of file 2 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_2_id}}?provider={{provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{file_2_id}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Restore client config snapshot",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"client_config_snapshot\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.request.body.raw = JSON.stringify({client_config: JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}')});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Restore client config returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete owner VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete owner VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{owner_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{owner_vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete other VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete other VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{other_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{other_vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

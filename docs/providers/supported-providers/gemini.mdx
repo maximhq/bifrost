@@ -30,6 +30,7 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Files | ✅ | - | `/upload/storage/v1beta/files` |
 | Batch | ✅ | - | `/v1beta/batchJobs` |
 | List Models | ✅ | - | `/v1beta/models` |
+| Decisions | ✅ | - | `/v1beta/decisions` (Gemini Decision models) |
 
 ---
 
@@ -458,6 +459,17 @@ Audio is sent as inline data with auto-detected MIME type:
 }
 ```
 
+<Note>
+Gemini caching works differently from the rest of Bifrost's providers, so the
+`prompt_cache.auto_inject` setting does **not** apply here. Anthropic-style providers
+mark a content block and the cached prefix follows from where the marker sits. Gemini
+instead caches through a server-side `cachedContent` **resource** that you create,
+name, and pass by ID, with its own TTL and billing. There is no per-block marker for
+Bifrost to add, so injecting one would do nothing. Create the resource and pass
+`cachedContent` yourself. See [Prompt caching](/features/prompt-caching) for how the setting behaves
+elsewhere.
+</Note>
+
 ### Extra Parameters
 
 Safety settings and caching can be configured:
@@ -511,11 +523,11 @@ resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.
 # 5. Embeddings
 
 <Note>
-Supports both single text and batch text embeddings via batch requests.
+Supports text and multimodal embeddings (text, image, audio, video, and PDF via `file` parts). Multiple input items are sent as a batch — each item maps to a separate entry in `requests[]`.
 </Note>
 
 **Request Parameters**:
-- `input` → `requests[0].content.parts[0].text` (single text joins arrays with space)
+- `input` → `ToGeminiEmbeddingRequest` maps each `EmbeddingInputItem.Content` to a separate `requests[]` entry (batch). Each content's parts map to `content.parts[]`.
 - `dimensions` → `outputDimensionality`
 - Extra task type and title via `extra_params`
 
@@ -856,6 +868,52 @@ If Gemini filters content for safety, `status` is `failed` and `content_filter` 
 | Download | `GET /v1/videos/{id}/content` | Downloads from GCS URI or decodes base64 video |
 
 Video Delete, List, and Remix are not supported.
+
+---
+
+# 12. Decisions
+
+Gemini Decision models answer [`/v1/decisions`](/quickstart/gateway/decisions) on the Gemini API's `/v1beta/decisions` endpoint. They score a fixed set of outcomes in one pass instead of generating text, and return calibrated probabilities. The endpoint is a sibling of the Interactions API: it reads the same content blocks, but it is not an interaction.
+
+| Model | Context limit | Input |
+|-------|---------------|-------|
+| `gemini-decision-1` | 262,144 tokens across the input and every question | Text, images, audio, video, and PDFs |
+
+```bash
+curl -X POST http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-decision-1",
+    "input": [{"role": "user", "content": [
+      {"type": "input_text", "text": "Customer photo for return request #8821."},
+      {"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/4AAQ...", "detail": "low"},
+      {"type": "input_file", "url": "https://example.com/voicemail.mp3", "mime_type": "audio/mpeg"}
+    ]}],
+    "questions": [
+      {"type": "predicate", "name": "is_damaged", "instructions": "Does the evidence show the item arrived damaged?",
+       "criteria": {"true": "The item is broken or dented.", "false": "Only the packaging is marked."}},
+      {"type": "choice", "name": "next_action", "instructions": "What should we do?", "choices": [
+        {"value": "refund", "description": "Refund without a return."},
+        {"value": "replace", "description": "Ship a replacement."}
+      ]}
+    ]
+  }'
+```
+
+How Bifrost maps the request:
+
+- `predicate`, `choice` and `score` questions become Gemini's `noul`, `choice` and `score`, keyed by each question's `name` when it is a valid Gemini key (1 to 64 letters, digits, `_` or `-`), and by `question_1`, `question_2`, ... (its position) otherwise, such as for an unnamed question or one named `Is the sky blue?`. Gemini's model never reads the keys, and each answer comes back under its question's own name. A predicate's `criteria` become `true_description` and `false_description`. Gemini reads question text only, so structured instructions and descriptions are sent as JSON text, and instructions written as parts are joined into text. `box` questions are rejected with `400` before the call. A choice question takes 2 to 255 options and a score question 2 to 255 levels; Gemini checks both.
+- Text input is sent as is, and structured input as its JSON text. Messages are written out as described under [Conversation History](/quickstart/gateway/decisions#conversation-history): one speaker's messages as their content, several speakers' with a role label each.
+- `input_image` parts become image blocks: a base64 data URL as its data, and an HTTPS URL as a URI whose media type is read from its extension (a URL without an image extension is rejected; send it as a data URL). Images sent by reference (with an `id`) are rejected.
+- `input_file` parts become audio, video, or document blocks by their `mime_type`: `audio/*`, `video/*`, or `application/pdf`. Bytes go as base64 data, and a `url` as the block's URI: an HTTPS URL up to 15 MB, or a [Files API](#7-files-api) URI. Gemini does not read YouTube or `gs://` URLs here. See [Files](/quickstart/gateway/decisions#files).
+- `detail` maps to Gemini's media resolution on images and video: `low` and `high` as they are, `original` to the highest resolution the block takes (`ultra_high` for images, `high` for video), and `auto` leaves it to Gemini.
+- Usage reports the input tokens as `prompt_tokens`, split into text, image, and audio tokens in `prompt_tokens_details` (video frames and PDF pages count as image tokens). Decisions generate no output tokens, so only input is billed. Cost is the input tokens times the model's `input_cost_per_token_decisions`. If your pricing data has no entry for the model, add a [pricing override](/providers/custom-pricing#pricing-fields-reference) for the `decisions` request type; Google's list price of $0.10 per million input tokens is `0.0000001`.
+
+Only `gemini-decision-*` models are served on this endpoint, unless the model's datasheet entry says otherwise. A decision request for any other Gemini model, such as `gemini-3-flash`, returns `unsupported_operation`, or is emulated through the Responses API when the [compat plugin's](/features/compat-plugin) `convert_decision_to_responses` is on. A custom provider on the Gemini base serves the same models.
+
+Decision errors carry Gemini's error code as a string, which Bifrost returns as the error's `code`: `invalid_request` for a request Gemini rejects (`400`), `not_found` for a model it does not serve on this endpoint (`404`), and `safety`, `prohibited_content`, `blocklist`, `image_safety`, or `content_blocked` when its safety filters block the input (`400`). A rejected API key comes back in Google's usual error format.
+
+Decisions run on the Gemini API only. Vertex AI does not serve them yet, so `vertex/` decision requests return `unsupported_operation`.
 
 ---
 

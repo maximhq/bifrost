@@ -297,6 +297,7 @@ type CohereEmbeddingRequest struct {
 	OutputDimension *int                   `json:"output_dimension,omitempty"` // Optional: Embedding dimensions (256, 512, 1024, 1536)
 	EmbeddingTypes  []string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
 	Truncate        *string                `json:"truncate,omitempty"`         // Optional: How to handle long inputs
+	Priority        *int                   `json:"priority,omitempty"`         // Optional: Priority of the request
 	ExtraParams     map[string]interface{} `json:"-"`                          // Optional: Extra parameters
 }
 
@@ -316,16 +317,30 @@ type CohereEmbeddingResponse struct {
 	ResponseType *string                    `json:"response_type,omitempty"` // Response type (embeddings_floats, embeddings_by_type)
 	Texts        []string                   `json:"texts,omitempty"`         // Original text entries
 	Images       []CohereEmbeddingImageInfo `json:"images,omitempty"`        // Original image entries
+	Inputs       []CohereEmbeddingInputEcho `json:"inputs,omitempty"`        // Original mixed entries
 	Meta         *CohereEmbeddingMeta       `json:"meta,omitempty"`          // Response metadata
+}
+
+// CohereEmbeddingInputEcho is one echoed inputs[] entry. The response reports an
+// image under "image" as metadata, not "image_url" as a URL.
+type CohereEmbeddingInputEcho struct {
+	Content []CohereEmbeddingContentEcho `json:"content"`
+}
+
+// CohereEmbeddingContentEcho is one echoed content block.
+type CohereEmbeddingContentEcho struct {
+	Type  CohereContentBlockType    `json:"type"`
+	Text  *string                   `json:"text,omitempty"`
+	Image *CohereEmbeddingImageInfo `json:"image,omitempty"`
 }
 
 // CohereEmbeddingData represents the embeddings object with different types
 type CohereEmbeddingData struct {
 	Float   [][]float64 `json:"float,omitempty"`   // Float embeddings
 	Int8    [][]int8    `json:"int8,omitempty"`    // Int8 embeddings
-	Uint8   [][]uint8   `json:"uint8,omitempty"`   // Uint8 embeddings
+	Uint8   [][]int32   `json:"uint8,omitempty"`   // Uint8 embeddings; int32 avoids []byte→base64 JSON issue
 	Binary  [][]int8    `json:"binary,omitempty"`  // Binary embeddings
-	Ubinary [][]uint8   `json:"ubinary,omitempty"` // Unsigned binary embeddings
+	Ubinary [][]int32   `json:"ubinary,omitempty"` // Unsigned binary embeddings; int32 avoids []byte→base64 JSON issue
 	Base64  []string    `json:"base64,omitempty"`  // Base64 embeddings
 }
 
@@ -619,6 +634,7 @@ type CohereStreamContent struct {
 
 // CohereError represents an error response from the Cohere  API
 type CohereError struct {
+	ID      string  `json:"id,omitempty"`   // Request ID
 	Type    string  `json:"type"`           // Error type
 	Message string  `json:"message"`        // Error message
 	Code    *string `json:"code,omitempty"` // Optional error code

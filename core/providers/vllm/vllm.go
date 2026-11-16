@@ -188,6 +188,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.VLLM,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -295,6 +296,7 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		HandleVLLMResponse,
+		nil,
 		provider.logger,
 	)
 }
@@ -314,6 +316,8 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.VLLM,
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -352,6 +356,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
+			ValidateTools:             true,
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -481,7 +486,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*vLLMRerankRequest, error) {
 			return ToVLLMRerankRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -675,6 +680,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 				providerUtils.CloseStream(ctx, responseChan)
 			}()
+			defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 			reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -725,14 +731,20 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				var response schemas.BifrostTranscriptionStreamResponse
 				var bifrostErr *schemas.BifrostError
 
+				// Decode timed as the "response-parse" stream phase (per-event JSON decode).
+				parseStart := time.Now()
 				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 
+				// Convert timed as the "convertor" stream phase (per-event mapping).
+				convStart := time.Now()
 				customChunk, ok := parseVLLMTranscriptionStreamChunk(dataBytes)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if !ok || customChunk == nil {
 					logger.Warn("customChunkParser returned no chunk")
 					continue
@@ -906,6 +918,7 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		},
@@ -914,6 +927,11 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		nil,
 		provider.logger,
 	)
+}
+
+// ModelRetrieve is not supported by the vLLM provider.
+func (provider *VLLMProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the vLLM provider.

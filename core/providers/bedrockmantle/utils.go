@@ -5,6 +5,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -17,12 +20,12 @@ var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
 // mantle anthropic-version header added. It clones the input first so it never mutates the
 // shared networkConfig.ExtraHeaders map (which would leak anthropic-version onto the
 // OpenAI-compatible requests and race across concurrent requests).
-func addAnthropicHeaders(headers map[string]string) map[string]string {
+func addAnthropicHeaders(headers map[string]schemas.SecretVar) map[string]schemas.SecretVar {
 	out := maps.Clone(headers)
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out["anthropic-version"] = mantleAnthropicVersion
+	out["anthropic-version"] = *schemas.NewSecretVar(mantleAnthropicVersion)
 	return out
 }
 
@@ -74,4 +77,18 @@ func (provider *BedrockMantleProvider) resolveRegion(ctx *schemas.BifrostContext
 		return key.BedrockMantleKeyConfig.Region.GetValue()
 	}
 	return defaultMantleRegion
+}
+
+// dsmlChunkDecoder decodes a chat stream chunk and runs it through f; nil when f is nil.
+func dsmlChunkDecoder(f *bedrock.DSMLStreamFilter) func([]byte, *schemas.BifrostChatResponse, []byte, bool, bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if f == nil {
+		return nil
+	}
+	return func(body []byte, resp *schemas.BifrostChatResponse, _ []byte, _, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
+		if err := sonic.Unmarshal(body, resp); err != nil {
+			return nil, nil, providerUtils.NewBifrostOperationError("failed to parse stream response", err)
+		}
+		f.FilterChatChunk(resp)
+		return nil, nil, nil
+	}
 }

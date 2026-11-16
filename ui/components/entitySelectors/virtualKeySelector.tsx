@@ -13,6 +13,7 @@ import {
 	type EntityLabelResolverProps,
 	type EntitySelectorModeProps,
 	type EntitySelectorOption,
+	useEntitySelectorPages,
 	useEntitySelectorSearch,
 } from "@/components/entitySelectors/entitySelector";
 import { useGetVirtualKeyQuery, useGetVirtualKeysQuery } from "@/lib/store";
@@ -43,26 +44,27 @@ interface VirtualKeySelectorOwnProps extends EntitySelectorCommonProps {
 export type VirtualKeySelectorProps = VirtualKeySelectorOwnProps & EntitySelectorModeProps;
 
 export function VirtualKeySelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, filters, ...props }: VirtualKeySelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch, skip, isDebouncing } = useEntitySelectorSearch();
+	const search = useEntitySelectorSearch();
 
-	const {
-		data: vksData,
-		isFetching,
-		isError,
-	} = useGetVirtualKeysQuery({ ...filters, limit, search: debouncedSearch || undefined }, { skip });
+	const { currentData, isFetching, isError, refetch } = useGetVirtualKeysQuery(
+		{ ...filters, limit, offset: search.offset, search: search.debouncedSearch || undefined },
+		{ skip: search.skip },
+	);
 
-	// Memoized because multi mode hands this to react-select as defaultOptions,
-	// which re-syncs on identity change. vk.value is the secret itself and is
-	// deliberately never rendered.
-	const options = useMemo(
+	// Memoized because multi mode hands the merged list to react-select as
+	// defaultOptions, which re-syncs on identity change. vk.value is the secret
+	// itself and is deliberately never rendered.
+	const entries = useMemo(
 		() =>
-			(vksData?.virtual_keys ?? []).map((vk) => ({
+			currentData?.virtual_keys?.map((vk) => ({
 				value: vk.id,
 				label: vk.name || vk.id,
 				description: vk.description,
 			})),
-		[vksData],
+		[currentData],
 	);
+
+	const listProps = useEntitySelectorPages(search, { entries, totalCount: currentData?.total_count, isFetching, isError, refetch });
 
 	return (
 		<EntitySelector
@@ -70,14 +72,7 @@ export function VirtualKeySelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, filters,
 			LabelResolver={VirtualKeyLabelResolver}
 			entityLabel="virtual key"
 			entityLabelPlural="virtual keys"
-			options={options}
-			isFetching={isFetching}
-			isError={isError}
-			open={open}
-			onOpenChange={setOpen}
-			onSearchChange={setSearch}
-			isSearching={isDebouncing || (isFetching && !!debouncedSearch)}
-			debouncedSearch={debouncedSearch}
+			{...listProps}
 		/>
 	);
 }

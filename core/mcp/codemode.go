@@ -54,6 +54,9 @@ type CodeModeConfig struct {
 
 	// ToolExecutionTimeout is the maximum time allowed for tool execution
 	ToolExecutionTimeout time.Duration
+
+	// Limits bounds each execution; nil keeps the current limits
+	Limits *schemas.MCPCodeModeLimits
 }
 
 // CodeModeDependencies holds the dependencies required by CodeMode implementations.

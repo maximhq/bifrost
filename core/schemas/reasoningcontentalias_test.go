@@ -133,3 +133,98 @@ func TestReasoningContentAliasIsEmittedOnOutput(t *testing.T) {
 		assert.Equal(t, reasoning, *back.ReasoningDetails[0].Text)
 	})
 }
+
+// ModelScope (and other DeepSeek-shaped upstreams) keep sending reasoning_content
+// as an empty string on every content-phase chunk once thinking has finished.
+// Bifrost amplified that noise instead of dropping it: UnmarshalJSON folded the
+// empty alias into a non-nil Reasoning, synthesized a reasoning_details entry with
+// empty text from it, and MarshalJSON then re-emitted all of it under both
+// spellings. Reasoning-aware clients read each of those empty fragments as a fresh
+// thinking block, rendering "[Thinking 0.0s]" between every piece of the answer.
+// See https://github.com/maximhq/bifrost/issues/7294.
+func TestEmptyReasoningNoiseIsNotAmplified(t *testing.T) {
+	assertNoReasoningKeys := func(t *testing.T, encoded []byte) {
+		t.Helper()
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		for _, key := range []string{"reasoning", "reasoning_content", "reasoning_details"} {
+			_, present := decoded[key]
+			assert.False(t, present, "empty reasoning must not serialize a %q key", key)
+		}
+	}
+
+	t.Run("stream delta drops empty reasoning fields", func(t *testing.T) {
+		// Verbatim content-phase delta shape from issue #7294.
+		raw := `{"content":"Hello, I'","reasoning":"","reasoning_content":"","reasoning_details":[{"index":0,"type":"reasoning.text","text":""}]}`
+
+		var delta ChatStreamResponseChoiceDelta
+		require.NoError(t, json.Unmarshal([]byte(raw), &delta))
+
+		encoded, err := json.Marshal(delta)
+		require.NoError(t, err)
+		assertNoReasoningKeys(t, encoded)
+
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Equal(t, "Hello, I'", decoded["content"], "content must survive the cleanup")
+	})
+
+	t.Run("stream delta does not synthesize details from an empty alias", func(t *testing.T) {
+		raw := `{"content":"","reasoning_content":""}`
+
+		var delta ChatStreamResponseChoiceDelta
+		require.NoError(t, json.Unmarshal([]byte(raw), &delta))
+
+		encoded, err := json.Marshal(delta)
+		require.NoError(t, err)
+		assertNoReasoningKeys(t, encoded)
+	})
+
+	t.Run("assistant message drops empty reasoning fields", func(t *testing.T) {
+		raw := `{"content":"","reasoning":"","reasoning_content":"","reasoning_details":[{"index":0,"type":"reasoning.text","text":""}]}`
+
+		var msg ChatAssistantMessage
+		require.NoError(t, json.Unmarshal([]byte(raw), &msg))
+
+		encoded, err := json.Marshal(msg)
+		require.NoError(t, err)
+		assertNoReasoningKeys(t, encoded)
+	})
+
+	t.Run("payload-bearing details survive an empty reasoning string", func(t *testing.T) {
+		// A detail carrying a signature (or summary/data) is not noise even when
+		// its text is empty - only the empty reasoning string itself is dropped.
+		raw := `{"reasoning":"","reasoning_details":[{"index":0,"type":"reasoning.text","text":"","signature":"sig-abc"}]}`
+
+		var delta ChatStreamResponseChoiceDelta
+		require.NoError(t, json.Unmarshal([]byte(raw), &delta))
+
+		encoded, err := json.Marshal(delta)
+		require.NoError(t, err)
+
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		_, hasReasoning := decoded["reasoning"]
+		assert.False(t, hasReasoning, "the empty reasoning string is still dropped")
+		details, hasDetails := decoded["reasoning_details"].([]any)
+		require.True(t, hasDetails, "signed details must survive")
+		require.Len(t, details, 1)
+		assert.Equal(t, "sig-abc", details[0].(map[string]any)["signature"])
+	})
+
+	t.Run("real reasoning deltas are untouched", func(t *testing.T) {
+		raw := `{"reasoning_content":"We"}`
+
+		var delta ChatStreamResponseChoiceDelta
+		require.NoError(t, json.Unmarshal([]byte(raw), &delta))
+
+		encoded, err := json.Marshal(delta)
+		require.NoError(t, err)
+
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Equal(t, "We", decoded["reasoning"])
+		assert.Equal(t, "We", decoded["reasoning_content"])
+	})
+}
+

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Allocates two vLLM pods on RunPod for the test-vllm CI job and waits for
-# both to be healthy: a default vllm server pod (servers qwen3.5) and a vllm 
-# nightly server pod (servers GLM-4.7).
+# both to be healthy: a default pod (serves Qwen3.5) and a reasoning pod
+# (serves GLM-4.7), both on a pinned stable vLLM image.
 #
 # Usage: ./setup-vllm-runpod.sh
 # Required env: RUNPOD_API_KEY
@@ -19,7 +19,9 @@ set -euo pipefail
 #     VLLM_REASONING_TRUST_REMOTE_CODE, VLLM_REASONING_TOOL_CALL_PARSER,
 #     VLLM_REASONING_REASONING_PARSER, VLLM_REASONING_MAX_MODEL_LEN,
 #     VLLM_REASONING_ENABLE_THINKING (reasoning pod)
-#   VLLM_READY_TIMEOUT_SECONDS, VLLM_MAX_POD_LIFETIME_MINUTES (shared)
+#   VLLM_READY_TIMEOUT_SECONDS, VLLM_MAX_POD_LIFETIME_MINUTES,
+#     VLLM_GPU_TYPE_IDS (comma-separated, tried in order), VLLM_CREATE_ATTEMPTS,
+#     VLLM_CREATE_RETRY_SECONDS (shared)
 #
 # Exports (via $GITHUB_ENV) for later steps in the same job:
 #   RUNPOD_POD_ID, VLLM_BASE_URL, VLLM_API_KEY, VLLM_CHAT_MODEL, VLLM_TEXT_MODEL,
@@ -29,7 +31,9 @@ RUNPODCTL_VERSION="v2.7.2"
 RUNPODCTL_LINUX_AMD64_SHA256="acf5c49a3192b522e95cae92539fa6fcd8be8c48802aa26c7f3f2ec980ab4f5c"
 
 API_PORT=8000
-GPU_TYPE_ID="NVIDIA A40"
+IFS=',' read -r -a GPU_TYPE_IDS <<< "${VLLM_GPU_TYPE_IDS:-NVIDIA A40,NVIDIA L40S,NVIDIA RTX A6000}"
+CREATE_ATTEMPTS="${VLLM_CREATE_ATTEMPTS:-4}"
+CREATE_RETRY_SECONDS="${VLLM_CREATE_RETRY_SECONDS:-30}"
 READY_TIMEOUT_SECONDS="${VLLM_READY_TIMEOUT_SECONDS:-1200}"
 MAX_POD_LIFETIME_MINUTES="${VLLM_MAX_POD_LIFETIME_MINUTES:-120}"
 
@@ -71,7 +75,6 @@ create_vllm_pod() {
     pod create
     --name "bifrost-ci-vllm-${name_suffix}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
     --image "$image"
-    --gpu-id "$GPU_TYPE_ID"
     --gpu-count 1
     --cloud-type SECURE
     --container-disk-in-gb 30
@@ -87,9 +90,34 @@ create_vllm_pod() {
     create_args+=(--volume-in-gb 60 --volume-mount-path /root/.cache/huggingface)
   fi
 
-  echo "🚀 Creating ${name_suffix} vLLM pod ($model on $GPU_TYPE_ID, auto-terminates at ${TERMINATE_AFTER} as a backstop)..." >&2
-  local create_output
-  create_output=$(runpodctl "${create_args[@]}")
+  # Only capacity errors are retried, across GPU_TYPE_IDS then again after a pause.
+  # Anything else (bad flag, auth) fails on the first try.
+  local create_output="" create_err attempt gpu created=false
+  create_err=$(mktemp)
+  for attempt in $(seq 1 "$CREATE_ATTEMPTS"); do
+    for gpu in "${GPU_TYPE_IDS[@]}"; do
+      echo "🚀 Creating ${name_suffix} vLLM pod ($model on $gpu, attempt ${attempt}/${CREATE_ATTEMPTS}, auto-terminates at ${TERMINATE_AFTER} as a backstop)..." >&2
+      if create_output=$(runpodctl "${create_args[@]}" --gpu-id "$gpu" 2>"$create_err"); then
+        created=true
+        break 2
+      fi
+      cat "$create_err" >&2
+      if ! grep -qiE "no (longer any )?instances" "$create_err"; then
+        rm -f "$create_err"
+        echo "::error::Failed to create the ${name_suffix} vLLM pod; see RunPod error above" >&2
+        return 1
+      fi
+    done
+    if [ "$attempt" -lt "$CREATE_ATTEMPTS" ]; then
+      echo "⏳ No capacity for the ${name_suffix} pod on any of: ${GPU_TYPE_IDS[*]}; retrying in ${CREATE_RETRY_SECONDS}s" >&2
+      sleep "$CREATE_RETRY_SECONDS"
+    fi
+  done
+  rm -f "$create_err"
+  if [ "$created" != true ]; then
+    echo "::error::No RunPod capacity for the ${name_suffix} vLLM pod on ${GPU_TYPE_IDS[*]} after ${CREATE_ATTEMPTS} attempts" >&2
+    return 1
+  fi
   echo "$create_output" >&2
 
   local pod_id
@@ -123,7 +151,7 @@ wait_for_vllm_ready() {
 DEFAULT_MODEL_NAME="${VLLM_MODEL_NAME:-Qwen/Qwen3.5-35B-A3B-GPTQ-Int4}"
 POD_ID=$(create_vllm_pod \
   "default" \
-  "${VLLM_IMAGE:-vllm/vllm-openai:latest}" \
+  "${VLLM_IMAGE:-vllm/vllm-openai:v0.31.0}" \
   "$DEFAULT_MODEL_NAME" \
   "${VLLM_TRUST_REMOTE_CODE:-false}" \
   "${VLLM_TOOL_CALL_PARSER:-qwen3_coder}" \
@@ -131,12 +159,14 @@ POD_ID=$(create_vllm_pod \
   "${VLLM_ENABLE_THINKING:-false}" \
   "${VLLM_MAX_MODEL_LEN:-32768}" \
   "${RUNPOD_NETWORK_VOLUME_ID:-}")
+# Make the first pod available to teardown even if the second creation fails.
+echo "RUNPOD_POD_ID=${POD_ID}" >> "$GITHUB_ENV"
 
 # --- Reasoning pod: Reasoning scenario only (thinking on) ---
 REASONING_MODEL_NAME="${VLLM_REASONING_MODEL_NAME:-QuantTrio/GLM-4.7-Flash-AWQ}"
 REASONING_POD_ID=$(create_vllm_pod \
   "reasoning" \
-  "${VLLM_REASONING_IMAGE:-vllm/vllm-openai:nightly}" \
+  "${VLLM_REASONING_IMAGE:-vllm/vllm-openai:v0.31.0}" \
   "$REASONING_MODEL_NAME" \
   "${VLLM_REASONING_TRUST_REMOTE_CODE:-true}" \
   "${VLLM_REASONING_TOOL_CALL_PARSER:-glm47}" \
@@ -144,6 +174,7 @@ REASONING_POD_ID=$(create_vllm_pod \
   "${VLLM_REASONING_ENABLE_THINKING:-true}" \
   "${VLLM_REASONING_MAX_MODEL_LEN:-131072}" \
   "${RUNPOD_REASONING_NETWORK_VOLUME_ID:-}")
+echo "RUNPOD_REASONING_POD_ID=${REASONING_POD_ID}" >> "$GITHUB_ENV"
 
 VLLM_BASE_URL="https://${POD_ID}-${API_PORT}.proxy.runpod.net"
 VLLM_REASONING_BASE_URL="https://${REASONING_POD_ID}-${API_PORT}.proxy.runpod.net"
@@ -152,12 +183,10 @@ echo "Reasoning pod: ${REASONING_POD_ID} -> ${VLLM_REASONING_BASE_URL}"
 
 # Persist for later steps in this job (test run + teardown).
 {
-  echo "RUNPOD_POD_ID=${POD_ID}"
   echo "VLLM_BASE_URL=${VLLM_BASE_URL}"
   echo "VLLM_API_KEY=${VLLM_API_KEY}"
   echo "VLLM_CHAT_MODEL=${DEFAULT_MODEL_NAME}"
   echo "VLLM_TEXT_MODEL=${DEFAULT_MODEL_NAME}"
-  echo "RUNPOD_REASONING_POD_ID=${REASONING_POD_ID}"
   echo "VLLM_REASONING_BASE_URL=${VLLM_REASONING_BASE_URL}"
   echo "VLLM_REASONING_MODEL=${REASONING_MODEL_NAME}"
 } >> "$GITHUB_ENV"

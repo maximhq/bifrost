@@ -1,3 +1,5 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useTranslation } from "react-i18next";
 import type { ProviderThroughputHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -9,8 +11,12 @@ import {
 	getModelColor,
 	THROUGHPUT_COLOR,
 } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface ProviderThroughputChartProps {
 	data: ProviderThroughputHistogramResponse | null;
@@ -37,7 +43,7 @@ function AllProvidersTooltip({ active, payload, displayProviders: providers }: a
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+								<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">{provider}</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{formatTokensPerSecond(stats.tokens_per_second)}</span>
 						</div>
@@ -49,6 +55,7 @@ function AllProvidersTooltip({ active, payload, displayProviders: providers }: a
 }
 
 function SingleProviderTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -61,17 +68,17 @@ function SingleProviderTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: THROUGHPUT_COLOR }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Throughput</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.throughput")}</span>
 					</span>
 					<span className="font-medium">{formatTokensPerSecond(data.tokens_per_second)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
-					<span className="text-zinc-600 dark:text-zinc-400">Completion tokens</span>
-					<span className="font-medium">{data.total_completion_tokens?.toLocaleString() || 0}</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.completionTokens")}</span>
+					<span className="font-medium">{data.total_completion_tokens?.toLocaleString(getLocale()) || 0}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Requests</span>
-					<span className="font-medium">{data.total_requests?.toLocaleString() || 0}</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.requests")}</span>
+					<span className="font-medium">{data.total_requests?.toLocaleString(getLocale()) || 0}</span>
 				</div>
 			</div>
 		</div>
@@ -79,6 +86,7 @@ function SingleProviderTooltip({ active, payload }: any) {
 }
 
 function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderThroughputChartProps) {
+	useLocale();
 	const { chartData, mode, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], mode: "all" as const, displayProviders: [] };
@@ -115,7 +123,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 	}, [data, selectedProvider]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
@@ -125,7 +133,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -157,7 +165,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 									fill={THROUGHPUT_COLOR}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 							</>
 						) : (
@@ -174,7 +182,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
-										radius={[2, 2, 0, 0]}
+										shape={barShape}
 									/>
 								))}
 							</>

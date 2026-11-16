@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // DefaultPageSize is the default page size for listing models
@@ -101,8 +102,9 @@ func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageTok
 
 	// Validate cursor integrity if LastID is present
 	if cursor.LastID != "" && !validatePaginationCursor(cursor, response.Data) {
-		// Invalid cursor: reset to beginning
-		offset = 0
+		// Listing shifted since the cursor was issued: continue after the last
+		// returned ID rather than re-emitting earlier rows.
+		offset = resumeOffsetAfterLastID(response.Data, cursor.LastID, offset)
 	}
 
 	if offset >= totalItems {
@@ -146,6 +148,18 @@ func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageTok
 	return paginatedResponse
 }
 
+// BifrostModelRetrieveRequest retrieves a single model's metadata (OpenAI GET /v1/models/{model}).
+type BifrostModelRetrieveRequest struct {
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
+}
+
+// BifrostModelRetrieveResponse carries the retrieved model inline, alongside the usual extra fields.
+type BifrostModelRetrieveResponse struct {
+	Model
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
@@ -158,6 +172,7 @@ type Model struct {
 	MaxOutputTokens     *int               `json:"max_output_tokens,omitempty"`
 	Architecture        *Architecture      `json:"architecture,omitempty"`
 	IsDeprecated        bool               `json:"is_deprecated,omitempty"`
+	ShutdownDate        *string            `json:"shutdown_date,omitempty"` // Provider-announced retirement date
 	Pricing             *Pricing           `json:"pricing,omitempty"`
 	TopProvider         *TopProvider       `json:"top_provider,omitempty"`
 	PerRequestLimits    *PerRequestLimits  `json:"per_request_limits,omitempty"`
@@ -297,4 +312,23 @@ func validatePaginationCursor(cursor paginationCursor, data []Model) bool {
 	}
 
 	return true
+}
+
+// resumeOffsetAfterLastID returns the index at which to resume a page after lastID
+// when the listing changed since the cursor was issued. For ID-sorted data it finds the
+// first ID greater than lastID (which also handles a removed cursor row). For unsorted
+// data it resumes after lastID's new index, or keeps fallback (clamped) if the row is gone.
+func resumeOffsetAfterLastID(data []Model, lastID string, fallback int) int {
+	if sort.SliceIsSorted(data, func(i, j int) bool { return data[i].ID < data[j].ID }) {
+		return sort.Search(len(data), func(i int) bool { return data[i].ID > lastID })
+	}
+	for i := range data {
+		if data[i].ID == lastID {
+			return i + 1
+		}
+	}
+	if fallback > len(data) {
+		return len(data)
+	}
+	return fallback
 }

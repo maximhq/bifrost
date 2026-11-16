@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,10 +12,12 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -44,7 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+			if responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -56,6 +59,61 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		},
 		PreCallback: checkAnthropicPassthrough,
 	}
+}
+
+// anthropicRefuseThreadContinue is the ShortCircuit for the `/v1/messages` routes
+// implementing Bifrost's stateless handling of Anthropic server-side threads.
+// Thread state is bound to the upstream account that created it, and Bifrost's
+// per-request key selection, retries, and fallbacks cannot keep a continuation
+// on that account. A `thread: {"type": "continue"}` request carries only the
+// conversation delta, which Bifrost cannot serve, so it is refused with the
+// `thread_unsupported_request` error code; the client then resends the turn in
+// full and drops the thread field for the rest of the session. Create requests
+// pass through here and have the field stripped on the provider's raw-body path
+// (BuildAnthropicResponsesRequestBody), since they carry the full conversation.
+func anthropicRefuseThreadContinue(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false, nil
+	}
+	// The parser captures unknown top-level fields as compacted RawMessage. In
+	// large-payload mode the body is never parsed, so the enterprise metadata
+	// extractor surfaces the thread type through the routing metadata instead
+	// (already resolved and cached by the hydration in checkAnthropicPassthrough).
+	// An extractor that does not populate ThreadType leaves behavior unchanged.
+	threadType := ""
+	if threadRaw, ok := anthropicReq.ExtraParams["thread"].(json.RawMessage); ok {
+		threadType = gjson.GetBytes(threadRaw, "type").String()
+	} else if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		if metadata := resolveLargePayloadMetadata(bifrostCtx); metadata != nil {
+			threadType = metadata.ThreadType
+		}
+	}
+	if threadType != "continue" {
+		return false, nil
+	}
+	// The count_tokens endpoint has its own static route without this hook; this
+	// guard keeps the wildcard /v1/messages/{path:*} route from refusing token
+	// counting if route registration ever changes. Token counting keeps working
+	// on full-replay bodies either way.
+	if strings.HasSuffix(string(ctx.Path()), "/count_tokens") {
+		return false, nil
+	}
+	payload, err := providerUtils.MarshalSorted(&anthropic.AnthropicMessageError{
+		Type: "error",
+		Error: anthropic.AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: `Bifrost does not keep Anthropic thread state; replay the full conversation with thread: {"type": "create"}.`,
+			Details: &anthropic.AnthropicMessageErrorDetails{ErrorCode: "thread_unsupported_request"},
+		},
+	})
+	if err != nil {
+		return true, err
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(payload)
+	return true, nil
 }
 
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
@@ -79,6 +137,9 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
 					normalizeBifrostInputContentBlocks(bifrostReq)
+					// Input is still owned here. Strip once before hooks/fallbacks
+					// share it, avoiding a conversation-slice copy per GPT attempt.
+					bifrostReq.ExtractAnthropicBillingHeader()
 					return &schemas.BifrostRequest{
 						ResponsesRequest: bifrostReq,
 					}, nil
@@ -87,9 +148,23 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-				if soToolName == "" && isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
+				if soToolName == "" && isClaudeModel(ctx, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
+						passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+						raw, isRawJSON := resp.ExtraFields.RawResponse.(json.RawMessage)
+						if passthrough || !isRawJSON {
+							return resp.ExtraFields.RawResponse, nil
+						}
+						// Raw capture was requested: echo extra_fields as the converted path does, leaving Anthropic's bytes intact.
+						extraFields, err := sonic.Marshal(resp.ExtraFields)
+						if err != nil {
+							return nil, fmt.Errorf("marshal anthropic extra_fields: %w", err)
+						}
+						withExtraFields, err := sjson.SetRawBytes(raw, "extra_fields", extraFields)
+						if err != nil {
+							return nil, fmt.Errorf("attach anthropic extra_fields: %w", err)
+						}
+						return json.RawMessage(withExtraFields), nil
 					}
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil
@@ -116,7 +191,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					if soToolName == "" && responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
@@ -162,10 +237,22 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					return string(anthropicResponse[0].Type), anthropicResponse[0], nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					// A stream that errors never renders a terminal frame, so this is
+					// where its prompt-usage readings are released: handleStreaming
+					// converts chunks in order and returns after this callback, so
+					// every queued message_delta has already been converted. Kept out
+					// of ToAnthropicResponsesStreamError so that converter stays pure.
+					anthropic.ReleaseStreamPromptUsage(ctx)
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
+				// The error path above covers a stream that failed. A stream that
+				// simply ends -- including one whose upstream closed without a
+				// message_stop -- releases here instead, rather than waiting for the
+				// next stream to sweep it.
+				Cleanup: anthropic.ReleaseStreamPromptUsage,
 			},
-			PreCallback: checkAnthropicPassthrough,
+			PreCallback:  checkAnthropicPassthrough,
+			ShortCircuit: anthropicRefuseThreadContinue,
 		})
 	}
 	return routes
@@ -303,9 +390,9 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 	}
 }
 
-// checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
-// If it is, it attaches the raw request body for direct use by the provider.
-// It also checks for anthropic oauth headers and sets the bifrost context.
+// checkAnthropicPassthrough configures provider-native forwarding for Claude Code requests.
+// Alongside the required auth, path, and raw-response settings, it registers an
+// Anthropic-owned text rewriter so raw request bytes cannot bypass runtime redaction.
 func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req any) error {
 	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
 
@@ -345,13 +432,129 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
+		// These providers convert output_config.format through Bifrost, including
+		// their client-facing response events, so the raw request text rewriter
+		// does not apply.
+		if anthropic.ProviderRequiresSyntheticStructuredOutput(provider) && hasOutputConfigFormat(req) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			return nil
+		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
-		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
-			return nil
+		// Raw passthrough preserves native-only fields but skips normalized request
+		// serialization, so Guardrails needs an integration-owned path rewriter.
+		bifrostCtx.SetValue(
+			schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+			schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
+		)
+	}
+	return nil
+}
+
+// rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.
+// Keeping the allowlist here preserves native metadata and other fields Guardrails did not inspect.
+func rewriteAnthropicRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectAnthropicRawRequestTextPaths)
+}
+
+// anthropicRawContentScope controls which native content-block text fields are guardrail-visible.
+type anthropicRawContentScope uint8
+
+const (
+	anthropicRawContentScopeSystem anthropicRawContentScope = iota
+	anthropicRawContentScopeMessage
+	anthropicRawContentScopeToolResult
+)
+
+// collectAnthropicRawRequestTextPaths enumerates Anthropic fields mirrored into mutable Bifrost request text.
+func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := appendRawRequestStringPath(&paths, root.Get("prompt"), "prompt"); err != nil {
+		return nil, err
+	}
+	if err := collectAnthropicRawContentPaths(&paths, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
+		return nil, err
+	}
+
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return paths, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectAnthropicRawContentPaths(
+			&paths,
+			message.Get("content"),
+			rawRequestObjectPath(messagePath, "content"),
+			anthropicRawContentScopeMessage,
+		)
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.
+func collectAnthropicRawContentPaths(paths *[]string, content gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if content.Type == gjson.String {
+		*paths = append(*paths, path)
+		return nil
+	}
+	if content.IsObject() {
+		return collectAnthropicRawContentBlockPaths(paths, content, path, scope)
+	}
+	if !content.IsArray() {
+		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
+	}
+
+	var collectErr error
+	content.ForEach(func(index, block gjson.Result) bool {
+		collectErr = collectAnthropicRawContentBlockPaths(paths, block, rawRequestArrayPath(path, int(index.Int())), scope)
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectAnthropicRawContentBlockPaths selects only block fields represented as mutable normalized text.
+func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !block.IsObject() {
+		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
+	}
+	blockType := block.Get("type")
+	if !blockType.Exists() || blockType.Type == gjson.Null {
+		return nil
+	}
+	if blockType.Type != gjson.String {
+		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
+	}
+
+	switch scope {
+	case anthropicRawContentScopeSystem, anthropicRawContentScopeToolResult:
+		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		}
+		return nil
+	case anthropicRawContentScopeMessage:
+		switch anthropic.AnthropicContentBlockType(blockType.String()) {
+		case anthropic.AnthropicContentBlockTypeText:
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeToolUse:
+			return collectRawRequestArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
+		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
+			return collectAnthropicRawContentPaths(
+				paths,
+				block.Get("content"),
+				rawRequestObjectPath(path, "content"),
+				anthropicRawContentScopeToolResult,
+			)
 		}
 	}
 	return nil
@@ -359,7 +562,21 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
-	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, alias, string(provider))
+	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(ctx, model, alias, string(provider))
+}
+
+// responsePassthroughActive decides whether a reply is converted as raw Anthropic
+// passthrough. It follows shouldUsePassthrough, except that core may take an attempt off
+// raw-body passthrough after ingress chose it (provider-injected tools, structured output
+// on a provider without native support). That attempt was sent through the typed path,
+// so its reply must be re-encoded from Bifrost events: forwarding raw frames would show
+// the client turns it never asked for, and passthrough mode skips events the typed
+// stream relies on.
+func responsePassthroughActive(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
+	if useRaw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && !useRaw {
+		return false
+	}
+	return shouldUsePassthrough(ctx, provider, model, alias)
 }
 
 // serverToolSynthesizesResultBlock reports whether an item's output_item.done
@@ -428,12 +645,32 @@ func mustConvertInPassthrough(resp *schemas.BifrostResponsesStreamResponse) bool
 	return false
 }
 
-func isClaudeModel(model, alias, provider string) bool {
-	return (provider == string(schemas.Anthropic) ||
-		(provider == "" && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))) ||
-		(provider == string(schemas.BedrockMantle) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
-		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
-		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))
+// isClaudeModel reports whether this attempt talks to a native Anthropic Messages surface, which
+// is what makes forwarding the upstream response verbatim safe. model is the caller-sent model and
+// alias the resolved wire model, empty at ingress; provider is empty only when the caller sent no
+// provider prefix.
+//
+// Bedrock Mantle, Vertex and Azure are multi-family, so they resolve the model family instead of
+// sniffing names: an alias labelled "claude-opus" may well point at an OpenAI model, and passing an
+// OpenAI Responses body back to an Anthropic client yields a malformed (HTTP 200) response.
+func isClaudeModel(ctx *schemas.BifrostContext, model, alias, provider string) bool {
+	switch provider {
+	case string(schemas.Anthropic):
+		return true
+	case string(schemas.BedrockMantle), string(schemas.Vertex), string(schemas.Azure):
+		// alias is empty at ingress, where the caller-sent model is all there is to resolve against.
+		candidate := alias
+		if candidate == "" {
+			candidate = model
+		}
+		// Name check first so this stays a strict subset of the pre-family behavior: the family
+		// resolution can only downgrade a Claude-looking name, never promote a non-Claude one.
+		return (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)) &&
+			schemas.IsAnthropicModelFamily(ctx, candidate)
+	case "":
+		return schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)
+	}
+	return false
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request
@@ -526,23 +763,30 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 					isNonAnthropicProvider = true
 				}
 				var model *string
+				mixedModels := false
 				requests := make([]schemas.BatchRequestItem, len(anthropicReq.Requests))
 				for i, r := range anthropicReq.Requests {
-					if isNonAnthropicProvider {
-						requestModel, ok := r.Params["model"].(string)
-						if !ok {
+					requestModel, ok := r.Params["model"].(string)
+					if !ok || requestModel == "" {
+						// Only the non-Anthropic providers need a model to route at all.
+						if isNonAnthropicProvider {
 							return nil, errors.New("model is required")
 						}
-						if model == nil {
-							model = schemas.Ptr(requestModel)
-						} else if *model != requestModel {
+					} else if model == nil {
+						model = schemas.Ptr(requestModel)
+					} else if *model != requestModel {
+						if isNonAnthropicProvider {
 							return nil, errors.New("for non-Anthropic providers, model must be the same for all requests")
 						}
+						mixedModels = true
 					}
 					requests[i] = schemas.BatchRequestItem{
 						CustomID: r.CustomID,
 						Params:   r.Params,
 					}
+				}
+				if mixedModels {
+					model = nil
 				}
 				br := &BatchRequest{
 					Type: schemas.BatchCreateRequest,
@@ -1031,13 +1275,13 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		PreCallback: extractAnthropicFileListQueryParams,
 	})
 
-	// Retrieve file endpoint - GET /v1/files/{file_id}
+	// Retrieve file metadata endpoint - GET /v1/files/{file_id}
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeAnthropic,
-		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Path:   pathPrefix + "/v1/files/{file_id}",
 		Method: "GET",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.FileContentRequest
+			return schemas.FileRetrieveRequest
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
@@ -1064,6 +1308,41 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicFileRetrieveResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+		PreCallback: extractAnthropicFileIDFromPath,
+	})
+
+	// Download file content endpoint - GET /v1/files/{file_id}/content
+	// No response converter: the router streams the raw bytes with the provider's content type.
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicFileContentRequest{}
+		},
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
+			if contentReq, ok := req.(*anthropic.AnthropicFileContentRequest); ok {
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				// Handle file id conversion for Gemini
+				if provider == schemas.Gemini {
+					contentReq.FileID = strings.Replace(contentReq.FileID, "files-", "files/", 1)
+				}
+				return &FileRequest{
+					Type: schemas.FileContentRequest,
+					ContentRequest: &schemas.BifrostFileContentRequest{
+						FileID:   contentReq.FileID,
+						Provider: provider,
+					},
+				}, nil
+			}
+			return nil, errors.New("invalid file content request type")
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
@@ -1114,7 +1393,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 }
 
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
-func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
+func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *AnthropicRouter {
 	routes := CreateAnthropicRouteConfigs("/anthropic", logger)
 	routes = append(routes, CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
@@ -1122,6 +1401,6 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }

@@ -22,10 +22,18 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// ErrRoutingPluginUnavailable marks a RoutingManager call that failed because the routing
+// plugin could not be reached at all, rather than because the caller's payload was bad.
+// Implementations must wrap it so handlers can tell the two apart: the payload-rejection
+// case is the client's to fix and answers 400, while an unreachable plugin is a server
+// misconfiguration that would otherwise be reported as an invalid configuration.
+var ErrRoutingPluginUnavailable = errors.New("routing plugin unavailable")
 
 // RoutingManager applies routing-rule and complexity-analyzer edits to the running plugin.
 // Writes land in the config store first; these calls refresh the in-memory state that
@@ -34,6 +42,64 @@ type RoutingManager interface {
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// ValidateComplexityAnalyzerConfig checks runtime dependencies that static
+	// JSON validation cannot prove, such as an external VectorStore being
+	// configured for semantic.vector_store "vector_store" mode.
+	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// GetComplexitySemanticStatus returns the non-persisted readiness of
+	// semantic complexity routing so configuration clients can distinguish
+	// saved from ready.
+	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+	// RetryComplexitySemanticWarmup restarts a failed semantic warmup using the
+	// saved analyzer configuration. It returns false when no retry was started.
+	RetryComplexitySemanticWarmup(ctx context.Context) (complexity.SemanticStatusInfo, bool, error)
+	// GetComplexityLLMStatus returns the llm fallback classifier's readiness.
+	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
+	// ListComplexityGenerations reports the exemplar generations the vector
+	// store holds. Retired ones are not reclaimed on a shared external store, so
+	// this is the only way to see what has accumulated.
+	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
+	// DeleteComplexityGeneration removes one retired generation.
+	DeleteComplexityGeneration(ctx context.Context, namespace string) error
+	// ReloadModelRouter serves a saved model router.
+	ReloadModelRouter(ctx context.Context, id string) error
+	// ReloadModelRouterTargets serves a saved router's targets, leaving its
+	// classifiers as they are.
+	ReloadModelRouterTargets(ctx context.Context, id string) error
+	// ReloadModelRouterRouting serves a saved router's routing, leaving its
+	// classifiers and targets as they are.
+	ReloadModelRouterRouting(ctx context.Context, id string) error
+	// RemoveModelRouter stops serving a deleted router.
+	RemoveModelRouter(ctx context.Context, id string) error
+	// GetModelRouterStatus reports one router's classifier readiness;
+	// configstore.ErrNotFound for a router not served.
+	GetModelRouterStatus(ctx context.Context, id string) (complexity.SemanticStatusInfo, complexity.LLMStatusInfo, error)
+	// RetryModelRouterWarmup restarts one router's failed semantic warmup;
+	// configstore.ErrNotFound for a router not served.
+	RetryModelRouterWarmup(ctx context.Context, id string) (complexity.SemanticStatusInfo, bool, error)
+}
+
+// complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
+// embedded rather than nested so every field clients already read stays at the
+// top level; session_store and llm are additive and omitted when absent.
+type complexityStatusResponse struct {
+	complexity.SemanticStatusInfo
+	LLM *complexity.LLMStatusInfo `json:"llm,omitempty"`
+	// LLMDefaultPrompt is the shipped classification guidance, served so the
+	// UI can seed its prompt editor and offer a reset without holding a copy
+	// that drifts from the gateway's. It is the editable half only; the fixed
+	// tier-name reinforcement is appended server-side and never exposed.
+	LLMDefaultPrompt string `json:"llm_default_prompt,omitempty"`
+	// DecisionDefaults is the shipped decision-model per-tier criteria, served for the same
+	// reason as LLMDefaultPrompt. The fixed question, decision rule, and
+	// context rule are never exposed because they are not editable.
+	DecisionDefaults configstore.ComplexityDecisionGuidanceDefaults `json:"decision_defaults"`
+	// SuggestionDefaultInstructions is the shipped phrase-suggestion
+	// instructions, served for the same reason: the editable half only.
+	SuggestionDefaultInstructions     string                                                `json:"suggestion_default_instructions"`
+	SuggestionDefaultTierInstructions string                                                `json:"suggestion_default_tier_instructions"`       // shipped tier-step question
+	SuggestionDefaultTierPrompt       string                                                `json:"suggestion_default_tier_prompt,omitempty"`   // see getModelRouterStatus
+	SuggestionDefaultTierCriteria     map[string]configstore.ComplexityDecisionTierDefaults `json:"suggestion_default_tier_criteria,omitempty"` // see getModelRouterStatus
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -82,6 +148,13 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	register(fasthttp.MethodGet, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.getComplexityAnalyzerConfig)
 	register(fasthttp.MethodPut, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.updateComplexityAnalyzerConfig)
 	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
+	// Status never shipped under /api/governance, so it has no legacy alias.
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
+	r.Handle(fasthttp.MethodPost, "/api/routing/complexity-analyzer-status/retry", lib.ChainMiddlewares(h.retryComplexitySemanticWarmup, middlewares...))
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
+	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
+	h.registerComplexitySuggestionRoutes(r, middlewares...)
+	h.registerModelRouterRoutes(r, middlewares...)
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -92,36 +165,58 @@ type RoutingTarget struct {
 	Model    *string `json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
 	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+
+	TTFTTimeoutMs *int `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string          `json:"name" validate:"required"`
-	Description   string          `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool           `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string          `json:"cel_expression"`
-	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Scope         string          `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string         `json:"scope_id,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
+	Name          string                              `json:"name" validate:"required"`
+	Description   string                              `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
+	ChainRule     *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
+	CelExpression string                              `json:"cel_expression"`
+	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string                             `json:"scope_id,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string         `json:"name,omitempty"`
-	Description   *string         `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`
-	ChainRule     *bool           `json:"chain_rule,omitempty"`
-	CelExpression *string         `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      *int            `json:"priority,omitempty"`
-	Scope         *string         `json:"scope,omitempty"`
-	ScopeID       *string         `json:"scope_id,omitempty"`
+	Name          *string                             `json:"name,omitempty"`
+	Description   *string                             `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`
+	ChainRule     *bool                               `json:"chain_rule,omitempty"`
+	CelExpression *string                             `json:"cel_expression,omitempty"`
+	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      *int                                `json:"priority,omitempty"`
+	Scope         *string                             `json:"scope,omitempty"`
+	ScopeID       *string                             `json:"scope_id,omitempty"`
+}
+
+// maxRoutingTTFTTimeoutMs caps a target's TTFT deadline; it mirrors
+// ttft_timeout_ms's maximum in config.schema.json.
+const maxRoutingTTFTTimeoutMs = 300000
+
+// validateRoutingTTFTTimeout checks a target's ttft_timeout_ms; nil and 0 mean "no deadline".
+func validateRoutingTTFTTimeout(ms *int) error {
+	if ms != nil && (*ms < 0 || *ms > maxRoutingTTFTTimeoutMs) {
+		return fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
+	}
+	return nil
+}
+
+// nilIfZero normalizes a 0 ("no deadline") ttft_timeout_ms to nil so it is stored as NULL.
+func nilIfZero(ms *int) *int {
+	if ms == nil || *ms == 0 {
+		return nil
+	}
+	return ms
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -197,18 +292,21 @@ func validateRoutingScope(scope string) error {
 	return nil
 }
 
-// validateRoutingTargets checks that all weights are positive, that no two
-// targets share the same (provider, model, key_id) identity, and that all
-// weights sum to 1.
+// validateRoutingTargets checks that every weight is greater than 0 (as
+// config.schema.json and the dashboard form require), that no two targets share
+// the same (provider, model, key_id) identity, and that all weights sum to 1.
 func validateRoutingTargets(targets []RoutingTarget) error {
 	seen := make(map[string]struct{}, len(targets))
 	total := 0.0
 	for _, t := range targets {
-		if t.Weight < 0 {
-			return fmt.Errorf("each target weight must be positive")
+		if !(t.Weight > 0) {
+			return fmt.Errorf("each target weight must be greater than 0, got %v", t.Weight)
 		}
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")
+		}
+		if err := validateRoutingTTFTTimeout(t.TTFTTimeoutMs); err != nil {
+			return err
 		}
 
 		// Canonicalise identity: lowercase provider/model, treat nil == "".
@@ -238,16 +336,17 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	return nil
 }
 
-// validateRoutingFallbacks ensures each fallback parses to a non-empty known provider via
-// schemas.ParseModelString (e.g. "openai/gpt-4o", or "azure/" to use the incoming model).
-func validateRoutingFallbacks(fallbacks []string) error {
+// validateRoutingFallbacks ensures each fallback names a known provider. The legacy string form only
+// splits on a known prefix, so an unknown one surfaces as an empty provider; the object form carries
+// the provider verbatim, so it is checked against the registry explicitly to match.
+func validateRoutingFallbacks(fallbacks []configstoreTables.RoutingFallback) error {
 	for i, fb := range fallbacks {
-		if strings.TrimSpace(fb) == "" {
-			return fmt.Errorf("fallbacks[%d] must not be empty", i)
+		provider := strings.TrimSpace(string(fb.Provider))
+		if provider == "" || !schemas.IsKnownProvider(provider) {
+			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb.String())
 		}
-		provider, _ := schemas.ParseModelString(fb, "")
-		if provider == "" {
-			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb)
+		if fb.ProviderKeyName != nil && strings.TrimSpace(*fb.ProviderKeyName) != "" {
+			return fmt.Errorf("fallbacks[%d] provider_key_name is a config.json-only field; send key_id over the API", i)
 		}
 	}
 	return nil
@@ -280,8 +379,17 @@ func (h *RoutingHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, defaults)
 		return
 	}
-	SendJSON(ctx, cfg)
+	// A suggestions block saved before they moved to model routers is not
+	// served: it does nothing, and a client that saves back what it read
+	// would be refused for it.
+	served := *cfg
+	served.Suggestions = nil
+	SendJSON(ctx, served)
 }
+
+// complexityConfigSuggestionsError refuses a suggestions block on the
+// complexity analyzer config: phrase suggestions are made for model routers.
+const complexityConfigSuggestionsError = "phrase suggestions are set per model router (suggestions on /api/routing/model-routers/{id}), not on the complexity analyzer config"
 
 func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
@@ -300,6 +408,10 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
 		return
 	}
+	if payload.Suggestions != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, complexityConfigSuggestionsError)
+		return
+	}
 
 	normalized, err := complexity.ValidateAndNormalize(&payload)
 	if err != nil {
@@ -307,6 +419,18 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		return
 	}
 
+	if err := h.routingManager.ValidateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		// An unreachable routing plugin says nothing about the submitted config, so it
+		// must not be reported as a rejected payload the operator could fix by editing.
+		if errors.Is(err, ErrRoutingPluginUnavailable) {
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	before, _ := h.configStore.GetComplexityAnalyzerConfig(ctx)
 	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
 		return
@@ -316,6 +440,7 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "complexity_analyzer_config.updated", "complexity_analyzer_config", "complexity_analyzer_config", "Complexity analyzer config", auditComplexityConfig(before), normalized)
 	SendJSON(ctx, normalized)
 }
 
@@ -325,21 +450,89 @@ func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx)
 		return
 	}
 
+	// Reset owns the two sections it is named for — the tier boundaries and the
+	// phrase lists — and nothing else. The rest of the record is deployment
+	// state configured elsewhere: the embedding provider, model, and storage
+	// selection, without which classification stops entirely. Replacing the
+	// whole record would turn "restore the default phrases" into "turn the
+	// classifier off", which is neither what the endpoint says nor what the
+	// operator confirmed.
+	//
+	// The section hashes ride along for the same reason they are carried over on
+	// an ordinary update: they record which config.json sections have already
+	// been applied. Clearing them would let config.json reapply its phrases on
+	// the next boot and silently undo this reset.
+	//
+	// The store performs the swap: reading the record here and writing it back
+	// would leave a window in which a concurrent save of the preserved sections
+	// is read before the save and overwritten after it.
+	before, _ := h.configStore.GetComplexityAnalyzerConfig(ctx)
 	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	restored, err := h.configStore.ResetComplexityAnalyzerConfig(ctx, &defaults)
+	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	if err := h.reloadComplexityAnalyzerConfig(ctx, restored); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
 
-	SendJSON(ctx, defaults)
+	lib.RecordAuditChange(ctx, "complexity_analyzer_config.reset", "complexity_analyzer_config", "complexity_analyzer_config", "Complexity analyzer config", auditComplexityConfig(before), restored)
+	SendJSON(ctx, restored)
+}
+
+// auditComplexityConfig returns cfg for the audit diff, or nil when nothing was stored.
+func auditComplexityConfig(cfg *complexity.AnalyzerConfig) any {
+	if cfg == nil {
+		return nil
+	}
+	return cfg
 }
 
 func (h *RoutingHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
 	return h.routingManager.ReloadComplexityAnalyzerConfig(ctx, config)
+}
+
+// getComplexitySemanticStatus returns the non-persisted readiness of semantic
+// complexity routing so configuration clients can distinguish saved from ready.
+func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
+	status, err := h.routingManager.GetComplexitySemanticStatus(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
+		return
+	}
+	response := complexityStatusResponse{
+		SemanticStatusInfo:                status,
+		DecisionDefaults:                  configstore.DefaultComplexityDecisionGuidance(),
+		SuggestionDefaultInstructions:     suggest.DefaultInstructions(),
+		SuggestionDefaultTierInstructions: suggest.DefaultTierInstructions(),
+	}
+	// The llm classifier state rides the same endpoint and must not be able to
+	// fail the whole response.
+	if llmStatus, llmErr := h.routingManager.GetComplexityLLMStatus(ctx); llmErr != nil {
+		logger.Warn("failed to get llm complexity status: %v", llmErr)
+	} else {
+		response.LLM = &llmStatus
+		response.LLMDefaultPrompt = complexity.DefaultLLMClassifierGuidance()
+	}
+	SendJSON(ctx, response)
+}
+
+// retryComplexitySemanticWarmup restarts a failed semantic warmup without
+// changing the saved analyzer configuration.
+func (h *RoutingHandler) retryComplexitySemanticWarmup(ctx *fasthttp.RequestCtx) {
+	status, retried, err := h.routingManager.RetryComplexitySemanticWarmup(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to retry semantic complexity warmup: %v", err))
+		return
+	}
+	if !retried {
+		SendError(ctx, fasthttp.StatusConflict, "semantic complexity warmup can only be retried after a failure")
+		return
+	}
+	lib.RecordAuditChange(ctx, "complexity_analyzer.warmup_retried", "complexity_analyzer", "complexity_analyzer", "Complexity analyzer", nil, map[string]any{"retried": true})
+	SendJSONWithStatus(ctx, complexityStatusResponse{SemanticStatusInfo: status}, fasthttp.StatusAccepted)
 }
 
 // getRoutingRules retrieves all routing rules with optional filtering from database
@@ -519,10 +712,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 	for _, t := range req.Targets {
 		targets = append(targets, configstoreTables.TableRoutingTarget{
-			Provider: t.Provider,
-			Model:    t.Model,
-			KeyID:    t.KeyID,
-			Weight:   t.Weight,
+			Provider:      t.Provider,
+			Model:         t.Model,
+			KeyID:         t.KeyID,
+			Weight:        t.Weight,
+			TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 		})
 	}
 
@@ -553,6 +747,14 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 
 	// Create in database
 	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+		if errors.Is(err, configstore.ErrRoutingRulePriorityTaken) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
@@ -563,6 +765,7 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "routing_rule.created", "routing_rule", rule.ID, rule.Name, nil, rule)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule created successfully",
 		"rule":    rule,
@@ -590,6 +793,7 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve routing rule")
 		return
 	}
+	before := lib.AuditSnapshot(rule)
 
 	// Update fields if provided
 	if req.Name != nil && *req.Name != "" {
@@ -625,10 +829,11 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 		for _, t := range req.Targets {
 			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
+				Provider:      t.Provider,
+				Model:         t.Model,
+				KeyID:         t.KeyID,
+				Weight:        t.Weight,
+				TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 			})
 		}
 		rule.Targets = newTargets
@@ -675,6 +880,14 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 
 	// Update in database
 	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+		if errors.Is(err, configstore.ErrRoutingRulePriorityTaken) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
 		return
 	}
@@ -685,6 +898,7 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "routing_rule.updated", "routing_rule", rule.ID, rule.Name, before, rule)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule updated successfully",
 		"rule":    rule,
@@ -695,6 +909,7 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
 
+	existing, _ := h.configStore.GetRoutingRule(ctx, ruleID)
 	// Delete from database
 	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -710,7 +925,68 @@ func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to remove routing rule from memory: %v", err)
 	}
 
+	targetName := ruleID
+	var before any
+	if existing != nil {
+		targetName = existing.Name
+		before = existing
+	}
+	lib.RecordAuditChange(ctx, "routing_rule.deleted", "routing_rule", ruleID, targetName, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// complexityGenerationsResponse lists what the vector store is holding for
+// semantic complexity routing.
+type complexityGenerationsResponse struct {
+	Generations []complexity.GenerationInfo `json:"generations"`
+}
+
+// listComplexityGenerations reports every exemplar generation in the configured
+// vector store, flagging the serving one.
+//
+// Each configuration change mints a new fingerprinted generation, and retired
+// ones are only reclaimed automatically on a node-local store: on a shared
+// backend another replica may still be serving one, so they accumulate. The
+// backend holds no phrase text, so without this listing a retired generation is
+// an opaque hash an operator has no safe way to identify.
+func (h *RoutingHandler) listComplexityGenerations(ctx *fasthttp.RequestCtx) {
+	generations, err := h.routingManager.ListComplexityGenerations(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to list complexity generations: %v", err))
+		return
+	}
+	if generations == nil {
+		generations = []complexity.GenerationInfo{}
+	}
+	SendJSON(ctx, complexityGenerationsResponse{Generations: generations})
+}
+
+// deleteComplexityGeneration removes one retired generation and its vectors.
+//
+// The serving generation is refused rather than deleted: routing would keep
+// querying a namespace that no longer exists until the next warmup replaced it.
+func (h *RoutingHandler) deleteComplexityGeneration(ctx *fasthttp.RequestCtx) {
+	namespace, ok := ctx.UserValue("namespace").(string)
+	if !ok || strings.TrimSpace(namespace) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "namespace is required")
+		return
+	}
+
+	if err := h.routingManager.DeleteComplexityGeneration(ctx, namespace); err != nil {
+		switch {
+		case errors.Is(err, complexity.ErrGenerationActive):
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+		case errors.Is(err, complexity.ErrNotAGeneration):
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		case errors.Is(err, complexity.ErrClassifierUnavailable):
+			SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		default:
+			SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to delete complexity generation: %v", err))
+		}
+		return
+	}
+	lib.RecordAuditChange(ctx, "complexity_generation.deleted", "complexity_generation", namespace, namespace, map[string]any{"namespace": namespace}, nil)
+	SendJSON(ctx, map[string]string{"status": "deleted", "namespace": namespace})
 }
