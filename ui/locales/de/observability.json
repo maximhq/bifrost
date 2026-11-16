@@ -1121,6 +1121,8 @@
 			"groupTracesBySessionHelp": "Wenn aktiviert, werden Anfragen mit demselben x-bf-session-id-Header in einem einzigen Trace gruppiert, wobei jede Anfrage als Top-Level-Sibling-Span erscheint. Eine Anfrage mit einem eingehenden W3C-traceparent verbleibt in ihrem eigenen verteilten Trace und ist davon nicht betroffen.",
 			"disableRootSpanContent": "Root-Span-Inhalt deaktivieren",
 			"disableRootSpanContentHelp": "Wenn aktiviert, wird der Input-/Output-Nachrichteninhalt nur aus dem Root-Span verworfen; der zugrunde liegende Generation-Span (llm.call) behält den vollständigen Inhalt.",
+			"applyTraceDimensionsToChildSpans": "Dimensionen auf untergeordnete Spans anwenden",
+			"applyTraceDimensionsToChildSpansHelp": "Wenn aktiviert, werden Anfragedimensionen (x-bf-dim-*-Header) in jeden exportierten Span übernommen, nicht nur in den Root-Span, sodass untergeordnete Spans nach Dimension gefiltert oder gruppiert werden können. path, method und reservierte Namensräume wie gen_ai.* werden übersprungen. Jede Dimension wird jedem Span hinzugefügt, daher erhöhen Werte mit hoher Kardinalität die Ingestion-Kosten des Collectors.",
 			"enableMetricsExport": "Metrik-Export aktivieren",
 			"enableMetricsExportHelp": "Metriken an einen OTEL Collector senden, um sie in Cluster-Bereitstellungen ordnungsgemäß zu aggregieren",
 			"overheadBreakdown": "Overhead-Aufschlüsselung",
