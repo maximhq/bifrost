@@ -52,6 +52,7 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 		}
 	}
 	base = warp.WithGrant(base, warpGrantSettler(ctx))
+	base = warpManagementCaller(base, ctx)
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
 }
@@ -145,6 +146,8 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	agentCtx, cancel, scopeErr := snapshotWarpContext(ctx, turn.Budget)
 	if scopeErr != nil {
 		cancel()
+		// The turn never runs, so it returns its lease on the management catalog here.
+		turn.Release()
 		SendError(ctx, fasthttp.StatusInternalServerError, "Warp could not establish this request's data scope")
 		return
 	}
