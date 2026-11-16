@@ -53,7 +53,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *reg
 		RecordGrantedVirtualMCP(ctx, def)
 	}
 	for _, clientID := range view.unnamedClients {
-		warnUnnamedMCPClient(gs.logger, "virtual key", vk.Name, clientID)
+		WarnUnnamedMCPClient(gs.logger, "virtual key", vk.Name, clientID)
 	}
 	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.Active, vk.IsExpiredAt(time.Now()), view.providers, view.mcp,
 		grant.WithAgentPermits(view.agents), grant.WithAllowAllProviders(view.allowAllProviders),
@@ -110,7 +110,7 @@ func (gs *LocalGovernanceStore) buildPermitView(set *registry.GrantSet) *permitV
 		acc.AddVirtualMCP(def)
 		v.virtualMCPs = append(v.virtualMCPs, def)
 	}
-	v.mcp, v.unnamedClients = mcpPermitsOf(acc, MCPClientNames(gs.live))
+	v.mcp, v.unnamedClients = MCPPermitsOf(acc, MCPClientNames(gs.live))
 	v.mcp = AppendMCPPermitsAllowedByDefault(v.mcp, acc.ConfiguredClients(), allowedByDefaultClients)
 
 	v.agents = make([]string, 0, len(set.Agents))

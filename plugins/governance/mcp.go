@@ -150,23 +150,25 @@ func (acc *MCPToolAccumulator) ConfiguredClients() map[string]struct{} {
 // client that reaches no tool is dropped (allowed-by-default stays blocked via ConfiguredClients, not a
 // permit); an unresolvable name is dropped and logged. A free function so any store passes its own deps.
 func MCPPermitsFromAccumulator(acc *MCPToolAccumulator, holderKind, holderName string, clientNames map[string]string, logger schemas.Logger) []schemas.MCPPermit {
-	result, unnamed := mcpPermitsOf(acc, clientNames)
+	result, unnamed := MCPPermitsOf(acc, clientNames)
 	for _, clientID := range unnamed {
-		warnUnnamedMCPClient(logger, holderKind, holderName, clientID)
+		WarnUnnamedMCPClient(logger, holderKind, holderName, clientID)
 	}
 	return result
 }
 
-// warnUnnamedMCPClient logs that a holder grants tools of an MCP client with no configured name.
-func warnUnnamedMCPClient(logger schemas.Logger, holderKind, holderName, clientID string) {
+// WarnUnnamedMCPClient logs that a holder grants tools of an MCP client with no configured name. A
+// store that computes permits once and shares them calls it each time it hands one out, as
+// MCPPermitsFromAccumulator does when it computes them.
+func WarnUnnamedMCPClient(logger schemas.Logger, holderKind, holderName, clientID string) {
 	if logger != nil {
 		logger.Warn("governance: %s %q grants tools of MCP client %q, which has no configured name; those tools are not reachable until the client is configured", holderKind, holderName, clientID)
 	}
 }
 
-// mcpPermitsOf is MCPPermitsFromAccumulator without the logging: it returns the clients it dropped
-// for having no name, in the order it met them, for the caller to report.
-func mcpPermitsOf(acc *MCPToolAccumulator, clientNames map[string]string) (result []schemas.MCPPermit, unnamed []string) {
+// MCPPermitsOf is MCPPermitsFromAccumulator without the logging: it returns the clients it dropped
+// for having no name, in the order it met them, for the caller to report with WarnUnnamedMCPClient.
+func MCPPermitsOf(acc *MCPToolAccumulator, clientNames map[string]string) (result []schemas.MCPPermit, unnamed []string) {
 	// Sorted for a stable permit across nodes and rebuilds.
 	sort.Strings(acc.order)
 	result = make([]schemas.MCPPermit, 0, len(acc.order))
