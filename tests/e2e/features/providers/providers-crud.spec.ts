@@ -491,7 +491,9 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible();
       const saved = await savedAliases();
       expect(saved, "the replaced pattern must be gone").not.toHaveProperty([pattern]);
-      expect(saved[corrected].model_id).toBe("global.anthropic.$1");
+      // An alias with only model_id comes back in the legacy string shape.
+      const correctedAlias: string | { model_id: string } = saved[corrected];
+      expect(typeof correctedAlias === "string" ? correctedAlias : correctedAlias.model_id).toBe("global.anthropic.$1");
     });
 
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
@@ -1126,7 +1128,7 @@ test.describe("Providers", () => {
 
       // Change only the weight, then save without touching the auth method.
       await providersPage.openKeyEditor(keyName);
-      await page.getByLabel("Weight").fill("2");
+      await page.getByLabel("Weight").fill("0.5");
       await providersPage.keySaveBtn.click();
       await providersPage.waitForSuccessToast();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
@@ -1136,7 +1138,7 @@ test.describe("Providers", () => {
       const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
       const saved = body.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
-      expect(saved?.weight).toBe(2);
+      expect(saved?.weight).toBe(0.5);
       expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
     });
 
