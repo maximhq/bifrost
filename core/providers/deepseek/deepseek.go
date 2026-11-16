@@ -238,7 +238,7 @@ func (provider *DeepSeekProvider) ListModels(ctx *schemas.BifrostContext, keys [
 // It formats the request, sends it to DeepSeek, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	resp, bifrostErr := openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
@@ -263,7 +263,7 @@ func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 // It formats the request, sends it to DeepSeek, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -315,7 +315,7 @@ func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -373,7 +373,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,

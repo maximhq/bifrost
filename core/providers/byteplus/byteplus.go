@@ -107,7 +107,7 @@ func (provider *BytePlusProvider) TextCompletionStream(ctx *schemas.BifrostConte
 // ChatCompletion performs a chat completion request to Ark's OpenAI-compatible API.
 // Extra params pass through so Ark-only fields such as thinking reach the wire.
 func (provider *BytePlusProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -127,7 +127,7 @@ func (provider *BytePlusProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 
 // ChatCompletionStream performs a streaming chat completion request to Ark's OpenAI-compatible API.
 func (provider *BytePlusProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -153,7 +153,7 @@ func (provider *BytePlusProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 
 // Responses performs a request to Ark's native Responses API.
 func (provider *BytePlusProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -173,7 +173,7 @@ func (provider *BytePlusProvider) Responses(ctx *schemas.BifrostContext, key sch
 
 // ResponsesStream performs a streaming request to Ark's native Responses API.
 func (provider *BytePlusProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
@@ -246,7 +246,7 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 // ImageGeneration performs a Seedream image generation request to Ark's /images/generations API.
 // Extra params pass through so Seedream-only fields such as background reach the wire.
 func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -262,7 +262,7 @@ func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, k
 // ImageEdit performs a Seedream image-to-image request. Seedream edits through the same
 // /images/generations endpoint, with the source images sent as reference images.
 func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -309,7 +309,7 @@ func (provider *BytePlusProvider) doImageRequest(ctx *schemas.BifrostContext, ke
 // task options such as draft, service_tier and return_last_frame reach the wire.
 func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -544,7 +544,7 @@ func (provider *BytePlusProvider) TranscriptionStream(ctx *schemas.BifrostContex
 // ImageGenerationStream streams a Seedream generation, one event per finished image. Ark streams
 // only on Seedream 5.0 lite, 4.5 and 4.0; other models reject the stream field with a 400.
 func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -564,7 +564,7 @@ func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostCont
 
 // ImageEditStream streams a Seedream image-to-image generation through the same endpoint as ImageGenerationStream.
 func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,

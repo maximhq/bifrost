@@ -2737,6 +2737,24 @@ func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *s
 	return nil
 }
 
+// EnablePassthroughExtraParams turns extra-params passthrough on for one provider attempt
+// and returns the prior value, to be handed back to RestorePassthroughExtraParams.
+func EnablePassthroughExtraParams(ctx *schemas.BifrostContext) any {
+	prev := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return prev
+}
+
+// RestorePassthroughExtraParams puts back the value EnablePassthroughExtraParams replaced,
+// so a fallback attempt does not inherit a provider-scoped passthrough.
+func RestorePassthroughExtraParams(ctx *schemas.BifrostContext, prev any) {
+	if prev == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyPassthroughExtraParams)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, prev)
+}
+
 // marshalConvertedRequestBody encodes a converted, non-nil body under the
 // "request-marshal" phase and merges its extra params when passthrough is enabled.
 func marshalConvertedRequestBody(ctx context.Context, convertedBody RequestBodyWithExtraParams) ([]byte, *schemas.BifrostError) {

@@ -401,6 +401,7 @@ func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		return nil, bErr
 	}
 	request = withChatWireModel(ctx, key, request)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/chat/completions")
 	if bErr != nil {
 		return nil, bErr
@@ -432,6 +433,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		return nil, bErr
 	}
 	request = withChatWireModel(ctx, key, request)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/chat/completions")
 	if bErr != nil {
 		return nil, bErr
@@ -462,6 +464,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // Embedding performs an embedding request against the resolved Databricks surface.
 func (provider *DatabricksProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	request = withEmbeddingWireModel(ctx, key, request)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/embeddings")
 	if bErr != nil {
 		return nil, bErr
@@ -505,6 +508,7 @@ func (provider *DatabricksProvider) Responses(ctx *schemas.BifrostContext, key s
 		return nil, bErr
 	}
 	wireRequest = withResponsesWireModel(ctx, key, wireRequest)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	url, auth, bErr := provider.prepareRequest(ctx, key, wireRequest.Model, "/responses")
 	if bErr != nil {
 		return nil, bErr
@@ -549,6 +553,7 @@ func (provider *DatabricksProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		return nil, bErr
 	}
 	wireRequest = withResponsesWireModel(ctx, key, wireRequest)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	url, auth, bErr := provider.prepareRequest(ctx, key, wireRequest.Model, "/responses")
 	if bErr != nil {
 		return nil, bErr

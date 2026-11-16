@@ -146,7 +146,7 @@ func (provider *BasetenProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -170,7 +170,7 @@ func (provider *BasetenProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -208,7 +208,7 @@ func (provider *BasetenProvider) Responses(ctx *schemas.BifrostContext, key sche
 		}
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -237,7 +237,7 @@ func (provider *BasetenProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,

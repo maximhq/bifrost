@@ -141,7 +141,7 @@ func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 // and SGLang's Anthropic-compatible layer doesn't expose one either, so this always uses the
 // OpenAI-compatible /v1/completions endpoint.
 func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -166,7 +166,7 @@ func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 // It formats the request, sends it to SGL, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -195,7 +195,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 // resolved alias) has UseAnthropicEndpoints set, the request is routed through SGLang's
 // Anthropic-compatible Messages endpoint instead of its OpenAI-compatible one.
 func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -242,7 +242,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -309,7 +309,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 // Anthropic responses handler operates on the Responses-shaped request natively.
 func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
-		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 		baseURL, bifrostErr := provider.baseURLOrError(key)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -346,7 +346,7 @@ func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 // ResponsesStream performs a streaming responses request to the SGL API.
 func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
-		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 		baseURL, bifrostErr := provider.baseURLOrError(key)
 		if bifrostErr != nil {
 			return nil, bifrostErr

@@ -102,7 +102,7 @@ func (provider *MiniMaxProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 // ChatCompletion performs a chat completion request to MiniMax's OpenAI-compatible API.
 func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -122,7 +122,7 @@ func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 // ChatCompletionStream performs a streaming chat completion request to MiniMax's OpenAI-compatible API.
 func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -636,7 +636,7 @@ func (provider *MiniMaxProvider) PassthroughStream(_ *schemas.BifrostContext, _ 
 
 // Speech performs a text-to-speech request to MiniMax's /v1/t2a_v2 API.
 func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -681,7 +681,7 @@ func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas
 // SpeechStream performs a streaming text-to-speech request to MiniMax's /v1/t2a_v2 API.
 // Status-1 chunks carry incremental hex audio; the status-2 chunk carries usage and, with exclude_aggregated_audio, no audio.
 func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
