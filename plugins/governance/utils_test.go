@@ -59,6 +59,28 @@ func TestParseVirtualKeyFromFastHTTPRequest_OcpApimSubscriptionKeyNonVirtualKeyI
 	}
 }
 
+// A virtual key in xi-api-key, the header ElevenLabs clients send, must be parsed
+// the same way as the HTTP transport context extractor.
+func TestParseVirtualKeyFromFastHTTPRequest_VirtualKeyFromXiAPIKeyHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("xi-api-key", "sk-bf-elevenlabs-vk")
+
+	vk := ParseVirtualKeyFromFastHTTPRequest(ctx)
+	if vk == nil || *vk != "sk-bf-elevenlabs-vk" {
+		t.Fatalf("virtual key = %#v, want %q", vk, "sk-bf-elevenlabs-vk")
+	}
+}
+
+// A real ElevenLabs key in xi-api-key must not be misread as a virtual key.
+func TestParseVirtualKeyFromFastHTTPRequest_XiAPIKeyNonVirtualKeyIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("xi-api-key", "real-elevenlabs-key")
+
+	if vk := ParseVirtualKeyFromFastHTTPRequest(ctx); vk != nil {
+		t.Fatalf("virtual key should not be set from a non-VK xi-api-key value, got %#v", *vk)
+	}
+}
+
 // csvModelListFilter stands in for a provider's list format: the body is comma-separated model names.
 func csvModelListFilter(body []byte, keep func(string) bool) ([]byte, error) {
 	if string(body) == "malformed" {
