@@ -329617,7 +329617,7 @@
                   "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
                   "  pm.expect(text, 'no delta event: ' + text.slice(0, 500)).to.include('transcript.text.delta');",
                   "  pm.expect(text, 'no done event: ' + text.slice(-500)).to.include('transcript.text.done');",
-                  "  pm.expect(text, 'no non-empty transcript delta: ' + text.slice(0, 500)).to.match(/\\\"delta\\\"\\\\s*:\\\\s*\\\"[^\\\"]+\\\"/);",
+                  "  pm.expect(text, 'no non-empty transcript delta: ' + text.slice(0, 500)).to.match(/\"delta\"\\s*:\\s*\"[^\"]+\"/);",
                   "  pm.expect(text, 'no token usage: ' + text.slice(-500)).to.match(/\"total_tokens\":\\s*[1-9]/);",
                   "  pm.expect(text, 'stream carried an error: ' + text.slice(-500)).to.not.match(/\"error\"\\s*:\\s*\\{/);",
                   "});"
