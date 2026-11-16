@@ -34,6 +34,9 @@ type PluginsLoader interface {
 	// using the loaded plugin instance if it implements ConfigMarshallerPlugin.
 	// Returns nil, nil when the plugin is not loaded or does not implement the interface.
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
+	// IsFixedBuiltinPlugin reports whether name is a built-in plugin the server configures
+	// itself, which the plugins API may not create, change or delete.
+	IsFixedBuiltinPlugin(name string) bool
 }
 
 // PluginsHandler is the handler for the plugins API
@@ -256,6 +259,16 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, h.buildPluginResponse(ctx, plugin))
 }
 
+// refuseFixedBuiltinPlugin answers 400 and reports true when name is a built-in plugin the server
+// configures itself, which the plugins API may not create, change or delete.
+func (h *PluginsHandler) refuseFixedBuiltinPlugin(ctx *fasthttp.RequestCtx, name string) bool {
+	if !h.pluginsLoader.IsFixedBuiltinPlugin(name) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("The %s plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API", name))
+	return true
+}
+
 // createPlugin creates a new plugin
 func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	var request CreatePluginRequest
@@ -267,6 +280,9 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	// Validate required fields
 	if request.Name == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Plugin name is required")
+		return
+	}
+	if h.refuseFixedBuiltinPlugin(ctx, request.Name) {
 		return
 	}
 	// Validate placement value
@@ -378,6 +394,9 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	if name == "" {
 		logger.Warn("empty 'name' parameter provided in update plugin request")
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
+		return
+	}
+	if h.refuseFixedBuiltinPlugin(ctx, name) {
 		return
 	}
 	defer h.lockPlugin(name)()
@@ -596,6 +615,9 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	if name == "" {
 		logger.Warn("empty 'name' parameter provided in delete plugin request")
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
+		return
+	}
+	if h.refuseFixedBuiltinPlugin(ctx, name) {
 		return
 	}
 	defer h.lockPlugin(name)()

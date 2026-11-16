@@ -244,6 +244,12 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 	return nil
 }
 
+// IsFixedBuiltinPlugin implements handlers.PluginsLoader: the built-in plugins Bifrost configures
+// itself, which the plugins API may not create, change or delete.
+func (s *BifrostHTTPServer) IsFixedBuiltinPlugin(name string) bool {
+	return lib.IsFixedBuiltinPlugin(name)
+}
+
 // loadBuiltinPlugins loads required built-in plugins in specific order
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)

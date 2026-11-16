@@ -86,6 +86,7 @@ type ServerCallbacks interface {
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 	GetLoadedPluginNames() []string
 	NormalizePluginConfig(name string, config map[string]any) (map[string]any, error)
+	IsFixedBuiltinPlugin(name string) bool
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error

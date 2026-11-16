@@ -12,7 +12,7 @@ import (
 func TestLoggingPluginConfigTakesCaptureClientIPFromLogsStore(t *testing.T) {
 	for _, capture := range []bool{true, false} {
 		bifrostConfig := &lib.Config{LogsStoreConfig: &logstore.Config{CaptureClientIP: capture}}
-		// A stored plugin config, as a PUT /api/plugins/logging reload decodes it: no capture_client_ip, or a stale one.
+		// A stored plugin config, as a reload decodes it: no capture_client_ip, or a stale one.
 		for _, stored := range []map[string]any{{}, {"capture_client_ip": !capture}} {
 			got, err := loggingPluginConfig(stored, bifrostConfig)
 			if err != nil {

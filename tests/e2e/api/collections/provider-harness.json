@@ -263771,6 +263771,507 @@
       ]
     },
     {
+      "name": "384. Plugins API refuses to create, change or delete the built-in plugins Bifrost configures itself (fixed-builtin-plugins) [SERIAL]",
+      "description": "Pins the plugins API's refusal of the built-in plugins Bifrost configures itself, from the client config, the model catalog or their own APIs rather than a plugin config: governance, routing, logging, prompts, compat and model-catalog-resolver. POST /api/plugins naming one, and PUT or DELETE /api/plugins/{name} on one, answer 400 with \"The <name> plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API\" and leave the plugin running. A PUT with enabled false used to stop the running plugin: without model-catalog-resolver, a request with an unprefixed model name has no plugin to pick its provider.\n\nThe cases send each write for governance and model-catalog-resolver through the registered routes and middleware, and after each refused update and delete read GET /api/plugins/loaded to check the plugin is still loaded. The last two cases keep otel, a built-in configured through this API, editable: the first checks the gateway has no otel row of its own, and the second updates otel with PUT /api/plugins/otel, which creates a disabled row, expects 200 with the update stored, and deletes the row afterwards. The update skips when the gateway already has an otel row, so a configuration this run did not create is never changed. The case names carry openai only so the openai fork selects them; no inference request is sent. The folder is [SERIAL] because a refused write that got through would stop a plugin every other request depends on.\n\nRed before the change: the model-catalog-resolver create, update and delete are accepted, and the update removes the resolver from the loaded plugins. Green after.\n\nRun with FEATURE=\"fixed-builtin-plugins\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the governance plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"governance\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/governance disabling the governance plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/governance with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/governance is refused and the governance plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the model-catalog-resolver plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"model-catalog-resolver\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/model-catalog-resolver disabling the model-catalog-resolver plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/model-catalog-resolver with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/model-catalog-resolver is refused and the model-catalog-resolver plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai GET /api/plugins shows no otel row before the editable built-in update - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var list = [];",
+                  "try { list = (pm.response.json() || {}).plugins || []; } catch (e) { list = []; }",
+                  "var found = list.some(function (p) { return p && p.name === 'otel'; });",
+                  "pm.collectionVariables.set('fixedBuiltinOtelPreexisting', pm.response.code === 200 && !found ? 'false' : 'true');",
+                  "pm.test('GET /api/plugins answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the gateway has no otel row of its own for the otel update to create', function () {",
+                  "  pm.expect(found, 'this gateway already configures otel; the otel update is skipped rather than change a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai PUT /api/plugins/otel still updates otel, a built-in configured through the plugins API - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The update creates a disabled otel row, so it runs only after the previous case confirmed the",
+                  "// gateway has none of its own. Skipping when that check did not run keeps a filtered run from",
+                  "// changing an unchecked gateway.",
+                  "if (pm.collectionVariables.get('fixedBuiltinOtelPreexisting') !== 'false') { pm.execution.skipRequest(); }",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var updated = pm.response.code === 200;",
+                  "pm.test('PUT /api/plugins/otel answers 200 and stores the update', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = (pm.response.json() || {}).plugin || {};",
+                  "  pm.expect(plugin.name, pm.response.text()).to.equal('otel');",
+                  "  pm.expect(plugin.enabled, pm.response.text()).to.equal(false);",
+                  "  pm.expect((plugin.config || {}).request_headers, JSON.stringify(plugin.config)).to.eql(['x-bf-fixed-builtin-plugins']);",
+                  "});",
+                  "// The gateway had no otel row before this case, so the row is this case's own: remove it whatever",
+                  "// the update answered. The removal must answer 200 when the update created the row; a failed",
+                  "// update may have left no row, so then 404 is the only other answer accepted.",
+                  "mgmt('DELETE', '/api/plugins/otel', null, function (err, res) {",
+                  "  pm.test(updated ? 'cleanup: deleted the otel row the update created' : 'cleanup: removed any otel row the failed update left', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    if (updated) {",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    } else {",
+                  "      pm.expect(res.code, res.text()).to.be.oneOf([200, 404]);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"x-bf-fixed-builtin-plugins\"\n    ]\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "222. Bedrock Converse Claude tool-schema compatibility (tool-schema-compat)",
       "description": "Claude on Bedrock rejects oneOf/anyOf/allOf at the root of a tool input_schema (\"input_schema does not support oneOf, allOf, or anyOf at the top level\"). Folder 99 pins the Anthropic converter, which bedrock_mantle and the Bedrock InvokeModel egress reuse; Bedrock's default Converse egress forwarded toolSpec.inputSchema verbatim, so Codex tools like automation_update failed on bedrock/ but not on bedrock_mantle/. Every inbound route that reaches Converse for Claude is covered: /v1/responses, /openai/v1/responses streaming (Codex's route), /v1/chat/completions, /anthropic/v1/messages, and the native /bedrock converse and invoke routes. The raw_request cases pin the flattened wire schema; the branch-limit case pins the gateway-side 400; the Nova case pins that non-Claude Converse models keep the root composition, which they accept.",
       "item": [
