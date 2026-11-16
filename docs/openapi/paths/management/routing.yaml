@@ -267,6 +267,10 @@ complexity:
     operationId: getComplexityAnalyzerConfig
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -297,6 +301,10 @@ complexity:
     operationId: updateComplexityAnalyzerConfig
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -337,6 +345,10 @@ complexity-reset:
     x-bifrost-destructive: true
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -398,6 +410,10 @@ complexity-status:
     operationId: getComplexityAnalyzerStatus
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -430,6 +446,10 @@ complexity-status-retry:
     operationId: retryComplexityAnalyzerWarmup
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |

@@ -54160,7 +54160,7 @@
       "get": {
         "operationId": "getComplexityAnalyzerConfig",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity analyzer config",
         "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
@@ -54618,7 +54618,7 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfig",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update complexity analyzer config",
         "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.",
@@ -55506,7 +55506,7 @@
         "operationId": "resetComplexityAnalyzerConfig",
         "x-bifrost-destructive": true,
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reset complexity analyzer config",
         "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved.\n",
@@ -55966,7 +55966,7 @@
       "get": {
         "operationId": "getComplexityAnalyzerStatus",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity classifier status",
         "description": "Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.\n",
@@ -56161,7 +56161,7 @@
       "post": {
         "operationId": "retryComplexityAnalyzerWarmup",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Retry failed complexity classifier warmup",
         "description": "Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.\n",
@@ -60051,7 +60051,7 @@
       "get": {
         "operationId": "getComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }
@@ -60515,7 +60515,7 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }
@@ -61409,7 +61409,7 @@
         "operationId": "resetComplexityAnalyzerConfigLegacy",
         "x-bifrost-destructive": true,
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config/reset` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config/reset` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }

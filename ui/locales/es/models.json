@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "El enrutador de complejidad se está actualizando a Enrutadores",
-				"body": "Los enrutadores pueden ejecutar varios clasificadores, cada uno con sus propios modelos y las solicitudes que gestiona. Esta página sigue funcionando como hasta ahora; te recomendamos probar los enrutadores en las configuraciones nuevas.",
+				"body": "Con los enrutadores, puedes crear varios enrutadores, cada uno con su propio clasificador y sus propios modelos. Esta página sigue funcionando como hasta ahora; te recomendamos pasar a los enrutadores tanto en las configuraciones existentes como en las nuevas.",
 				"action": "Abrir enrutadores"
 			}
 		},

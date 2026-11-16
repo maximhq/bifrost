@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "O roteador de complexidade está evoluindo para Roteadores",
-				"body": "Os roteadores podem executar vários classificadores, cada um com seus próprios modelos e as solicitações que atende. Esta página continua funcionando como hoje; recomendamos experimentar os roteadores em novas configurações.",
+				"body": "Com os roteadores, você pode criar vários roteadores, cada um com seu próprio classificador e seus próprios modelos. Esta página continua funcionando como hoje; recomendamos migrar para os roteadores tanto nas configurações existentes quanto nas novas.",
 				"action": "Abrir roteadores"
 			}
 		},
