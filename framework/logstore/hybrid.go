@@ -992,6 +992,11 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	return err
 }
 
+// FindExistingLogIDs reads ids from the database rows, which the object store never holds alone.
+func (h *HybridLogStore) FindExistingLogIDs(ctx context.Context, table LogTable, ids []string) ([]string, error) {
+	return h.inner.FindExistingLogIDs(ctx, table, ids)
+}
+
 // DeleteLogsBatch deletes old DB rows older than cutoff in batches of
 // batchSize. Object-store entries are intentionally NOT deleted here: the
 // expectation is that the bucket has a lifecycle policy configured to expire

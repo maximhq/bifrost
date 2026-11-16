@@ -180,6 +180,10 @@ type LogStore interface {
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
+	// FindExistingLogIDs returns the ids among ids that name a row of table, read under the row
+	// scope on ctx. It reads only the id column, so checking many ids before a delete does not
+	// load their rows or payloads.
+	FindExistingLogIDs(ctx context.Context, table LogTable, ids []string) ([]string, error)
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	// RetentionInterval is how often the retention cleaner runs; it lives here so wrappers that embed LogStore forward it.
 	RetentionInterval() time.Duration

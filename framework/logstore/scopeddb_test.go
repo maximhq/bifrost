@@ -156,3 +156,31 @@ func TestFindMCPToolLogUsesScopedDB(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hidden-mcp-log", hidden.ID)
 }
+
+// TestFindExistingLogIDs checks the id-only lookup in every log table: it returns the ids that
+// exist, drops unknown ones, and applies the row scope on the context.
+func TestFindExistingLogIDs(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"a", "b"} {
+		require.NoError(t, store.db.Create(&Log{ID: id, Timestamp: now, Status: "success"}).Error)
+		require.NoError(t, store.db.Create(&MCPToolLog{ID: id, Timestamp: now, Status: "success"}).Error)
+		require.NoError(t, store.db.Create(&AgentLog{ID: id, Timestamp: now}).Error)
+		require.NoError(t, store.db.Create(&RelayLog{ID: id, Timestamp: now}).Error)
+	}
+	hideB := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("id <> ?", "b") })
+
+	for _, table := range []LogTable{LogTableLogs, LogTableMCPToolLogs, LogTableAgentLogs, LogTableRelayLogs} {
+		got, err := store.FindExistingLogIDs(ctx, table, []string{"a", "b", "missing"})
+		require.NoError(t, err, table)
+		require.ElementsMatch(t, []string{"a", "b"}, got, table)
+
+		got, err = store.FindExistingLogIDs(hideB, table, []string{"a", "b", "missing"})
+		require.NoError(t, err, table)
+		require.ElementsMatch(t, []string{"a"}, got, table)
+	}
+
+	_, err := store.FindExistingLogIDs(ctx, LogTable("governance_users"), []string{"a"})
+	require.Error(t, err, "only log tables are accepted")
+}

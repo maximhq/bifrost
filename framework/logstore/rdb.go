@@ -5480,6 +5480,44 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	})
 }
 
+// LogTable names one of the log tables a caller can check ids against.
+type LogTable string
+
+// The log tables FindExistingLogIDs accepts.
+const (
+	LogTableLogs        LogTable = "logs"
+	LogTableMCPToolLogs LogTable = "mcp_tool_logs"
+	LogTableAgentLogs   LogTable = "agent_logs"
+	LogTableRelayLogs   LogTable = "relay_logs"
+)
+
+// existingIDsChunk bounds the ids bound in one query, well under every dialect's parameter limit.
+const existingIDsChunk = 500
+
+// FindExistingLogIDs returns the ids among ids present in table under the row scope on ctx. The
+// logs table also honours the hidden request types on ctx, as FindByID does.
+func (s *RDBLogStore) FindExistingLogIDs(ctx context.Context, table LogTable, ids []string) ([]string, error) {
+	switch table {
+	case LogTableLogs, LogTableMCPToolLogs, LogTableAgentLogs, LogTableRelayLogs:
+	default:
+		return nil, fmt.Errorf("unknown log table %q", table)
+	}
+	found := make([]string, 0, len(ids))
+	for start := 0; start < len(ids); start += existingIDsChunk {
+		chunk := ids[start:min(start+existingIDsChunk, len(ids))]
+		db := s.ScopedDB(ctx)
+		if table == LogTableLogs {
+			db = s.scopedLogsDB(ctx)
+		}
+		var page []string
+		if err := db.Table(string(table)).Where("id IN ?", chunk).Pluck("id", &page).Error; err != nil {
+			return nil, err
+		}
+		found = append(found, page...)
+	}
+	return found, nil
+}
+
 // ============================================================================
 // MCP Tool Log Methods
 // ============================================================================
