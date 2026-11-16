@@ -373,11 +373,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // "wally/minimax-m3"), so they'd otherwise be claimed by the deepseek or minimax partitions.
   // Route them exclusively to wally.
   let model;
-  try { model = JSON.parse(item.request?.body?.raw || "{}").model; } catch {
-    // Template bodies may not be JSON (e.g. an unquoted {{maxTokens}}); recover an explicit
-    // wally/ model id from the raw text so the row still lands in the wally partition.
-    const match = /"model"\s*:\s*"(wally\/[^"]*)"/i.exec(item.request?.body?.raw || "");
-    if (match) model = match[1];
+  const rawBody = item.request?.body?.raw || "{}";
+  try { model = JSON.parse(rawBody).model; } catch {
+    // Template bodies may not be JSON (e.g. an unquoted {{maxTokens}}). Stand each placeholder
+    // in for a JSON null and parse again, so only the top-level model counts; a nested
+    // metadata.model must not move the row into another provider's partition.
+    try { model = JSON.parse(rawBody.replace(/\{\{[^{}]*\}\}/g, "null")).model; } catch {}
   }
   // An explicit model wins over names, folders and arbitrary message text. Rows
   // without a model retain name/URL matching (including provider model listings).
