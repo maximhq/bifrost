@@ -719,6 +719,7 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		// reads both when the request context is built.
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, claims.Subject)
 		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialMCPToken, claims.Subject))
+		lib.MarkPreAuthenticated(ctx, lib.PreAuthClientGateway)
 	case schemas.MCPAuthModeSession:
 		ep.store.Mu.RLock()
 		enforceAuth := ep.store.ClientConfig.EnforceAuthOnInference
