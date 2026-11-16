@@ -900,8 +900,12 @@ func normalizeChatMessage(msg schemas.ChatMessage) schemas.ChatMessage {
 }
 
 // normalizeResponsesMessage mirrors normalizeChatMessage for the Responses API.
+// The item ID is dropped: inbound converters (e.g. Anthropic tool_use / assistant
+// history) mint a fresh random ID per request, so hashing it would make identical
+// requests miss. call_id and content still identify the item.
 func normalizeResponsesMessage(msg schemas.ResponsesMessage) schemas.ResponsesMessage {
 	out := msg
+	out.ID = nil
 	if msg.Content == nil {
 		return out
 	}

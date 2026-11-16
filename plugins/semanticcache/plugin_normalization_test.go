@@ -3,6 +3,7 @@ package semanticcache
 import (
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -344,4 +345,62 @@ func PtrFloat64(f float64) *float64 {
 
 func PtrInt(i int) *int {
 	return &i
+}
+
+// TestResponsesRequestHashIgnoresItemIDs verifies that generated Responses item
+// IDs (fc_/msg_ minted per request by inbound converters such as Anthropic
+// tool_use history) do not change the direct-cache request hash, while real
+// differences (call_id, content) still do.
+func TestResponsesRequestHashIgnoresItemIDs(t *testing.T) {
+	t.Parallel()
+	plugin := &Plugin{config: &Config{}}
+
+	build := func(fcID, msgID, callID, text string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-sonnet-4-5",
+				Input: []schemas.ResponsesMessage{
+					{Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: bifrost.Ptr("go")}},
+					{
+						ID:   bifrost.Ptr(msgID),
+						Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesOutputMessageContentTypeText, Text: bifrost.Ptr(text)},
+						}},
+					},
+					{
+						ID:   bifrost.Ptr(fcID),
+						Type: bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    bifrost.Ptr(callID),
+							Name:      bifrost.Ptr("run_query"),
+							Arguments: bifrost.Ptr(`{"q":"x"}`),
+						},
+					},
+				},
+			},
+		}
+	}
+	hash := func(req *schemas.BifrostRequest) string {
+		t.Helper()
+		h, err := plugin.generateRequestHash(req, nil)
+		if err != nil {
+			t.Fatalf("generateRequestHash: %v", err)
+		}
+		return h
+	}
+
+	base := hash(build("fc_aaa", "msg_aaa", "toolu_1", "hi"))
+	if got := hash(build("fc_bbb", "msg_bbb", "toolu_1", "hi")); got != base {
+		t.Fatalf("hash changed with only item IDs differing: %s vs %s", base, got)
+	}
+	if got := hash(build("fc_aaa", "msg_aaa", "toolu_2", "hi")); got == base {
+		t.Fatal("hash must still change when call_id differs")
+	}
+	if got := hash(build("fc_aaa", "msg_aaa", "toolu_1", "bye")); got == base {
+		t.Fatal("hash must still change when content differs")
+	}
 }
