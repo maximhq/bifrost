@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "启用后，完整错误详情会写入服务器控制台日志。便于调试，但在生产环境可能噪音较大。",
 		"asyncJobTtl": "异步任务结果 TTL（秒）",
 		"asyncJobTtlHelp": "异步任务结果的默认存活时间（秒）。过期后结果会自动清理。",
+		"bifrostUrl": "Bifrost URL",
+		"bifrostUrlHelp": "客户端访问此网关所用的 URL，包括任何基础路径。<code0>/v1/mcp</code0> 和 Warp 的配置工具需要此项：它们的调用会被视为从此处到达，因此结果中的链接指向该 URL。留空则二者都会停用；绝不会改用请求发送的 Host 标头。",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "OpenAPI URL",
+		"openapiUrlHelp": "<code0>/v1/mcp</code0> 用于生成工具的 OpenAPI 规范：一个 http(s) URL，或用于离线环境、相对于应用目录的路径。留空则读取此版本已发布的规范。",
+		"openapiUrlPlaceholder": "此版本已发布的规范",
 		"languageHelp": "控制台的显示语言。保存在此浏览器中，并立即生效。",
 		"headerForwarding": "请求头转发",
 		"headerForwardingHelp": "控制哪些额外请求头会转发到 LLM 提供商。",
@@ -244,11 +250,17 @@
 		"deleteExpiredVirtualKeysHelp": "启用后，每日清理任务会删除所有已过期的虚拟密钥，并发送列出已删除密钥的通知。每个密钥都可通过其<b0>过期后删除</b0>开关覆盖此设置：设为关闭的密钥会保留；即使此设置关闭，设为开启的密钥仍会删除。",
 		"enforceVkObjectOwnership": "将提供商对象限制为创建它的虚拟密钥",
 		"enforceVkObjectOwnershipHelp": "启用后，使用虚拟密钥创建的文件、批次、视频、容器、缓存内容和实时会话，只能使用同一密钥读取、列出或删除。其他虚拟密钥会收到未找到错误，也无法在列表中看到这些对象。不受虚拟密钥保护的请求不受影响。即使此选项关闭，也会记录创建对象的密钥；再次启用后，期间创建的对象也会受到限制，但无法记录创建密钥的对象除外。",
+		"bifrostMcpAllowWrites": "允许通过 Bifrost MCP 更改配置",
+		"bifrostMcpAllowWritesHelp": "将网关中非 GET 的 /api 操作作为 <code0>/v1/mcp</code0> 上的工具提供。推理、批处理和文件路由始终提供。破坏性工具会要求 MCP 客户端确认。",
 		"proofRequired": "输入当前管理员密码以确认此更改。仪表盘保护已关闭，因此此会话未登录。如果不知道密码，请改用设置令牌。",
 		"skipAccessProfileKeyCreation": "不为访问配置文件创建用户虚拟密钥",
 		"skipAccessProfileKeyCreationHelp": "启用后，用户首次获得访问配置文件时不会为其创建虚拟密钥。用户已拥有的密钥或你为其添加的密钥，在用户持有访问配置文件期间仍由该配置文件治理。",
 		"skipAccessProfileKeyDeletion": "移除访问配置文件时不删除用户虚拟密钥",
-		"skipAccessProfileKeyDeletionHelp": "启用后，移除用户的最后一个访问配置文件时，其虚拟密钥会保留为普通密钥，不再继承该配置文件的供应商或访问权限。删除用户仍会删除其密钥。"
+		"skipAccessProfileKeyDeletionHelp": "启用后，移除用户的最后一个访问配置文件时，其虚拟密钥会保留为普通密钥，不再继承该配置文件的供应商或访问权限。删除用户仍会删除其密钥。",
+		"entityAccessProfileMode": "实体访问配置文件模式",
+		"entityAccessProfileModeHelp": "设置用户所属团队、业务部门和客户的访问配置文件如何与用户自身的访问权限组合，与项目的访问规则相同。扩展：每个配置文件都会扩大用户可访问的范围。限制：改为限制该范围，只有当用户自身的配置文件或虚拟密钥、其团队或业务部门配置文件之一以及其客户配置文件之一都允许时，请求才会被允许。没有活动配置文件的组会被跳过。两种模式下预算和速率限制的计费方式相同。",
+		"entityAccessProfileModeExtend": "扩展",
+		"entityAccessProfileModeRestrict": "限制"
 	},
 	"logging": {
 		"title": "日志设置",
@@ -405,6 +417,7 @@
 		"toastSyncIntervalInvalid": "工具同步间隔必须为零或正数。",
 		"toastMaxInstructionsPerServerInvalid": "每个服务器的最大指令长度必须为零或正数。",
 		"toastMaxInstructionsTotalInvalid": "指令总长度上限必须为零或正数。",
+		"toastOpenAPIMaxSpecInvalid": "OpenAPI 规范大小限制必须是 0 到 {{max}} MiB 之间的整数。",
 		"toastIssuerUrlRequired": "MCP 认证模式为 OAuth 或 Both 时必须填写颁发者 URL。请先在 设置 > 安全 中设置。",
 		"oauthPrivateAllowlist": "OAuth 私有网络允许列表",
 		"oauthPrivateAllowlistHelp": "OAuth 发现、客户端注册和 MCP 服务器令牌请求可访问的主机、IP 地址或 CIDR 范围（不含协议或端口），前提是解析结果为环回或私有地址。例如：<code0>localhost</code0>、<code1>127.0.0.1</code1> 或 <code2>10.20.0.0/16</code2>。适用于启用了仪表盘身份验证的 MCP 服务器；修改此设置需要仪表盘身份验证。始终阻止链路本地地址和云元数据地址。",
@@ -413,8 +426,12 @@
 		"maxInstructionsPerServerHelp": "超出长度的文本会被截断并附带提示。设为 0 可使用默认值 4096。",
 		"maxProtocolVersion": "最高协议版本",
 		"maxProtocolVersionHelp": "Bifrost 向 MCP 服务器提供的最新 MCP 协议版本。Auto 使用 Bifrost 支持的最新版本。每个服务器可单独覆盖此设置。",
+		"serverMaxProtocolVersion": "Bifrost MCP 服务器协议版本",
+		"serverMaxProtocolVersionHelp": "Bifrost 自身 MCP 端点向客户端提供的最新 MCP 协议版本。Auto 提供 Bifrost 支持的所有版本。低于 2025-11-25 时，将关闭使用客户端 ID 元数据文档的登录，客户端改为动态注册。",
 		"maxInstructionsTotal": "指令总长度上限（字节）",
 		"maxInstructionsTotalHelp": "调用方可见的所有服务器指令总长度上限。在 <code0>网关和 LLM 请求</code0>中，这些指令会随每个包含 MCP 的请求发送，因此提高上限会增加每个请求的 token 数。设为 0 可使用默认值 16384。",
+		"maxOpenAPISpecSize": "OpenAPI 规范最大大小（MiB）",
+		"maxOpenAPISpecSizeHelp": "OpenAPI MCP 服务器可接受的最大文档，无论是粘贴、上传还是从其 URL 获取。解析时占用的内存是该大小的数倍。设为 0 则使用默认值 32。",
 		"allowedRedirectUris": "允许的重定向 URI",
 		"allowedRedirectUrisHelp": "远程 MCP 客户端可使用的精确回调 URI，例如 <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>。添加 <code1>*</code1> 可允许任意 HTTPS 回调；不支持部分通配符。始终允许环回回调和 <code2>cursor://anysphere.cursor-mcp</code2>。修改此列表需要仪表盘身份验证。",
 		"allowedRedirectUrisPlaceholder": "添加回调 URI（按 Enter）",
@@ -1042,6 +1059,76 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "配置工具",
+			"description": "Warp 可以读取 Bifrost 的配置。请选择它还可以进行哪些类型的更改；每项更改仍需等待用户确认。",
+			"reads": "读取配置",
+			"readsHelp": "提供商、虚拟密钥、团队、预算、路由规则等。",
+			"alwaysOn": "始终开启",
+			"size_one": "{{count}} 个工具 · 约 {{tokens}} 个 token",
+			"size_other": "{{count}} 个工具 · 约 {{tokens}} 个 token",
+			"kinds": {
+				"create": {
+					"label": "创建",
+					"help": "添加虚拟密钥、团队、路由规则等。"
+				},
+				"update": {
+					"label": "更新",
+					"help": "更改现有资源，例如虚拟密钥的预算。"
+				},
+				"delete": {
+					"label": "删除",
+					"help": "移除资源。每次删除都会提示无法撤销。"
+				},
+				"action": {
+					"label": "其他操作",
+					"help": "执行测试提供商或清除缓存等操作。"
+				}
+			},
+			"notLoaded": "Bifrost MCP 加载后即可选择更改类型。",
+			"writesOff": "整个 Bifrost MCP 的更改已关闭。请在安全设置中开启<link0>允许通过 Bifrost MCP 更改配置</link0>，以便为 Warp 选择它们。",
+			"contextWarning": "你开启的每种类型都会随每个 Warp 请求发送：在这些设置下工具约为 {{tokens}} 个 token。上下文窗口较小的模型可能会停止回答。",
+			"contextReadsOnly": "读取会为每个 Warp 请求增加约 {{tokens}} 个 token 的工具。"
+		},
+		"mcpNotice": {
+			"title": "Warp 现在通过 Bifrost MCP 工作",
+			"intro": "以下是变化内容及控制它的设置。",
+			"changeReads": "读取你的配置：提供商、虚拟密钥、团队、预算、路由规则等。",
+			"changeWrites": "只进行管理员在 Warp 设置中允许的更改，每次都需用户确认。默认只读取。",
+			"changeAccess": "以每个用户自己的权限运行，并将读取的内容发送给 Warp 的模型提供商，不包含虚拟密钥的值。",
+			"settingsHeading": "你的设置",
+			"loading": "正在读取设置…",
+			"settingsUnreadable": "你的角色无法读取网关设置。请让管理员在“客户端设置”和“安全”中检查。",
+			"settingsLoadFailed": "无法读取网关设置：{{error}}",
+			"bifrostUrl": "Bifrost URL",
+			"notSet": "未设置",
+			"bifrostUrlSet": "配置工具从此地址加载。",
+			"bifrostUrlMissing": "没有它，Bifrost MCP 不会加载，Warp 也不会回答。请在客户端设置中设置它以启用 Warp。",
+			"openapiUrl": "OpenAPI 规范",
+			"openapiDefault": "此版本发布的规范",
+			"openapiDefaultHint": "从 GitHub 获取。在无法访问互联网的环境中，请将 OpenAPI URL 指向本地副本，否则配置工具不会加载。",
+			"changes": "Warp 可进行的更改",
+			"changesReadsOnly": "仅读取",
+			"changesHint": "在 <link0>Warp 设置</link0>的配置工具中选择。你允许的每种类型都会增加每个 Warp 请求的内容。",
+			"changesCeiling": "安全设置中已关闭 Bifrost MCP 的更改，因此 Warp 只读取。类型在 <link0>Warp 设置</link0>中选择。",
+			"outcome": {
+				"off": "在这些设置下，Warp 不会回答。设置 Bifrost URL 即可启用。",
+				"reads": "在这些设置下，Warp 会回答流量和配置问题，但无法更改任何内容。",
+				"reads_and_writes": "在这些设置下，Warp 会回答流量和配置问题，并可在用户逐一确认后进行 Warp 设置中允许的更改。"
+			},
+			"docsLink": "阅读升级说明",
+			"docsSetupLink": "如何设置 Bifrost MCP",
+			"openClientSettings": "打开客户端设置",
+			"later": "稍后提醒",
+			"gotIt": "知道了",
+			"bannerDescription": "Warp 现在会读取你的配置，并可在用户确认后进行管理员允许的更改。请检查控制此行为的设置。",
+			"review": "查看",
+			"setupTitle": "Warp 需要 Bifrost MCP",
+			"setupIntro": "在 Bifrost MCP 设置完成前，Warp 不会回答。",
+			"bannerSetupDescription": "在 Bifrost MCP 设置完成前，Warp 不会回答。",
+			"setUp": "设置",
+			"notLoaded": "Bifrost URL 已设置，但 Bifrost MCP 未加载。通常是 OpenAPI 规范无法下载；服务器日志中的 [Bifrost MCP] 警告会说明原因。"
+		},
 		"saved": "Warp 配置已保存。",
 		"badRange": "请选择有效的回填时间范围。",
 		"backfillStarted": "已开始 Warp 嵌入回填。",
@@ -1601,5 +1688,30 @@
 		"retry": "重试",
 		"externalClientUrl": "外部客户端 URL",
 		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。"
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "让开发者在 Claude Code 中通过 <code0>/login</code0> 登录 Bifrost，而无需手动配置虚拟密钥。",
+		"enableLabel": "启用 Claude Code 登录",
+		"enableDescription": "开发者在 <code1>/login</code1> 中选择 <b0>Cloud gateway</b0>，在浏览器中确认代码，然后选择身份：虚拟密钥、自己的账户，或在未强制推理认证时选择匿名会话。之后的请求将以该身份运行，并适用其预算、速率限制和模型访问权限。登录会显示在 OAuth 授权中，可在那里撤销。",
+		"gatewayURLTemplate": "<颁发者 URL>/gateway/claude-code",
+		"connectTitle": "连接 Claude Code",
+		"gatewayURLLabel": "网关 URL：",
+		"connectBody": "Claude Code 只从机器级托管设置中读取网关 URL。请将以下键部署到每台开发者机器（通过 MDM 或 Claude Code 的 <code0>managed-settings.json</code0>），然后开发者运行 <code1>/login</code1>，并在 <b2>Cloud gateway</b2> 界面按 Enter：",
+		"requirements": "Claude Code 要求使用 https（仅 localhost 可用 http），且网关主机须解析为私有网络地址。",
+		"managedSettingsLabel": "托管设置（JSON）",
+		"managedSettingsDescription": "可选的 Claude Code <code0>managed-settings.json</code0>，会推送给每个已登录的客户端（权限、环境变量、模型允许列表等）。客户端每小时刷新一次。留空表示不使用托管策略。",
+		"issuerRequired": "请先设置颁发者 URL，再启用 Claude Code 登录。",
+		"invalidJSON": "托管设置必须是有效的 JSON。",
+		"notObject": "托管设置必须是 JSON 对象。",
+		"updated": "Claude Code 设置已更新。"
+	},
+	"gateways": {
+		"title": "网关",
+		"description": "让编码客户端通过各自的 <code0>/login</code0> 登录 Bifrost，而无需手动配置虚拟密钥。每个客户端都有自己的 URL，其请求以开发者选择的虚拟密钥或账户运行。",
+		"issuerLabel": "颁发者 URL",
+		"issuerDescription": "Bifrost 的固定公共 URL。每个网关都在 <code0/> 提供服务。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
+		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<颁发者 URL>/gateway/<客户端>"
 	}
 }

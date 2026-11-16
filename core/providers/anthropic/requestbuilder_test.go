@@ -4011,3 +4011,172 @@ func BenchmarkMoveCachePrefixKeysLast(b *testing.B) {
 		}
 	})
 }
+
+// thinking.block_binding (thinking-binding-controls-2026-08-01) tells the API to drop, not
+// 400 on, a thinking block whose signature fails the conversation prefix check. It reaches
+// the wire with its derived beta only on hosts that take the beta and only on a thinking
+// mode that can carry it, on every route that can express it: the native typed path (where
+// adaptive thinking is rebuilt from the neutral shape), the raw passthrough body, and
+// /v1/chat/completions with an Anthropic "thinking" object in the extra params.
+func TestThinkingBlockBindingRequestBuilders(t *testing.T) {
+	// Opus 5.5 is adaptive-only (every mode lands on "adaptive"); Sonnet 4.5 keeps
+	// "enabled" and "disabled", so both carrier and non-carrier modes reach the wire;
+	// Sonnet 5.5 has the caller's "enabled" thinking restored verbatim after the strip
+	// pass, which must not bring block_binding back on a host without the beta.
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-4-5", "claude-sonnet-5-5"} {
+		testThinkingBlockBindingRequestBuilders(t, model)
+	}
+}
+
+func testThinkingBlockBindingRequestBuilders(t *testing.T, model string) {
+	const binding = `{"prefix_mismatch_behavior":"drop_block"}`
+	chatInput := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}
+	routes := []string{"native", "native-stream", "raw", "chat-extra-params", "chat-reasoning-plus-extra-params"}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		for _, thinkingType := range []string{"adaptive", "enabled", "disabled"} {
+			for _, route := range routes {
+				t.Run(fmt.Sprintf("%s/%s/%s/%s", model, provider, thinkingType, route), func(t *testing.T) {
+					thinking := `{"type":"` + thinkingType + `","block_binding":` + binding + `}`
+					if thinkingType == "enabled" {
+						thinking = `{"type":"enabled","budget_tokens":2048,"block_binding":` + binding + `}`
+					}
+					body := []byte(`{"model":"` + model + `","max_tokens":4096,"thinking":` + thinking + `,"messages":[{"role":"user","content":"hi"}]}`)
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+					var out []byte
+					var err *schemas.BifrostError
+					switch route {
+					case "native", "native-stream":
+						// Anthropic-shaped SSE carries no raw_request echo, so this is the only
+						// place the streaming native build is checked for the binding.
+						cfg.IsStreaming = route == "native-stream"
+						var req AnthropicMessageRequest
+						if uerr := schemas.Unmarshal(body, &req); uerr != nil {
+							t.Fatalf("unmarshal: %v", uerr)
+						}
+						request := req.ToBifrostResponsesRequest(ctx)
+						request.Provider = provider
+						out, err = BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+					case "raw":
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, RawRequestBody: body, Input: makeSimpleInput("hi")}, cfg)
+					default:
+						var extra map[string]interface{}
+						if uerr := json.Unmarshal([]byte(thinking), &extra); uerr != nil {
+							t.Fatalf("unmarshal: %v", uerr)
+						}
+						params := &schemas.ChatParameters{ExtraParams: map[string]interface{}{"thinking": extra}}
+						if route == "chat-reasoning-plus-extra-params" {
+							params.Reasoning = &schemas.ChatReasoning{Effort: new("high")}
+							if thinkingType == "disabled" {
+								params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
+							}
+						}
+						out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, Input: chatInput, Params: params}, cfg)
+					}
+					if err != nil {
+						t.Fatalf("build: %v", err)
+					}
+					sentType := providerUtils.GetJSONField(out, "thinking.type").String()
+					want := provider == schemas.Anthropic && (sentType == "adaptive" || sentType == "enabled")
+					if thinkingType != "disabled" && provider == schemas.Anthropic && !want {
+						t.Fatalf("thinking mode lost: thinking.type = %q; body=%s", sentType, out)
+					}
+					got := providerUtils.GetJSONField(out, "thinking.block_binding")
+					if got.Exists() != want {
+						t.Fatalf("thinking.block_binding present = %v, want %v; body=%s", got.Exists(), want, out)
+					}
+					if want && got.Get("prefix_mismatch_behavior").String() != "drop_block" {
+						t.Errorf("thinking.block_binding = %s, want %s", got.Raw, binding)
+					}
+					betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+					if slices.Contains(betas, AnthropicThinkingBindingControlsBetaHeader) != want {
+						t.Errorf("beta %s present = %v, want %v (betas: %v)", AnthropicThinkingBindingControlsBetaHeader, !want, want, betas)
+					}
+				})
+			}
+		}
+	}
+}
+
+// A layer that turns thinking off after ingress (here: the neutral reasoning rewritten to
+// effort "none") must not get the caller's block_binding back on a disabled thinking
+// object, which the API rejects on every model.
+func TestThinkingBlockBindingNotRestoredOntoDisabledThinking(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":4096,"thinking":{"type":"adaptive","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"messages":[{"role":"user","content":"hi"}]}`)
+	var req AnthropicMessageRequest
+	if err := schemas.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := req.ToBifrostResponsesRequest(ctx)
+	request.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: new("none")}
+	// The witness must hold its own copy, not the inbound pointer.
+	*req.Thinking.BlockBinding.PrefixMismatchBehavior = "error"
+	out, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if providerUtils.JSONFieldExists(out, "thinking.block_binding") {
+		t.Errorf("block_binding restored onto thinking.type %q; body=%s", providerUtils.GetJSONField(out, "thinking.type").String(), out)
+	}
+
+	// Same request with reasoning untouched keeps the caller's value, not the mutated one.
+	ctx = schemas.NewBifrostContext(context.Background(), time.Time{})
+	var fresh AnthropicMessageRequest
+	_ = schemas.Unmarshal(body, &fresh)
+	request = fresh.ToBifrostResponsesRequest(ctx)
+	*fresh.Thinking.BlockBinding.PrefixMismatchBehavior = "error"
+	out, err = BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if got := providerUtils.GetJSONField(out, "thinking.block_binding.prefix_mismatch_behavior").String(); got != "drop_block" {
+		t.Errorf("prefix_mismatch_behavior = %q, want drop_block (witness aliased the inbound request?); body=%s", got, out)
+	}
+}
+
+// With the ExtraParams passthrough flag on, the caller's thinking object is merged onto the
+// wire verbatim after the typed body is marshaled, so the beta must be derived from that
+// merged body: deriving it from the typed request alone misses block_binding and Anthropic
+// 400s on the field. Covers chat with and without an explicit reasoning (the explicit one
+// sets the typed thinking mode, the merge then overwrites thinking wholesale) and the
+// neutral responses route. Hosts without the beta still never get it.
+func TestThinkingBlockBindingPassthroughExtraParamsDerivesBeta(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	thinking := map[string]interface{}{"type": "adaptive", "block_binding": map[string]interface{}{"prefix_mismatch_behavior": "drop_block"}}
+	chatInput := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex} {
+		for _, route := range []string{"chat", "chat-explicit-reasoning", "responses"} {
+			t.Run(fmt.Sprintf("%s/%s", provider, route), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+				extra := map[string]interface{}{"thinking": thinking}
+				var out []byte
+				var err *schemas.BifrostError
+				switch route {
+				case "responses":
+					out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, Input: makeSimpleInput("hi"), Params: &schemas.ResponsesParameters{ExtraParams: extra}}, cfg)
+				default:
+					params := &schemas.ChatParameters{ExtraParams: extra}
+					if route == "chat-explicit-reasoning" {
+						params.Reasoning = &schemas.ChatReasoning{Effort: new("high")}
+					}
+					out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, Input: chatInput, Params: params}, cfg)
+				}
+				if err != nil {
+					t.Fatalf("build: %v", err)
+				}
+				if got := providerUtils.GetJSONField(out, "thinking.block_binding.prefix_mismatch_behavior").String(); got != "drop_block" {
+					t.Fatalf("passthrough did not merge thinking.block_binding; body=%s", out)
+				}
+				want := provider == schemas.Anthropic
+				betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+				if slices.Contains(betas, AnthropicThinkingBindingControlsBetaHeader) != want {
+					t.Errorf("beta %s present = %v, want %v (betas: %v); body=%s", AnthropicThinkingBindingControlsBetaHeader, !want, want, betas, out)
+				}
+			})
+		}
+	}
+}

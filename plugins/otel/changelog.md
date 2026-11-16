@@ -1,1 +1,2 @@
+- feat: optional `apply_trace_dimensions_to_child_spans` profile flag merges `x-bf-dim-*` dimensions onto every exported span; span attributes win on conflict, reserved keys are skipped (#3770)
 - chore: upgraded core to v1.15.2 and framework to v1.12.2

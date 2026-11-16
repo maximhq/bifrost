@@ -520,9 +520,17 @@ func suggestionRecordContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(context.WithoutCancel(ctx), suggestionRecordTimeout)
 }
 
-// ErrComplexitySuggestionsOff is a run asked for while suggestions are off or
-// have nowhere to be kept.
-var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are off: enable them in the complexity router settings")
+// ErrComplexitySuggestionsOff is a run asked for on a router with no
+// suggestions settings, or while suggestions have nowhere to be kept.
+var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are not set up for this router: add its suggestions settings (enabled may stay false to run them only on demand)")
+
+// suggestionsConfigured reports whether a router has suggestions settings to
+// run with. Runs started on demand, estimates and impact replays need only
+// these: enabled turns on capture and the schedule, not the on-demand APIs,
+// which backfill what they read from the router's logs.
+func suggestionsConfigured(router suggestionRouter) bool {
+	return router.config != nil && router.config.Suggestions != nil
+}
 
 // ErrComplexitySuggestionRunInFlight is a run asked for while one is already
 // queued or running.
@@ -536,7 +544,7 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, rou
 	if !ok {
 		return "", ErrUnknownComplexityRouter
 	}
-	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !router.config.SuggestionsEnabled() {
+	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !suggestionsConfigured(router) {
 		return "", ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -612,7 +620,7 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if !ok {
 		return suggestrun.Estimate{}, ErrUnknownComplexityRouter
 	}
-	if !router.config.SuggestionsEnabled() {
+	if !suggestionsConfigured(router) {
 		return suggestrun.Estimate{}, ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -964,7 +972,7 @@ func (p *RoutingPlugin) ComplexitySuggestionImpact(ctx context.Context, routerID
 	if !ok {
 		return suggestrun.Impact{}, 0, ErrUnknownComplexityRouter
 	}
-	if !router.config.SuggestionsEnabled() {
+	if !suggestionsConfigured(router) {
 		return suggestrun.Impact{}, 0, ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -1239,7 +1247,10 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 	if p.suggestions != nil {
 		deps = p.suggestions.deps.Load()
 	}
-	if !ok || !router.config.SuggestionsEnabled() || deps == nil || router.classifier == nil {
+	// A scheduled run needs suggestions still on; one started on demand
+	// needs only their settings.
+	if !ok || !suggestionsConfigured(router) || deps == nil || router.classifier == nil ||
+		(meta.TriggeredBy == logstore.ComplexitySuggestionTriggerSchedule && !router.config.SuggestionsEnabled()) {
 		return suggestrun.Result{}, errSuggestionsUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, suggestionRunTimeout)

@@ -488,6 +488,23 @@ func TestValidateConfigSchema_ValidClientConfig(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings pins that managed_settings accepts
+// null (no policy, what Go writes for an unset value), {} (empty policy) and a policy object.
+func TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings(t *testing.T) {
+	cfg := func(managed string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "managed_settings": ` + managed + `}}}}}`)
+	}
+	for _, valid := range []string{`null`, `{}`, `{"permissions": {"deny": ["Bash(rm:*)"]}}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("managed_settings %s must be valid, got: %v", valid, err)
+		}
+	}
+	if err := ValidateConfigSchema(cfg(`"not an object"`), loadLocalSchema(t)); err == nil {
+		t.Error("a string managed_settings must be rejected")
+	}
+}
+
 func TestValidateConfigSchema_InvalidMinimum(t *testing.T) {
 	// initial_pool_size has minimum: 1
 	invalidConfig := `{

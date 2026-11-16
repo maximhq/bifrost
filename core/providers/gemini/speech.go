@@ -183,6 +183,24 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 	return bifrostResp, nil
 }
 
+// geminiPCMMimeType labels the headerless signed 16-bit 24 kHz PCM that Gemini TTS answers with.
+const geminiPCMMimeType = "audio/L16;codec=pcm;rate=24000"
+
+// geminiSpeechMimeType labels speech audio for a GenAI client; Gemini TTS answers in raw PCM or WAV, so audio without a WAV header is PCM whatever its first bytes look like.
+func geminiSpeechMimeType(audio []byte, routing schemas.RoutingInfo) string {
+	mimeType := utils.DetectAudioMimeType(audio)
+	model := routing.Model
+	if routing.ResolvedKeyAlias != nil && routing.ResolvedKeyAlias.ModelID != "" {
+		model = routing.ResolvedKeyAlias.ModelID // a key alias hides the model behind its own name
+	}
+	isGeminiTTS := (routing.Provider == schemas.Gemini || routing.Provider == schemas.Vertex) &&
+		strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini")
+	if isGeminiTTS && mimeType != "audio/wav" {
+		return geminiPCMMimeType
+	}
+	return mimeType
+}
+
 // ToGeminiSpeechResponse converts a BifrostSpeechResponse to Gemini's GenerateContentResponse
 func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
@@ -197,7 +215,7 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 				{
 					InlineData: &Blob{
 						Data:     encodeBytesToBase64String(bifrostResp.Audio),
-						MIMEType: utils.DetectAudioMimeType(bifrostResp.Audio),
+						MIMEType: geminiSpeechMimeType(bifrostResp.Audio, bifrostResp.ExtraFields.RoutingInfo),
 					},
 				},
 			},
@@ -229,7 +247,7 @@ func ToGeminiSpeechStreamResponse(bifrostResp *schemas.BifrostSpeechStreamRespon
 			// Gemini TTS stream chunks are headerless signed 16-bit PCM. Generic
 			// header detection falls back to audio/mp3 for headerless data, which
 			// makes native GenAI clients decode valid PCM as the wrong format.
-			mimeType = "audio/L16;codec=pcm;rate=24000"
+			mimeType = geminiPCMMimeType
 		}
 		genaiResp.Candidates = []*Candidate{{
 			Content: &Content{

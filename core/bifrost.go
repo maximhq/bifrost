@@ -40,6 +40,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/kimchi"
+	"github.com/maximhq/bifrost/core/providers/machgen"
 	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
@@ -5317,6 +5318,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.MachGen:
+		return machgen.NewMachGenProvider(config, bifrost.logger)
 	case schemas.Runware:
 		return runware.NewRunwareProvider(config, bifrost.logger)
 	case schemas.Fireworks:
@@ -5507,6 +5510,7 @@ type WSStreamHooks struct {
 	PostHookRunner       schemas.PostHookRunner
 	Cleanup              func()
 	ShortCircuitResponse *schemas.BifrostResponse
+	Request              *schemas.BifrostRequest // the request as the pre-hooks left it; a relay forwards a body plugins rewrote from here
 }
 
 // RealtimeTurnHooks mirrors RunStreamPreHooks but is explicitly scoped to a
@@ -5673,6 +5677,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	return &WSStreamHooks{
 		PostHookRunner: postHookRunner,
 		Cleanup:        cleanup,
+		Request:        preReq,
 	}, nil
 }
 
@@ -7380,6 +7385,12 @@ func executeRequestWithRetries[T any](
 	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
+	// True once the request was re-sent with the synthetic structured-output tool; granted once.
+	forcedStructuredOutputTool := false
+	// True iff the previous attempt was a native structured-output request the provider rejected
+	// and the next one goes out with the synthetic tool; the payload changes, so there is nothing
+	// to wait out.
+	lastWasStructuredOutputForceTool := false
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -7575,7 +7586,7 @@ func executeRequestWithRetries[T any](
 			// credential swap or a stripped replay.
 			ctxEnded := false
 			stage := "before retry dispatch"
-			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip || lastWasStructuredOutputForceTool) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				ctxEnded = waitRetryBackoff(ctx, backoff)
@@ -7930,6 +7941,20 @@ func executeRequestWithRetries[T any](
 				logger.Warn("upstream returned 400 for a request to %s/%s that replays encrypted reasoning; retrying once without it in case the token is the cause: %s", providerKey, model, errMessage)
 			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
+		}
+
+		// A provider marks a native structured-output request whose schema it rejected; the same
+		// request works with the schema as the synthetic tool, so it gets one more attempt on the
+		// same key in that form. Once per request: a body that keeps its native schema cannot loop.
+		lastWasStructuredOutputForceTool = false
+		if !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+			forcedStructuredOutputTool = true
+			lastWasStructuredOutputForceTool = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("%s/%s rejected the native structured-output schema; retrying once with it as a tool: %s", providerKey, model, errMessage)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Native structured-output schema rejected by %s/%s; re-sending once with the schema as a tool", providerKey, model))
 		}
 
 		if !shouldRetry {
@@ -9270,6 +9295,7 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 			if bifrostError != nil {
 				return nil, bifrostError
 			}
+			providerUtils.RestoreResponsesToolCalls(responsesRequest, responsesResponse)
 			chatResponse := responsesResponse.ToBifrostChatResponse()
 			if chatResponse != nil {
 				// RawResponse is still the Responses body; integrations must not echo it as chat.
@@ -9278,10 +9304,12 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 			return chatResponse, nil
 		}
 	}
-	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
+	preparedRequest := prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest)
+	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, preparedRequest)
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
+	providerUtils.RestoreChatCustomToolCalls(preparedRequest, chatCompletionResponse)
 	chatCompletionResponse.BackfillParams(original)
 	return chatCompletionResponse, nil
 }
@@ -9294,7 +9322,6 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
-	response := &schemas.BifrostResponse{}
 	if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 		chatRequest := preparedRequest.ToChatRequest()
 		if chatRequest != nil {
@@ -9306,10 +9333,8 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 			responsesResponse.BackfillParams(original)
 			// RawResponse is still the chat body; integrations must not echo it as Responses.
 			responsesResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
-			response.ResponsesResponse = responsesResponse
-			providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
-			providerUtils.RestoreResponsesCustomToolCalls(preparedRequest.CustomToolNames, responsesResponse)
-			return response.ResponsesResponse, nil
+			providerUtils.RestoreResponsesToolCalls(preparedRequest, responsesResponse)
+			return responsesResponse, nil
 		}
 	}
 	responsesResponse, bifrostError := provider.Responses(ctx, key, preparedRequest)
@@ -9317,10 +9342,8 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 		return nil, bifrostError
 	}
 	responsesResponse.BackfillParams(original)
-	response.ResponsesResponse = responsesResponse
-	providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
-	providerUtils.RestoreResponsesCustomToolCalls(preparedRequest.CustomToolNames, responsesResponse)
-	return response.ResponsesResponse, nil
+	providerUtils.RestoreResponsesToolCalls(preparedRequest, responsesResponse)
+	return responsesResponse, nil
 }
 
 // dispatchChatStream opens one chat completion stream, converting through the
@@ -9336,10 +9359,12 @@ func (bifrost *Bifrost) dispatchChatStream(ctx *schemas.BifrostContext, provider
 			if bifrostError != nil {
 				return nil, bifrostError
 			}
-			return provider.ResponsesStream(ctx, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
+			// Custom tool events are restored before the conversion to chat chunks sees them.
+			return provider.ResponsesStream(ctx, providerUtils.WrapResponsesToolRestorePostHookRunner(wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), responsesRequest), postHookSpanFinalizer, key, responsesRequest)
 		}
 	}
-	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
+	preparedRequest := prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest)
+	return provider.ChatCompletionStream(ctx, providerUtils.WrapChatCustomToolRestorePostHookRunner(postHookRunner, preparedRequest), postHookSpanFinalizer, key, preparedRequest)
 }
 
 // dispatchResponsesStream opens one Responses API stream, converting through chat
@@ -9357,12 +9382,12 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 			// The providers' chat streaming handler re-assembles Responses events from the
 			// chat chunks when this flag is set, so the caller still gets a Responses stream.
 			ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-			return provider.ChatCompletionStream(ctx, wrapResponsesRestorePostHookRunner(postHookRunner, preparedRequest), postHookSpanFinalizer, key, chatRequest)
+			return provider.ChatCompletionStream(ctx, providerUtils.WrapResponsesToolRestorePostHookRunner(postHookRunner, preparedRequest), postHookSpanFinalizer, key, chatRequest)
 		}
 	}
 	// The prepared request carries the alias map; the wrapped runner restores the
 	// caller's tool names on every chunk before the post hooks see it.
-	return provider.ResponsesStream(ctx, wrapResponsesRestorePostHookRunner(postHookRunner, preparedRequest), postHookSpanFinalizer, key, preparedRequest)
+	return provider.ResponsesStream(ctx, providerUtils.WrapResponsesToolRestorePostHookRunner(postHookRunner, preparedRequest), postHookSpanFinalizer, key, preparedRequest)
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
@@ -9438,7 +9463,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		if retrieveResp != nil {
-			providerUtils.RestoreResponsesCustomToolCalls(providerUtils.CustomToolNamesFromTools(retrieveResp.Tools), retrieveResp)
+			providerUtils.RestoreRetrievedCustomToolCalls(retrieveResp)
 		}
 		response.ResponsesResponse = retrieveResp
 	case schemas.ResponsesDeleteRequest:
@@ -9478,12 +9503,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.ResponsesInputItemsResponse = itemsResp
 	case schemas.CompactionRequest:
-		compactionRequest, customCallIDs := providerUtils.RewriteCompactionCustomCalls(req.Context, provider.GetProviderKey(), req.BifrostRequest.CompactionRequest)
+		compactionRequest, restoreCompaction := providerUtils.RewriteCompactionCustomCalls(req.Context, provider.GetProviderKey(), req.BifrostRequest.CompactionRequest)
 		compactionResponse, bifrostError := provider.Compaction(req.Context, key, compactionRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		providerUtils.RestoreCompactionCustomToolCalls(customCallIDs, compactionResponse)
+		restoreCompaction(compactionResponse)
 		response.CompactionResponse = compactionResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)

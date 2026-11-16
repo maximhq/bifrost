@@ -2655,7 +2655,8 @@ func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
 
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
-	require.Contains(t, content, "how a routing rule is configured")
+	// How a rule is configured is a management-tool question, not a traffic one.
+	require.Contains(t, content, "A question about how something is configured goes to the management tools")
 }
 
 // A row says which rule, key and alias handled it, so a list of requests can be

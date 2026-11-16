@@ -514,6 +514,8 @@ test.describe("MCP Registry", () => {
 
   // http-no-ping-server lists one prompt (review) and one resource (file:///fixture/handbook.md).
   test.describe("MCP Client Prompts and Resources", () => {
+    // These tests open MCP logs, whose table has no room for a clickable row at 720px.
+    test.use({ viewport: { width: 1440, height: 900 } });
     const PROMPT = "review";
     const RESOURCE = "file:///fixture/handbook.md";
 

@@ -116,6 +116,41 @@ func TestConsentFlowDetail(t *testing.T) {
 		assert.True(t, resp.LocalhostOnly)
 	})
 
+	// A flow started before /mcp was capped below 2025-11-25 cannot finish with a metadata document.
+	t.Run("capped server refuses a metadata document flow started before the cap", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-cimd", time.Now().Add(time.Minute))
+		store.authReqs["flow-cimd"].ClientID = "https://client.example.com/oauth/client.json"
+		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+
+		detail := consentCtx("flow-cimd", "")
+		h.flowDetail(detail)
+		assert.Equal(t, fasthttp.StatusBadRequest, detail.Response.StatusCode())
+		assert.Contains(t, string(detail.Response.Body()), "no longer accepted")
+
+		// A submission that would otherwise mint a code: an active virtual key in the field the handler reads.
+		store.vksByValue["sk-bf-active"] = &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+		submit := consentCtx("flow-cimd", `{"mode":"vk","value":"sk-bf-active"}`)
+		h.flowSubmit(submit)
+		assert.Equal(t, fasthttp.StatusBadRequest, submit.Response.StatusCode())
+		assert.Contains(t, string(submit.Response.Body()), "no longer accepted")
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-cimd"].Status, "no code is minted")
+
+		// The same submission mints a code once the cap is lifted.
+		h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPMaxProtocolVersionAuto
+		submit = consentCtx("flow-cimd", `{"mode":"vk","value":"sk-bf-active"}`)
+		h.flowSubmit(submit)
+		require.Equal(t, fasthttp.StatusOK, submit.Response.StatusCode(), string(submit.Response.Body()))
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusConsented, store.authReqs["flow-cimd"].Status)
+		h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+
+		registered := consentCtx("flow-dcr", "")
+		h.flowDetail(registered)
+		assert.Equal(t, fasthttp.StatusOK, registered.Response.StatusCode(), "a registered client is unaffected: %s", registered.Response.Body())
+	})
+
 	t.Run("registered client has no published host", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
@@ -315,6 +350,45 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Body()), "not available")
 	})
+}
+
+// TestConsentFlowSubmit_DeviceFlow pins the device-grant branch used by the
+// Claude Code gateway: consent completes the row without minting an
+// authorization code, and sends the browser to the device-approved page.
+func TestConsentFlowSubmit_DeviceFlow(t *testing.T) {
+	store := newConsentStore()
+	store.vksByValue["sk-bf-active"] = &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+	deviceHash := "device-hash"
+	store.authReqs["flow-device"] = &configtables.TableOAuth2AuthorizeRequest{
+		ID:             "flow-device",
+		ClientID:       claudeCodeClientID,
+		Status:         configtables.OAuth2AuthorizeRequestStatusPending,
+		DeviceCodeHash: &deviceHash,
+		ExpiresAt:      time.Now().Add(time.Minute),
+	}
+	h := newConsentHandler(store, nil, false)
+
+	// The consent page names the built-in client even if its registration was swept.
+	detail := consentCtx("flow-device", "")
+	h.flowDetail(detail)
+	require.Equal(t, fasthttp.StatusOK, detail.Response.StatusCode(), string(detail.Response.Body()))
+	var flow consentFlowDetailResponse
+	require.NoError(t, json.Unmarshal(detail.Response.Body(), &flow))
+	assert.Equal(t, "Claude Code", flow.ClientName)
+
+	ctx := consentCtx("flow-device", `{"mode":"vk","value":"sk-bf-active"}`)
+	h.flowSubmit(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var resp consentFlowSubmitResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.Equal(t, testIssuer+"/oauth/device?approved=1", resp.RedirectURL)
+	assert.NotContains(t, resp.RedirectURL, "code=")
+
+	got := store.authReqs["flow-device"]
+	assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.Nil(t, got.CodeHash, "a device grant carries no authorization code")
+	assert.Equal(t, "vk", got.BfMode)
+	assert.Equal(t, "vk-row-1", got.BfSub)
 }
 
 func TestConsentFlowSubmit_User(t *testing.T) {

@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // isUniqueConstraintError checks if the error is a unique constraint violation (SQLite or PostgreSQL)
@@ -24,7 +26,8 @@ func isUniqueConstraintError(err error) bool {
 // Prompt Repository - Folders
 // ============================================================================
 
-// GetFolders gets all folders
+// GetFolders gets all folders. Each folder's PromptsCount counts only the prompts visible under
+// the row-visibility scope on ctx, matching what listing the folder's prompts returns.
 func (s *RDBConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, error) {
 	var folders []tables.TableFolder
 	if err := s.DB().WithContext(ctx).
@@ -36,7 +39,7 @@ func (s *RDBConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, 
 	// Get prompts count for each folder
 	for i := range folders {
 		var count int64
-		if err := s.DB().WithContext(ctx).Model(&tables.TablePrompt{}).Where("folder_id = ?", folders[i].ID).Count(&count).Error; err != nil {
+		if err := s.ScopedDB(ctx).Model(&tables.TablePrompt{}).Where("prompts.folder_id = ?", folders[i].ID).Count(&count).Error; err != nil {
 			return nil, err
 		}
 		folders[i].PromptsCount = int(count)
@@ -78,14 +81,28 @@ func (s *RDBConfigStore) UpdateFolder(ctx context.Context, folder *tables.TableF
 // DeleteFolder deletes a folder and all its child prompts (with their versions, sessions, and messages).
 // PostgreSQL uses native ON DELETE CASCADE; SQLite requires manual cascade because it cannot
 // alter foreign key constraints after table creation.
+//
+// The cascade removes every prompt in the folder, so when ctx carries a row-visibility scope the
+// delete is refused with ErrFolderHasHiddenPrompts if the folder holds a prompt that scope hides.
+// The check runs inside the transaction after the folder row is locked, so a prompt moved into the
+// folder concurrently either lands before the check (and refuses the delete) or waits for it.
 func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Check folder exists
+		// Check folder exists, locking its row on Postgres: moving a prompt into it takes a key
+		// share lock on this row through the folder_id foreign key, so the move waits. SQLite
+		// already runs one writer at a time.
+		lookup := tx
+		if s.DB().Dialector.Name() == "postgres" {
+			lookup = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
 		var folder tables.TableFolder
-		if err := tx.First(&folder, "id = ?", id).Error; err != nil {
+		if err := lookup.First(&folder, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
+			return err
+		}
+		if err := s.assertFolderPromptsInScope(ctx, tx, id); err != nil {
 			return err
 		}
 
@@ -126,6 +143,29 @@ func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
 		// Delete the folder
 		return tx.Delete(&folder).Error
 	})
+}
+
+// assertFolderPromptsInScope returns ErrFolderHasHiddenPrompts when the folder holds a prompt the
+// row-visibility scope on ctx hides, and nil when ctx carries no scope. Both counts read through
+// tx, so they see the folder as the delete that holds tx will cascade over it.
+func (s *RDBConfigStore) assertFolderPromptsInScope(ctx context.Context, tx *gorm.DB, folderID string) error {
+	if queryscope.FromContext(ctx) == nil {
+		return nil
+	}
+	var total, visible int64
+	if err := tx.WithContext(ctx).Model(&tables.TablePrompt{}).Where("folder_id = ?", folderID).Count(&total).Error; err != nil {
+		return err
+	}
+	if total == 0 {
+		return nil
+	}
+	if err := s.ScopedDB(ctx, tx).Model(&tables.TablePrompt{}).Where("prompts.folder_id = ?", folderID).Count(&visible).Error; err != nil {
+		return err
+	}
+	if visible < total {
+		return ErrFolderHasHiddenPrompts
+	}
+	return nil
 }
 
 // ============================================================================
