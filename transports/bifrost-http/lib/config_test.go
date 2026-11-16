@@ -14107,6 +14107,40 @@ func TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets(t *test
 	assert.NotEmpty(t, team.ConfigHash, "the rest of the entry still applies, hash and all")
 }
 
+// TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate: when the file changes an ungoverned team's
+// inline budget and rate limit, the update writes them, as the first load did. Both are saved with
+// the team row, so the team save must keep saving those associations.
+func TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	withLimits := func(suffix string) *ConfigData {
+		configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+		configData.Governance = &configstore.GovernanceConfig{
+			Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One",
+				RateLimit: &tables.TableRateLimit{ID: "team-rl-" + suffix, TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h")},
+				Budgets:   []tables.TableBudget{{ID: "team-budget-" + suffix, MaxLimit: 100, ResetDuration: "1M"}}}},
+		}
+		return configData
+	}
+	ctx := context.Background()
+	createConfigFile(t, tempDir, withLimits("a"))
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	createConfigFile(t, tempDir, withLimits("b"))
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	exists, _ := countBudget(t, config2, "team-budget-b")
+	assert.True(t, exists, "the team's new inline budget was written on update")
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	require.NotNil(t, team.RateLimitID)
+	assert.Equal(t, "team-rl-b", *team.RateLimitID, "the team's new inline rate limit was written and linked")
+}
+
 // governedKeyConfig declares team-1 owning key vk-1, which carries a budget in governance.budgets, a
 // rate limit in governance.rate_limits and a provider config of its own: the shape a file keeps after
 // an access profile is attached to the team.

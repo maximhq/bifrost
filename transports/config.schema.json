@@ -376,6 +376,15 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "entity_access_profile_mode": {
+          "type": "string",
+          "enum": [
+            "union",
+            "intersect"
+          ],
+          "default": "union",
+          "description": "Enterprise only. How the access profiles of the teams, business units and customers a caller belongs to combine with the caller's own access. Takes the same values as a project's access_rule. 'union' (default) lets each of them add to what the caller may reach. 'intersect' makes each level that holds an active profile cap it instead: the caller keeps only what their own profiles (or virtual key) allow AND what at least one of their team or business unit profiles allows AND what at least one of their customer profiles allows. A level holding no active profile is skipped. The cap covers providers, models, provider keys, MCP tools and relays; agents are not capped, since team, business unit and customer profiles cannot grant them. Budgets and rate limits are charged as in 'union' mode. The x-bf-customer-id / x-bf-customer-name scope headers are ignored in 'intersect' mode."
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -817,6 +826,9 @@
           "$ref": "#/$defs/provider"
         },
         "byteplus": {
+          "$ref": "#/$defs/provider"
+        },
+        "machgen": {
           "$ref": "#/$defs/provider"
         },
         "baseten": {
@@ -7623,7 +7635,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."
+          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; with false, suggestions run only on demand, never on the schedule. A run started without a suggestion model is accepted and then fails."
         },
         "sample_rate": {
           "type": "number",
@@ -7930,7 +7942,7 @@
     },
     "complexity_llm_config": {
       "type": "object",
-      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when complexity_semantic_config.fallback selects 'llm', where it runs only after semantic classification produces no tier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
       "properties": {
         "provider": {
           "type": "string",
@@ -7940,7 +7952,7 @@
         "model": {
           "type": "string",
           "minLength": 1,
-          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
         },
         "timeout": {
           "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",

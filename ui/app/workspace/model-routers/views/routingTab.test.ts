@@ -107,7 +107,7 @@ describe("ComplexityRulesNotice", () => {
 		expect(html).toContain("The routing rule ");
 		expect(html).toContain(">complexity_tier</code> and is enabled.");
 		expect(html).toContain('href="/workspace/routing-rules"');
-		expect(html).toContain('href="https://docs.getbifrost.ai/features/complexity-router"');
+		expect(html).toContain('href="https://docs.getbifrost.ai/features/routers#moving-from-the-complexity-router"');
 	});
 
 	it("lists several rules and counts the ones it does not name", () => {

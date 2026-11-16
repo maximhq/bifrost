@@ -1,1 +1,2 @@
 - chore: upgraded core to v1.15.2
+- [feat]: MachGen video jobs are settled and priced by the video job sweeper

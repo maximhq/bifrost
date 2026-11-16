@@ -1105,10 +1105,19 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 	return governance.CanonicalModelConfigName(model, provider)
 }
 
+// modelConfigReloadReadTimeout bounds the store read a model config reload makes on the server's
+// own context, since it no longer inherits the caller's deadline.
+const modelConfigReloadReadTimeout = 30 * time.Second
+
 // ReloadModelConfig reloads a model config from the database into in-memory store
 // If usage was modified (e.g., reset due to config change), syncs it back to DB
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
-	preloadedMC, err := s.Config.ConfigStore.GetModelConfigByID(ctx, id)
+	// The reload loads the row it was told to load, whoever triggered it, so it reads on the
+	// server's own context: the caller's row-visibility scope must not stop a config the caller
+	// just wrote (for a target it cannot see) from reaching memory and peers.
+	readCtx, cancel := context.WithTimeout(s.backgroundCtx(), modelConfigReloadReadTimeout)
+	defer cancel()
+	preloadedMC, err := s.Config.ConfigStore.GetModelConfigByID(readCtx, id)
 	if err != nil {
 		logger.Error("failed to load model config: %v", err)
 		return nil, err

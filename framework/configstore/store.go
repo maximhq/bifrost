@@ -560,6 +560,9 @@ type ConfigStore interface {
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD
+	// GetModelConfigs reads every model config with no row-visibility scope. It serves internal
+	// callers that must see all rows (the governance load, the name collision check); a listing
+	// for a caller goes through GetModelConfigsPaginated.
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)

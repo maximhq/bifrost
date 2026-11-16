@@ -972,6 +972,9 @@ export interface CoreConfig {
 	skip_access_profile_user_virtual_key_creation?: boolean;
 	// Enterprise: losing the last access profile does not delete the user's virtual keys.
 	skip_access_profile_user_virtual_key_deletion?: boolean;
+	// Enterprise: whether team, business unit and customer access profiles add to ("union", shown as
+	// Extend) or cap ("intersect", shown as Restrict) what a user may reach, like a project's access rule.
+	entity_access_profile_mode?: "union" | "intersect";
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	// Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to
@@ -994,56 +997,7 @@ export interface CoreConfig {
 	};
 }
 
-export const DefaultCoreConfig: CoreConfig = {
-	drop_excess_requests: false,
-	initial_pool_size: 1000,
-	prometheus_labels: [],
-	enable_logging: true,
-	disable_content_logging: false,
-	retain_content_in_object_storage: false,
-	allow_per_request_content_storage_override: false,
-	allow_per_request_raw_override: false,
-	allow_direct_keys: false,
-	vk_rotation_cooldown: 0,
-	disable_db_pings_in_health: false,
-	dump_errors_in_console_logs: false,
-	log_retention_days: 365,
-	enforce_auth_on_inference: true,
-	dual_credential_conflict_behavior: "prefer_idp",
-	extra_fields_placement: "body",
-	allowed_origins: [],
-	max_request_body_size_mb: 100,
-	compat: {
-		convert_text_to_chat: false,
-		convert_chat_to_responses: false,
-		should_drop_params: false,
-		should_convert_params: false,
-		azure_deepseek: false,
-		force_reasoning_only_models_to_responses: true,
-		convert_decision_to_responses: false,
-	},
-	mcp_agent_depth: 10,
-	mcp_tool_execution_timeout: 30,
-	mcp_code_mode_binding_level: "server",
-	mcp_tool_sync_interval: 10,
-	mcp_disable_auto_tool_inject: false,
-	mcp_max_instructions_per_client: 0,
-	mcp_max_instructions_total: 0,
-	mcp_openapi_max_spec_mb: 0,
-	mcp_enable_temp_token_auth: false,
-	async_job_result_ttl: 3600,
-	allowed_headers: [],
-	required_headers: [],
-	logging_headers: [],
-	whitelisted_routes: [],
-	hide_deleted_virtual_keys_in_filters: false,
-	delete_expired_virtual_keys: false,
-	enforce_vk_object_ownership: true,
-	skip_access_profile_user_virtual_key_creation: false,
-	skip_access_profile_user_virtual_key_deletion: false,
-	hidden_request_types: [],
-	routing_chain_max_depth: 10,
-};
+export { DefaultCoreConfig } from "./coreConfigDefaults";
 
 // Semantic cache configuration types
 interface BaseCacheConfig {

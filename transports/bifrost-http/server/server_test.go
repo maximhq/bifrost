@@ -2785,3 +2785,34 @@ func TestRegisterUserLimitsRoutes(t *testing.T) {
 	}
 	require.Equal(t, len(paths), ran)
 }
+
+// callerMarkerKey stands in for the caller identity a request context carries.
+type callerMarkerKey struct{}
+
+// reloadModelConfigConfigStore answers a model config read and records whether the read carried
+// the caller marker, the way a scoped store would narrow a read for that caller.
+type reloadModelConfigConfigStore struct {
+	configstore.ConfigStore
+	sawCaller bool
+}
+
+// GetModelConfigByID records whether ctx carries the caller marker and returns the row.
+func (s *reloadModelConfigConfigStore) GetModelConfigByID(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	s.sawCaller = ctx.Value(callerMarkerKey{}) != nil
+	return &configstoreTables.TableModelConfig{ID: id, ModelName: "gpt-4o", Scope: "global"}, nil
+}
+
+// TestReloadModelConfigReadsWithoutTheCallersContext checks that the reload's store read does not
+// carry the caller's context, so a caller's row-visibility scope cannot hide the config it just
+// wrote from the in-memory reload.
+func TestReloadModelConfigReadsWithoutTheCallersContext(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	store := &reloadModelConfigConfigStore{}
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: &lib.Config{ConfigStore: store}}
+
+	callerCtx := context.WithValue(context.Background(), callerMarkerKey{}, "alice")
+	_, _ = server.ReloadModelConfig(callerCtx, "mc-1") // no governance plugin: only the read matters here
+	if store.sawCaller {
+		t.Fatal("the reload read the model config on the caller's context")
+	}
+}

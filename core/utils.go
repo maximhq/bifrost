@@ -16,7 +16,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -468,6 +467,8 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
+	// A fallback model decides its own structured-output path.
+	ctx.ClearValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
 	// previous provider's headers would otherwise survive on the context and
@@ -954,12 +955,6 @@ func isPromptOptionalVideoEditType(t *string) bool {
 	)
 }
 
-// wrapResponsesRestorePostHookRunner restores custom tool calls, then namespaced tool names.
-func wrapResponsesRestorePostHookRunner(runner schemas.PostHookRunner, prepared *schemas.BifrostResponsesRequest) schemas.PostHookRunner {
-	runner = providerUtils.WrapCustomToolRestorePostHookRunner(runner, prepared.CustomToolNames)
-	return providerUtils.WrapNamespaceRestorePostHookRunner(runner, prepared.NamespaceToolAliases)
-}
-
 // wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs. Each converted chunk is
@@ -968,6 +963,8 @@ func wrapResponsesRestorePostHookRunner(runner schemas.PostHookRunner, prepared 
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
 	var identity chatStreamIdentity
+	var streamedInput map[string]struct{} // custom calls whose input arrived as deltas
+	var toolIndexes map[int]uint16        // chat tool call index by Responses output index
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -981,8 +978,10 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				}
 			case schemas.ResponsesRequest:
 				// chat→responses: convert responses stream chunk back to chat
-				if result.ResponsesStreamResponse != nil {
-					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+				if event := result.ResponsesStreamResponse; event != nil {
+					event, streamedInput = customInputAsDelta(event, streamedInput)
+					if converted := event.ToBifrostChatResponse(); converted != nil {
+						toolIndexes = setChatToolCallIndex(converted, event, toolIndexes)
 						roleSent = setAssistantRoleOnce(converted, roleSent)
 						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType
@@ -993,6 +992,58 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setChatToolCallIndex numbers a converted stream's tool calls in the order their items were added.
+func setChatToolCallIndex(chunk *schemas.BifrostChatResponse, event *schemas.BifrostResponsesStreamResponse, indexes map[int]uint16) map[int]uint16 {
+	if event.OutputIndex == nil || len(chunk.Choices) == 0 {
+		return indexes
+	}
+	choice := chunk.Choices[0].ChatStreamResponseChoice
+	if choice == nil || choice.Delta == nil || len(choice.Delta.ToolCalls) == 0 {
+		return indexes
+	}
+	index, ok := indexes[*event.OutputIndex]
+	if !ok {
+		if event.Type != schemas.ResponsesStreamResponseTypeOutputItemAdded {
+			return indexes
+		}
+		if indexes == nil {
+			indexes = make(map[int]uint16)
+		}
+		index = uint16(len(indexes))
+		indexes[*event.OutputIndex] = index
+	}
+	choice.Delta.ToolCalls[0].Index = index
+	return indexes
+}
+
+// customInputAsDelta returns a custom_tool_call_input.done event as a delta when no delta
+// carried that call's input, which is how a restored custom call arrives.
+func customInputAsDelta(event *schemas.BifrostResponsesStreamResponse, streamed map[string]struct{}) (*schemas.BifrostResponsesStreamResponse, map[string]struct{}) {
+	switch event.Type {
+	case schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta:
+		if event.ItemID != nil {
+			if streamed == nil {
+				streamed = make(map[string]struct{})
+			}
+			streamed[*event.ItemID] = struct{}{}
+		}
+	case schemas.ResponsesStreamResponseTypeCustomToolCallInputDone:
+		if event.Input == nil {
+			break
+		}
+		if event.ItemID != nil {
+			if _, ok := streamed[*event.ItemID]; ok {
+				break
+			}
+		}
+		delta := *event
+		delta.Type = schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta
+		delta.Delta = event.Input
+		return &delta, streamed
+	}
+	return event, streamed
 }
 
 // chatStreamIdentity holds the id, model and created of a converted chat stream.

@@ -137,3 +137,19 @@ func TestGenerateClientConfigHash_BifrostURLAndAllowWritesAreUnambiguous(t *test
 	require.NoError(t, err)
 	require.Equal(t, "66ee28323ac8b742b63ca063f251b2f585209a32980345cf26dd0b81298ddf4c", unsetHash, "both unset keeps the hash configs had before the fields existed")
 }
+
+// The entity access profile mode is part of what decides whether a changed config.json replaces the
+// stored client config: intersect must change the hash, while unset and an explicit union must hash
+// the same,
+// so an upgrade that starts writing the default does not churn every deployment's hash.
+func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
+	hash := func(mode tables.EntityAccessProfileMode) string {
+		t.Helper()
+		h, err := (&ClientConfig{EntityAccessProfileMode: mode}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	unset := hash("")
+	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
+	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
+}

@@ -88102,10 +88102,10 @@
       "get": {
         "operationId": "getComplexityAnalyzerConfig",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity analyzer config",
-        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM classifier settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
         "tags": [
           "Routing"
         ],
@@ -88490,7 +88490,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -88505,7 +88505,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -88581,7 +88581,7 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfig",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update complexity analyzer config",
         "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.",
@@ -88960,7 +88960,7 @@
                   },
                   "llm": {
                     "type": "object",
-                    "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                    "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                     "additionalProperties": false,
                     "required": [
                       "provider",
@@ -88975,7 +88975,7 @@
                       "model": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                        "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                       },
                       "timeout": {
                         "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -89407,7 +89407,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -89422,7 +89422,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -89511,7 +89511,7 @@
         "operationId": "resetComplexityAnalyzerConfig",
         "x-bifrost-destructive": true,
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reset complexity analyzer config",
         "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved.\n",
@@ -89899,7 +89899,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -89914,7 +89914,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -89992,7 +89992,7 @@
       "get": {
         "operationId": "getComplexityAnalyzerStatus",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity classifier status",
         "description": "Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.\n",
@@ -90014,7 +90014,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.",
+                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.",
                   "properties": {
                     "state": {
                       "type": "string",
@@ -90202,7 +90202,7 @@
       "post": {
         "operationId": "retryComplexityAnalyzerWarmup",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Retry failed complexity classifier warmup",
         "description": "Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.\n",
@@ -90224,7 +90224,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.",
+                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.",
                   "properties": {
                     "state": {
                       "type": "string",
@@ -91465,7 +91465,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Start a phrase suggestion run now",
-        "description": "Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).\n",
+        "description": "Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. It needs the router's suggestions settings and a suggestion model, not suggestions turned on: with enabled false the run is a one-off, never scheduled, and first embeds the router's logged requests in its window that are not yet captured (the sample_rate share of those whose content was logged, newest first, up to max_clustered_requests). A run started without a suggestion model is accepted and then fails. Refused while the router has no suggestions settings, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).\n",
         "tags": [
           "Routing"
         ],
@@ -91535,7 +91535,7 @@
             }
           },
           "409": {
-            "description": "Suggestions are off, or a run is already queued or running",
+            "description": "The router has no suggestions settings, or a run is already queued or running",
             "content": {
               "application/json": {
                 "schema": {
@@ -91669,7 +91669,7 @@
             }
           },
           "409": {
-            "description": "Suggestions are off for this router",
+            "description": "The router has no suggestions settings",
             "content": {
               "application/json": {
                 "schema": {
@@ -91896,7 +91896,7 @@
             }
           },
           "409": {
-            "description": "The run has already ended, or suggestions are off",
+            "description": "The run has already ended, or suggestions have nowhere to be kept",
             "content": {
               "application/json": {
                 "schema": {
@@ -92210,7 +92210,7 @@
             }
           },
           "409": {
-            "description": "Suggestions are off for this router, or the stored router is in a form this version cannot read; save or reset it",
+            "description": "The router has no suggestions settings, or the stored router is in a form this version cannot read; save or reset it",
             "content": {
               "application/json": {
                 "schema": {
@@ -93601,7 +93601,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.",
+                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.",
                   "properties": {
                     "state": {
                       "type": "string",
@@ -93822,7 +93822,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.",
+                  "description": "Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.",
                   "properties": {
                     "state": {
                       "type": "string",
@@ -94758,13 +94758,13 @@
       "get": {
         "operationId": "getComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }
         },
         "summary": "Get complexity analyzer config (deprecated path)",
-        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM classifier settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
         "tags": [
           "Routing"
         ],
@@ -95149,7 +95149,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -95164,7 +95164,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -95243,7 +95243,7 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }
@@ -95625,7 +95625,7 @@
                   },
                   "llm": {
                     "type": "object",
-                    "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                    "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                     "additionalProperties": false,
                     "required": [
                       "provider",
@@ -95640,7 +95640,7 @@
                       "model": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                        "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                       },
                       "timeout": {
                         "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -96072,7 +96072,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -96087,7 +96087,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -96179,7 +96179,7 @@
         "operationId": "resetComplexityAnalyzerConfigLegacy",
         "x-bifrost-destructive": true,
         "x-mint": {
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config/reset` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config/reset` instead.\n</Warning>\n<Warning>\n  The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
           "metadata": {
             "tag": "Removing soon"
           }
@@ -96570,7 +96570,7 @@
                     },
                     "llm": {
                       "type": "object",
-                      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                       "additionalProperties": false,
                       "required": [
                         "provider",
@@ -96585,7 +96585,7 @@
                         "model": {
                           "type": "string",
                           "minLength": 1,
-                          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                         },
                         "timeout": {
                           "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -128567,7 +128567,8 @@
           "minimax",
           "byteplus",
           "baseten",
-          "kimchi"
+          "kimchi",
+          "soniox"
         ]
       },
       "Fallback": {
@@ -151874,7 +151875,7 @@
           "cycles": {
             "type": "integer",
             "description": "Number of reset windows the override stays active for, counting the current window as the first.\nRequired and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.\n",
-            "minimum": 1
+            "minimum": 0
           }
         }
       },
@@ -153161,7 +153162,7 @@
           },
           "llm": {
             "type": "object",
-            "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+            "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
             "additionalProperties": false,
             "required": [
               "provider",
@@ -153176,7 +153177,7 @@
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
               },
               "timeout": {
                 "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -153232,7 +153233,7 @@
             "properties": {
               "enabled": {
                 "type": "boolean",
-                "description": "Capture a sample of classified requests and run suggestions on the schedule; default false. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block)."
+                "description": "Capture a sample of classified requests and run suggestions on the schedule; default false. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; a router left at false runs suggestions only on demand, each run first embedding the router's logged requests in its window that are not yet captured - the sample_rate share of those whose content was logged, up to max_clustered_requests per run and newest first, so a smaller backlog is embedded in full and older requests past the limit wait for later runs. A run started without a suggestion model is accepted and then fails. Estimates and impact replays need this block but not the suggestion model, which they do not call. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block)."
               },
               "sample_rate": {
                 "type": "number",
@@ -153933,7 +153934,7 @@
           },
           "llm": {
             "type": "object",
-            "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+            "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
             "additionalProperties": false,
             "required": [
               "provider",
@@ -153948,7 +153949,7 @@
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
               },
               "timeout": {
                 "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -154004,7 +154005,7 @@
             "properties": {
               "enabled": {
                 "type": "boolean",
-                "description": "Capture a sample of classified requests and run suggestions on the schedule; default false. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block)."
+                "description": "Capture a sample of classified requests and run suggestions on the schedule; default false. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; a router left at false runs suggestions only on demand, each run first embedding the router's logged requests in its window that are not yet captured - the sample_rate share of those whose content was logged, up to max_clustered_requests per run and newest first, so a smaller backlog is embedded in full and older requests past the limit wait for later runs. A run started without a suggestion model is accepted and then fails. Estimates and impact replays need this block but not the suggestion model, which they do not call. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block)."
               },
               "sample_rate": {
                 "type": "number",
@@ -154825,7 +154826,7 @@
               },
               "llm": {
                 "type": "object",
-                "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier\nwhen `classifier` is `llm`, and as the fallback when `semantic.fallback`\nselects `llm`, where it runs only after semantic classification produces no\ntier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
                 "additionalProperties": false,
                 "required": [
                   "provider",
@@ -154840,7 +154841,7 @@
                   "model": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                    "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                   },
                   "timeout": {
                     "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
@@ -160836,6 +160837,62 @@
             "type": "boolean",
             "readOnly": true,
             "description": "Whether the shared runtime vector store is connected."
+          },
+          "management_writes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "create",
+                "update",
+                "delete",
+                "action"
+              ],
+              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
+            },
+            "description": "Kinds of configuration change Warp may offer through the Bifrost MCP,\neach run only after the person confirms it. Reads are always offered;\nempty, the default, is reads only.\n"
+          },
+          "management_writes_available": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Whether the Bifrost MCP serves writes at all. It is the ceiling: with\nclient.bifrost_mcp_allow_writes off, no kind of write is offered,\nwhatever management_writes says.\n"
+          },
+          "management_tool_sizes": {
+            "type": "array",
+            "readOnly": true,
+            "description": "Per kind, how many management tools Warp could be offered and roughly\nhow many tokens their declarations add to every Warp request. Absent\nwhile the Bifrost MCP is not loaded.\n",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "read",
+                    "create",
+                    "update",
+                    "delete",
+                    "action"
+                  ]
+                },
+                "tools": {
+                  "type": "integer"
+                },
+                "estimated_tokens": {
+                  "type": "integer",
+                  "description": "Rough estimate (declaration characters / 3)."
+                }
+              },
+              "required": [
+                "kind",
+                "tools",
+                "estimated_tokens"
+              ]
+            }
+          },
+          "bifrost_mcp_available": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Whether the gateway's Bifrost MCP is loaded. Warp reads configuration\nthrough it and does not answer without it: chat returns 503 with reason\n`no_bifrost_mcp`. False when `client.bifrost_url` is unset or the\nOpenAPI spec could not be read.\n"
           }
         },
         "required": [
@@ -160853,7 +160910,10 @@
           "semantic_search_threshold",
           "semantic_search_limit",
           "topic_discovery_min_requests",
-          "vector_store_connected"
+          "vector_store_connected",
+          "management_writes",
+          "management_writes_available",
+          "bifrost_mcp_available"
         ]
       },
       "WarpConfigInput": {
@@ -161014,6 +161074,21 @@
               }
             ],
             "description": "How many requests that matched no topic have to be waiting before an\nhourly pass clusters them into new topics, from 10 to 20000. Omitted\nkeeps the stored value; zero means \"use the default\", resolved before\nvalidation. 1 to 9 are refused.\n"
+          },
+          "management_writes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "create",
+                "update",
+                "delete",
+                "action"
+              ],
+              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
+            },
+            "uniqueItems": true,
+            "description": "Kinds of configuration change Warp may offer, each run only after the\nperson confirms it. Reads are always offered and are not a kind. Omitted\nkeeps the stored value; [] is reads only.\n"
           }
         }
       },
@@ -161291,14 +161366,15 @@
       },
       "WarpUnavailable": {
         "type": "object",
-        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n",
+        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n- `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,\n  or its OpenAPI spec could not be read). Warp does not answer without it.\n  Show administrators the setup step and everyone else an ask-an-admin\n  message, in place of the composer.\n",
         "properties": {
           "reason": {
             "type": "string",
             "enum": [
               "not_configured",
               "no_log_store",
-              "no_vector_store"
+              "no_vector_store",
+              "no_bifrost_mcp"
             ]
           },
           "message": {

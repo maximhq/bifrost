@@ -662,6 +662,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
 		return
 	}
+	// The same for the entity access profile mode: only an omitted field keeps the stored mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeUnion &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeIntersect {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("entity_access_profile_mode must be 'union' or 'intersect', got %q", payload.ClientConfig.EntityAccessProfileMode))
+		return
+	}
 
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -951,6 +958,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// The next spec load reads it, so no reload is needed.
 	if _, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present {
 		updatedConfig.MCPOpenAPIMaxSpecMB = payload.ClientConfig.MCPOpenAPIMaxSpecMB
+	}
+	// Copied only when sent (validated up front), so a partial save keeps the stored entity access profile mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present {
+		updatedConfig.EntityAccessProfileMode = payload.ClientConfig.EntityAccessProfileMode
 	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
