@@ -237,6 +237,11 @@ const (
 // BifrostContextKey is a type for context keys used in Bifrost.
 type BifrostContextKey string
 
+const (
+	StructuredOutputGrammarRejected = "rejected"   // a native structured-output request hit the provider's grammar limit
+	StructuredOutputForceTool       = "force-tool" // the retry must send the schema as the synthetic tool
+)
+
 // MCPAuthMode describes which identity dimension a per-user OAuth row is keyed by.
 // It is a derived view of context state at the point of token lookup, never
 // stored as a context key. Derived via BifrostContext.MCPAuthMode().
@@ -340,6 +345,7 @@ const (
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
+	BifrostContextKeyStructuredOutputGrammarRetry        BifrostContextKey = "bifrost-structured-output-grammar-retry"          // string (StructuredOutputGrammarRejected set by a provider, StructuredOutputForceTool set by bifrost)
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeyClientIP                            BifrostContextKey = "bifrost-client-ip"                                // string (caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer; set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
@@ -1418,25 +1424,20 @@ type BifrostMCPConnectRequest struct {
 // BifrostMCPPingRequest is intentionally empty: the wire ping rides over the existing
 // transport and has no per-call headers or parameters. Plugins observe via ClientName on
 // the parent BifrostMCPRequest and may short-circuit (synthetic healthy/unhealthy).
-type BifrostMCPPingRequest struct {
-}
+type BifrostMCPPingRequest struct{}
 
 // BifrostMCPListToolsRequest is intentionally empty for the same reason as ping: list_tools
 // reuses the existing transport's headers. Plugins observe via ClientName and may short-circuit
 // (e.g. cached tool list).
-type BifrostMCPListToolsRequest struct {
-}
+type BifrostMCPListToolsRequest struct{}
 
 // BifrostMCPListResourcesRequest, BifrostMCPListResourceTemplatesRequest and
 // BifrostMCPListPromptsRequest are empty for the same reason as list_tools.
-type BifrostMCPListResourcesRequest struct {
-}
+type BifrostMCPListResourcesRequest struct{}
 
-type BifrostMCPListResourceTemplatesRequest struct {
-}
+type BifrostMCPListResourceTemplatesRequest struct{}
 
-type BifrostMCPListPromptsRequest struct {
-}
+type BifrostMCPListPromptsRequest struct{}
 
 // BifrostMCPGetPromptRequest is a prompts/get forwarded to the client that owns the prompt.
 type BifrostMCPGetPromptRequest struct {
@@ -1457,8 +1458,7 @@ type BifrostMCPCompleteRequest struct {
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
 // Note that the tool name and arguments are not standardized in this struct yet since they are still being pulled from the old fields for backward compatibility,
 // but they will be standardized in the future when we remove the old fields.
-type BifrostMCPExecuteToolRequest struct {
-}
+type BifrostMCPExecuteToolRequest struct{}
 
 // GetToolName returns the tool name from the active MCP request variant.
 func (r *BifrostMCPRequest) GetToolName() string {
@@ -1997,8 +1997,7 @@ type MCPServerCapabilities struct {
 	Logging   bool `json:"logging"`   // server supports logging
 }
 
-type BifrostMCPPingResponse struct {
-}
+type BifrostMCPPingResponse struct{}
 
 type BifrostMCPListToolsResponse struct {
 	Tools        map[string]ChatTool // Discovered tools keyed by client-prefixed name
@@ -2039,8 +2038,7 @@ type SkippedMCPTool struct {
 
 // Keeping the stub for now, will be used from the next major bump when we move ChatMessage
 // and ResponsesMessage into this struct.
-type BifrostMCPExecuteToolResponse struct {
-}
+type BifrostMCPExecuteToolResponse struct{}
 
 // PopulateExtraFields backfills ExtraFields.{MCPRequestType, ClientName, ToolName}
 // when they aren't already set on the response. Mirrors BifrostResponse.PopulateExtraFields
