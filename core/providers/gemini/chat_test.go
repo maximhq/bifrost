@@ -659,12 +659,10 @@ func TestGeminiThoughtPartsPopulateReasoningAndWireFields(t *testing.T) {
 
 		wireBytes, err := schemas.Marshal(chunks[0])
 		require.NoError(t, err)
-		var wire map[string]any
-		require.NoError(t, json.Unmarshal(wireBytes, &wire))
-		wireDelta := wire["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
-		assert.Equal(t, "Step 1: analyze Step 2: verify.", wireDelta["reasoning"])
-		assert.Equal(t, "Step 1: analyze Step 2: verify.", wireDelta["reasoning_content"])
-		assert.NotEmpty(t, wireDelta["reasoning_details"])
+		assert.Equal(t, "Step 1: analyze Step 2: verify.", gjson.GetBytes(wireBytes, "choices.0.delta.reasoning").String())
+		assert.Equal(t, "Step 1: analyze Step 2: verify.", gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_content").String())
+		assert.True(t, gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_details").Array())
 	})
 
 	t.Run("non_stream_thought_parts_populate_reasoning_and_wire_fields", func(t *testing.T) {
@@ -702,13 +700,11 @@ func TestGeminiThoughtPartsPopulateReasoningAndWireFields(t *testing.T) {
 
 		wireBytes, err := schemas.Marshal(bifrostResp)
 		require.NoError(t, err)
-		var wire map[string]any
-		require.NoError(t, json.Unmarshal(wireBytes, &wire))
-		wireMsg := wire["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
-		assert.Equal(t, "Internal reasoning.", wireMsg["reasoning"])
-		assert.Equal(t, "Internal reasoning.", wireMsg["reasoning_content"])
-		assert.NotEmpty(t, wireMsg["reasoning_details"])
-		assert.Equal(t, "Final answer.", wireMsg["content"])
+		assert.Equal(t, "Internal reasoning.", gjson.GetBytes(wireBytes, "choices.0.message.reasoning").String())
+		assert.Equal(t, "Internal reasoning.", gjson.GetBytes(wireBytes, "choices.0.message.reasoning_content").String())
+		assert.True(t, gjson.GetBytes(wireBytes, "choices.0.message.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(wireBytes, "choices.0.message.reasoning_details").Array())
+		assert.Equal(t, "Final answer.", gjson.GetBytes(wireBytes, "choices.0.message.content").String())
 	})
 
 	t.Run("encrypted_signature_only_keeps_reasoning_nil", func(t *testing.T) {
@@ -746,11 +742,10 @@ func TestGeminiThoughtPartsPopulateReasoningAndWireFields(t *testing.T) {
 
 		streamWireBytes, err := schemas.Marshal(chunks[0])
 		require.NoError(t, err)
-		var streamWire map[string]any
-		require.NoError(t, json.Unmarshal(streamWireBytes, &streamWire))
-		wireDelta := streamWire["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
-		assert.NotContains(t, wireDelta, "reasoning")
-		assert.NotContains(t, wireDelta, "reasoning_content")
+		assert.False(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning").Exists())
+		assert.False(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_content").Exists())
+		assert.True(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_details").Array())
 
 		nonStreamResp := resp.ToBifrostChatResponse()
 		require.NotNil(t, nonStreamResp)
@@ -761,10 +756,9 @@ func TestGeminiThoughtPartsPopulateReasoningAndWireFields(t *testing.T) {
 
 		nonStreamWireBytes, err := schemas.Marshal(nonStreamResp)
 		require.NoError(t, err)
-		var nonStreamWire map[string]any
-		require.NoError(t, json.Unmarshal(nonStreamWireBytes, &nonStreamWire))
-		wireMsg := nonStreamWire["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
-		assert.NotContains(t, wireMsg, "reasoning")
-		assert.NotContains(t, wireMsg, "reasoning_content")
+		assert.False(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning").Exists())
+		assert.False(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_content").Exists())
+		assert.True(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_details").Array())
 	})
 }

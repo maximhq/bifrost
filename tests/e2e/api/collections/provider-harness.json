@@ -330553,6 +330553,244 @@
           }
         }
       ]
+    },
+    {
+      "name": "352. Thought text parts populate chat reasoning alongside reasoning_details (thought reasoning fields) (PR #10073)",
+      "description": "Thought text parts (part.Thought && part.Text != \"\") on /v1/chat/completions must populate message.reasoning / message.reasoning_content and delta.reasoning / delta.reasoning_content alongside reasoning_details on both unary and streaming responses. 352.1-352.2 pin unary and streaming on the API-key endpoint; 352.3-352.4 pin unary and streaming on the cloud platform endpoint.",
+      "item": [
+        {
+          "name": "352.1 gemini/gemini-2.5-flash /v1/chat/completions thought parts populate reasoning and reasoning_details unary (thought reasoning fields) - PR #10073",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"max_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('352.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var msg = ((j.choices || [])[0] || {}).message || {};",
+                  "pm.test('352.1 message carries both reasoning and reasoning_details', function () {",
+                  "  var snippet = pm.response.text().slice(0, 600);",
+                  "  pm.expect(msg.reasoning_details, 'missing reasoning_details: ' + snippet).to.be.an('array').that.is.not.empty;",
+                  "  var hasTextDetail = msg.reasoning_details.some(function (d) { return d && d.type === 'reasoning.text' && typeof d.text === 'string' && d.text.length > 0; });",
+                  "  pm.expect(hasTextDetail, 'expected non-empty reasoning.text detail: ' + JSON.stringify(msg.reasoning_details)).to.equal(true);",
+                  "  pm.expect(msg.reasoning, 'missing message.reasoning: ' + snippet).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(msg.reasoning_content, 'message.reasoning_content must mirror message.reasoning').to.equal(msg.reasoning);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "352.2 gemini/gemini-2.5-flash /v1/chat/completions thought parts populate reasoning and reasoning_details streaming (thought reasoning fields) - PR #10073",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"max_tokens\": 2048,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('352.2 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+                  "pm.test('352.2 stream carries no error and completes', function () {",
+                  "  pm.expect(text, 'stream error: ' + text.slice(0, 600)).to.not.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  pm.expect(text, 'no [DONE]: ' + text.slice(-400)).to.include('[DONE]');",
+                  "});",
+                  "pm.test('352.2 stream deltas carry both reasoning and reasoning_details', function () {",
+                  "  var reasoningAcc = '';",
+                  "  var reasoningContentAcc = '';",
+                  "  var textDetails = 0;",
+                  "  chunks.forEach(function (c) {",
+                  "    (c.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      if (typeof d.reasoning === 'string') { reasoningAcc += d.reasoning; }",
+                  "      if (typeof d.reasoning_content === 'string') { reasoningContentAcc += d.reasoning_content; }",
+                  "      (d.reasoning_details || []).forEach(function (rd) {",
+                  "        if (rd && rd.type === 'reasoning.text' && typeof rd.text === 'string' && rd.text.length > 0) { textDetails += 1; }",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(textDetails, 'expected reasoning.text delta details: ' + text.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(reasoningAcc, 'expected non-empty streamed delta.reasoning: ' + text.slice(0, 600)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(reasoningContentAcc, 'delta.reasoning_content must match delta.reasoning').to.equal(reasoningAcc);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "352.3 vertex/gemini-2.5-flash /v1/chat/completions thought parts populate reasoning and reasoning_details unary (thought reasoning fields) - PR #10073",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"max_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('352.3 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var msg = ((j.choices || [])[0] || {}).message || {};",
+                  "pm.test('352.3 message carries both reasoning and reasoning_details', function () {",
+                  "  var snippet = pm.response.text().slice(0, 600);",
+                  "  pm.expect(msg.reasoning_details, 'missing reasoning_details: ' + snippet).to.be.an('array').that.is.not.empty;",
+                  "  var hasTextDetail = msg.reasoning_details.some(function (d) { return d && d.type === 'reasoning.text' && typeof d.text === 'string' && d.text.length > 0; });",
+                  "  pm.expect(hasTextDetail, 'expected non-empty reasoning.text detail: ' + JSON.stringify(msg.reasoning_details)).to.equal(true);",
+                  "  pm.expect(msg.reasoning, 'missing message.reasoning: ' + snippet).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(msg.reasoning_content, 'message.reasoning_content must mirror message.reasoning').to.equal(msg.reasoning);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "352.4 vertex/gemini-2.5-flash /v1/chat/completions thought parts populate reasoning and reasoning_details streaming (thought reasoning fields) - PR #10073",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"max_tokens\": 2048,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('352.4 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+                  "pm.test('352.4 stream carries no error and completes', function () {",
+                  "  pm.expect(text, 'stream error: ' + text.slice(0, 600)).to.not.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  pm.expect(text, 'no [DONE]: ' + text.slice(-400)).to.include('[DONE]');",
+                  "});",
+                  "pm.test('352.4 stream deltas carry both reasoning and reasoning_details', function () {",
+                  "  var reasoningAcc = '';",
+                  "  var reasoningContentAcc = '';",
+                  "  var textDetails = 0;",
+                  "  chunks.forEach(function (c) {",
+                  "    (c.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      if (typeof d.reasoning === 'string') { reasoningAcc += d.reasoning; }",
+                  "      if (typeof d.reasoning_content === 'string') { reasoningContentAcc += d.reasoning_content; }",
+                  "      (d.reasoning_details || []).forEach(function (rd) {",
+                  "        if (rd && rd.type === 'reasoning.text' && typeof rd.text === 'string' && rd.text.length > 0) { textDetails += 1; }",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(textDetails, 'expected reasoning.text delta details: ' + text.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(reasoningAcc, 'expected non-empty streamed delta.reasoning: ' + text.slice(0, 600)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(reasoningContentAcc, 'delta.reasoning_content must match delta.reasoning').to.equal(reasoningAcc);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
