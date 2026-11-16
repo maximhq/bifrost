@@ -828,6 +828,9 @@
         "byteplus": {
           "$ref": "#/$defs/provider"
         },
+        "machgen": {
+          "$ref": "#/$defs/provider"
+        },
         "baseten": {
           "$ref": "#/$defs/provider"
         },
