@@ -559,13 +559,13 @@ ClientConfig:
                           headers:
                             type: object
                             description: >
-                              Headers sent with every export, for example authorization. Values must be env. or vault.
-                              references; plain-text values are refused so no collector credential is stored in the config.
-                              Responses return each value as an object.
+                              Headers sent with every export, for example authorization. Values can be plain or env. or
+                              vault. references, like provider keys, and must not be empty. Responses return each value as
+                              an object, with plain values redacted.
                             additionalProperties:
                               oneOf:
                                 - type: string
-                                  pattern: '^(env|vault)\.'
+                                  pattern: '\S'
                                 - $ref: '#/SecretVarObject'
                         additionalProperties: false
                     drop_attributes:

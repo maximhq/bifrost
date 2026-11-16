@@ -27,9 +27,9 @@ export interface TelemetryPayload {
 export type TelemetryDraftError =
 	| { kind: "noDestination" }
 	| { kind: "endpointInvalid" }
+	| { kind: "endpointDuplicate" }
 	| { kind: "headerMalformed" }
-	| { kind: "headerConflict" }
-	| { kind: "headerNotReference"; name: string };
+	| { kind: "headerConflict" };
 
 let nextDestinationId = 0;
 
@@ -109,18 +109,22 @@ const isReference = (value: string) => value.startsWith("env.") || value.startsW
 // telemetry off and no collectors, no block is sent at all.
 export function telemetryPayloadFromDraft(draft: TelemetryDraft): { telemetry?: TelemetryPayload; error?: TelemetryDraftError } {
 	const destinations: TelemetryPayload["destinations"] = [];
+	const seen = new Set<string>();
 	for (const row of draft.destinations) {
 		if (row.headerConflict) return { error: { kind: "headerConflict" } };
 		const endpoint = row.endpoint.trim();
 		if (!endpoint) continue;
-		if (!isReference(endpoint) && !isHttpURL(endpoint)) return { error: { kind: "endpointInvalid" } };
+		// The server checks endpoints only while forwarding is on, so a paused collector never blocks a save.
+		if (draft.enabled && !isReference(endpoint) && !isHttpURL(endpoint)) return { error: { kind: "endpointInvalid" } };
+		// The server refuses a collector listed twice, even while forwarding is paused.
+		if (seen.has(endpoint)) return { error: { kind: "endpointDuplicate" } };
+		seen.add(endpoint);
 		const headers: Record<string, string> = {};
 		for (const [rawName, rawValue] of Object.entries(row.headers)) {
 			const name = rawName.trim();
 			const value = secretVarText(rawValue).trim();
 			if (!name && !value) continue;
 			if (!name || !value) return { error: { kind: "headerMalformed" } };
-			if (!isReference(value)) return { error: { kind: "headerNotReference", name } };
 			headers[name] = value;
 		}
 		destinations.push(Object.keys(headers).length ? { endpoint, headers } : { endpoint });

@@ -1,6 +1,8 @@
 package tables
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -131,8 +133,8 @@ type ClientGatewayTelemetryConfig struct {
 // ClientGatewayTelemetryDestination is one OTLP/HTTP collector. Endpoint is the
 // collector's base URL; each signal is posted as protobuf to
 // {endpoint}/v1/{metrics|logs|traces}, as OTEL_EXPORTER_OTLP_ENDPOINT works.
-// Header values must be env. or vault. references, so no collector credential
-// is stored in the config or returned by the config API.
+// Header values are plain values or env./vault. references, like provider keys;
+// the config API redacts plain values.
 type ClientGatewayTelemetryDestination struct {
 	Endpoint *schemas.SecretVar            `json:"endpoint"`
 	Headers  map[string]*schemas.SecretVar `json:"headers,omitempty"`
@@ -144,11 +146,30 @@ func (c *ClaudeCodeGatewayConfig) TelemetryEnabled() bool {
 }
 
 // Validate checks a telemetry block that is switched on: at least one
-// destination, every endpoint an http(s) URL once resolved, and every header
-// value an env. or vault. reference. A switched-off block is not checked, so an
+// destination, every endpoint an http(s) URL once resolved, and every header with a value.
+// A collector listed twice is refused either way; otherwise a switched-off block is not checked, so an
 // operator can keep destinations around while forwarding is paused.
 func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
-	if c == nil || !c.Enabled {
+	if c == nil {
+		return nil
+	}
+	// A collector listed twice is refused even while forwarding is paused: its redacted headers
+	// could not be told apart on the next save, which would then fail.
+	seen := make(map[string]int, len(c.Destinations))
+	for i, d := range c.Destinations {
+		if d.Endpoint == nil || !d.Endpoint.IsSet() {
+			continue
+		}
+		key := strings.TrimSpace(d.Endpoint.GetValue())
+		if d.Endpoint.IsFromSecret() {
+			key = d.Endpoint.GetRawRef()
+		}
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("%s.destinations[%d].endpoint repeats destinations[%d]; list each collector once", path, i, first)
+		}
+		seen[key] = i
+	}
+	if !c.Enabled {
 		return nil
 	}
 	if len(c.Destinations) == 0 {
@@ -168,8 +189,8 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 			if strings.TrimSpace(name) == "" {
 				return fmt.Errorf("%s.destinations[%d].headers has an empty header name", path, i)
 			}
-			if v == nil || !v.IsFromSecret() {
-				return fmt.Errorf("%s.destinations[%d].headers.%s must be an env. or vault. reference, so the credential is not stored in the config", path, i, name)
+			if v == nil || (!v.IsFromSecret() && strings.TrimSpace(v.GetValue()) == "") {
+				return fmt.Errorf("%s.destinations[%d].headers.%s needs a value", path, i, name)
 			}
 		}
 	}
@@ -179,6 +200,63 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 		}
 	}
 	return nil
+}
+
+// StorageJSON is the oauth2_server_config_json written for c. Its secret fields (the issuer URL
+// and each telemetry endpoint and header value) keep only an env. or vault. reference, never its
+// resolved value, as MCP client headers are stored; the reference is resolved again on load.
+// Everything else, managed settings included, is written as is.
+func (c *OAuth2ServerConfig) StorageJSON() (string, error) {
+	if c == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return "", err
+	}
+	stripResolvedSecretValue(doc["issuer_url"])
+	for _, d := range telemetryDestinationsOf(doc) {
+		dest, _ := d.(map[string]any)
+		stripResolvedSecretValue(dest["endpoint"])
+		headers, _ := dest["headers"].(map[string]any)
+		for _, v := range headers {
+			stripResolvedSecretValue(v)
+		}
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// stripResolvedSecretValue blanks the value of one serialized SecretVar that carries an env. or
+// vault. reference.
+func stripResolvedSecretValue(v any) {
+	secret, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	if ref, _ := secret["ref"].(string); strings.HasPrefix(ref, "env.") || strings.HasPrefix(ref, "vault.") {
+		if _, has := secret["value"]; has {
+			secret["value"] = ""
+		}
+	}
+}
+
+// telemetryDestinationsOf returns the serialized Claude Code telemetry destinations in doc.
+func telemetryDestinationsOf(doc map[string]any) []any {
+	gateways, _ := doc["gateways"].(map[string]any)
+	claudeCode, _ := gateways["claude_code"].(map[string]any)
+	telemetry, _ := claudeCode["telemetry"].(map[string]any)
+	destinations, _ := telemetry["destinations"].([]any)
+	return destinations
 }
 
 // ClaudeCodeGateway returns the Claude Code gateway block, or nil when it is unset.

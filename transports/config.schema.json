@@ -739,10 +739,10 @@
                                 "type": "object",
                                 "additionalProperties": {
                                   "type": "string",
-                                  "pattern": "^(env|vault)\\.",
-                                  "description": "An env. or vault. reference; plain-text values are refused so no collector credential is stored in the config."
+                                  "pattern": "\\S",
+                                  "description": "A plain value or an env. or vault. reference; it must not be empty. Use a reference to keep the credential out of config.json."
                                 },
-                                "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references."
+                                "description": "Headers sent with every export, for example authorization. Values can be plain or env./vault. references, like provider keys."
                               }
                             },
                             "required": [

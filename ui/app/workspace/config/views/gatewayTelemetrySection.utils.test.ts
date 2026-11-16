@@ -93,16 +93,30 @@ describe("telemetryPayloadFromDraft", () => {
 				draft({ destinations: [{ id: "a", endpoint: "https://x.example.com", headers: { authorization: { value: "", ref: "" } } }] }),
 			).error,
 		).toEqual({ kind: "headerMalformed" });
-		expect(
-			telemetryPayloadFromDraft(
-				draft({
-					destinations: [{ id: "a", endpoint: "https://x.example.com", headers: { authorization: { value: "Bearer abc", ref: "" } } }],
-				}),
-			).error,
-		).toEqual({
-			kind: "headerNotReference",
-			name: "authorization",
+	});
+
+	it("accepts a plain header value, like a provider key", () => {
+		const d = draft({
+			destinations: [{ id: "a", endpoint: "https://x.example.com", headers: { authorization: { value: "Bearer abc", ref: "" } } }],
 		});
+		expect(telemetryPayloadFromDraft(d).telemetry?.destinations).toEqual([
+			{ endpoint: "https://x.example.com", headers: { authorization: "Bearer abc" } },
+		]);
+	});
+
+	it("refuses a collector listed twice, even while forwarding is paused", () => {
+		const row = { endpoint: "https://otel.example.com", headers: {} };
+		const destinations = [
+			{ id: "a", ...row },
+			{ id: "b", ...row },
+		];
+		expect(telemetryPayloadFromDraft(draft({ destinations })).error).toEqual({ kind: "endpointDuplicate" });
+		expect(telemetryPayloadFromDraft(draft({ enabled: false, destinations })).error).toEqual({ kind: "endpointDuplicate" });
+	});
+
+	it("does not check a paused collector's endpoint, as the server does not", () => {
+		const d = draft({ enabled: false, destinations: [{ id: "a", endpoint: "ftp://x", headers: {} }], dropAttributes: "" });
+		expect(telemetryPayloadFromDraft(d)).toEqual({ telemetry: { enabled: false, destinations: [{ endpoint: "ftp://x" }] } });
 	});
 
 	it("allows an env endpoint and keeps collectors while forwarding is paused", () => {

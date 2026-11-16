@@ -291,11 +291,11 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if cc.OAuth2ServerConfig != nil {
-		data, err := json.Marshal(cc.OAuth2ServerConfig)
+		data, err := cc.OAuth2ServerConfig.StorageJSON()
 		if err != nil {
 			return err
 		}
-		cc.OAuth2ServerConfigJSON = string(data)
+		cc.OAuth2ServerConfigJSON = data
 	} else {
 		cc.OAuth2ServerConfigJSON = ""
 	}

@@ -92,12 +92,12 @@ export default function GatewaysView() {
 					return t("claudeCode.telemetryNoDestination");
 				case "endpointInvalid":
 					return t("claudeCode.telemetryEndpointInvalid");
+				case "endpointDuplicate":
+					return t("claudeCode.telemetryEndpointDuplicate");
 				case "headerMalformed":
 					return t("claudeCode.telemetryHeaderMalformed");
 				case "headerConflict":
 					return t("claudeCode.telemetryHeaderConflict");
-				case "headerNotReference":
-					return t("claudeCode.telemetryHeaderNotReference", { name: error.name });
 			}
 		},
 		[t],

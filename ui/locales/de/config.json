@@ -1744,16 +1744,16 @@
 		"collectorsLabel": "Collectors",
 		"collectorEndpointLabel": "Collector-Endpunkt",
 		"collectorHeadersLabel": "Collector-Header",
-		"collectorHeadersHelp": "Header-Werte müssen env.- oder vault.-Referenzen sein, damit keine Zugangsdaten in der Konfiguration gespeichert werden.",
+		"collectorHeadersHelp": "Header-Werte können Klartextwerte oder env.-/vault.-Referenzen sein. Klartextwerte werden nach dem Speichern nicht mehr angezeigt; verwende eine Referenz, um die Zugangsdaten aus der Konfiguration herauszuhalten.",
 		"addCollector": "Collector hinzufügen",
 		"removeCollector": "Collector entfernen",
 		"dropAttributesLabel": "Attribute entfernen",
 		"dropAttributesHelp": "Kommagetrennte Attributschlüssel, die vor dem Weiterleiten auf allen Ebenen entfernt werden, zum Beispiel <code0>prompt</code0>.",
 		"telemetryNoDestination": "Füge mindestens einen Collector hinzu, um Telemetrie weiterzuleiten.",
 		"telemetryEndpointInvalid": "Jeder Collector-Endpunkt muss eine http- oder https-URL oder eine env.- oder vault.-Referenz sein.",
+		"telemetryEndpointDuplicate": "Jeder Collector-Endpunkt darf nur einmal aufgeführt werden.",
 		"telemetryHeaderMalformed": "Gib jedem Collector-Header einen Namen und einen Wert.",
-		"telemetryHeaderConflict": "Zwei Header eines Collectors haben denselben Namen. Benenne einen um oder entferne ihn.",
-		"telemetryHeaderNotReference": "Der Header {{name}} muss eine env.- oder vault.-Referenz sein."
+		"telemetryHeaderConflict": "Zwei Header eines Collectors haben denselben Namen. Benenne einen um oder entferne ihn."
 	},
 	"gateways": {
 		"title": "Gateways",
