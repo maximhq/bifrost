@@ -50,6 +50,11 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	if speechAPIKey != "" && strings.HasPrefix(strings.ToLower(speechAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(speechAPIKey)
 	}
+	// ElevenLabs clients send their key as xi-api-key.
+	elevenLabsAPIKey := string(req.Request.Header.Peek("xi-api-key"))
+	if elevenLabsAPIKey != "" && strings.HasPrefix(strings.ToLower(elevenLabsAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(elevenLabsAPIKey)
+	}
 	return nil
 }
 
