@@ -146,7 +146,7 @@ func TestRegisterStateNeedsAKind(t *testing.T) {
 	}
 }
 
-// TestDropTable checks that a dropped name can be registered again.
+// TestDropTable checks that a table reports its name and that a dropped name can be registered again.
 func TestDropTable(t *testing.T) {
 	s := newStore()
 	defer s.Close()
@@ -155,10 +155,13 @@ func TestDropTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	tb.Put("k", 1)
+	if tb.Name() != "plugin" {
+		t.Fatalf("a table must report the name it was registered under, got %q", tb.Name())
+	}
 	if _, err := s.NewTable[string, int](context.Background(), "plugin"); err == nil {
 		t.Fatal("a live name must not register twice")
 	}
-	if err := s.DropTable(context.Background(), "plugin"); err != nil {
+	if err := s.DropTable(context.Background(), tb.Name()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := tb.Get("k"); ok {

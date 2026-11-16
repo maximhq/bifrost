@@ -8,7 +8,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm/clause"
 )
 
 // pastSQLiteParamLimit is more IDs than one SQLite statement may bind (32,766), so a read that
@@ -67,4 +69,62 @@ func TestMCPClientsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	}
 	slices.Sort(ids)
 	require.Equal(t, []string{"a", "z"}, ids, "the client listed after the missing IDs is read too")
+}
+
+// TestTeamsByIDReadsMoreTeamsThanTheParameterLimit checks that a refresh of more teams than one
+// statement may bind reads every one, with the budgets each holds: the read of the teams and the
+// read of their budgets each bind the whole ID list.
+func TestTeamsByIDReadsMoreTeamsThanTheParameterLimit(t *testing.T) {
+	ctx := context.Background()
+	db := newProviderDB(t, nil).DB()
+	teams := make([]tables.TableTeam, 0, pastSQLiteParamLimit)
+	ids := make([]string, 0, pastSQLiteParamLimit)
+	for i := range pastSQLiteParamLimit {
+		id := fmt.Sprintf("team-%05d", i)
+		teams = append(teams, tables.TableTeam{ID: id, Name: id})
+		ids = append(ids, id)
+	}
+	require.NoError(t, db.Omit(clause.Associations).CreateInBatches(teams, 1000).Error)
+	held := budgetRow("tb-1", 1)
+	held.TeamID = ptr("team-00007")
+	insert(t, db, held)
+
+	rows, err := TeamsByID(ctx, db, ids)
+	require.NoError(t, err)
+	require.Len(t, rows, pastSQLiteParamLimit)
+	for _, r := range rows {
+		if r.ID == "team-00007" {
+			require.Equal(t, []string{"tb-1"}, r.BudgetIDs)
+		} else {
+			require.Empty(t, r.BudgetIDs)
+		}
+	}
+}
+
+// TestModelConfigsByKeysReadsMoreKeysThanTheParameterLimit checks that a refresh of the model
+// configs of more keys than one statement may bind still reads the ones those keys scope.
+func TestModelConfigsByKeysReadsMoreKeysThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TableModelConfig{ID: "mc-1", ModelName: "gpt-4o", Scope: tables.ModelConfigScopeVirtualKey, ScopeID: ptr("vk-1")})
+	rows, err := ModelConfigsByKeys(context.Background(), db, withMissingIDs("vk-1"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"mc-1"}, modelConfigIDsOf(rows))
+}
+
+// TestVirtualMCPsByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more virtual MCP
+// IDs than one statement may bind still reads the ones that exist; their row IDs are integers.
+func TestVirtualMCPsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TableVirtualMCP{
+		Name: "vmcp", EndpointSlug: "vmcp", Enabled: true,
+		ParsedTools: []tables.MCPToolSpec{{MCPClientID: "c1", ToolNames: []string{"search"}}},
+	})
+	ids := []string{NumericID(1)}
+	for i := range uint(pastSQLiteParamLimit) {
+		ids = append(ids, NumericID(1_000_000+i))
+	}
+	rows, err := VirtualMCPsByID(context.Background(), db, ids)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, NumericID(1), VirtualMCPID(rows[0]))
 }

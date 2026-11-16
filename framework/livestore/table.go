@@ -45,6 +45,7 @@ func HoldsHandles() TableOption {
 // from it for size. Put replaces a value whole; a value is never changed after Put. A table
 // starts empty, so it may be created after LoadAll, from a plugin's Init.
 type Table[K comparable, V any] struct {
+	name   string
 	seed   maphash.Seed
 	opts   tableOptions
 	shards [tableShards]tableShard[K, V]
@@ -112,7 +113,7 @@ func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, 
 	if err := publicTableName(name); err != nil {
 		return nil, err
 	}
-	t := newTable[K, V](collectTableOptions(opts))
+	t := newTable[K, V](name, collectTableOptions(opts))
 	if err := s.addTable(name, t, ""); err != nil {
 		return nil, err
 	}
@@ -133,7 +134,7 @@ func (s *Store) RegisterState[V any](ctx context.Context, name string, of Kind, 
 	if of == "" {
 		return nil, fmt.Errorf("livestore: state %q needs a kind", name)
 	}
-	t := newTable[string, *V](collectTableOptions(opts))
+	t := newTable[string, *V](name, collectTableOptions(opts))
 	if err := s.addTable(name, t, of); err != nil {
 		return nil, err
 	}
@@ -149,11 +150,14 @@ func collectTableOptions(opts []TableOption) tableOptions {
 	return o
 }
 
-// newTable builds an empty table that no store tracks yet.
-func newTable[K comparable, V any](o tableOptions) *Table[K, V] {
-	t := &Table[K, V]{seed: maphash.MakeSeed(), opts: o}
+// newTable builds an empty table named name that no store tracks yet.
+func newTable[K comparable, V any](name string, o tableOptions) *Table[K, V] {
+	t := &Table[K, V]{name: name, seed: maphash.MakeSeed(), opts: o}
 	return t
 }
+
+// Name is the name the table was registered under, which DropTable takes.
+func (t *Table[K, V]) Name() string { return t.name }
 
 // shard returns the shard that holds k.
 func (t *Table[K, V]) shard(k K) *tableShard[K, V] {

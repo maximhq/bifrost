@@ -24,6 +24,18 @@ const providerKeyListsTable = internalPrefix + "provider_key_lists"
 // KindMCPClient names the MCP client collection.
 const KindMCPClient Kind = "mcp_client"
 
+// Governance kinds: virtual keys, the teams and customers they sit under, the budgets and rate
+// limits those hold, model configs, and virtual MCPs.
+const (
+	KindVirtualKey  Kind = "virtual_key"
+	KindTeam        Kind = "team"
+	KindCustomer    Kind = "customer"
+	KindBudget      Kind = "budget"
+	KindRateLimit   Kind = "rate_limit"
+	KindModelConfig Kind = "model_config"
+	KindVirtualMCP  Kind = "virtual_mcp"
+)
+
 // Collections holds the typed collection of each config store table the live store loads. New
 // registers every one of them, so a reader takes them from Store.Collections. The record types and
 // the reads that load them are in the registry package.
@@ -31,6 +43,13 @@ type Collections struct {
 	Providers    *Collection[registry.Provider]    // provider settings; their keys are ProviderKeys
 	ProviderKeys *Collection[registry.ProviderKey] // one record per key, children of Providers
 	MCPClients   *Collection[registry.MCPClient]
+	VirtualKeys  *Collection[registry.VirtualKey]
+	Teams        *Collection[registry.Team]
+	Customers    *Collection[registry.Customer]
+	Budgets      *Collection[registry.Budget]
+	RateLimits   *Collection[registry.RateLimit]
+	ModelConfigs *Collection[registry.ModelConfig]
+	VirtualMCPs  *Collection[registry.VirtualMCP]
 }
 
 // Views holds the global derived tables: tables derived only from collections and read by more
@@ -51,14 +70,18 @@ type Views struct {
 // derived from them. It loads nothing: LoadAll fills the collections from the database, or
 // LoadRecords from config.json when there is none, and the views follow every publish, the load
 // included. A build that adds collections registers them on the returned store before either runs.
-func New() (*Store, error) {
+func New(opts ...StoreOption) (*Store, error) {
+	var o storeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	s := newStore()
-	cols, err := registerCollections(s)
+	cols, err := registerCollections(s, &o)
 	if err != nil {
 		return nil, err
 	}
 	s.Collections = cols
-	lists := newTable[string, *[]schemas.Key](tableOptions{})
+	lists := newTable[string, *[]schemas.Key](providerKeyListsTable, tableOptions{})
 	if err := s.addTable(providerKeyListsTable, lists, KindProvider); err != nil {
 		return nil, err
 	}
@@ -67,12 +90,18 @@ func New() (*Store, error) {
 	return s, nil
 }
 
+// StoreOption configures the store New returns.
+type StoreOption func(*storeOptions)
+
+// storeOptions holds what the StoreOptions given to New set.
+type storeOptions struct{}
+
 // registerCollections registers the collection of each config store table on s, with the
 // registry's reads as its loader.
-func registerCollections(s *Store) (*Collections, error) {
+func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 	c := &Collections{}
 	var err error
-	if c.Providers, err = s.Register(KindProvider, nil, Loader[registry.Provider]{
+	if c.Providers, err = s.Register(KindProvider, []Kind{KindBudget, KindRateLimit}, Loader[registry.Provider]{
 		ID:   registry.ProviderName,
 		Page: registry.ProvidersPage,
 		ByID: registry.ProvidersByName,
@@ -94,6 +123,9 @@ func registerCollections(s *Store) (*Collections, error) {
 		UniqueIndex(registry.MCPClientByName, registry.MCPClientName),
 		UniqueIndex(registry.MCPClientBySlug, registry.MCPClientSlug),
 	); err != nil {
+		return nil, err
+	}
+	if err := registerGovernance(s, c, o); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -130,4 +162,85 @@ func (s *Store) rebuildProviderKeyLists(_ context.Context, changes []Change[regi
 		}
 		s.Views.ProviderKeyLists.Put(string(provider), &keys)
 	}
+}
+
+// registerGovernance registers the governance collections on s. A limit follows its holder: a
+// refresh of a key, team, customer, model config or provider re-reads the budgets and rate limits
+// it holds, and removing the holder removes them. Keys and teams keep their records when the
+// team or customer above them is removed, re-read with the reference cleared, and key-scoped
+// model configs go with their key.
+func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
+	var err error
+	if c.Customers, err = s.Register(KindCustomer, []Kind{KindBudget, KindRateLimit}, Loader[registry.Customer]{
+		ID:   registry.CustomerID,
+		Page: registry.CustomersPage,
+		ByID: registry.CustomersByID,
+	}); err != nil {
+		return err
+	}
+	if c.Teams, err = s.Register(KindTeam, []Kind{KindBudget, KindRateLimit, KindCustomer}, Loader[registry.Team]{
+		ID:   registry.TeamID,
+		Page: registry.TeamsPage,
+		ByID: registry.TeamsByID,
+	},
+		ChildOf(KindCustomer, registry.TeamCustomerID, registry.TeamsByCustomers, SetNull),
+	); err != nil {
+		return err
+	}
+	if c.VirtualKeys, err = s.Register(KindVirtualKey, []Kind{KindBudget, KindRateLimit, KindTeam, KindCustomer, KindVirtualMCP}, Loader[registry.VirtualKey]{
+		ID:   registry.VirtualKeyID,
+		Page: registry.VirtualKeysPage,
+		ByID: registry.VirtualKeysByID,
+	},
+		UniqueIndex(registry.VirtualKeyByValue, registry.VirtualKeyValue),
+		MultiIndex(registry.VirtualKeyByPreviousValue, registry.VirtualKeyPreviousValue),
+		ChildOf(KindTeam, registry.VirtualKeyTeamID, registry.VirtualKeysByTeams, SetNull),
+		ChildOf(KindCustomer, registry.VirtualKeyCustomerID, registry.VirtualKeysByCustomers, SetNull),
+	); err != nil {
+		return err
+	}
+	if c.ModelConfigs, err = s.Register(KindModelConfig, []Kind{KindBudget, KindRateLimit}, Loader[registry.ModelConfig]{
+		ID:   registry.ModelConfigID,
+		Page: registry.ModelConfigsPage,
+		ByID: registry.ModelConfigsByID,
+	},
+		MultiIndex(registry.ModelConfigByScope, func(m *registry.ModelConfig) []string { return []string{registry.ModelConfigScope(m)} }),
+		ChildOf(KindVirtualKey, registry.ModelConfigKeyID, registry.ModelConfigsByKeys, Cascade),
+	); err != nil {
+		return err
+	}
+	if c.Budgets, err = s.Register(KindBudget, nil, Loader[registry.Budget]{
+		ID:   registry.BudgetID,
+		Page: registry.BudgetsPage,
+		ByID: registry.BudgetsByID,
+	},
+		ChildOf(KindVirtualKey, registry.BudgetKeyID, registry.BudgetsByKeys, Cascade),
+		ChildOf(KindTeam, registry.BudgetTeamID, registry.BudgetsByTeams, Cascade),
+		ChildOf(KindCustomer, registry.BudgetCustomerID, registry.BudgetsByCustomers, Cascade),
+		ChildOf(KindModelConfig, registry.BudgetModelConfigID, registry.BudgetsByModelConfigs, Cascade),
+		ChildOf(KindProvider, registry.BudgetProvider, registry.BudgetsByProviders, Cascade),
+	); err != nil {
+		return err
+	}
+	if c.RateLimits, err = s.Register(KindRateLimit, nil, Loader[registry.RateLimit]{
+		ID:   registry.RateLimitID,
+		Page: registry.RateLimitsPage,
+		ByID: registry.RateLimitsByID,
+	},
+		ChildOf(KindVirtualKey, registry.RateLimitKeyID, registry.RateLimitsByKeys, Cascade),
+		ChildOf(KindTeam, registry.RateLimitTeamID, registry.RateLimitsByTeams, Cascade),
+		ChildOf(KindCustomer, registry.RateLimitCustomerID, registry.RateLimitsByCustomers, Cascade),
+		ChildOf(KindModelConfig, registry.RateLimitModelConfigID, registry.RateLimitsByModelConfigs, Cascade),
+		ChildOf(KindProvider, registry.RateLimitProvider, registry.RateLimitsByProviders, Cascade),
+	); err != nil {
+		return err
+	}
+	if c.VirtualMCPs, err = s.Register(KindVirtualMCP, nil, Loader[registry.VirtualMCP]{
+		ID:   registry.VirtualMCPID,
+		Page: registry.VirtualMCPsPage,
+		ByID: registry.VirtualMCPsByID,
+	}); err != nil {
+		return err
+	}
+	return nil
 }

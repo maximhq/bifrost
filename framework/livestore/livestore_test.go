@@ -2173,7 +2173,7 @@ func TestReadGroupDropsIdleState(t *testing.T) {
 // generation, moving between the two as it is written, and that every read and sweep sees both.
 func TestTableKeepsEntriesThatNeverExpireAsTheirValueAlone(t *testing.T) {
 	clock := setClock(t, time.Unix(1000, 0))
-	tb := newTable[string, int](tableOptions{})
+	tb := newTable[string, int]("t", tableOptions{})
 	plain := func(k string) bool {
 		sh := tb.shard(k)
 		_, inPlain := sh.plain[k]
@@ -2213,7 +2213,7 @@ func TestTableKeepsEntriesThatNeverExpireAsTheirValueAlone(t *testing.T) {
 	}
 
 	gen := uint64(0)
-	memo := newTable[string, int](tableOptions{gen: func() uint64 { return gen }})
+	memo := newTable[string, int]("m", tableOptions{gen: func() uint64 { return gen }})
 	memo.Put("k", 1)
 	if v, ok := memo.Get("k"); !ok || v != 1 {
 		t.Fatal("a memo entry under generation zero is not read")

@@ -97,7 +97,7 @@ func (s *Store) Register[T any](kind Kind, dependsOn []Kind, load Loader[T], opt
 		}
 	}
 	if c.negTTL > 0 {
-		c.negative = newTable[string, struct{}](tableOptions{ttl: c.negTTL})
+		c.negative = newTable[string, struct{}](internalPrefix+"negative_"+string(kind), tableOptions{ttl: c.negTTL})
 	}
 	links := make([]childHandle, 0, len(c.parents))
 	for _, pl := range c.parents {
@@ -113,7 +113,7 @@ func (s *Store) Register[T any](kind Kind, dependsOn []Kind, load Loader[T], opt
 		return nil, err
 	}
 	if c.negative != nil {
-		if err := s.addTable(internalPrefix+"negative_"+string(kind), c.negative, ""); err != nil {
+		if err := s.addTable(c.negative.Name(), c.negative, ""); err != nil {
 			return nil, err
 		}
 	}
