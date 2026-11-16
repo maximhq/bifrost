@@ -122,7 +122,7 @@ func TestRoundTrip_A_TopLevelSystemOnly(t *testing.T) {
 // inlinedText renders the <system-reminder> envelope a mid-conversation system message takes when
 // it is inlined into a user turn (see inlineMidConversationSystem).
 func inlinedText(text string) string {
-	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	return "<system-reminder>\n" + text + "\n</system-reminder>"
 }
 
 // assertInlined asserts `text` reached the messages array wrapped in a user turn and did NOT get

@@ -296,6 +296,7 @@ type BifrostHTTPServer struct {
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
+	BifrostMCP           *handlers.BifrostMCP // /api as MCP tools on /v1/mcp; its server loads after boot
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
 	devPprofHandler      *handlers.DevPprofHandler
 	skillsServingHandler *handlers.SkillsServingHandler
@@ -3725,7 +3726,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// package does that, core only knows the hook. Registered on the config
 	// passed to Init and again on the client below, so a manager created
 	// lazily (no mcp block in config.json) gets it too.
-	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()))
+	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()), openapimcp.WithMaxSpecBytes(s.Config.MCPOpenAPIMaxSpecBytes))
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
