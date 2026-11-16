@@ -852,6 +852,13 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if toolCall.Custom != nil {
+					copyCustom := *toolCall.Custom
+					if toolCall.Custom.Name != nil {
+						copyCustom.Name = Ptr(*toolCall.Custom.Name)
+					}
+					copyToolCall.Custom = &copyCustom
+				}
 				if len(toolCall.ExtraContent) > 0 {
 					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
 				}

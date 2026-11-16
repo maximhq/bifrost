@@ -376,6 +376,15 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "entity_access_profile_mode": {
+          "type": "string",
+          "enum": [
+            "union",
+            "intersect"
+          ],
+          "default": "union",
+          "description": "Enterprise only. How the access profiles of the teams, business units and customers a caller belongs to combine with the caller's own access. Takes the same values as a project's access_rule. 'union' (default) lets each of them add to what the caller may reach. 'intersect' makes each level that holds an active profile cap it instead: the caller keeps only what their own profiles (or virtual key) allow AND what at least one of their team or business unit profiles allows AND what at least one of their customer profiles allows. A level holding no active profile is skipped. The cap covers providers, models, provider keys, MCP tools and relays; agents are not capped, since team, business unit and customer profiles cannot grant them. Budgets and rate limits are charged as in 'union' mode. The x-bf-customer-id / x-bf-customer-name scope headers are ignored in 'intersect' mode."
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
