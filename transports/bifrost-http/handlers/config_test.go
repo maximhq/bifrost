@@ -954,6 +954,33 @@ func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *cfg.FrameworkConfig.Pricing.MCPLibraryURL)
 }
 
+// TestUpdateConfig_MCPLibrarySyncInterval pins /api/config to the config.json
+// contract for mcp_library_sync_interval: 0 (sync disabled) or at least 3600
+// seconds. Anything else is refused rather than stored.
+func TestUpdateConfig_MCPLibrarySyncInterval(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	put := func(seconds int64) *fasthttp.RequestCtx {
+		ctx := putConfigCtx(fmt.Sprintf(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_sync_interval":%d}}`, seconds))
+		h.updateConfig(ctx)
+		return ctx
+	}
+	for _, seconds := range []int64{0, modelcatalog.MinimumPricingSyncIntervalSec, 86400} {
+		ctx := put(seconds)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%d seconds: %s", seconds, ctx.Response.Body())
+		persisted, err := store.GetFrameworkConfig(bgCtx())
+		require.NoError(t, err)
+		require.NotNil(t, persisted.MCPLibrarySyncInterval)
+		assert.Equal(t, seconds, *persisted.MCPLibrarySyncInterval)
+	}
+	for _, seconds := range []int64{-1, 1, modelcatalog.MinimumPricingSyncIntervalSec - 1} {
+		ctx := put(seconds)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%d seconds: %s", seconds, ctx.Response.Body())
+	}
+}
+
 // failingFrameworkConfigStore makes the framework config write fail while every
 // other store call goes through to the real store.
 type failingFrameworkConfigStore struct {
