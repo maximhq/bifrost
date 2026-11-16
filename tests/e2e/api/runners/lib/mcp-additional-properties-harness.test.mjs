@@ -39,7 +39,9 @@ test('MCP test client is isolated and fixture advertises the original closed sch
  assert.deepEqual(clients[0].tools_to_execute,['closed_schema_probe']);
  assert.deepEqual(clients[0].tools_to_auto_execute,[]);
  const src=fs.readFileSync(path.join(root,'examples/mcps/remote-test-server/main.go'),'utf8');
- assert.match(src,/closedSchemaTool\.InputSchema\.AdditionalProperties = false/u);
+ assert.match(src,/mcp\.NewToolWithRawSchema\(/u);
+ assert.match(src,/"additionalProperties":false/u);
+ assert.doesNotMatch(src,/closedSchemaTool\.InputSchema\.AdditionalProperties/u);
  assert.match(src,/s\.AddTool\(closedSchemaTool/u);
 });
 test('augmentation integrates the regression without modifying the checked-in giant Postman collection',()=>{
