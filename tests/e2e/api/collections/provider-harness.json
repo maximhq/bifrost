@@ -330608,7 +330608,234 @@
       ]
     },
     {
-      "name": "352. MachGen Provider Coverage (list models, image, image edit, video)",
+      "name": "267. Caller identity endpoint (session-me)",
+      "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and Bifrost MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
+      "item": [
+        {
+          "name": "openai session-me: the harness caller is described",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('session-me: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('session-me: an admin caller identifies no user and is unrestricted', function () {",
+                  "  pm.expect(body.identified, 'identified: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(body.unrestricted, 'unrestricted: ' + pm.response.text()).to.equal(true);",
+                  "  pm.expect(body, 'no user id for an unidentified caller: ' + pm.response.text()).to.not.have.property('user_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "352. Bedrock Converse caller anthropic_beta union with gateway-derived betas (#4965 / PR #5011) (caller anthropic_beta union)",
+      "description": "A caller can send extra Anthropic betas to a Claude model on Bedrock Converse through additionalModelRequestFieldPaths.anthropic_beta (a top-level body key on /v1/chat/completions and /v1/responses, collected as an extra param and applied by applyBedrockExtraParams in core/providers/bedrock/utils.go). On the Chat path the gateway derives its own betas first (fine-grained-tool-streaming-2025-05-14 for eager_input_streaming function tools via applyBedrockFineGrainedToolStreaming, and server-tool betas such as context-management-2025-06-27 for memory_* via the server-tool tunnel) and only then applies extra params. mergeAdditionalModelRequestFields replaced the whole anthropic_beta key with the caller's list, so the gateway-derived betas never reached Bedrock: eager tools streamed arguments in one burst, and a tunneled server tool went out without the beta it needs. The fix unions the two lists (caller values first, deduplicated). Cases 1-2 are red before the fix on the Chat path; case 3 pins the same invariant on /v1/responses, which already applied extra params before the eager beta. Each case reads the logged raw_request (the harness profile stores raw requests) and asserts additionalModelRequestFields.anthropic_beta. Go-level pin: TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta.",
+      "item": [
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            },\n            \"content\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\",\n            \"content\"\n          ]\n        }\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 memory server tool keeps its beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat memory: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat memory: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"context-management-2025-06-27\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat memory: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"memory_20250818\",\n      \"name\": \"memory\"\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union responses eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union responses eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union responses eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"write_file\",\n      \"description\": \"Write a file\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\",\n          \"content\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "353. MachGen Provider Coverage (list models, image, image edit, video)",
       "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
       "item": [
         {
