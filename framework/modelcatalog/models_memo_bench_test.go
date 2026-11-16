@@ -61,7 +61,7 @@ func benchCatalog(tb testing.TB, nProviders, nModels int) (*ModelCatalog, []stri
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(tb, mc)
 	return mc, models
 }
 
@@ -91,7 +91,7 @@ func BenchmarkProvidersForModel_Uncached(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// computeProvidersForModel -> GetModelsForProvider, so flush modelsForProvider
 		// each iteration or it stays warm and this stops measuring the pre-cache path.
-		mc.modelsForProvider.Flush()
+		clearTable(mc.modelsForProvider)
 		_ = mc.computeProvidersForModel(q[i%len(q)])
 	}
 }
@@ -108,7 +108,7 @@ func BenchmarkProvidersForModel_UncachedScale(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				// flush modelsForProvider each iteration so the compute path stays cold
 				// (computeProvidersForModel -> GetModelsForProvider is otherwise memoised).
-				mc.modelsForProvider.Flush()
+				clearTable(mc.modelsForProvider)
 				_ = mc.computeProvidersForModel(q[i%len(q)])
 			}
 		})
@@ -142,8 +142,8 @@ func BenchmarkIsModelAllowed_Uncached(b *testing.B) {
 		// bust both memos each iteration to simulate the pre-cache cost:
 		// IsModelAllowedForProvider -> computeProvidersForModel -> GetModelsForProvider,
 		// so modelsForProvider must be flushed too or it stays warm after iteration 1.
-		mc.providersForModel.Flush()
-		mc.modelsForProvider.Flush()
+		clearTable(mc.providersForModel)
+		clearTable(mc.modelsForProvider)
 		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
 	}
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
-	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,7 +93,7 @@ func newFakeConfigStore() *fakeConfigStore {
 
 // rowKey keys the fake's rows by their (mode, identity, client) binding.
 func rowKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
+	return livestore.EncodeKey(string(mode), identity, mcpClientID)
 }
 
 func (f *fakeConfigStore) GetMCPPerUserDiscoveryByMode(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {

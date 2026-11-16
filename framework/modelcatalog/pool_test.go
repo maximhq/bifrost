@@ -402,7 +402,7 @@ func TestGetModelsForProvider_DeprecatedDatasheetModelsRespectAllowBlock(t *test
 				keyconf:   kc,
 				done:      make(chan struct{}),
 			}
-			mc.initCaches()
+			withTestCaches(t, mc)
 			mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
 
 			got := mc.GetModelsForProvider(schemas.OpenAI)

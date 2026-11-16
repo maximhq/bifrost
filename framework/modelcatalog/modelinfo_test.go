@@ -72,7 +72,7 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(t, mc)
 	return mc
 }
 

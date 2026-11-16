@@ -1,17 +1,19 @@
 package modelcatalog
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/gencache"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // providersWithPartialListModels enumerates providers whose /v1/models response
@@ -37,6 +39,13 @@ var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
 	schemas.Cloudflare: true,
 }
 
+// The catalog's model index table names. A process has one catalog, so the names are fixed.
+const (
+	maxOutputTokensTable   = "model_catalog_max_output_tokens"
+	providersForModelTable = "model_catalog_providers_for_model"
+	modelsForProviderTable = "model_catalog_models_for_provider"
+)
+
 // GetModelCreatedTimes returns the creation time, in Unix seconds, that the
 // provider last reported for each of its listed models, taken from the cached
 // list-models responses in the given mode, so times line up with the listing
@@ -56,9 +65,14 @@ func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider, unf
 //
 // Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
-	return mc.modelsForProvider.GetOrCompute(string(provider), func() []string {
+	if mc.modelsForProvider == nil {
 		return mc.computeModelsForProvider(provider)
-	})
+	}
+	// Cloned: callers sort the result in place. An empty answer is not kept.
+	return slices.Clone(mc.modelsForProvider.GetOrCompute(string(provider), func() ([]string, time.Duration, bool) {
+		models := mc.computeModelsForProvider(provider)
+		return models, 0, len(models) > 0
+	}))
 }
 
 func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider) []string {
@@ -209,9 +223,19 @@ func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
 }
 
-// catalogMemoMaxEntries bounds each catalog memo: model/provider keys are
-// client-controlled, so an unbounded map is a memory-growth vector.
-const catalogMemoMaxEntries = 4096
+// catalogNegativeTTL is how long the catalog memos keep an answer for a model name the catalog does
+// not list: that it knows nothing of the model, or what it knows under another spelling. Model names
+// come from requests, so such answers are kept briefly rather than for the generation, and names
+// callers invent cannot grow the memos for long; names the catalog lists stay for the generation.
+const catalogNegativeTTL = 30 * time.Second
+
+// listedFor reports whether provider's model list names model exactly as written. Many spellings
+// resolve to one listed model (a version suffix strips to its base model), so a memo keeps an answer
+// for the generation only when this holds: the names kept that long are bounded by what the catalog
+// lists, not by what callers send.
+func (mc *ModelCatalog) listedFor(provider schemas.ModelProvider, model string) bool {
+	return slices.Contains(mc.GetModelsForProvider(provider), model)
+}
 
 // catalogGeneration sums the three stores' write counters. Each write bumps one
 // counter by one, so the sum strictly increases: no two catalog states collide.
@@ -219,41 +243,50 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 	return mc.datasheet.WriteGen() + mc.keyconf.WriteGen() + mc.live.WriteGen()
 }
 
-// initCaches builds the memos. Every constructor must call it before use: the
-// cached getters deref the caches with no nil guard.
-func (mc *ModelCatalog) initCaches() {
-	mc.providersForModel = newProvidersForModelCache(mc)
-	mc.modelsForProvider = newModelsForProviderCache(mc)
-	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
-}
-
-// Clone-on-return: the resolver sorts the result in place.
-func newProvidersForModelCache(mc *ModelCatalog) *gencache.Cache[[]schemas.ModelProvider] {
-	return gencache.New(
-		mc.catalogGeneration,
-		catalogMemoMaxEntries,
-		gencache.WithClone(func(v []schemas.ModelProvider) []schemas.ModelProvider { return slices.Clone(v) }),
-		gencache.WithSkipStore(func(v []schemas.ModelProvider) bool { return len(v) == 0 }),
-	)
-}
-
-// catalogGeneration is a valid stamp here too: the list derives from the same
-// three stores. Clone-on-return: callers sort the result in place.
-func newModelsForProviderCache(mc *ModelCatalog) *gencache.Cache[[]string] {
-	return gencache.New(
-		mc.catalogGeneration,
-		catalogMemoMaxEntries,
-		gencache.WithClone(func(v []string) []string { return slices.Clone(v) }),
-		gencache.WithSkipStore(func(v []string) bool { return len(v) == 0 }),
-	)
+// initCaches builds the capability cache and the catalog's generation tables in live. A catalog
+// built without them computes every answer: every cached getter is safe on a nil table.
+func (mc *ModelCatalog) initCaches(live *livestore.Store) error {
+	ctx := context.Background()
+	var err error
+	// Concurrent lookups of one model share one load, as the cache this replaced did.
+	if mc.capabilities, err = live.NewCache[capabilityMemo](ctx, "model_catalog_capabilities",
+		livestore.WithCacheTTL(capabilityMemo.ttl),
+		livestore.WithSharedFills[capabilityMemo]()); err != nil {
+		return err
+	}
+	// catalogGeneration covers all three: each answer derives from the same three stores.
+	gen := livestore.WithGeneration(mc.catalogGeneration)
+	if mc.providersForModel, err = live.NewTable[string, []schemas.ModelProvider](ctx, providersForModelTable, gen); err != nil {
+		return err
+	}
+	if mc.modelsForProvider, err = live.NewTable[string, []string](ctx, modelsForProviderTable, gen); err != nil {
+		return err
+	}
+	mc.maxOutputTokens, err = live.NewTable[string, int](ctx, maxOutputTokensTable, gen)
+	return err
 }
 
 // GetProvidersForModel returns every provider that can serve the model.
 // Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return mc.providersForModel.GetOrCompute(model, func() []schemas.ModelProvider {
+	if mc.providersForModel == nil {
 		return mc.computeProvidersForModel(model)
-	})
+	}
+	// Cloned: the resolver sorts the result in place. An empty answer is not kept.
+	return slices.Clone(mc.providersForModel.GetOrCompute(model, func() ([]schemas.ModelProvider, time.Duration, bool) {
+		providers := mc.computeProvidersForModel(model)
+		if len(providers) == 0 {
+			return providers, 0, false
+		}
+		// An answer for a name no provider lists is kept only for catalogNegativeTTL. A provider
+		// that lists the name is in the answer, so only those are checked.
+		for _, p := range providers {
+			if mc.listedFor(p, model) {
+				return providers, 0, true
+			}
+		}
+		return providers, catalogNegativeTTL, true
+	}))
 }
 
 // computeProvidersForModel composes the uncached answer across stores,

@@ -5,17 +5,18 @@ import (
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/framework/livestore"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/lrucache"
 )
 
 // capabilityTestCatalog builds a catalog whose capability lookups are served by
 // load instead of the datasheet, so cache behaviour can be exercised without a
 // config store.
-func capabilityTestCatalog(load func(schemas.ModelProvider, string) *schemas.ModelCapabilities) (*ModelCatalog, *int) {
+func capabilityTestCatalog(t testing.TB, load func(schemas.ModelProvider, string) *schemas.ModelCapabilities) (*ModelCatalog, *int) {
+	t.Helper()
 	calls := 0
-	mc := &ModelCatalog{capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+	mc := withTestCaches(t, NewTestCatalog(nil))
 	mc.loadCapabilities = func(p schemas.ModelProvider, m string) (*schemas.ModelCapabilities, error) {
 		calls++
 		return load(p, m), nil
@@ -25,7 +26,7 @@ func capabilityTestCatalog(load func(schemas.ModelProvider, string) *schemas.Mod
 
 func TestGetModelCapabilities_CachesRecord(t *testing.T) {
 	yes := true
-	mc, calls := capabilityTestCatalog(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+	mc, calls := capabilityTestCatalog(t, func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
 		if p == schemas.Azure && m == "gpt-5.1-chat" {
 			return &schemas.ModelCapabilities{SupportsFastMode: &yes}
 		}
@@ -47,7 +48,7 @@ func TestGetModelCapabilities_CachesRecord(t *testing.T) {
 // cache. Without that, the ~10 capability checks a single request makes would
 // each hit the database.
 func TestGetModelCapabilities_CachesAbsence(t *testing.T) {
-	mc, calls := capabilityTestCatalog(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+	mc, calls := capabilityTestCatalog(t, func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
 		return nil
 	})
 
@@ -65,7 +66,7 @@ func TestGetModelCapabilities_CachesAbsence(t *testing.T) {
 // another's — the same model name resolves independently per provider.
 func TestGetModelCapabilities_KeyedByProvider(t *testing.T) {
 	yes, no := true, false
-	mc, _ := capabilityTestCatalog(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+	mc, _ := capabilityTestCatalog(t, func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
 		switch p {
 		case schemas.Anthropic:
 			return &schemas.ModelCapabilities{SupportsFastMode: &yes}
@@ -90,7 +91,7 @@ func TestGetModelCapabilities_KeyedByProvider(t *testing.T) {
 // an entry — a naive join on ":" would collapse both to "a:b:c".
 func TestGetModelCapabilities_KeyCannotBeForged(t *testing.T) {
 	var seen []string
-	mc, calls := capabilityTestCatalog(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+	mc, calls := capabilityTestCatalog(t, func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
 		seen = append(seen, string(p)+"|"+m)
 		return &schemas.ModelCapabilities{}
 	})
@@ -108,7 +109,7 @@ func TestGetModelCapabilities_KeyCannotBeForged(t *testing.T) {
 func TestGetModelCapabilities_FlushDropsRecordsAndAbsences(t *testing.T) {
 	present := false
 	yes := true
-	mc, calls := capabilityTestCatalog(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+	mc, calls := capabilityTestCatalog(t, func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
 		if present {
 			return &schemas.ModelCapabilities{SupportsFastMode: &yes}
 		}
@@ -141,7 +142,7 @@ func TestGetModelCapabilities_NilCatalogAndEmptyModel(t *testing.T) {
 		t.Errorf("expected nil from a nil catalog, got %+v", got)
 	}
 
-	mc, calls := capabilityTestCatalog(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+	mc, calls := capabilityTestCatalog(t, func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
 		return &schemas.ModelCapabilities{}
 	})
 	if got := mc.GetModelCapabilities(schemas.OpenAI, ""); got != nil {
@@ -160,7 +161,7 @@ func TestGetModelCapabilities_DoesNotCacheFailedLoads(t *testing.T) {
 	yes := true
 	calls := 0
 	failing := true
-	mc := &ModelCatalog{capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+	mc := withTestCaches(t, NewTestCatalog(nil))
 	mc.loadCapabilities = func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error) {
 		calls++
 		if failing {
@@ -192,10 +193,7 @@ func TestGetModelCapabilities_DoesNotCacheFailedLoads(t *testing.T) {
 // loader builds its own context, so cancelling syncCtx alone does not stop it.
 func TestCleanup_ClearsGlobalCapabilityResolver(t *testing.T) {
 	yes := true
-	mc := &ModelCatalog{
-		capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize),
-		done:         make(chan struct{}),
-	}
+	mc := withTestCaches(t, NewTestCatalog(nil))
 	mc.loadCapabilities = func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error) {
 		return &schemas.ModelCapabilities{SupportsFastMode: &yes}, nil
 	}
@@ -213,4 +211,18 @@ func TestCleanup_ClearsGlobalCapabilityResolver(t *testing.T) {
 	if got := providerUtils.CapabilitiesFor(schemas.Anthropic, "claude-opus-5"); got != nil {
 		t.Errorf("resolver still answering from a torn-down catalog: %+v", got)
 	}
+}
+
+// withTestCaches gives mc its capability cache and generation tables in a live store of its own, as Init does.
+func withTestCaches(t testing.TB, mc *ModelCatalog) *ModelCatalog {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	if err := mc.initCaches(live); err != nil {
+		t.Fatalf("catalog caches: %v", err)
+	}
+	return mc
 }

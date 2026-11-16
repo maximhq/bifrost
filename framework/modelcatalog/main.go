@@ -13,17 +13,16 @@ package modelcatalog
 import (
 	"context"
 	"fmt"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"sync"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/gencache"
-	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
+	livemodels "github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 type ModelCatalog struct {
@@ -32,21 +31,21 @@ type ModelCatalog struct {
 	logger                 schemas.Logger
 
 	datasheet *datasheet.Store
-	live      *live.Store
+	live      *livemodels.Store
 	keyconf   *keyconfig.Store
 
 	// capabilities caches datasheet capability records by (provider, model).
 	// Flushed whenever a sync applies a new sheet.
-	capabilities *lrucache.Cache[*schemas.ModelCapabilities]
+	capabilities *livestore.Cache[capabilityMemo]
 	// loadCapabilities fills a capability cache miss.
 	loadCapabilities func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error)
 
-	providersForModel *gencache.Cache[[]schemas.ModelProvider]
-	modelsForProvider *gencache.Cache[[]string]
+	providersForModel *livestore.Table[string, []schemas.ModelProvider]
+	modelsForProvider *livestore.Table[string, []string]
 	// maxOutputTokens memoizes the datasheet output-token cap per provider+model.
 	// 0 means "no cap known" and is cached too, so a model missing from the
 	// sheet pays the full-table capability scan once per generation, not per request.
-	maxOutputTokens *gencache.Cache[int]
+	maxOutputTokens *livestore.Table[string, int]
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -85,7 +84,9 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 	}
 }
 
-func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
+// Init builds the model catalog over live, whose tables hold its memos, and loads pricing from
+// configStore when there is one. A nil live store is an error.
+func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*ModelCatalog, error) {
 	pricingURL := DefaultPricingURL
 	if config != nil && config.PricingURL != nil {
 		pricingURL = *config.PricingURL
@@ -119,12 +120,15 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			ModelParametersURL: modelParametersURL,
 			SyncInterval:       syncInterval,
 		}),
-		live:         live.New(logger),
-		keyconf:      keyconfig.New(logger),
-		capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize),
-		done:         make(chan struct{}),
+		live:    livemodels.New(logger),
+		keyconf: keyconfig.New(logger),
+		done:    make(chan struct{}),
 	}
-	mc.initCaches()
+	if live != nil {
+		if err := mc.initCaches(live); err != nil {
+			return nil, fmt.Errorf("failed to create the model catalog caches: %w", err)
+		}
+	}
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
 	// Core providers reach capabilities through this hook — they cannot import
@@ -133,7 +137,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// than one sync.
 	mc.loadCapabilities = mc.datasheetCapabilityLoader
 	providerUtils.SetCapabilityResolver(mc.GetModelCapabilities)
-	mc.datasheet.SetOnModelParametersApplied(mc.capabilities.Flush)
+	mc.datasheet.SetOnModelParametersApplied(mc.flushCapabilities)
 
 	// If Init returns an error the caller never owns mc and will never call
 	// Cleanup(), so cancel syncCtx to stop any background goroutines that
@@ -700,16 +704,15 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 }
 
 // NewTestCatalog constructs a minimal ModelCatalog for unit tests. Does not
-// start background workers or hit external services.
+// start background workers or hit external services. It has no caches, so
+// every lookup computes its answer.
 func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
-	mc := &ModelCatalog{
+	return &ModelCatalog{
 		datasheet: datasheet.NewTestStore(baseModelIndex),
-		live:      live.New(nil),
+		live:      livemodels.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
-	return mc
 }
 
 // NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
@@ -717,12 +720,10 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 // LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
 // exercise real pricing/cost computation without reaching the network.
 func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
-	mc := &ModelCatalog{
+	return &ModelCatalog{
 		datasheet: ds,
-		live:      live.New(nil),
+		live:      livemodels.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
-	return mc
 }

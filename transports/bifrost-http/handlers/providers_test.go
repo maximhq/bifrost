@@ -3917,7 +3917,7 @@ func datasheetHandlerForTest(t *testing.T) *ProviderHandler {
 	t.Cleanup(func() { _ = cs.Close(ctx) })
 	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
 	disabled := int64(0)
-	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, bifrost.NewNoOpLogger())
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, nil, bifrost.NewNoOpLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

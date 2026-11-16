@@ -759,8 +759,8 @@ func TestCacheDecodeKey_RejectsMalformedInput(t *testing.T) {
 }
 
 // TestLiveCache_TTLDropsEntriesAndTheirIndex checks WithCacheTTL: an entry is read until its TTL
-// passes and not after, its index binding goes with it, a value whose TTL has already run out is not
-// installed, and a zero TTL keeps the entry.
+// passes and not after, Expiry reports when that is, its index binding goes with it, a value whose
+// TTL has already run out is not installed, and a zero TTL keeps the entry with no expiry.
 func TestLiveCache_TTLDropsEntriesAndTheirIndex(t *testing.T) {
 	type timed struct {
 		v   string
@@ -781,13 +781,15 @@ func TestLiveCache_TTLDropsEntriesAndTheirIndex(t *testing.T) {
 	owner, ok := c.byIndex.Get("row-a")
 	require.True(t, ok, "the index binding is present while its entry is live")
 	require.Equal(t, "soon", owner)
-	entryExpiry, ok := c.entries.Expiry("soon")
+	entryExpiry, ok := c.Expiry("soon")
 	require.True(t, ok, "the entry has a TTL")
 	indexExpiry, ok := c.byIndex.Expiry("row-a")
 	require.True(t, ok, "the index binding has a TTL")
 	require.Equal(t, entryExpiry, indexExpiry, "the index binding expires with its entry")
 	_, ok = c.Get("past")
 	require.False(t, ok, "a value whose TTL has run out is not installed")
+	_, ok = c.Expiry("never")
+	require.False(t, ok, "a zero TTL gives the entry no expiry")
 
 	*clock = clock.Add(81 * time.Millisecond)
 	_, ok = c.Get("soon")

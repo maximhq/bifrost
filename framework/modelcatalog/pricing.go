@@ -2,10 +2,11 @@ package modelcatalog
 
 import (
 	"context"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -44,11 +45,25 @@ func (mc *ModelCatalog) GetMaxOutputTokens(model string, provider schemas.ModelP
 	if mc == nil || model == "" {
 		return 0
 	}
-	return mc.maxOutputTokens.GetOrCompute(lrucache.EncodeKey(string(provider), model), func() int {
+	compute := func() int {
 		if entry := mc.GetModelCapabilityEntryForModel(model, provider); entry != nil && entry.MaxOutputTokens != nil {
 			return *entry.MaxOutputTokens
 		}
 		return 0
+	}
+	if mc.maxOutputTokens == nil {
+		return compute()
+	}
+	// "Nothing known" (0) is kept only for catalogNegativeTTL, so model names nobody serves do not
+	// accumulate.
+	return mc.maxOutputTokens.GetOrCompute(livestore.EncodeKey(string(provider), model), func() (int, time.Duration, bool) {
+		tokens := compute()
+		// So is a cap found for a name the provider does not list, such as a version suffix on a
+		// listed model: callers can send any number of those.
+		if tokens == 0 || !mc.listedFor(provider, model) {
+			return tokens, catalogNegativeTTL, true
+		}
+		return tokens, 0, true
 	})
 }
 
