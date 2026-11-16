@@ -29,3 +29,42 @@ func TestResolveAnalyzerConfigIgnoresLegacySuggestions(t *testing.T) {
 	assert.Nil(t, got.Suggestions)
 	assert.Same(t, legacy, override.Suggestions, "the caller's override keeps its block")
 }
+
+// governanceResolving answers ResolveAccess with an access that carries no restriction, which is all
+// resolveGovernanceScope needs: it reads the identifiers off the context the resolution stamped.
+type governanceResolving struct{ Governance }
+
+func (governanceResolving) ResolveAccess(*schemas.BifrostContext) (schemas.Access, error) {
+	return struct{ schemas.Access }{}, nil
+}
+
+// The scope carries every team the request is attributed to, beside the primary one the singular
+// key names, so a rule scoped to any of them can match.
+func TestResolveGovernanceScopeCarriesEveryTeam(t *testing.T) {
+	p := &RoutingPlugin{governance: governanceResolving{}}
+
+	t.Run("primary team and the full set", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-b")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, "Team B")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamIDs, []string{"team-a", "team-b"})
+
+		scope, ok := p.resolveGovernanceScope(ctx)
+
+		require.True(t, ok)
+		assert.Equal(t, "team-b", scope.TeamID)
+		assert.Equal(t, "Team B", scope.TeamName)
+		assert.Equal(t, []string{"team-a", "team-b"}, scope.TeamIDs)
+	})
+
+	t.Run("no team set leaves the scope as it was", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-a")
+
+		scope, ok := p.resolveGovernanceScope(ctx)
+
+		require.True(t, ok)
+		assert.Equal(t, "team-a", scope.TeamID)
+		assert.Empty(t, scope.TeamIDs)
+	})
+}
