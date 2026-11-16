@@ -643,7 +643,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		// Client gateways are only hashed when set, so configs without them keep
 		// their existing hash.
 		if cc := oc.ClaudeCodeGateway(); cc != nil {
-			hash.Write([]byte("gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
+			// The NUL starts the block where no redirect URI can reach: URIs are written
+			// unframed (kept for existing hashes) and cannot hold control characters.
+			hash.Write([]byte("\x00gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
 			if cc.ManagedSettings != nil {
 				// MarshalSorted sorts map keys at every level, so the bytes are stable.
 				settings, err := providerUtils.MarshalSorted(cc.ManagedSettings)

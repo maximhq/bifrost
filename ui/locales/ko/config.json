@@ -1752,6 +1752,8 @@
 	},
 	"gateways": {
 		"title": "게이트웨이",
+		"loadFailed": "게이트웨이 설정을 불러오지 못했습니다",
+		"reloadFailed": "저장했지만 업데이트된 설정을 다시 불러오지 못했습니다. 더 변경하기 전에 다시 불러오세요.",
 		"description": "코딩 클라이언트가 직접 설정한 가상 키 대신 자체 <code0>/login</code0>으로 Bifrost에 로그인하게 하세요. 클라이언트마다 고유한 URL이 있으며, 요청은 개발자가 선택한 가상 키 또는 계정으로 실행돼요.",
 		"issuerLabel": "발급자 URL",
 		"issuerDescription": "Bifrost의 고정 공개 URL이에요. 각 게이트웨이는 <code0/>에서 제공돼요. MCP OAuth 서버와 같은 발급자를 사용하므로 변경하면 OAuth로 로그인한 MCP 클라이언트에도 영향을 줘요. 환경 변수 구문을 지원해요(예: <code1>env.BIFROST_ISSUER_URL</code1>).",

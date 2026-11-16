@@ -15,6 +15,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -290,7 +291,7 @@ func (ep *clientGatewayEndpoint) handleMetadata(ctx *fasthttp.RequestCtx) {
 	}
 	ctx.Response.Header.Set("Cache-Control", "no-store")
 	base := ep.baseURL(ctx)
-	data, err := sonic.Marshal(map[string]any{
+	data, err := providerUtils.MarshalSorted(map[string]any{
 		"issuer":                                base,
 		"device_authorization_endpoint":         base + "/oauth/device_authorization",
 		"token_endpoint":                        base + "/oauth/token",
@@ -377,7 +378,7 @@ func (ep *clientGatewayEndpoint) handleDeviceAuthorization(ctx *fasthttp.Request
 	}
 
 	verificationURI := clientGatewayDeviceVerificationURL(oauth2IssuerURL(ctx, ep.store))
-	data, err := sonic.Marshal(map[string]any{
+	data, err := providerUtils.MarshalSorted(map[string]any{
 		"device_code":               deviceCode,
 		"user_code":                 userCode,
 		"verification_uri":          verificationURI,

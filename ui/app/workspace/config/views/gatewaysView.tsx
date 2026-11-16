@@ -1,3 +1,4 @@
+import FullPageLoader from "@/components/fullPageLoader";
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import GatewayTelemetrySection from "./gatewayTelemetrySection";
@@ -22,7 +23,7 @@ import {
 } from "./gatewayTelemetrySection.utils";
 
 // The managed-settings editor holds pretty-printed JSON; "" means no managed policy.
-const formatManagedSettings = (settings?: Record<string, unknown>) => (settings ? JSON.stringify(settings, null, 2) : "");
+const formatManagedSettings = (settings?: Record<string, unknown> | null) => (settings ? JSON.stringify(settings, null, 2) : "");
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
@@ -46,8 +47,15 @@ const gatewayURL = (issuer: SecretVar | undefined, fallback: string) => {
 // per coding client (Claude Code today).
 export default function GatewaysView() {
 	const { t } = useTranslation("config");
+	const { t: tCommon } = useTranslation("common");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
-	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const {
+		data: bifrostConfig,
+		isLoading: isConfigLoading,
+		isFetching: isConfigFetching,
+		error: configError,
+		refetch,
+	} = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 
@@ -58,15 +66,22 @@ export default function GatewaysView() {
 	const [managedSettings, setManagedSettings] = useState("");
 	const [telemetry, setTelemetry] = useState<TelemetryDraft>(() => telemetryDraftFromConfig(undefined));
 
+	// The form is synced from the stored settings only when they change: a refetch that
+	// returns the same settings must not wipe the draft, and the form stays locked from the
+	// save until the refetch it triggers lands, so that refetch cannot overwrite an edit.
+	const syncedSettings = useRef<string | null>(null);
 	useEffect(() => {
-		if (!config) return;
+		if (!config || isLoading || isConfigFetching) return;
+		const settings = JSON.stringify([config.oauth2_server_config ?? null, config.mcp_enable_temp_token_auth ?? false]);
+		if (settings === syncedSettings.current) return;
+		syncedSettings.current = settings;
 		setEnabled(config.oauth2_server_config?.gateways?.claude_code?.enabled ?? false);
 		setIssuerURL(config.oauth2_server_config?.issuer_url);
 		setAccessTokenTTL(accessTokenTTLText(config.oauth2_server_config?.access_token_ttl));
 		setAllowTempToken(config.mcp_enable_temp_token_auth ?? false);
 		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.gateways?.claude_code?.managed_settings));
 		setTelemetry(telemetryDraftFromConfig(config.oauth2_server_config?.gateways?.claude_code?.telemetry));
-	}, [config]);
+	}, [config, isLoading, isConfigFetching]);
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
@@ -178,13 +193,39 @@ export default function GatewaysView() {
 		t,
 	]);
 
+	// A failed refetch over cached settings (e.g. right after a save) leaves stale settings as the
+	// baseline, so saving waits until they reload.
+	const reloadFailed = !!configError && !!bifrostConfig;
+
+	if (isConfigLoading && !bifrostConfig) {
+		return <FullPageLoader />;
+	}
+
+	if (configError && !bifrostConfig) {
+		return (
+			<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="gateways-load-error">
+				<PageTitle title={t("gateways.title")} />
+				<div className="border-destructive/30 bg-destructive/5 flex flex-col gap-3 rounded-sm border p-4">
+					<p className="text-destructive text-sm font-medium">{t("gateways.loadFailed")}</p>
+					<p className="text-muted-foreground text-sm">{getErrorMessage(configError)}</p>
+					<div>
+						<Button variant="outline" size="sm" onClick={() => void refetch()} data-testid="gateways-load-retry-btn">
+							{tCommon("retry")}
+						</Button>
+					</div>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="gateways-view">
 			<PageTitle title={t("gateways.title")}>
 				<Trans t={t} i18nKey="gateways.description" components={{ code0: <code className="text-xs" /> }} />
 			</PageTitle>
 
-			<div className="space-y-4">
+			{/* Locked while saving and until the refetch after it lands, so it cannot overwrite an edit. */}
+			<fieldset disabled={isLoading || isConfigFetching} className="min-w-0 space-y-4">
 				<div className="space-y-1.5 rounded-sm border p-4">
 					<label htmlFor="gateways-issuer-url" className="text-sm font-medium">
 						{t("gateways.issuerLabel")}
@@ -307,10 +348,27 @@ export default function GatewaysView() {
 					</div>
 					<GatewayTelemetrySection value={telemetry} onChange={setTelemetry} disabled={!hasSettingsUpdateAccess} />
 				</section>
-			</div>
+			</fieldset>
+
+			{reloadFailed && (
+				<div
+					className="border-destructive/30 bg-destructive/5 flex items-center justify-between gap-3 rounded-sm border p-3"
+					role="alert"
+					data-testid="gateways-reload-error"
+				>
+					<p className="text-destructive text-sm">{t("gateways.reloadFailed")}</p>
+					<Button variant="outline" size="sm" onClick={() => void refetch()} data-testid="gateways-reload-retry-btn">
+						{tCommon("retry")}
+					</Button>
+				</div>
+			)}
 
 			<div className="flex justify-end pt-2">
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="claude-code-save-btn">
+				<Button
+					onClick={handleSave}
+					disabled={!hasChanges || isLoading || isConfigFetching || reloadFailed || !hasSettingsUpdateAccess}
+					data-testid="claude-code-save-btn"
+				>
 					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>

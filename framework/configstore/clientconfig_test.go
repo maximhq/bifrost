@@ -142,6 +142,22 @@ func TestGenerateClientConfigHash_TelemetryValuesAreUnambiguous(t *testing.T) {
 		"two headers must not hash like one whose value contains the next header")
 }
 
+// TestGenerateClientConfigHash_GatewayAfterRedirectURIsIsUnambiguous pins that a redirect URI
+// ending in the gateway marker does not hash like that URI plus a real gateway block.
+func TestGenerateClientConfigHash_GatewayAfterRedirectURIsIsUnambiguous(t *testing.T) {
+	hashOf := func(uri string, gateways *tables.ClientGatewaysConfig) string {
+		t.Helper()
+		c := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: []string{uri}, Gateways: gateways}}
+		h, err := c.GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	require.NotEqual(t,
+		hashOf("https://example.test/callback", &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: true}}),
+		hashOf("https://example.test/callbackgateways.claude_code.enabled:true", nil))
+}
+
 // bifrost_url and bifrost_mcp_allow_writes are hashed so that where one ends is
 // unambiguous: written as plain "prefix + value", a URL whose path ends in the
 // next field's text hashed the same as a shorter URL with that field set. Both

@@ -1757,6 +1757,8 @@
 	},
 	"gateways": {
 		"title": "Gateways",
+		"loadFailed": "Die Gateway-Einstellungen konnten nicht geladen werden",
+		"reloadFailed": "Gespeichert, aber die aktualisierten Einstellungen konnten nicht neu geladen werden. Lade sie neu, bevor du weitere Änderungen vornimmst.",
 		"description": "Lass Coding-Clients sich mit ihrem eigenen <code0>/login</code0> bei Bifrost anmelden, statt einen virtuellen Schlüssel von Hand zu konfigurieren. Jeder Client hat seine eigene URL, und seine Anfragen laufen unter dem virtuellen Schlüssel oder Konto, das der Entwickler wählt.",
 		"issuerLabel": "Issuer-URL",
 		"issuerDescription": "Die stabile öffentliche URL von Bifrost. Jedes Gateway ist unter <code0/> erreichbar. Es ist derselbe Issuer, den der MCP-OAuth-Server nutzt; eine Änderung betrifft also auch per OAuth angemeldete MCP-Clients. Unterstützt Umgebungsvariablen-Syntax (z. B. <code1>env.BIFROST_ISSUER_URL</code1>).",

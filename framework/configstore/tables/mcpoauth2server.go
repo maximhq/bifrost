@@ -176,11 +176,17 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 		if d.Endpoint == nil || !d.Endpoint.IsSet() {
 			return fmt.Errorf("%s.destinations[%d].endpoint is required", path, i)
 		}
-		if !d.Endpoint.IsFromSecret() {
-			u, err := url.Parse(strings.TrimSpace(d.Endpoint.GetValue()))
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return fmt.Errorf("%s.destinations[%d].endpoint must be an http or https URL", path, i)
+		// A reference is checked by what it resolves to, as the issuer URL is: unresolved is an
+		// error, and the error names the reference, never the resolved value.
+		endpoint := strings.TrimSpace(d.Endpoint.GetValue())
+		if endpoint == "" && d.Endpoint.IsFromSecret() {
+			return fmt.Errorf("%s.destinations[%d].endpoint references %s, which resolves to an empty value", path, i, d.Endpoint.GetRawRef())
+		}
+		if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			if d.Endpoint.IsFromSecret() {
+				return fmt.Errorf("%s.destinations[%d].endpoint references %s, which does not resolve to an http or https URL", path, i, d.Endpoint.GetRawRef())
 			}
+			return fmt.Errorf("%s.destinations[%d].endpoint must be an http or https URL", path, i)
 		}
 		for name, v := range d.Headers {
 			if strings.TrimSpace(name) == "" {

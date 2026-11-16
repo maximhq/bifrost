@@ -1000,7 +1000,7 @@ export interface CoreConfig {
 			claude_code?: {
 				enabled?: boolean;
 				// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
-				managed_settings?: Record<string, unknown>;
+				managed_settings?: Record<string, unknown> | null; // null: no managed policy
 				telemetry?: ClientGatewayTelemetry;
 			};
 		};

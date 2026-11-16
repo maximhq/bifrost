@@ -2937,6 +2937,8 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 		{[]string{"https://*.example.com/cb"}, true},
 		{[]string{"https://app.example.com/*"}, true},
 		{[]string{"**"}, true},
+		{[]string{"https://app.example.com/cb\x00gateways.claude_code.enabled:true"}, true},
+		{[]string{"https://app.example.com/cb\n"}, true},
 	} {
 		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: tc.uris}})
 		if tc.wantErr {
@@ -3067,6 +3069,41 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	}
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth_code_ttl")
+}
+
+// TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing pins that a config.json
+// redirect URI imitating the gateway block's NUL framing fails startup before the file is
+// hashed. Without the early check its hash matches the stored row (the plain URI plus an
+// enabled gateway), the stored row is kept, and the file is silently ignored.
+func TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	data := func(uri string, gateways *tables.ClientGatewaysConfig) *ConfigData {
+		return &ConfigData{
+			Client: &configstore.ClientConfig{
+				InitialPoolSize: 10, EnableLogging: new(true), MaxRequestBodySizeMB: 100,
+				OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+					IssuerURL:           schemas.NewSecretVar("https://bifrost.example.com"),
+					AllowedRedirectURIs: []string{uri},
+					Gateways:            gateways,
+				},
+			},
+			ConfigStoreConfig: &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(tempDir, "config.db")}},
+		}
+	}
+	ctx := context.Background()
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback", &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: true}}))
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback\x00gateways.claude_code.enabled:true", nil))
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		defer second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "contains a control character")
 }
 
 // TestValidateClientConfig_MCPOpenAPIMaxSpecMB: PUT /api/config bounds

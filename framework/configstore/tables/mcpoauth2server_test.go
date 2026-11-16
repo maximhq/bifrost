@@ -15,6 +15,8 @@ import (
 // switched-off block is not checked.
 func TestClientGatewayTelemetryConfig_Validate(t *testing.T) {
 	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "secret")
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://otel.example.com")
+	t.Setenv("BIFROST_TEST_OTEL_FTP", "ftp://otel.example.com")
 	dest := func(endpoint string, headers map[string]string) ClientGatewayTelemetryDestination {
 		d := ClientGatewayTelemetryDestination{Endpoint: schemas.NewSecretVar(endpoint)}
 		if headers != nil {
@@ -33,6 +35,8 @@ func TestClientGatewayTelemetryConfig_Validate(t *testing.T) {
 		"disabled, empty":            {cfg: &ClientGatewayTelemetryConfig{Enabled: false}},
 		"valid":                      {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{dest("https://otel.example.com", map[string]string{"authorization": "env.BIFROST_TEST_OTEL_TOKEN"})}, DropAttributes: []string{"prompt"}}},
 		"env endpoint":               {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{dest("env.BIFROST_TEST_OTEL_ENDPOINT", nil)}}},
+		"unset env endpoint":         {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{dest("env.BIFROST_TEST_OTEL_UNSET", nil)}}, wantErr: "references env.BIFROST_TEST_OTEL_UNSET, which resolves to an empty value"},
+		"env endpoint not http":      {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{dest("env.BIFROST_TEST_OTEL_FTP", nil)}}, wantErr: "references env.BIFROST_TEST_OTEL_FTP, which does not resolve to an http or https URL"},
 		"no destinations":            {cfg: &ClientGatewayTelemetryConfig{Enabled: true}, wantErr: "destinations must list at least one collector"},
 		"missing endpoint":           {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{{}}}, wantErr: "endpoint is required"},
 		"non-http endpoint":          {cfg: &ClientGatewayTelemetryConfig{Enabled: true, Destinations: []ClientGatewayTelemetryDestination{dest("ftp://otel.example.com", nil)}}, wantErr: "must be an http or https URL"},
