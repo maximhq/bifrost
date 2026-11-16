@@ -9596,6 +9596,8 @@ func TestBedrockToolResultRefusesMembersItCannotForward(t *testing.T) {
 		"document by s3 reference":  {{Document: &bedrock.BedrockDocumentSource{Format: "pdf", Name: "d", Source: &bedrock.BedrockDocumentSourceData{S3Location: s3}}}},
 		"nested tool use":           {{Text: schemas.Ptr("x")}, {ToolUse: &bedrock.BedrockToolUse{ToolUseID: "n", Name: "n", Input: json.RawMessage(`{}`)}}},
 		"empty member":              {{Text: schemas.Ptr("x")}, {}},
+		"lone nested tool use":      {{ToolUse: &bedrock.BedrockToolUse{ToolUseID: "n", Name: "n", Input: json.RawMessage(`{}`)}}},
+		"lone empty member":         {{}},
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
