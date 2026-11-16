@@ -139,6 +139,14 @@ func (a *Access) Bases() []schemas.Permit {
 	return a.granting()
 }
 
+// Held implements schemas.Access.
+func (a *Access) Held() []schemas.Permit {
+	if a == nil || len(a.bases) == 0 {
+		return nil
+	}
+	return slices.Clone(a.bases)
+}
+
 // LevelMode implements schemas.Access.
 func (a *Access) LevelMode() string {
 	if a == nil {

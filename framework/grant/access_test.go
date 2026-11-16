@@ -1810,6 +1810,25 @@ func TestAccessLevels_UnionReadsEveryPermitAsOne(t *testing.T) {
 	assert.Equal(t, "union", NewAccess(held(caller), Union, nil, "", nil).LevelMode())
 }
 
+// Held is every permit at every level, so limit gathering reaches capping profiles that Bases leaves
+// out under Intersect.
+func TestAccessLevels_HeldIncludesCappingLevels(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	customer := atLevel(permitWithModels(PermitCustomerAccessProfile, "c1", "Customer", "openai", "model-a"), 2)
+
+	intersect := NewAccess(held(caller, team, customer), Intersect, nil, "", nil)
+	assertPermitsAre(t, intersect.Bases(), caller)
+	assertPermitsAre(t, intersect.Held(), caller, team, customer)
+
+	union := NewAccess(held(caller, team, customer), Union, nil, "", nil)
+	assertPermitsAre(t, union.Held(), union.Bases()...)
+
+	var none *Access
+	assert.Nil(t, none.Held())
+	assert.Nil(t, NewAccess(nil, Intersect, nil, "", nil).Held())
+}
+
 func TestAccessLevels_AHigherLevelTakesAwayWhatTheCallerHolds(t *testing.T) {
 	// The caller holds models a and b; the level above allows only c. Nothing is left.
 	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")

@@ -1741,3 +1741,42 @@ func TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped(t *testing.T) {
 		assert.Equal(t, DecisionAllow, result.Decision)
 	})
 }
+
+// Under intersecting levels a capping profile only narrows what the caller may reach, but its own
+// per-model limits still bind, exactly as they do when levels union.
+func TestGatherLimitsIncludesCappingPermitModelLimits(t *testing.T) {
+	teamModelRL := buildRateLimit("rl-team-gpt-4o", 1000, 10)
+	teamScopeID := "t1"
+	teamModelConfig := buildModelConfig("mc-team-gpt-4o", "gpt-4o", nil, nil, teamModelRL)
+	teamModelConfig.Scope = configstoreTables.ModelConfigScopeEntityAccessProfile
+	teamModelConfig.ScopeID = &teamScopeID
+
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*teamModelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*teamModelRL},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	key := grant.NewPermit(grant.PermitVirtualKey, "vk1", "Key", true, false, []schemas.ProviderPermit{{
+		Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"},
+	}}, nil)
+	team := grant.NewPermit(grant.PermitTeamAccessProfile, teamScopeID, "Team", true, false, []schemas.ProviderPermit{{
+		Provider: "openai", AllowedModels: []string{"gpt-4o"}, KeyIDs: []string{"*"},
+	}}, nil, grant.WithLevel(1))
+
+	for _, levelMode := range []grant.CompositionMode{grant.Intersect, grant.Union} {
+		t.Run(string(levelMode), func(t *testing.T) {
+			access := grant.NewAccess([]schemas.Permit{key, team}, levelMode, nil, "", nil)
+			require.True(t, access.IsModelAllowed("openai", "gpt-4o"))
+
+			_, rateLimits, err := store.GatherLimits(emptyCtx(), access, schemas.OpenAI, "gpt-4o")
+
+			require.NoError(t, err)
+			ids := make([]string, 0, len(rateLimits))
+			for _, limit := range rateLimits {
+				ids = append(ids, limit.ID)
+			}
+			assert.Contains(t, ids, teamModelRL.ID, "the team profile's own gpt-4o rate limit must be gathered")
+		})
+	}
+}

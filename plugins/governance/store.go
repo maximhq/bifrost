@@ -4939,7 +4939,9 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	if access == nil {
 		return budgets, rateLimits, nil
 	}
-	carried := access.Bases()
+	// Held, not Bases: a capping level grants nothing under intersect, but its holders' own limits
+	// still bind, the same as when levels union.
+	carried := access.Held()
 	if scoping := access.Scoping(); scoping != nil {
 		carried = append(carried, scoping)
 	}

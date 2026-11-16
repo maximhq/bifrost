@@ -152,6 +152,9 @@ type Access interface {
 	// Bases returns the permits that grant, in attribution order: all of them, or the lowest level
 	// when levels intersect. Empty when the caller holds none.
 	Bases() []Permit
+	// Held returns every permit the caller holds at every level, in order. It equals Bases unless
+	// levels intersect, where it also includes the capping levels whose own limits still bind.
+	Held() []Permit
 	// LevelMode returns how the caller's levels combine: "intersect" caps by every level, anything
 	// else reads the permits as one. Separate from Mode, which is the scoping permit's.
 	LevelMode() string
