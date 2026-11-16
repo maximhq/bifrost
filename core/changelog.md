@@ -1,3 +1,4 @@
+- feat: providers - send a `bifrost/<version> Go/<go-version>` User-Agent upstream, replacing only the HTTP library defaults so a provider that sets its own keeps it [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
 - fix: a caller's `additionalModelRequestFieldPaths.anthropic_beta` on Bedrock Converse is now unioned with the betas Bifrost derives (fine-grained tool streaming, server-tool betas such as memory's context-management) instead of replacing them, so eager tools stream incrementally and tunneled server tools keep the beta they need (thanks [@fus3r](https://github.com/fus3r)!)
 - fix: gemini - decisions reject an empty input, a non-image data URL in `input_image`, and an image, file or audio part given as a single instruction object before calling Gemini, and read a part's `detail` case-insensitively (thanks [@Xytronix](https://github.com/Xytronix)!)
 - feat: Kimchi provider for chat, Responses and embeddings

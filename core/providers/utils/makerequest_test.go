@@ -8,6 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1159,4 +1162,172 @@ func TestSetExtraHeaders_ResolvesSecretVarValues(t *testing.T) {
 	if got := httpReq.Header.Get("Authorization"); got != "Bearer keep" {
 		t.Errorf("http Authorization overwritten: %q", got)
 	}
+}
+
+// TestUserAgent_DefaultAndPreserved checks the header format,
+// `<product>/<version> <lang>/<version>`, while leaving every deliberate
+// choice alone: a provider header (GitHub Copilot needs its own), a
+// fasthttp.Client.Name, and a client that opted out of a default.
+func TestUserAgent_DefaultAndPreserved(t *testing.T) {
+	previous := BifrostVersion
+	BifrostVersion = "v9.9.9"
+	t.Cleanup(func() { BifrostVersion = previous })
+
+	want := "bifrost/v9.9.9 Go/" + strings.TrimPrefix(runtime.Version(), "go")
+
+	capture := func(t *testing.T, client *fasthttp.Client, setCallerValue bool) string {
+		t.Helper()
+		var got string
+		ln := fasthttputil.NewInmemoryListener()
+		server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) {
+			got = string(ctx.Request.Header.Peek("User-Agent"))
+		}}
+		go server.Serve(ln) //nolint:errcheck
+		defer ln.Close()
+
+		client.Dial = func(string) (net.Conn, error) { return ln.Dial() }
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI("http://test.local/v1/chat/completions")
+		req.Header.SetMethod("POST")
+		if setCallerValue {
+			req.Header.Set("User-Agent", "caller-app/1.0")
+		}
+
+		_, bifrostErr, wait := MakeRequestWithContext(context.Background(), client, req, resp)
+		if bifrostErr != nil {
+			t.Fatalf("request failed: %v", bifrostErr)
+		}
+		wait()
+		return got
+	}
+
+	t.Run("fasthttp default", func(t *testing.T) {
+		if got := capture(t, &fasthttp.Client{}, false); got != want {
+			t.Errorf("User-Agent = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("fasthttp caller value preserved", func(t *testing.T) {
+		if got := capture(t, &fasthttp.Client{}, true); got != "caller-app/1.0" {
+			t.Errorf("User-Agent = %q, want %q (a deliberate value must be preserved)", got, "caller-app/1.0")
+		}
+	})
+
+	// fasthttp applies Client.Name only when the request header is empty, so the
+	// helper must not fill the header first.
+	t.Run("fasthttp client name preserved", func(t *testing.T) {
+		if got := capture(t, &fasthttp.Client{Name: "provider-sdk/1.0"}, false); got != "provider-sdk/1.0" {
+			t.Errorf("User-Agent = %q, want %q (Client.Name must be preserved)", got, "provider-sdk/1.0")
+		}
+	})
+
+	// NoDefaultUserAgentHeader means the caller wants no default at all.
+	t.Run("fasthttp no default user agent", func(t *testing.T) {
+		if got := capture(t, &fasthttp.Client{NoDefaultUserAgentHeader: true}, false); got != "" {
+			t.Errorf("User-Agent = %q, want no header", got)
+		}
+	})
+
+	t.Run("net/http default", func(t *testing.T) {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get("User-Agent")
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), "POST", srv.URL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := DoHTTPRequest(srv.Client(), req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if got != want {
+			t.Errorf("User-Agent = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("net/http caller value preserved", func(t *testing.T) {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get("User-Agent")
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), "POST", srv.URL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("User-Agent", "caller-app/1.0")
+		resp, err := DoHTTPRequest(srv.Client(), req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if got != "caller-app/1.0" {
+			t.Errorf("User-Agent = %q, want %q (a deliberate value must be preserved)", got, "caller-app/1.0")
+		}
+	})
+
+	// net/http omits the header when the value is empty, so an explicit empty
+	// value is a deliberate opt-out and must survive.
+	t.Run("net/http empty value preserved", func(t *testing.T) {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get("User-Agent")
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), "POST", srv.URL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("User-Agent", "")
+		resp, err := DoHTTPRequest(srv.Client(), req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if got != "" {
+			t.Errorf("User-Agent = %q, want no header", got)
+		}
+	})
+
+	// DoHTTPRequest is exported, so a caller can hand it a struct-literal request
+	// whose Header is nil. http.Client would initialize that map later; the
+	// helper must not panic before it gets there.
+	t.Run("net/http nil header", func(t *testing.T) {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get("User-Agent")
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatalf("parse url: %v", err)
+		}
+		req := &http.Request{Method: "POST", URL: u}
+		if req.Header != nil {
+			t.Fatalf("precondition: Header should be nil")
+		}
+
+		resp, err := DoHTTPRequest(srv.Client(), req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if got != want {
+			t.Errorf("User-Agent = %q, want %q", got, want)
+		}
+	})
 }
