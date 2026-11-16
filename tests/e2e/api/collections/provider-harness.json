@@ -320755,11 +320755,11 @@
       ]
     },
     {
-      "name": "354. Wally provider (wally provider)",
+      "name": "354. Wally provider (#9719 / PR #9720)",
       "description": "Wally (RunAnywhere) serves open-weight models through an OpenAI-compatible chat API at https://inference.runanywhere.ai/v1. Bifrost reaches it through the shared OpenAI chat handlers, serves /v1/responses by converting to chat, and lists models from /models. Wally has no /completions, /embeddings or /responses endpoint, so text completion and embeddings are declared unsupported in provider-capabilities.json and covered by the shared documented-unsupported checks. Model ids name upstream vendors (deepseek-v4.1-flash, minimax-m3), so filter-collection.mjs routes these rows exclusively to the wally partition.",
       "item": [
         {
-          "name": "/v1/chat/completions - answer served by wally with usage - wally/deepseek-v4.1-flash",
+          "name": "/v1/chat/completions - answer served by wally with usage - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -320805,7 +320805,7 @@
           }
         },
         {
-          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - wally/deepseek-v4.1-flash",
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -320861,7 +320861,7 @@
           }
         },
         {
-          "name": "/v1/chat/completions - reasoning_effort none turns thinking off - wally/deepseek-v4.1-flash",
+          "name": "/v1/chat/completions - reasoning_effort none turns thinking off - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -320904,7 +320904,7 @@
           }
         },
         {
-          "name": "/v1/chat/completions - top_k dropped and small output cap kept - wally/deepseek-v4.1-flash",
+          "name": "/v1/chat/completions - top_k dropped and small output cap kept - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -320947,7 +320947,7 @@
           }
         },
         {
-          "name": "/v1/chat/completions - function tool call - wally/deepseek-v4.1-flash",
+          "name": "/v1/chat/completions - function tool call - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -320993,7 +320993,7 @@
           }
         },
         {
-          "name": "/v1/responses - Responses shape via chat - wally/deepseek-v4.1-flash",
+          "name": "/v1/responses - Responses shape via chat - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -321037,7 +321037,7 @@
           }
         },
         {
-          "name": "/openai/v1/chat/completions - OpenAI drop-in route - wally/deepseek-v4.1-flash",
+          "name": "/openai/v1/chat/completions - OpenAI drop-in route - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -321079,7 +321079,7 @@
           }
         },
         {
-          "name": "/v1/responses stream - completed SSE response - wally/deepseek-v4.1-flash",
+          "name": "/v1/responses stream - completed SSE response - wally/deepseek-v4.1-flash - #9719",
           "event": [
             {
               "listen": "test",
@@ -321131,7 +321131,7 @@
           }
         },
         {
-          "name": "/v1/models?provider=wally - lists Wally models",
+          "name": "/v1/models?provider=wally - lists Wally models - #9719",
           "event": [
             {
               "listen": "test",
