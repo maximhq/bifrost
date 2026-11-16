@@ -53,6 +53,8 @@
 		"publishedBy": "Publiée par <code0>{{host}}</code0>",
 		"localhostWarning": "Cette application ne revient que vers votre propre ordinateur ; son nom ne peut donc pas être vérifié. N’importe quelle application exécutée localement pourrait l’utiliser.",
 		"deviceSignInConfirm": "Continuez uniquement si vous avez lancé cette connexion vous-même et que le code saisi correspond à celui affiché dans votre terminal.",
+		"deviceCodeLabel": "Code affiché dans votre terminal",
+		"deviceCodeEnter": "Saisissez le code affiché dans votre terminal",
 		"denyButton": "Ce n’était pas moi - refuser"
 	},
 	"setup": {

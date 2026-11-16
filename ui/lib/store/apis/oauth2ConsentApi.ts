@@ -16,6 +16,7 @@ export type OAuth2ConsentSubmitRequest =
 	| {
 			mode: "vk" | "session" | "user";
 			value?: string; // VK plaintext for mode=vk; absent for session/user
+			user_code?: string; // the terminal's code; required to approve a device sign-in
 	  }
 	| { deny: true }; // refuse a device sign-in instead of approving it
 

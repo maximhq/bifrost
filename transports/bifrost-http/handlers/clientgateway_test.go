@@ -95,7 +95,7 @@ func approveWithVK(t *testing.T, h *clientGatewayEndpoint, consent *OAuth2Consen
 	require.NoError(t, err)
 	flowID := parsed.Query().Get("flow")
 
-	submit := jsonPostCtx(`{"mode":"vk","value":"` + vkValue + `"}`)
+	submit := jsonPostCtx(`{"mode":"vk","value":"` + vkValue + `","user_code":"` + userCode + `"}`)
 	submit.SetUserValue("id", flowID)
 	consent.flowSubmit(submit)
 	require.Equal(t, fasthttp.StatusOK, submit.Response.StatusCode(), string(submit.Response.Body()))
@@ -607,7 +607,7 @@ func TestClaudeCodeGateway_DeniedSignIn(t *testing.T) {
 
 	assert.Equal(t, "access_denied", oauthErrorCode(t, pollDeviceToken(h, deviceCode)))
 
-	approve := jsonPostCtx(`{"mode":"vk","value":"` + vk.Value.GetValue() + `"}`)
+	approve := jsonPostCtx(`{"mode":"vk","value":"` + vk.Value.GetValue() + `","user_code":"` + userCode + `"}`)
 	approve.SetUserValue("id", flowID)
 	consent.flowSubmit(approve)
 	assert.NotEqual(t, fasthttp.StatusOK, approve.Response.StatusCode(), "a refused sign-in must not be approvable afterwards")

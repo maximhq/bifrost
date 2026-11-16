@@ -17,6 +17,10 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly deviceError: Locator
   readonly deviceApproved: Locator
   readonly deviceDenied: Locator
+  readonly consentDeviceCode: Locator
+  readonly consentDeviceCodeInput: Locator
+  readonly consentVKInput: Locator
+  readonly consentConnectVKBtn: Locator
   readonly telemetrySwitch: Locator
   readonly telemetryAddBtn: Locator
   readonly telemetryEndpointInput: Locator
@@ -40,6 +44,10 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.deviceError = page.getByTestId('claude-code-device-error')
     this.deviceApproved = page.getByTestId('claude-code-device-approved')
     this.deviceDenied = page.getByTestId('claude-code-device-denied')
+    this.consentDeviceCode = page.getByTestId('oauth-consent-device-code-value')
+    this.consentDeviceCodeInput = page.getByTestId('oauth-consent-device-code-input')
+    this.consentVKInput = page.getByTestId('oauth-consent-vk-input')
+    this.consentConnectVKBtn = page.getByTestId('oauth-consent-connect-vk-btn')
     this.telemetrySwitch = page.getByTestId('claude-code-telemetry-switch')
     this.telemetryAddBtn = page.getByTestId('claude-code-telemetry-add-btn')
     this.telemetryEndpointInput = page.getByTestId('claude-code-telemetry-endpoint-input')
@@ -55,5 +63,9 @@ export class ClaudeCodeGatewayPage extends BasePage {
 
   async gotoDevicePage(query: string): Promise<void> {
     await this.page.goto(`/oauth/device${query}`)
+  }
+
+  async gotoConsentPage(flowId: string): Promise<void> {
+    await this.page.goto(`/oauth/consent?flow=${encodeURIComponent(flowId)}`)
   }
 }

@@ -51,6 +51,8 @@
 		"publishedBy": "公開元：<code0>{{host}}</code0>",
 		"localhostWarning": "このアプリケーションはお使いのコンピューターにのみ戻るため、名前を確認できません。ローカルで動作する任意のアプリがこれを使用できる可能性があります。",
 		"deviceSignInConfirm": "このサインインを自分で開始し、入力したコードがターミナルに表示されたコードと一致する場合にのみ続行してください。",
+		"deviceCodeLabel": "ターミナルに表示されたコード",
+		"deviceCodeEnter": "ターミナルに表示されているコードを入力してください",
 		"denyButton": "自分ではありません - 拒否する",
 		"signInRedirectBody": "この認可にはサインイン済みの Bifrost アカウントが必要です。サインイン画面に移動し、完了後すぐにここへ戻ります。",
 		"signInToBifrost": "Bifrost にサインイン"
