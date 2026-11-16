@@ -587,6 +587,8 @@ Nodes coordinate saves through Bifrost's shared KV store. Without one, nodes sti
 
 **Chromem is node-local.** With Chromem as the vector store, nothing is shared between nodes. It survives restarts only when `path` is set; otherwise it behaves like `embedded`.
 
+**PostgreSQL (pgvector) stores long generation names under a hashed table name.** Each generation namespace (`BifrostComplexityRouter_<hash>`) is 88 characters, longer than a comfortable PostgreSQL table name, so pgvector keeps it in a table named after a prefix plus a hash and records the full namespace in the table comment. Listing and deleting generations work with the full name.
+
 <Note>
 Vectors are shared, configuration is not. Without cluster gossip, a save reloads only the node that served it; other nodes keep serving their current generation until they restart.
 </Note>

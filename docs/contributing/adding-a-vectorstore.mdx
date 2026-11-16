@@ -6,7 +6,7 @@ icon: "circle-nodes"
 
 The Vector store in Bifrost is designed to be extensible, allowing support for different vector database backends. This guide outlines the philosophy, architecture, and steps to add support for a new vector database.
 
-This guide will help you add a new custom backend for the vector store. Currently, Bifrost supports Weaviate, Redis and Qdrant.
+This guide will help you add a new custom backend for the vector store. Currently, Bifrost supports Weaviate, Redis (including Valkey-compatible endpoints), Qdrant, Pinecone, chromem (embedded, in-process) and PostgreSQL with pgvector.
 
 ## Setup
 
@@ -80,6 +80,11 @@ When adding a new database, please follow these conventions:
 6.  Create a constructor function that initializes the database client and validates connectivity.
 7.  Update the `NewVectorStore` factory function in `store.go` to handle your new database type.
 8.  Update the `Config` struct's `UnmarshalJSON` method in `store.go` to properly parse your configuration.
+9.  Register the type everywhere else backends are listed:
+    *   `transports/config.schema.json`: the `vector_store.type` enum, the `config` `anyOf`, an `allOf` entry that pins `config` to your `$defs/<name>_config`, and that `$defs` entry. `TestSchemaVectorStoreTypes` in `transports/bifrost-http/lib/validator_test.go` fails until the schema matches `NewVectorStore`; add valid and invalid config cases for your backend there.
+    *   Tests: the interface contract lists in `framework/vectorstore/upsert_test.go` (`vectorStoreTestBackends` and `TestVectorStoreListNamespaces`), a service in `tests/docker-compose.yml` (pinned IP on `bifrost_network`), a branch in `storeConfigForType` and an entry in `getVectorStoreTestCases` in `plugins/semanticcache`, and the backend map in `TestWarpTopicsJobAgainstLiveVectorStores` (`framework/warp/topics_test.go`).
+    *   Deployment: the Helm chart (`values.yaml`, `values.schema.json`, the vector store block and validation in `templates/_helpers.tpl`, secret env vars in `templates/deployment.yaml` and `templates/stateful.yaml`, a file in `values-examples/`) and the type list in `terraform/modules/bifrost/variables.tf`.
+    *   Docs: a page under `docs/integrations/vector-databases/` added to `docs/docs.json`, and the backend lists in the vector store architecture, semantic caching and deployment guide pages.
 
 ### Query translation
 

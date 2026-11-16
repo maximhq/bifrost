@@ -288,6 +288,16 @@ false
 {{- end -}}
 {{- end -}}
 
+{{- define "bifrost.pgvector.password" -}}
+{{- if .Values.vectorStore.pgvector.external.enabled -}}
+{{- if .Values.vectorStore.pgvector.external.existingSecret -}}
+env.BIFROST_PGVECTOR_PASSWORD
+{{- else -}}
+{{- .Values.vectorStore.pgvector.external.password -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "bifrost.config" -}}
 {{- $config := dict "$schema" (.Values.bifrost.schemaUrl | default "https://www.getbifrost.ai/schema") }}
 {{- if .Values.bifrost.sourceOfTruth }}
@@ -1482,6 +1492,32 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $chromemConfig }}
+{{- else if eq .Values.vectorStore.type "pgvector" }}
+{{- $pgvector := .Values.vectorStore.pgvector.external }}
+{{- $pgvectorConfig := dict "host" $pgvector.host "user" $pgvector.user "database" $pgvector.database }}
+{{- if $pgvector.port }}
+{{- $_ := set $pgvectorConfig "port" ($pgvector.port | int) }}
+{{- end }}
+{{- $pgvectorPassword := include "bifrost.pgvector.password" . }}
+{{- if $pgvectorPassword }}
+{{- $_ := set $pgvectorConfig "password" $pgvectorPassword }}
+{{- end }}
+{{- if $pgvector.sslMode }}
+{{- $_ := set $pgvectorConfig "ssl_mode" $pgvector.sslMode }}
+{{- end }}
+{{- if $pgvector.schema }}
+{{- $_ := set $pgvectorConfig "schema" $pgvector.schema }}
+{{- end }}
+{{- if $pgvector.maxConns }}
+{{- $_ := set $pgvectorConfig "max_conns" ($pgvector.maxConns | int) }}
+{{- end }}
+{{- if $pgvector.vectorType }}
+{{- $_ := set $pgvectorConfig "vector_type" $pgvector.vectorType }}
+{{- end }}
+{{- if $pgvector.rowLevelSecurity }}
+{{- $_ := set $pgvectorConfig "row_level_security" $pgvector.rowLevelSecurity }}
+{{- end }}
+{{- $_ := set $vectorStore "config" $pgvectorConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
@@ -1877,6 +1913,15 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "disable_identity_scoping" }}
 {{- $_ := set $scConfig "disable_identity_scoping" $inputConfig.disable_identity_scoping }}
+{{- end }}
+{{- if hasKey $inputConfig "tenant_isolation" }}
+{{- $_ := set $scConfig "tenant_isolation" $inputConfig.tenant_isolation }}
+{{- end }}
+{{- if hasKey $inputConfig "cleanup_interval" }}
+{{- $_ := set $scConfig "cleanup_interval" $inputConfig.cleanup_interval }}
+{{- end }}
+{{- if hasKey $inputConfig "cleanup_batch_size" }}
+{{- $_ := set $scConfig "cleanup_batch_size" $inputConfig.cleanup_batch_size }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
 {{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
@@ -2760,6 +2805,22 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not .Values.vectorStore.qdrant.external.host }}
 {{- fail "ERROR: vectorStore.qdrant.external.host is required when using external Qdrant." }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate pgvector when vector store type is pgvector. The chart does not deploy pgvector, so the external connection is required */}}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "pgvector") }}
+{{- if not .Values.vectorStore.pgvector.external.enabled }}
+{{- fail "ERROR: vectorStore.pgvector.external.enabled must be true when vectorStore.type is pgvector. The chart does not deploy pgvector; point vectorStore.pgvector.external at a PostgreSQL server with the pgvector extension." }}
+{{- end }}
+{{- if not .Values.vectorStore.pgvector.external.host }}
+{{- fail "ERROR: vectorStore.pgvector.external.host is required when using pgvector." }}
+{{- end }}
+{{- if not .Values.vectorStore.pgvector.external.user }}
+{{- fail "ERROR: vectorStore.pgvector.external.user is required when using pgvector." }}
+{{- end }}
+{{- if not .Values.vectorStore.pgvector.external.database }}
+{{- fail "ERROR: vectorStore.pgvector.external.database is required when using pgvector." }}
 {{- end }}
 {{- end }}
 

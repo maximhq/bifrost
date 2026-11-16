@@ -217,6 +217,32 @@ services:
                 # docker image CI test.
                 ipv4_address: 172.28.0.16
 
+    # PostgreSQL with the pgvector extension for the pgvector vector store tests
+    # (framework/vectorstore/pgvector_test.go and the semantic cache plugin
+    # suite). Host port 5433 because the postgres service above owns 5432; the
+    # tests default PGVECTOR_PORT to 5433.
+    pgvector:
+        image: pgvector/pgvector:pg16
+        environment:
+            POSTGRES_USER: bifrost
+            POSTGRES_PASSWORD: bifrost_password
+            POSTGRES_DB: bifrost
+        ports:
+            - "5433:5432"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bifrost -d bifrost"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        networks:
+            bifrost_network:
+                # PINNED IP - harden-runner (egress-policy: block) filters on the
+                # post-NAT destination IP, so a CI job that reaches pgvector
+                # through the published port 5433 has to allow 172.28.0.21:5432
+                # in its allowed-endpoints in .github/workflows/release-pipeline.yml.
+                # Change both together.
+                ipv4_address: 172.28.0.21
+
     # ClickHouse instance for logstore clickhouse tests. Native protocol on
     # host port 9001 (container 9000; host 9000 is taken by Weaviate above),
     # matching framework/logstore/clickhousestore_test.go's clickhouseTestConfig

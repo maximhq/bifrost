@@ -35,7 +35,7 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, state *ca
 
 	// All filters (cacheKey, provider, model, requestHash, paramsHash) are
 	// encoded into directCacheID, so a Get-by-ID is sufficient.
-	result, err := plugin.store.GetChunk(ctx, plugin.config.VectorStoreNamespace, directCacheID)
+	result, err := plugin.store.GetChunk(plugin.withTenantScope(ctx, state.TenantScope), plugin.config.VectorStoreNamespace, directCacheID)
 	if err != nil {
 		errMsg := strings.ToLower(err.Error())
 		isMiss := errors.Is(err, vectorstore.ErrNotFound) ||
@@ -90,7 +90,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 	}
 
 	selectFields := selectFieldsForRequest(req.RequestType)
-	results, err := plugin.store.GetNearest(ctx, plugin.config.VectorStoreNamespace, embedding, strictFilters, selectFields, cacheThreshold, 1)
+	results, err := plugin.store.GetNearest(plugin.withTenantScope(ctx, state.TenantScope), plugin.config.VectorStoreNamespace, embedding, strictFilters, selectFields, cacheThreshold, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search semantic cache: %w", err)
 	}
@@ -250,6 +250,10 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, state
 	}
 
 	if expired, miss := isExpiredEntry(properties); expired {
+		tenantScope := ""
+		if state != nil {
+			tenantScope = state.TenantScope
+		}
 		// Async best-effort cleanup of the stale entry. Tracked on writersWg
 		// so WaitForPendingOperations + Cleanup block until it finishes,
 		// avoiding a delete racing with namespace teardown.
@@ -258,6 +262,7 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, state
 			defer plugin.writersWg.Done()
 			deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			deleteCtx = plugin.withTenantScope(deleteCtx, tenantScope)
 			if err := plugin.store.Delete(deleteCtx, plugin.config.VectorStoreNamespace, result.ID); err != nil {
 				plugin.logger.Warn("Failed to delete expired entry %s: %v", result.ID, err)
 			}

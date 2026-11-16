@@ -1,0 +1,379 @@
+---
+title: "PostgreSQL (pgvector)"
+description: "PostgreSQL with the pgvector extension as the vector store for semantic caching in Bifrost."
+icon: "database"
+---
+
+## PostgreSQL (pgvector)
+
+[pgvector](https://github.com/pgvector/pgvector) adds a `vector` column type and similarity search to PostgreSQL. With it, Bifrost keeps its vectors in tables in a PostgreSQL database you already run, with each entry's metadata stored as JSONB next to its embedding.
+
+### Setup & Installation
+
+**Local PostgreSQL with pgvector:**
+```bash
+# Using Docker
+docker run -d \
+  --name pgvector \
+  -e POSTGRES_USER=bifrost \
+  -e POSTGRES_PASSWORD=bifrost_password \
+  -e POSTGRES_DB=bifrost \
+  -p 5432:5432 \
+  -v $(pwd)/pgvector_data:/var/lib/postgresql/data \
+  pgvector/pgvector:pg16
+```
+
+The `pgvector/pgvector` image is the official PostgreSQL image with the extension already built in. For an existing server, install the pgvector package for your PostgreSQL version (see the [pgvector installation guide](https://github.com/pgvector/pgvector#installation)). Most managed PostgreSQL services offer pgvector as an extension you can enable.
+
+On startup Bifrost checks whether the `vector` extension exists in the configured database and, if it does not, runs `CREATE EXTENSION IF NOT EXISTS vector`. See [Required privileges](#required-privileges) for who is allowed to do that.
+
+### Configuration Options
+
+<Tabs group="pgvector-config">
+
+<Tab title="Go SDK">
+
+```go
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypePgVector,
+    Config: vectorstore.PgVectorConfig{
+        Host:     *schemas.NewSecretVar("localhost"),
+        Port:     *schemas.NewSecretVar("5432"),
+        User:     *schemas.NewSecretVar("bifrost"),
+        Password: *schemas.NewSecretVar("env.PGVECTOR_PASSWORD"),
+        Database: *schemas.NewSecretVar("bifrost"),
+        SSLMode:  *schemas.NewSecretVar("disable"),
+    },
+}
+
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+```
+
+`Config` takes a `vectorstore.PgVectorConfig` value, not a pointer. Every field is a `schemas.SecretVar`, so each one accepts a literal value or an `env.VAR_NAME` reference.
+
+</Tab>
+
+<Tab title="config.json">
+
+**Local Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pgvector",
+    "config": {
+      "host": "localhost",
+      "port": 5432,
+      "user": "bifrost",
+      "password": "env.PGVECTOR_PASSWORD",
+      "database": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+```
+
+**Managed PostgreSQL Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pgvector",
+    "config": {
+      "host": "env.PGVECTOR_HOST",
+      "port": 5432,
+      "user": "env.PGVECTOR_USER",
+      "password": "env.PGVECTOR_PASSWORD",
+      "database": "bifrost_vectors",
+      "ssl_mode": "verify-full",
+      "schema": "bifrost_vectors",
+      "max_conns": 20
+    }
+  }
+}
+```
+
+The `schema` must already exist: Bifrost creates tables in it, never the schema itself.
+
+</Tab>
+
+</Tabs>
+
+### Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `host` | string | — | PostgreSQL hostname or IP address, without the port. Supports `env.VAR_NAME` syntax. **Required.** |
+| `port` | integer | `5432` | PostgreSQL port. |
+| `user` | string | — | Database user. Supports `env.VAR_NAME` syntax. **Required.** |
+| `password` | string | — | Database password. Supports `env.VAR_NAME` syntax. It is never logged, and connection errors do not contain it. |
+| `database` | string | — | Database name. Supports `env.VAR_NAME` syntax. **Required.** |
+| `ssl_mode` | string | `prefer` | `disable`, `allow`, `prefer`, `require`, `verify-ca` or `verify-full`, with the same meaning as libpq's `sslmode`. |
+| `schema` | string | `public` | Existing schema that holds the namespace tables. Letters, digits and underscores, starting with a letter or underscore. |
+| `max_conns` | integer | `10` | Maximum number of connections in Bifrost's pool. |
+| `vector_type` | string | `vector` | `vector` (4 bytes per dimension) or `halfvec` (2 bytes per dimension, pgvector 0.7.0 or later). Fixed when a namespace's table is created. See [Smaller vectors](#smaller-vectors-halfvec). |
+| `row_level_security` | boolean | `false` | Turn on PostgreSQL row-level security as a second wall between tenants. Used together with the semantic cache's `tenant_isolation`. See [Row-level security](#row-level-security-a-second-wall-between-tenants). |
+
+Connecting times out after 10 seconds, and each store operation after 30 seconds.
+
+<Note>
+Bifrost passes only `sslmode` to the driver. To verify the server certificate against a private CA with `verify-ca` or `verify-full`, set the standard libpq variable `PGSSLROOTCERT` to the CA file in Bifrost's environment.
+</Note>
+
+### How Bifrost stores data
+
+- **One table per namespace.** A namespace such as the semantic cache's default `BifrostSemanticCachePlugin` becomes the table `"<schema>"."BifrostSemanticCachePlugin"` with the columns `id TEXT PRIMARY KEY`, `embedding vector(<dimension>)`, which may be NULL, and `metadata JSONB`. Table names are quoted, so they keep their case: query one as `SELECT count(*) FROM "BifrostSemanticCachePlugin";`.
+- **Ownership marker.** Bifrost sets the table comment `bifrost_vectorstore` on every table it creates. It lists and drops only tables that carry that comment, and refuses to use an existing table without it, so it never adopts or deletes a table it did not create.
+- **Indexes.** A GIN index (`jsonb_path_ops`) on `metadata`, named `<namespace>_meta_gin`, and an HNSW index with `vector_cosine_ops` on `embedding`, named `<namespace>_emb_hnsw`, when the dimension is 2000 or less (`halfvec_cosine_ops` and 4000 with `vector_type: halfvec`). Two optional extras exist only if you turn them on: the row-level-security policy `bifrost_tenant_scope` and the `<namespace>_expires_idx` index used by [cleanup](#cleaning-up-expired-entries).
+- **Several replicas.** Namespace creation takes a transaction-scoped advisory lock, so replicas starting at the same time against one database do not race each other.
+
+### Namespace names
+
+A namespace becomes a table name, so it must:
+
+- match `^[A-Za-z_][A-Za-z0-9_]*$`: letters, digits and underscores, not starting with a digit
+- be at most 128 characters long
+
+A namespace of up to 48 characters is used as the table name directly. A longer one, such as the complexity router's `BifrostComplexityRouter_<64-character hash>`, is stored in a table named after its first 32 characters plus a hash of the full name, which keeps index names within PostgreSQL's 63-byte identifier limit. The table comment records the full namespace, so `ListNamespaces` and deletion still work with the original name.
+
+Bifrost's default namespaces, `BifrostSemanticCachePlugin` for the semantic cache and `BifrostWarpLogs` for Warp, are used as table names unchanged. A `vector_store_namespace` such as `my-cache` is rejected with `vectorstore: invalid namespace: "my-cache" must use letters, digits and underscores, starting with a letter or underscore`; the plugin API reports this as a 400.
+
+### Dimensions and search
+
+- **HNSW up to 2000 dimensions (4000 for `halfvec`).** pgvector can build an HNSW index on at most 2000 dimensions of type `vector`, and 4000 of type `halfvec`. For a larger dimension (up to pgvector's limit of 16000), Bifrost creates the table without a vector index and logs a warning, and every similarity search scans the whole table. For example, `text-embedding-3-small` (1536) is indexed and `text-embedding-3-large` (3072) is not.
+- **Iterative index scans on pgvector 0.8.0 and later.** Metadata filters, such as the semantic cache's per-cache-key filter, are applied to the rows the HNSW index returns. On pgvector 0.8.0 or later Bifrost runs each similarity search with `SET LOCAL hnsw.iterative_scan = strict_order`, so the index keeps scanning until enough rows pass the filter. On older versions the search runs without it, and a selective filter can return fewer matches than exist, so use pgvector 0.8.0 or later.
+- **Filters run in the database.** Equality filters use JSONB containment (`@>`), which the GIN index serves; range, pattern and list filters read the JSONB values directly.
+- **One dimension per table.** The dimension is fixed when the table is created as `vector(<dimension>)`. Storing or searching with a vector of any other size fails.
+
+### Metadata-only entries
+
+pgvector does not require a vector for every entry, because the `embedding` column may be NULL. Entries without an embedding, such as the semantic cache's direct-only (exact hash) entries, are stored as metadata alone, with no placeholder vector, and never appear in similarity search results.
+
+### Similarity scores
+
+Scores are cosine similarity, computed as `1 - (embedding <=> query)` from pgvector's cosine distance operator and clamped to the range -1 to 1. An entry matches when its similarity is at least the threshold, so a semantic cache `threshold` of `0.8` asks for a cosine similarity of 0.8 or more.
+
+### Smaller vectors (halfvec)
+
+By default each dimension takes 4 bytes (`vector`). Set `vector_type` to `halfvec` and each takes 2 bytes, using pgvector's `halfvec` type (needs pgvector 0.7.0 or later; Bifrost refuses to start with `halfvec` on an older extension). The HNSW index uses `halfvec_cosine_ops`. Searches and inserts still use the same float32 vectors in Bifrost; PostgreSQL converts them to half precision on the way in. The default stays `vector`, and nothing changes unless you set it.
+
+```json
+"config": { "host": "...", "user": "bifrost", "database": "bifrost", "vector_type": "halfvec" }
+```
+
+**Limits.** `halfvec` can be indexed up to **4000** dimensions (checked on the test container: an index on 4001 is refused with `column cannot have more than 4000 dimensions for hnsw index`, and 4000 works), so `text-embedding-3-large` (3072) gets an index with `halfvec` and none with `vector`. A column of either type can hold up to 16000 dimensions. The type is fixed when the table is created: asking for another type on an existing table is an error that tells you to pick a new namespace or drop the table; Bifrost never converts a table. Half precision keeps about 3 decimal digits, and values beyond about 65,000 are out of range; normalised embeddings are far inside that.
+
+**Measured.** PostgreSQL 16, pgvector 0.8.7, 5,000 random unit vectors, one HNSW index with default settings, one run:
+
+| Dimensions | | Table (incl. TOAST) | HNSW index | Total (table plus all its indexes) |
+|---|---|---|---|---|
+| 384 | `vector` | 10,280,960 B | 10,248,192 B | 20,914,176 B |
+| 384 | `halfvec` | 4,595,712 B | 5,865,472 B | 10,846,208 B |
+| 1536 | `vector` | 42,049,536 B | 40,968,192 B | 83,353,600 B |
+| 1536 | `halfvec` | 21,340,160 B | 20,488,192 B | 42,156,032 B |
+
+So the total is about **half** (0.52 at 384 dimensions, 0.51 at 1536). The saving is a bit smaller than "half" on the index at 384 dimensions (0.57), most likely because the HNSW graph links cost the same whatever the vector type. `halfvec` searches were no slower in this run (median 1.09 ms for `vector` vs 0.90 ms for `halfvec` at 384, 1.77 ms vs 1.55 ms at 1536; one run, so treat the difference as noise).
+
+Accuracy, measured against an exact float32 brute-force search done in Go over the same vectors, 200 queries each:
+
+| Dimensions | Type | Paraphrase-like queries, top-1 correct | Unrelated random queries, top-1 correct | Same, exact scan of stored data |
+|---|---|---|---|---|
+| 384 | `vector` | 100% | 52% | 100% |
+| 384 | `halfvec` | 100% | 54.5% | 100% |
+| 1536 | `vector` | 100% | 40.5% | 100% |
+| 1536 | `halfvec` | 100% | 38.5% | 100% |
+
+"Paraphrase-like" queries are a stored vector with noise added (cosine about 0.9), which is what a cache lookup looks like. "Unrelated random" queries are the worst case: 5,000 near-orthogonal vectors whose best matches are almost tied, and a default HNSW index misses the true best one about half the time **with either type**. The last column removes the index and shows that half precision alone did not change a single top-1 answer here. The difference between the two types in the index columns is within the noise of 200 queries. The cosine score of the true best match differed from the float32 value by **5e-6 on average, 2e-5 at most** (384 dimensions) and 3e-6 / 1e-5 (1536), against about 1e-7 or less for `vector`. That only matters if your `threshold` sits within about 0.00002 of a match, which a cache threshold such as 0.8 never does.
+
+This is random data, not your embeddings: test with your own model before relying on it. Re-run it with `BIFROST_PGVECTOR_MEASURE=1 go test ./framework/vectorstore -run Halfvec_MeasureSizeAndRecall -v`.
+
+### Row-level security (a second wall between tenants)
+
+The semantic cache already keeps one caller's answers away from another's: it folds the caller's identity into a hash that every lookup must match (see [Semantic Caching](/features/semantic-caching)). That wall lives in Bifrost's code. If a future bug or a hand-written query forgot the filter, nothing in the database would stop it.
+
+Row-level security (RLS) adds a second wall inside PostgreSQL. It is **off by default**. Turn it on with two settings, one on each side:
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pgvector",
+    "config": { "host": "...", "user": "bifrost_owner", "database": "bifrost", "row_level_security": true }
+  },
+  "plugins": [
+    { "enabled": true, "name": "semantic_cache", "config": { "dimension": 1536, "provider": "openai", "embedding_model": "text-embedding-3-small", "tenant_isolation": true } }
+  ]
+}
+```
+
+| Setting | Where | What it does |
+|---------|-------|--------------|
+| `tenant_isolation` | semantic cache plugin | Writes a `tenant_scope` value into every entry and tells the store, on every call, which tenant the call is for. Needs identity scoping, so it cannot be combined with `disable_identity_scoping`. |
+| `row_level_security` | pgvector store (`RowLevelSecurity` in Go) | Turns on RLS on every namespace table, with a policy that only shows a row to a call whose tenant matches the row's `tenant_scope`. |
+
+**What `tenant_scope` is.** A hash of the caller's identity (virtual key and user), shortened to 128 bits. The raw ids are never stored. A request with no identity gets the hash of the empty identity, one fixed value shared by all anonymous requests. The hash is not secret-keyed, so someone who already holds a short, guessable id could hash it and compare; it keeps ids out of the table, it does not make them unguessable.
+
+**What Bifrost does.** For each table it runs `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, and creates a policy named `bifrost_tenant_scope`:
+
+```sql
+CREATE POLICY bifrost_tenant_scope ON "BifrostSemanticCachePlugin"
+  USING (metadata ->> 'tenant_scope' = NULLIF(current_setting('app.tenant_scope', true), '')
+         OR current_setting('app.tenant_admin', true) = 'on');
+```
+
+Each store call sets `app.tenant_scope` for its own transaction only (`set_config(..., true)`), so nothing is left on the pooled connection afterwards. The same policy decides which rows may be read, changed, deleted and inserted: a call for tenant B cannot write a row stamped for tenant A.
+
+**Deny by default.** A call with no tenant scope sees no rows. So does a row without a `tenant_scope`, such as one written before you turned RLS on: it is invisible to every tenant and simply ages out (or is removed by [cleanup](#cleaning-up-expired-entries)).
+
+**Which database role.** PostgreSQL skips every policy for superusers and for roles with `BYPASSRLS`, even on a `FORCE`d table. Bifrost therefore refuses to start with `row_level_security` on if its role is one of those, and says so. `FORCE` also makes the table's owner obey the policy, so an ordinary owner role is fine. A role that owns the table can still switch RLS off, so for a real second wall split the roles: an owner that prepares the tables once, and a runtime role that can only read and write rows. Example:
+
+```sql
+-- As an administrator, once. Use a schema that holds only Bifrost tables.
+CREATE SCHEMA bifrost_vectors;
+CREATE ROLE bifrost_owner LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE bifrost_app   LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+GRANT USAGE, CREATE ON SCHEMA bifrost_vectors TO bifrost_owner;
+GRANT USAGE          ON SCHEMA bifrost_vectors TO bifrost_app;
+-- Default rights for tables the owner creates later:
+ALTER DEFAULT PRIVILEGES FOR ROLE bifrost_owner IN SCHEMA bifrost_vectors
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bifrost_app;
+```
+
+Start Bifrost once as `bifrost_owner` (with `"schema": "bifrost_vectors"` and `row_level_security: true`) so it creates the tables, indexes and policy, then run it as `bifrost_app`. When the policy already exists Bifrost runs no DDL, so the runtime role needs no ownership. The one thing it cannot do as a non-owner is build the expiry index (see [cleanup](#cleaning-up-expired-entries)); it logs a warning and carries on.
+
+**Calls that cross tenants on purpose.** Clearing a cache key, clearing one entry by id and the expired-entry sweep must reach every tenant. They carry an admin marker (`app.tenant_admin`) that the policy accepts. This marker is not a secret: anyone who can run SQL as the application role can set `app.tenant_scope` or `app.tenant_admin` themselves. RLS here protects against **mistakes in Bifrost's own queries and in hand-written queries that forget the tenant**, not against a hostile user who already has the application role's password. Keep that password out of reach, and use the owner/runtime split above.
+
+**Cost.** Setting the tenant and running the query are sent together, so a similarity search is still one network round trip; a test counting the writes on the connection saw exactly one per search, with RLS on and off. The database does extra work, though: it evaluates the policy on each candidate row. Measured on the test container (PostgreSQL 16, pgvector 0.8.7, localhost, 2,000 rows of 384 dimensions spread over 20 tenants, 400 cache-style lookups with the plugin's three filters, limit 1, threshold 0.8):
+
+| | Median | 95th percentile |
+|---|---|---|
+| Without RLS | 0.71 ms and 1.10 ms (two runs) | 1.14 ms and 2.87 ms |
+| With RLS | 1.04 ms and 1.68 ms | 1.63 ms and 3.97 ms |
+
+That is roughly **0.3 to 0.6 ms more per lookup** on a local database, or about 40 to 50 percent of a very small number; the two runs differ because the machine was noisy, so read it as a range. Without the plugin's filters the cost was 0.28 to 0.30 ms. For comparison, doing it the obvious way (begin a transaction, set the tenant, query, commit) took 1.8 to 2.1 ms, because that is four sequential round trips (begin, set, query, commit). Over a real network the single round trip matters more than these local numbers show. Every lookup in the test still found its entry, and there is no index on `tenant_scope`: the policy is applied as a filter to rows the vector index returns, like the cache's other filters.
+
+**Limits.**
+
+- Only the pgvector store enforces the scope. With another store, `tenant_isolation` still stamps entries but adds no wall, and Bifrost logs a warning at startup.
+- It is a second wall, not a replacement for the first. Keep identity scoping on.
+- Any other tool that reads these tables must connect as a role that sets the tenant too; with no setting it sees nothing.
+- If you turn `row_level_security` off later, Bifrost warns that the tables still have RLS enabled: they stay protected, and a store with no tenant scope sees nothing. Drop the policy and run `ALTER TABLE ... DISABLE ROW LEVEL SECURITY` yourself if you want the old behaviour back.
+
+### Cleaning up expired entries
+
+Every semantic cache entry carries an `expires_at` time (from `ttl`). What deletes it afterwards?
+
+**What was already there.** Expired entries are never served, but with pgvector (and the other stores) the only thing that deleted them was the lookup that happened to read one: it found the expired entry and removed it in the background. The two background loops in the plugin only tidy up in-memory state for streaming and in-flight requests; neither touches PostgreSQL. So an entry that expires and is never looked up again **stays in the table forever**, and with it its vector and its index entries. A cache with many one-off prompts grows without bound.
+
+Two optional ways to fix that. Neither is a dependency, and both are off unless you set them up.
+
+**1. Let Bifrost do it.** Set these on the semantic cache plugin:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `cleanup_interval` | `0` (off) | How often to run a cleanup, for example `"10m"` or `600`. |
+| `cleanup_batch_size` | `1000` once `cleanup_interval` is set | The most entries one delete call removes. |
+
+Each run deletes expired entries in batches until a batch comes back short, and stops after at most 50 batches, so a large backlog is worked off over several runs and no single statement runs long. Each batch is one short transaction: it picks the oldest expired rows with `FOR UPDATE SKIP LOCKED` (rows another transaction is working on are left for the next run) and deletes them. Entries with no `expires_at`, or one that is not a number, never expire and are never touched. The first run creates an index named `<namespace>_expires_idx` on the `expires_at` value so finding the oldest expired rows does not scan the table; building it takes a short write lock once, so on a very large existing table create it yourself first:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "BifrostSemanticCachePlugin_expires_idx"
+  ON "BifrostSemanticCachePlugin"
+  ((CASE WHEN jsonb_typeof(metadata -> 'expires_at') = 'number' THEN (metadata ->> 'expires_at')::float8 END));
+```
+
+(The expression must be written exactly like this for the planner to use the index.) You can also call `CleanupExpired` on the plugin from Go whenever you like. With [row-level security](#row-level-security-a-second-wall-between-tenants) on, the cleanup deliberately crosses tenants.
+
+**2. Schedule it in PostgreSQL with pg_cron.** If you already use [pg_cron](https://github.com/citusdata/pg_cron), this is the same sweep without Bifrost involved. Change the table name to yours:
+
+```sql
+SELECT cron.schedule('bifrost-expire', '*/10 * * * *', $$
+  DELETE FROM "BifrostSemanticCachePlugin" WHERE id IN (
+    SELECT id FROM "BifrostSemanticCachePlugin"
+    WHERE (CASE WHEN jsonb_typeof(metadata -> 'expires_at') = 'number' THEN (metadata ->> 'expires_at')::float8 END) < extract(epoch FROM now())
+    LIMIT 5000 FOR UPDATE SKIP LOCKED)
+$$);
+```
+
+Run it as the table's owner or a role with `SELECT`, `UPDATE` and `DELETE` on it. With [row-level security](#row-level-security-a-second-wall-between-tenants) on, the table is forced, so the job would see no rows: put `SELECT set_config('app.tenant_admin', 'on', true);` as the first statement of the job (pg_cron runs a job's statements in one transaction), or run it as a role with `BYPASSRLS`. The `DELETE` statement itself is tested against the real database; the `set_config` line is the same marker Bifrost's own cleanup uses.
+
+Deleting rows does not shrink the files by itself: PostgreSQL's autovacuum makes the space reusable, and it returns it to the operating system only in some cases. HNSW indexes can bloat after many deletes; run `REINDEX INDEX CONCURRENTLY` on the `_emb_hnsw` index now and then if you see it grow.
+
+### Required privileges
+
+The database user needs:
+
+- `CONNECT` on the database.
+- `USAGE` and `CREATE` on the schema (default `public`), to create namespace tables and their indexes. PostgreSQL 15 and later no longer let every user create objects in `public`, so grant it, or use a schema the user owns:
+
+  ```sql
+  GRANT USAGE, CREATE ON SCHEMA public TO bifrost;
+  ```
+
+- Ownership of the tables it drops. Bifrost's user owns the tables it creates, so this only matters if they were created under another role.
+
+The extension is the exception. pgvector is not a trusted extension, so `CREATE EXTENSION vector` needs a superuser, or on a managed service the role the provider grants extension rights to (for example `rds_superuser` on Amazon RDS). If Bifrost's user cannot create it, have an administrator run this once in the configured database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Once the extension exists, Bifrost needs no special privilege for it.
+
+### Helm
+
+The Helm chart connects to an external pgvector server with `vectorStore.type: pgvector` and the `vectorStore.pgvector.external` block. The chart does not deploy pgvector, and its bundled PostgreSQL image does not include the extension. See [`values-examples/postgres-pgvector.yaml`](https://github.com/maximhq/bifrost/blob/main/helm-charts/bifrost/values-examples/postgres-pgvector.yaml), which reads the password from a Kubernetes secret.
+
+### Troubleshooting
+
+**`the pgvector extension is not installed and could not be created (...)`**
+
+Bifrost found no `vector` extension in the database and `CREATE EXTENSION` failed. The text in parentheses is PostgreSQL's reason:
+
+- `permission denied to create extension "vector"`: the user may not create it. Have a superuser run `CREATE EXTENSION IF NOT EXISTS vector;` in that database, as shown in [Required privileges](#required-privileges).
+- An error saying the extension is not available, or that its control file could not be opened: pgvector is not installed on the server. Install the package for your PostgreSQL version, or use the `pgvector/pgvector` image.
+
+**`namespace "..." already exists with dimension N but config requires M`**
+
+The namespace's table was created for a different embedding size, for example after a change of `embedding_model` or `dimension`. Point `vector_store_namespace` at a new name, or drop the table so Bifrost recreates it on the next start:
+
+```sql
+DROP TABLE "BifrostSemanticCachePlugin";
+```
+
+A vector of the wrong size sent straight to the store fails with pgvector's own message: `expected N dimensions, not M` on insert, or `different vector dimensions N and M` on search.
+
+**`permission denied for schema public`**
+
+Typically reported as `failed to create namespace "...": ERROR: permission denied for schema public (SQLSTATE 42501)`, or as `failed to check namespace` when `USAGE` is missing too. The user cannot create tables in the schema. Grant `USAGE` and `CREATE` on it, or set `schema` to one the user owns, as shown in [Required privileges](#required-privileges).
+
+**`table ... already exists and was not created by Bifrost`**
+
+A table with the namespace's name exists but lacks Bifrost's `bifrost_vectorstore` comment, so Bifrost will not use or drop it. Choose another `vector_store_namespace`, or drop that table yourself if nothing else needs it.
+
+**`invalid namespace` or `namespace ... is too long`**
+
+The namespace breaks the [naming rules](#namespace-names). Use letters, digits and underscores only, starting with a letter or underscore, and at most 128 characters.
+
+**`row_level_security is on, but the database role "..." is a superuser or has BYPASSRLS`**
+
+PostgreSQL ignores policies for such roles, so Bifrost refuses to start rather than pretend to isolate tenants. Connect as an ordinary role, as described under [row-level security](#row-level-security-a-second-wall-between-tenants).
+
+**`failed to enable row-level security on namespace "..." (the table owner must do this once)`**
+
+The tables are not yet protected and the connecting role does not own them. Start Bifrost once as the table owner with `row_level_security: true`, or run the `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY` and `CREATE POLICY` statements yourself.
+
+**Every lookup misses after turning on `row_level_security`**
+
+Entries written before have no `tenant_scope`, so no tenant can see them. They age out by their TTL; write new ones with `tenant_isolation: true` on the plugin. If `tenant_isolation` is off, no call carries a tenant, and every call sees no rows.
+
+**`namespace "..." already exists with halfvec embeddings but vector_type is "vector"`** (or the reverse)
+
+The table was created with the other type. Use a new `vector_store_namespace`, or drop the table so Bifrost recreates it.
+
+**`failed to connect to pgvector database: ...`**
+
+Bifrost could not reach or log in to PostgreSQL. Check `host`, `port`, `user`, `database` and `ssl_mode`; `require`, `verify-ca` and `verify-full` fail against a server without TLS. The password never appears in this message.
+
+For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).

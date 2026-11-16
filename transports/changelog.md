@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **PostgreSQL + pgvector Vector Store** - `vector_store.type: "pgvector"` stores the semantic cache in PostgreSQL with the pgvector extension; config schema, Helm chart and health check updated
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 
 ## 🐞 Fixed

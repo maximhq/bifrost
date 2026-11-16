@@ -195,6 +195,28 @@ func getPineconeConfigFromEnv() vectorstore.PineconeConfig {
 	}
 }
 
+// getPgVectorConfigFromEnv retrieves PostgreSQL + pgvector configuration from environment
+// variables. The defaults match the pgvector service in tests/docker-compose.yml and the
+// framework vectorstore tests.
+func getPgVectorConfigFromEnv() vectorstore.PgVectorConfig {
+	fromEnv := func(envVar, fallback string) schemas.SecretVar {
+		value := schemas.NewSecretVar("env." + envVar)
+		if value.GetValue() == "" {
+			value = schemas.NewSecretVar(fallback)
+		}
+		return *value
+	}
+
+	return vectorstore.PgVectorConfig{
+		Host:     fromEnv("PGVECTOR_HOST", "localhost"),
+		Port:     fromEnv("PGVECTOR_PORT", "5433"),
+		User:     fromEnv("PGVECTOR_USER", "bifrost"),
+		Password: fromEnv("PGVECTOR_PASSWORD", "bifrost_password"),
+		Database: fromEnv("PGVECTOR_DATABASE", "bifrost"),
+		SSLMode:  fromEnv("PGVECTOR_SSLMODE", "disable"),
+	}
+}
+
 // storeConfigForType returns the env-derived connection config for a vector
 // store type. The bool is false for an unrecognized type. Shared by test setup
 // and the TestMain namespace sweep so both stay in lockstep when a new backend
@@ -209,6 +231,8 @@ func storeConfigForType(storeType vectorstore.VectorStoreType) (interface{}, boo
 		return getQdrantConfigFromEnv(), true
 	case vectorstore.VectorStoreTypePinecone:
 		return getPineconeConfigFromEnv(), true
+	case vectorstore.VectorStoreTypePgVector:
+		return getPgVectorConfigFromEnv(), true
 	default:
 		return nil, false
 	}

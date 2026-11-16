@@ -1,1 +1,2 @@
+- feat: PostgreSQL + pgvector vector store for the semantic cache (closes #3180) [@MadhusudhanM23](https://github.com/MadhusudhanM23)
 - chore: upgraded core to v1.15.2

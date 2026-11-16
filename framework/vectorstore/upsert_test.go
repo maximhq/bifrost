@@ -19,6 +19,11 @@ var upsertTestProperties = map[string]VectorStoreProperties{
 	"marker": {DataType: VectorStorePropertyTypeString, Description: "upsert test marker"},
 }
 
+// pgvectorContractDimension is wider than PgVectorTestDimension because the
+// contracts here place each entry's vector components by its index, for up to
+// 60 entries.
+const pgvectorContractDimension = 384
+
 // upsertBackend is one backend's answer to "give me a store I can write to".
 // Backends that need a server skip themselves; chromem always runs.
 type upsertBackend struct {
@@ -86,6 +91,17 @@ func vectorStoreTestBackends() []upsertBackend {
 				setup := NewRedisTestSetup(t)
 				t.Cleanup(func() { setup.Cleanup(t) })
 				return setup.Store, setup.ctx, TestNamespace
+			},
+		},
+		{
+			name:      "pgvector",
+			dimension: pgvectorContractDimension,
+			setup: func(t *testing.T) (VectorStore, context.Context, string) {
+				if testing.Short() {
+					t.Skip("Skipping integration tests in short mode")
+				}
+				setup := NewPgVectorTestSetup(t)
+				return setup.Store, setup.ctx, setup.newNamespace(t, pgvectorContractDimension)
 			},
 		},
 	}
@@ -257,6 +273,17 @@ func TestVectorStoreListNamespaces(t *testing.T) {
 				setup := NewRedisTestSetup(t)
 				t.Cleanup(func() { setup.Cleanup(t) })
 				return setup.Store, setup.ctx, TestNamespace
+			},
+		},
+		{
+			name:      "pgvector",
+			dimension: pgvectorContractDimension,
+			setup: func(t *testing.T) (VectorStore, context.Context, string) {
+				if testing.Short() {
+					t.Skip("Skipping integration tests in short mode")
+				}
+				setup := NewPgVectorTestSetup(t)
+				return setup.Store, setup.ctx, setup.newNamespace(t, pgvectorContractDimension)
 			},
 		},
 	}

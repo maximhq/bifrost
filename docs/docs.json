@@ -721,7 +721,8 @@
               "integrations/vector-databases/weaviate",
               "integrations/vector-databases/redis",
               "integrations/vector-databases/qdrant",
-              "integrations/vector-databases/pinecone"
+              "integrations/vector-databases/pinecone",
+              "integrations/vector-databases/pgvector"
             ]
           }
         ]

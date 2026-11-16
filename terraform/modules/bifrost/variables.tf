@@ -84,7 +84,7 @@ variable "mcp" {
 }
 
 variable "vector_store" {
-  description = "Vector store configuration (enabled, type: weaviate/redis/qdrant/pinecone, config)."
+  description = "Vector store configuration (enabled, type: weaviate/redis/qdrant/pinecone/chromem/pgvector, config)."
   type        = any
   default     = null
 }

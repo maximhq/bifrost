@@ -966,6 +966,9 @@ bifrost:
         exclude_system_prompt: false
         # cache_tool_call_responses: false  # Cache responses that carry tool calls (off: a replayed tool call runs in another caller's agent loop)
         # disable_identity_scoping: false  # Share entries across virtual keys and users (off: an entry is only served to the identity that wrote it)
+        # tenant_isolation: false          # Second tenant wall: stamp entries with a hashed tenant_scope for a store that enforces it (pgvector with rowLevelSecurity)
+        # cleanup_interval: "10m"          # Delete expired entries in the background (off by default; pgvector)
+        # cleanup_batch_size: 1000         # Most entries deleted per call during a cleanup run
         vector_store_namespace: ""
 
     otel:
@@ -2357,7 +2360,7 @@ postgresql:
 vectorStore:
   # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem, pgvector
 
   # Weaviate configuration
   weaviate:
@@ -2538,6 +2541,26 @@ vectorStore:
   chromem:
     path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
     compress: false # Gzip-compress persisted documents (only used when path is set)
+
+  # PostgreSQL + pgvector configuration (external only: the chart does not deploy it).
+  # Point it at a PostgreSQL server where the pgvector extension is installed, or can be
+  # created by this user. Each namespace becomes one table in the configured schema.
+  pgvector:
+    external:
+      enabled: false
+      host: ""
+      port: 5432
+      user: ""
+      password: ""
+      database: ""
+      sslMode: prefer # disable, allow, prefer, require, verify-ca, verify-full
+      # schema: public  # Existing schema that holds the namespace tables
+      # maxConns: 10    # Maximum pooled connections
+      # vectorType: vector      # vector (default) or halfvec: half the storage, needs pgvector 0.7.0+, loses a little precision
+      # rowLevelSecurity: false # Second tenant wall in PostgreSQL itself (the user must not be a superuser or have BYPASSRLS)
+      # Use existing Kubernetes secret for password (takes precedence over password field)
+      existingSecret: ""
+      passwordKey: "password"
 
 # Environment variables
 env: []
