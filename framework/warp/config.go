@@ -46,6 +46,7 @@ type ConfigView struct {
 	// ManagementToolSizes is what each kind adds to every Warp request, so the
 	// settings page can say what turning one on costs. Empty while the Bifrost MCP is not loaded.
 	ManagementToolSizes []ManagementToolSize `json:"management_tool_sizes,omitempty"`
+	BifrostMCPAvailable bool                 `json:"bifrost_mcp_available"` // Warp answers only while this is true
 }
 
 // ConfigInput is a configuration write.
@@ -222,6 +223,7 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 			ManagementWrites:          []string{},
 			ManagementWritesAvailable: catalog.hasWrites(),
 			ManagementToolSizes:       catalog.sizes(),
+			BifrostMCPAvailable:       s.bifrostMCPAvailable(),
 		}, nil
 	}
 	return s.configViewFromRow(row), nil
@@ -623,11 +625,20 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		TopicDiscoveryMinRequests: config.EffectiveTopicDiscoveryMinRequests(),
 		VectorStoreConnected:      s.vectorStore != nil,
 		ManagementWrites:          nonNilStrings(config.ManagementWrites),
+		BifrostMCPAvailable:       s.bifrostMCPAvailable(),
 	}
 	_, catalog := s.managementTools()
 	view.ManagementWritesAvailable = catalog.hasWrites()
 	view.ManagementToolSizes = catalog.sizes()
 	return view
+}
+
+// bifrostMCPAvailable reports whether a turn would get the Bifrost MCP's tools,
+// the same check NewTurn refuses on, so the panel can show the setup state
+// before anyone asks a question.
+func (s *Service) bifrostMCPAvailable() bool {
+	_, catalog := s.managementTools()
+	return catalog != nil
 }
 
 // configFromRow lifts a stored row into the shared schema type.

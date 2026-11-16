@@ -7,9 +7,11 @@ import { useWarpStream } from "@/components/warp/useWarpStream";
 import WarpComposer from "@/components/warp/warpComposer";
 import { resolveWarpModel, warpModelForRequest, warpModelKey, warpModels } from "@/components/warp/warpComposer.utils";
 import WarpHistory from "@/components/warp/warpHistory";
+import { useWarpBifrostMCPNotice, WarpBifrostMCPNoticeDialog } from "@/components/warp/warpBifrostMCPNotice";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import {
+	decodeTurnError,
 	indexStatusLabel,
 	nextWarpHandoff,
 	pendingWarpQuestion,
@@ -87,6 +89,11 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+	// Warp does not answer without the Bifrost MCP: admins get the setup popup on
+	// every open, everyone else an ask-an-admin message, and no one a composer.
+	const bifrostMCPAvailable = !!config?.bifrost_mcp_available;
+	const needsBifrostMCP = isConfigured && !bifrostMCPAvailable;
+	const bifrostMCPNotice = useWarpBifrostMCPNotice({ warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
 
 	const models = useMemo(() => warpModels(config), [config]);
 	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
@@ -99,6 +106,11 @@ export default function WarpPanel() {
 		if (!error || !sentModelRef.current) return;
 		sentModelRef.current = false;
 		void refetchConfig();
+	}, [error, refetchConfig]);
+	// The Bifrost MCP can go away after the config was read; the refusal says so,
+	// and rereading the config swaps the transcript for the setup state.
+	useEffect(() => {
+		if (error && decodeTurnError(error).code === "no_bifrost_mcp") void refetchConfig();
 	}, [error, refetchConfig]);
 
 	const [indexPollMs, setIndexPollMs] = useState(30000);
@@ -218,6 +230,7 @@ export default function WarpPanel() {
 
 	return (
 		<div className="flex h-full min-h-0 w-full flex-col" data-testid="warp-panel">
+			{canConfigure && <WarpBifrostMCPNoticeDialog notice={bifrostMCPNotice} />}
 			<header className="flex h-13 shrink-0 items-center justify-between gap-2 border-b px-4">
 				<div className="flex min-w-0 items-center gap-2">
 					{/* -mt-0.5 corrects the glyph's optical centre, which sits below its box centre. */}
@@ -238,7 +251,7 @@ export default function WarpPanel() {
 					)}
 				</div>
 				<div className="flex shrink-0 items-center gap-1">
-					{isConfigured && (
+					{isConfigured && !needsBifrostMCP && (
 						<button
 							type="button"
 							aria-label={showHistory ? t("warp.panel.backToChat") : t("warp.panel.chatHistory")}
@@ -298,6 +311,28 @@ export default function WarpPanel() {
 					<p className="text-destructive text-xs" role="alert">
 						{t("warp.panel.loadFailed")}
 					</p>
+				</div>
+			) : needsBifrostMCP ? (
+				<div
+					className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+					data-testid="warp-needs-bifrost-mcp"
+				>
+					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
+						<WarpIcon className="size-5" />
+					</span>
+					<p className="text-sm font-medium">{t("warp.panel.needsBifrostMCP")}</p>
+					{canConfigure ? (
+						<>
+							<p className="text-muted-foreground text-xs">{t("warp.panel.needsBifrostMCPHint")}</p>
+							<Button size="sm" className="mt-1" onClick={bifrostMCPNotice.review} data-testid="warp-bifrost-mcp-set-up">
+								{t("warp.panel.setUpBifrostMCP")}
+							</Button>
+						</>
+					) : (
+						<p className="text-muted-foreground text-xs" data-testid="warp-ask-admin-bifrost-mcp">
+							{t("warp.panel.askAdminBifrostMCP")}
+						</p>
+					)}
 				</div>
 			) : isConfigured && showHistory ? (
 				<div className="min-h-0 flex-1" data-testid="warp-history-view">

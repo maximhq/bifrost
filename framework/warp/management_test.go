@@ -58,6 +58,12 @@ func (f *fakeManagement) called() []fakeManagementCall {
 	return append([]fakeManagementCall(nil), f.calls...)
 }
 
+// withManagement binds management tools at construction, for tests that run
+// turns: Warp refuses a turn without the Bifrost MCP.
+func withManagement(management ManagementTools) Option {
+	return func(s *Service) { s.management = management }
+}
+
 // managementService is a configured Warp with creates allowed: the fake
 // catalog's one write is a create, and these tests are about how writes behave.
 func managementService(model *scriptedModel, store *memoryConversations, management ManagementTools) *Service {
@@ -304,15 +310,40 @@ func TestWarpManagementToolsAndPrompt(t *testing.T) {
 	require.Contains(t, declared["createVirtualKey"], "Runs only after the person confirms it")
 	require.Contains(t, model.lastInstructions, managementWriteCapabilityFor([]string{schemas.WarpManagementCreate}))
 	require.Contains(t, model.lastInstructions, managementCoverage)
-	require.NotContains(t, model.lastInstructions, readOnlyCapability)
-	require.NotContains(t, model.lastInstructions, trafficCoverage)
+	require.NotContains(t, model.lastInstructions, managementCapability)
 
-	// Without the management tools the prompt is exactly what it was.
-	require.Contains(t, SystemPrompt, readOnlyCapability)
-	require.Contains(t, SystemPrompt, trafficCoverage)
+	// Warp always has the management tools, so the base prompt reads configuration
+	// through them and never tells the model only traffic is reachable.
+	require.Contains(t, SystemPrompt, managementCapability)
+	require.Contains(t, SystemPrompt, managementCoverage)
+	require.NotContains(t, SystemPrompt, "no tool says what is set up")
+	require.NotContains(t, SystemPrompt, "They do not cover any other configuration")
 	require.Equal(t, SystemPrompt, systemInstructionsFor(nil, toolAvailability{}, timeContext{now: time.Unix(0, 0)})[:len(SystemPrompt)])
-	require.NotEqual(t, SystemPrompt, managementSystemPrompt)
 	require.NotEqual(t, SystemPrompt, managementWriteSystemPromptFor([]string{schemas.WarpManagementCreate}))
+}
+
+// Without the Bifrost MCP Warp does not answer at all: the turn is refused
+// before the model runs, so no traffic answer stands in for a configuration one.
+func TestWarpTurnRefusedWithoutBifrostMCP(t *testing.T) {
+	for name, management := range map[string]ManagementTools{
+		"never bound":     nil,
+		"spec not loaded": &fakeManagement{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("There are two routing rules.")}}
+			service := managementService(model, nil, management)
+			_, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "what routing rules exist?"}}}, 64)
+			require.ErrorIs(t, err, ErrNoBifrostMCP)
+			require.Zero(t, model.calls, "the model must not run")
+
+			view, err := service.ConfigView(context.Background())
+			require.NoError(t, err)
+			require.False(t, view.BifrostMCPAvailable)
+		})
+	}
+	view, err := managementService(&scriptedModel{}, nil, newFakeManagement()).ConfigView(context.Background())
+	require.NoError(t, err)
+	require.True(t, view.BifrostMCPAvailable)
 }
 
 // A management tool named like one of Warp's own is dropped, so the model never

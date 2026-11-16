@@ -838,6 +838,7 @@ func TestWarpServiceSearchLogsForAnAPICaller(t *testing.T) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
 	}
 	service := NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(vectors),
 		WithEmbeddingExecutor(executor),
@@ -887,6 +888,7 @@ func TestWarpSemanticSearchRefusesFiltersItCannotApply(t *testing.T) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
 	}
 	service := NewService(nil,
+		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithEmbeddingExecutor(executor),

@@ -17,6 +17,11 @@ var (
 	// reach a model, which only happens when the service was built without a log
 	// reader and therefore without a client.
 	ErrNoModelClient = errors.New("warp has no model client available")
+	// ErrNoBifrostMCP is returned when the gateway's Bifrost MCP is not loaded
+	// (no bifrost_url, or its OpenAPI spec could not be read). Warp reads
+	// configuration through it, and does not answer at all without it rather
+	// than pass off what traffic shows as what is configured.
+	ErrNoBifrostMCP = errors.New("warp needs the Bifrost MCP, which is not loaded: set bifrost_url in the client settings")
 	// ErrConversationTooLong is returned when the client-sent history exceeds
 	// MaxHistoryBytes. The dashboard starts a new thread in response.
 	ErrConversationTooLong = errors.New("conversation is too long")
@@ -135,6 +140,10 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	}
 	// Leased: the catalog's load stays open until the turn releases it (RunTurn, or Release).
 	management, catalog, release := s.leaseManagementTools()
+	if catalog == nil {
+		release()
+		return nil, ErrNoBifrostMCP
+	}
 	// Reads, plus only the kinds of change this deployment's Warp settings allow.
 	catalog = catalog.Allowing(config.ManagementWrites)
 	question, questionRole := request.Messages[len(request.Messages)-1].Content, request.Messages[len(request.Messages)-1].Role

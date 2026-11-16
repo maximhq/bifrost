@@ -128,6 +128,10 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured,
 			"Warp is not configured. Set a provider and model in Settings to enable it.")
 		return
+	case errors.Is(err, warp.ErrNoBifrostMCP):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoBifrostMCP,
+			"Warp needs the Bifrost MCP, which is not loaded. An admin can turn it on by setting the Bifrost URL in Client settings.")
+		return
 	case errors.Is(err, warp.ErrNoModelClient):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured, "Warp has no model client available.")
 		return

@@ -587,7 +587,6 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	instructions := systemInstructionsFor(a.config, toolAvailability{
 		semantic:         a.deps != nil && a.deps.semantic != nil,
 		userLimits:       a.deps != nil && a.deps.userGovernance != nil,
-		management:       a.managementCatalog != nil,
 		managementWrites: a.writeKinds(),
 	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes, now: now})
 	finalInstructions := instructions + finalStepInstructions
