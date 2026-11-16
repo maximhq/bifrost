@@ -8245,11 +8245,11 @@
     },
     "openai_config": {
       "type": "object",
-      "description": "OpenAI Responses API settings, honoured by the openai and fireworks providers",
+      "description": "OpenAI Responses API settings, honoured by the openai, fireworks and azure providers",
       "properties": {
         "disable_store": {
           "type": "boolean",
-          "description": "Force store=false on outgoing Responses API requests (openai and fireworks)."
+          "description": "Force store=false on outgoing Responses API requests (openai, fireworks and azure)."
         }
       },
       "additionalProperties": false

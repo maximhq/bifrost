@@ -35,6 +35,7 @@ const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_m
 const OPENAI_CONFIG_TAB_LABELS: Record<string, string> = {
 	openai: "OpenAI Config",
 	fireworks: "OpenAI Config",
+	azure: "OpenAI Config",
 };
 
 const availableTabs = (
