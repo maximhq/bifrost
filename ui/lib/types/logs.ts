@@ -458,6 +458,7 @@ export interface ToolCall {
 	type?: string;
 	id?: string;
 	function: FunctionCall;
+	custom?: { name?: string; input?: string };
 }
 
 // Model parameters types
