@@ -50,8 +50,21 @@ type geminiInteractionStreamEvent struct {
 }
 
 type geminiInteractionStreamInteraction struct {
-	Steps []geminiInteractionStep  `json:"steps,omitempty"`
-	Usage *geminiInteractionsUsage `json:"usage,omitempty"`
+	Status string                   `json:"status,omitempty"`
+	Steps  []geminiInteractionStep  `json:"steps,omitempty"`
+	Usage  *geminiInteractionsUsage `json:"usage,omitempty"`
+}
+
+const geminiInteractionCompletedEvent = "interaction.completed"
+
+func isGeminiInteractionStreamCompleted(event *geminiInteractionStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	if event.EventType == geminiInteractionCompletedEvent {
+		return true
+	}
+	return event.Interaction != nil && event.Interaction.Status == "completed"
 }
 
 type geminiInteractionStreamMetadata struct {

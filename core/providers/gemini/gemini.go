@@ -1823,10 +1823,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 }
 
 func (provider *GeminiProvider) transcriptionInteraction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	interactionRequest := ToGeminiInteractionTranscriptionRequest(request, false)
-	jsonData, err := providerUtils.MarshalProviderRequest(interactionRequest)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	jsonData, bifrostErr := buildGeminiInteractionTranscriptionRequestBody(ctx, request, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	interactionResponse, rawResponse, latency, providerResponseHeaders, bifrostErr := provider.completeInteractionRequest(ctx, key, jsonData)
@@ -1860,10 +1859,9 @@ func (provider *GeminiProvider) transcriptionInteraction(ctx *schemas.BifrostCon
 }
 
 func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	interactionRequest := ToGeminiInteractionTranscriptionRequest(request, true)
-	jsonBody, err := providerUtils.MarshalProviderRequest(interactionRequest)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	jsonBody, bifrostErr := buildGeminiInteractionTranscriptionRequestBody(ctx, request, true)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -1880,7 +1878,7 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 	req.SetBody(jsonBody)
 
 	startTime := time.Now()
-	err = providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1938,6 +1936,9 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 		lastChunkTime := startTime
 		var fullTranscriptionText strings.Builder
 		var usage *geminiInteractionsUsage
+		completed := false
+		eventCount := 0
+		var lastEvent []byte
 
 		for {
 			if ctx.Err() != nil {
@@ -1954,8 +1955,21 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+				if !completed {
+					// The body closed before interaction.completed: report a truncated
+					// stream instead of emitting a partial transcript marked done.
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					streamErr := providerUtils.NewBifrostUpstreamConnectionError(
+						fmt.Sprintf("Gemini interaction stream ended before interaction.completed (events: %d)", eventCount),
+						io.ErrUnexpectedEOF,
+					)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, streamErr, jsonBody, lastEvent, provider.sendBackRawRequest, provider.sendBackRawResponse, time.Since(startTime)), responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
 				break
 			}
+			eventCount++
+			lastEvent = append(lastEvent[:0], data...)
 
 			var event geminiInteractionStreamEvent
 			parseStart := time.Now()
@@ -1975,6 +1989,9 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 				return
 			}
 
+			if isGeminiInteractionStreamCompleted(&event) {
+				completed = true
+			}
 			if eventUsage := geminiInteractionStreamUsage(&event); eventUsage != nil {
 				usage = eventUsage
 			}
@@ -2023,6 +2040,23 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 	}()
 
 	return responseChan, nil
+}
+
+// buildGeminiInteractionTranscriptionRequestBody preserves provider-native request
+// bodies when raw request mode is enabled. The typed Interactions converter only
+// represents the fields exposed by Bifrost and cannot safely round-trip arbitrary
+// provider-specific options or input content.
+func buildGeminiInteractionTranscriptionRequestBody(ctx *schemas.BifrostContext, request *schemas.BifrostTranscriptionRequest, stream bool) ([]byte, *schemas.BifrostError) {
+	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok {
+		return rawBody, nil
+	}
+
+	interactionRequest := ToGeminiInteractionTranscriptionRequest(request, stream)
+	jsonBody, err := providerUtils.MarshalProviderRequest(interactionRequest)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	return jsonBody, nil
 }
 
 // Transcription performs a speech-to-text request to the Gemini API.
