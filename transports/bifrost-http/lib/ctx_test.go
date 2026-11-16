@@ -1855,6 +1855,19 @@ func (g *gateway) editVirtualKey(edited configstoreTables.TableVirtualKey) {
 	}
 }
 
+// editRateLimit writes edited over a stored rate limit and refreshes it, the way the rate limit API
+// applies an edit: the limit's settings change and its live usage carries on.
+func (g *gateway) editRateLimit(edited configstoreTables.TableRateLimit) {
+	g.t.Helper()
+	ctx := context.Background()
+	if err := g.config.ConfigStore.UpdateRateLimit(ctx, &edited); err != nil {
+		g.t.Fatalf("writing rate limit %s: %v", edited.ID, err)
+	}
+	if err := g.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindRateLimit, ID: edited.ID}}); err != nil {
+		g.t.Fatalf("refreshing rate limit %s: %v", edited.ID, err)
+	}
+}
+
 // gateway is one in-process gateway: the transport's provider config and account, the governance
 // and routing plugins over their stores, core, and the session store.
 type gateway struct {
@@ -3055,7 +3068,7 @@ func TestGatewayGovernanceRefusalDropsTheBinding(t *testing.T) {
 	}
 
 	raised := limit(100)
-	store.UpsertRateLimitConfig(t.Context(), raised.ID, &raised)
+	g.editRateLimit(raised)
 	r = g.send(gwCall{model: "m", headers: vkHeaders("vk1", "s")})
 	requireServedBy(t, r, gwB)
 	if r.info.IsFallback {

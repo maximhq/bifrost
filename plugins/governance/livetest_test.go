@@ -142,7 +142,15 @@ func openLiveHarness(t testing.TB, configStore configstore.ConfigStore, cfg *con
 	if err := h.writeGovernance(cfg); err != nil {
 		return nil, fmt.Errorf("write governance config: %w", err)
 	}
-	live, err := livestore.New()
+	for _, table := range []string{harnessBudgetFlags, harnessRateLimitFlags} {
+		if err := h.db.Exec("CREATE TABLE IF NOT EXISTS " + table + " (limit_id VARCHAR(255) PRIMARY KEY, calendar_aligned BOOLEAN NOT NULL)").Error; err != nil {
+			return nil, fmt.Errorf("create %s: %w", table, err)
+		}
+	}
+	live, err := livestore.New(livestore.LimitOwners(
+		[]registry.LimitOwner{{From: harnessBudgetFlags + " o", Column: "o.limit_id", Calendar: "o.calendar_aligned"}},
+		[]registry.LimitOwner{{From: harnessRateLimitFlags + " o", Column: "o.limit_id", Calendar: "o.calendar_aligned"}},
+	))
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +159,55 @@ func openLiveHarness(t testing.TB, configStore configstore.ConfigStore, cfg *con
 		return nil, err
 	}
 	h.live = live
+	harnessDBs.Store(live, h.db)
+	t.Cleanup(func() { harnessDBs.Delete(live) })
 	return h, nil
+}
+
+// harnessBudgetFlags and harnessRateLimitFlags hold the limits the harness's tests write on their
+// own, with the calendar flag a holder would give them: a test sets IsCalendarAligned on such a
+// limit, which the limit row does not store. The harness registers them as limit owners, so the
+// live store reads them as a build reads its own holders.
+const (
+	harnessBudgetFlags    = "harness_budget_flags"
+	harnessRateLimitFlags = "harness_rate_limit_flags"
+)
+
+// recordCalendarFlag records whether the limit id of kind that a test writes on its own is calendar
+// aligned, for the live store's next read of it.
+func recordCalendarFlag(tb testing.TB, store *LocalGovernanceStore, kind livestore.Kind, id string, aligned bool) {
+	tb.Helper()
+	value, ok := harnessDBs.Load(store.live)
+	if !ok {
+		tb.Errorf("the store's live store was not built by a live harness")
+		return
+	}
+	db := value.(*gorm.DB)
+	table := harnessRateLimitFlags
+	if kind == livestore.KindBudget {
+		table = harnessBudgetFlags
+	}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("DELETE FROM "+table+" WHERE limit_id = ?", id).Error; err != nil {
+			return err
+		}
+		return tx.Exec("INSERT INTO "+table+" (limit_id, calendar_aligned) VALUES (?, ?)", id, aligned).Error
+	})
+	if err != nil {
+		tb.Errorf("record the calendar flag of %s %s: %v", kind, id, err)
+	}
+}
+
+// harnessDBs finds the database a harness's live store reads, for helpers given only a store.
+var harnessDBs sync.Map // *livestore.Store -> *gorm.DB
+
+// harnessDB returns the database store's live store reads, failing the test when the store was
+// not built over a harness.
+func harnessDB(tb testing.TB, store *LocalGovernanceStore) *gorm.DB {
+	tb.Helper()
+	value, ok := harnessDBs.Load(store.live)
+	require.True(tb, ok, "the store's live store was not built by a live harness")
+	return value.(*gorm.DB)
 }
 
 // newTestGovernanceStore is a governance store over a live store loaded from cfg and fixture. Usage
