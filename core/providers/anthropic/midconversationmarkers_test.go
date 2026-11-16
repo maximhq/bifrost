@@ -123,6 +123,13 @@ func TestInlineMidConversationSystem_EnvelopeHasNoTrailingWhitespace(t *testing.
 	assert.Equal(t, "<system-reminder>\nkeep going\n</system-reminder>", *msg.Content.ContentBlocks[1].Text)
 }
 
+// claude5InlineModel is a Claude 5 model that trims user-turn trailing whitespace and, on Bedrock,
+// has no native mid-conversation system role, so its reminder is inlined as a user turn: the path
+// these tests exercise. Haiku 5.5 and Sonnet 5.5 are native on Bedrock (see
+// DefaultSupportsMidConversationSystem), so they emit role:"system" and never reach the inline
+// join that the trim applies to. Sonnet 5 is the latest model that still inlines.
+const claude5InlineModel = "global.anthropic.claude-sonnet-5"
+
 // Claude 5 models drop trailing whitespace from the text that ends a user turn but keep it
 // mid-turn. A marked user block ending in "\n" (Claude Code's own <system-reminder> blocks do) is
 // mid-turn while an inlined reminder follows it and ends the turn once the reminder is dropped, so
@@ -138,11 +145,11 @@ func TestInlinedSystemReminder_TrimsTheUserTextItJoins(t *testing.T) {
 		row         *schemas.ModelCapabilities // datasheet row; nil ⇒ name detection
 		want        string
 	}{
-		{"claude 5 trims", "global.anthropic.claude-haiku-5-5", nil, trimmed},
+		{"claude 5 trims", claude5InlineModel, nil, trimmed},
 		{"claude 4 keeps", "global.anthropic.claude-haiku-4-5-20251001-v1:0", nil, marked},
 		{"unrecognised model keeps", "global.anthropic.claude-opus-6", nil, marked},
 		{"datasheet trims an unrecognised model", "global.anthropic.claude-opus-6", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}, trimmed},
-		{"datasheet keeps a claude 5 model", "global.anthropic.claude-haiku-5-5", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(false)}, marked},
+		{"datasheet keeps a claude 5 model", claude5InlineModel, &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(false)}, marked},
 	}
 
 	for _, tc := range models {
@@ -240,7 +247,7 @@ func TestInlinedSystemReminder_TrimIsStableAsTheBreakpointMoves(t *testing.T) {
 	const marked = "<system-reminder>\ncontext\n</system-reminder>\n"
 	const nudge = "keep going"
 	for _, tc := range []struct{ name, model, want string }{
-		{"claude 5", "global.anthropic.claude-haiku-5-5", strings.TrimSuffix(marked, "\n")},
+		{"claude 5", claude5InlineModel, strings.TrimSuffix(marked, "\n")},
 		{"claude 4", "global.anthropic.claude-haiku-4-5-20251001-v1:0", marked},
 	} {
 		t.Run(tc.name+"/anthropic route", func(t *testing.T) {
