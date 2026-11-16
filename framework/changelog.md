@@ -1,2 +1,3 @@
 - chore: upgraded core to v1.15.2
+- [test]: regression tests pin advisor-pass billing on the Anthropic passthrough stream, with no repeated per-request fee, fast mode and US data residency carried to the advisor pass, and no advisor billing on semantic-cache hits (from #8783) [@tomatomptt](https://github.com/tomatomptt)
 - [feat]: MachGen video jobs are settled and priced by the video job sweeper
