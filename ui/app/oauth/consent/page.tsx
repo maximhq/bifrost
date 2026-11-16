@@ -89,6 +89,20 @@ function ConsentView({ flowId }: { flowId: string }) {
 		void Promise.resolve(refetch()).finally(() => setFlowRechecked(true));
 	}, [awaitingRecheck, refetch]);
 
+	// Refusing a device sign-in (Claude Code's /login) ends the device's polling at once.
+	const handleDeny = async () => {
+		try {
+			const res = await submitFlow({ flowId, body: { deny: true } }).unwrap();
+			if (!isSafeRedirect(res.redirect_url)) {
+				toast.error(t("consent.authFailed"), { description: t("consent.invalidRedirect") });
+				return;
+			}
+			window.location.href = res.redirect_url;
+		} catch (err) {
+			toast.error(t("consent.authFailed"), { description: getErrorMessage(err) });
+		}
+	};
+
 	const handleSubmit = async (mode: "vk" | "session" | "user") => {
 		setSelectedMode(mode);
 		try {
@@ -183,9 +197,20 @@ function ConsentView({ flowId }: { flowId: string }) {
 					</>
 				) : (
 					// Device sign-ins (Claude Code gateway) have no callback; the device polls for the result.
-					<p className="mt-4 text-sm" data-testid="oauth-consent-device-signin">
-						{t("consent.deviceSignInConfirm")}
-					</p>
+					<>
+						<p className="mt-4 text-sm" data-testid="oauth-consent-device-signin">
+							{t("consent.deviceSignInConfirm")}
+						</p>
+						<Button
+							variant="outline"
+							className="text-destructive mt-3 w-full"
+							onClick={() => void handleDeny()}
+							disabled={submitting}
+							data-testid="oauth-consent-deny-btn"
+						>
+							{t("consent.denyButton")}
+						</Button>
+					</>
 				)}
 			</div>
 

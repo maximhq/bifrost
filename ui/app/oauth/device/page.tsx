@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getEndpointUrl } from "@/lib/utils/port";
-import { CheckCircle2, Loader2, Terminal } from "lucide-react";
+import { CheckCircle2, Loader2, Terminal, XCircle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,7 +21,22 @@ function formatUserCode(value: string): string {
 export default function DeviceSignInPage() {
 	const { t } = useTranslation("login");
 	const [approved] = useQueryState("approved");
+	const [denied] = useQueryState("denied");
 	const [prefill] = useQueryState("user_code");
+
+	if (denied) {
+		return (
+			<Shell>
+				<div className="text-center" data-testid="claude-code-device-denied">
+					<div className="bg-destructive/10 mx-auto mb-4 flex size-14 items-center justify-center rounded-full">
+						<XCircle className="text-destructive size-7" />
+					</div>
+					<h1 className="text-xl font-semibold tracking-tight">{t("device.deniedTitle")}</h1>
+					<p className="text-muted-foreground mt-2 text-sm">{t("device.deniedBody")}</p>
+				</div>
+			</Shell>
+		);
+	}
 
 	if (approved) {
 		return (
