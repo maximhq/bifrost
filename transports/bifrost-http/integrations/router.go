@@ -64,6 +64,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -958,6 +959,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if err != nil {
 			if convTracer != nil {
 				convTracer.EndSpan(convHandle, schemas.SpanStatusError, err.Error())
+			}
+			// A caller-fault refusal keeps its own message; the generic line would hide why.
+			if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, badRequest)
+				return
 			}
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format"))
 			return

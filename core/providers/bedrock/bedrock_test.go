@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -9485,4 +9486,215 @@ func TestBedrockNativeStructuredOutput_ResponsesNoToolInterception(t *testing.T)
 	require.Len(t, chat.Choices, 1)
 	assert.Equal(t, text, *chat.Choices[0].Message.Content.ContentStr)
 	assert.Equal(t, "stop", *chat.Choices[0].FinishReason)
+}
+
+// toolResultRoundTrip drives a one-turn tool loop whose tool_result carries content through
+// the Bedrock ingress and back out the Bedrock egress, and returns the rebuilt toolResult
+// content. It is the shared harness for the multi-member tool_result regression tests.
+func toolResultRoundTrip(t *testing.T, content []bedrock.BedrockContentBlock) ([]bedrock.BedrockContentBlock, error) {
+	t.Helper()
+	req := &bedrock.BedrockConverseRequest{
+		ModelID: "us.anthropic.claude-sonnet-4-6",
+		Messages: []bedrock.BedrockMessage{
+			{Role: bedrock.BedrockMessageRoleUser, Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Call get.")}}},
+			{Role: bedrock.BedrockMessageRoleAssistant, Content: []bedrock.BedrockContentBlock{{
+				ToolUse: &bedrock.BedrockToolUse{ToolUseID: "t1", Name: "get", Input: json.RawMessage(`{}`)},
+			}}},
+			{Role: bedrock.BedrockMessageRoleUser, Content: []bedrock.BedrockContentBlock{
+				{ToolResult: &bedrock.BedrockToolResult{ToolUseID: "t1", Status: schemas.Ptr("success"), Content: content}},
+			}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult != nil && block.ToolResult.ToolUseID == "t1" {
+				return block.ToolResult.Content, nil
+			}
+		}
+	}
+	t.Fatal("no toolResult for t1 in rebuilt request")
+	return nil, nil
+}
+
+func TestBedrockToolResultKeepsEveryMember(t *testing.T) {
+	png := "iVBORw0KGgo="
+	image := bedrock.BedrockContentBlock{Image: &bedrock.BedrockImageSource{Format: "png", Source: bedrock.BedrockImageSourceData{Bytes: &png}}}
+	pdf := "JVBERi0xLjQ="
+	document := bedrock.BedrockContentBlock{Document: &bedrock.BedrockDocumentSource{Format: "pdf", Name: "vault", Source: &bedrock.BedrockDocumentSourceData{Bytes: &pdf}}}
+
+	t.Run("image only", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{image})
+		require.NoError(t, err)
+		require.Len(t, got, 1, "got %s", mustMarshalJSON(got))
+		require.NotNil(t, got[0].Image, "image dropped: %s", mustMarshalJSON(got))
+		assert.Equal(t, "png", got[0].Image.Format)
+		assert.Equal(t, png, *got[0].Image.Source.Bytes)
+	})
+
+	t.Run("text then image keeps order", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{{Text: schemas.Ptr("here it is")}, image})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "got %s", mustMarshalJSON(got))
+		require.NotNil(t, got[0].Text)
+		assert.Equal(t, "here it is", *got[0].Text)
+		require.NotNil(t, got[1].Image, "image dropped: %s", mustMarshalJSON(got))
+	})
+
+	t.Run("document", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{document})
+		require.NoError(t, err)
+		require.Len(t, got, 1, "got %s", mustMarshalJSON(got))
+		require.NotNil(t, got[0].Document, "document dropped: %s", mustMarshalJSON(got))
+		assert.Equal(t, "pdf", got[0].Document.Format)
+		assert.Equal(t, "vault", got[0].Document.Name)
+		assert.Equal(t, pdf, *got[0].Document.Source.Bytes)
+	})
+
+	t.Run("two text blocks", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{{Text: schemas.Ptr("alpha")}, {Text: schemas.Ptr("bravo")}})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "got %s", mustMarshalJSON(got))
+		assert.Equal(t, "alpha", *got[0].Text)
+		assert.Equal(t, "bravo", *got[1].Text)
+	})
+
+	t.Run("json member survives next to an image", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{{JSON: json.RawMessage(`{"ok":true}`)}, image})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "got %s", mustMarshalJSON(got))
+		assert.JSONEq(t, `{"ok":true}`, string(got[0].JSON))
+		require.NotNil(t, got[1].Image)
+	})
+
+	t.Run("a lone text member is still a plain string", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{{Text: schemas.Ptr("only")}})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "only", *got[0].Text)
+	})
+
+	t.Run("a lone json member is unchanged", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{{JSON: json.RawMessage(`{"a":1}`)}})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.JSONEq(t, `{"a":1}`, string(got[0].JSON))
+	})
+}
+
+func TestBedrockToolResultRefusesMembersItCannotForward(t *testing.T) {
+	s3 := &bedrock.BedrockS3Location{URI: "s3://bucket/key.png"}
+	cases := map[string][]bedrock.BedrockContentBlock{
+		"image by s3 reference":     {{Image: &bedrock.BedrockImageSource{Format: "png", Source: bedrock.BedrockImageSourceData{S3Location: s3}}}},
+		"document without a source": {{Document: &bedrock.BedrockDocumentSource{Format: "pdf", Name: "d"}}},
+		"document by s3 reference":  {{Document: &bedrock.BedrockDocumentSource{Format: "pdf", Name: "d", Source: &bedrock.BedrockDocumentSourceData{S3Location: s3}}}},
+		"nested tool use":           {{Text: schemas.Ptr("x")}, {ToolUse: &bedrock.BedrockToolUse{ToolUseID: "n", Name: "n", Input: json.RawMessage(`{}`)}}},
+		"empty member":              {{Text: schemas.Ptr("x")}, {}},
+		"lone nested tool use":      {{ToolUse: &bedrock.BedrockToolUse{ToolUseID: "n", Name: "n", Input: json.RawMessage(`{}`)}}},
+		"lone empty member":         {{}},
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := toolResultRoundTrip(t, content)
+			require.Error(t, err, "an unforwardable member must be refused, not dropped")
+			assert.True(t, providerUtils.IsInvalidRequestError(err), "must be a caller-fault 400, got %v", err)
+		})
+	}
+
+	t.Run("search result envelope still carries an s3 image", func(t *testing.T) {
+		got, err := toolResultRoundTrip(t, []bedrock.BedrockContentBlock{
+			{Image: &bedrock.BedrockImageSource{Format: "png", Source: bedrock.BedrockImageSourceData{S3Location: s3}}},
+			{SearchResult: &bedrock.BedrockSearchResultBlock{Source: "s", Title: "t", Content: []bedrock.BedrockSearchResultContent{{Text: "c"}}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		require.NotNil(t, got[0].Image)
+		assert.NotNil(t, got[0].Image.Source.S3Location)
+	})
+}
+
+func TestBedrockInvokeToolResultKeepsEveryMember(t *testing.T) {
+	const image = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}`
+	const document = `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"ORCHID-7731"}}`
+	cases := map[string]struct {
+		content string
+		want    int
+	}{
+		"image only":           {"[" + image + "]", 1},
+		"text and image":       {`[{"type":"text","text":"here it is"},` + image + `]`, 2},
+		"two text blocks":      {`[{"type":"text","text":"alpha"},{"type":"text","text":"bravo"}]`, 2},
+		"every supported kind": {`[{"type":"text","text":"here it is"},` + image + `,` + document + `,{"type":"text","text":"bravo"}]`, 4},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":24,
+"messages":[{"role":"user","content":"Call get."},
+{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"get","input":{}}]},
+{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":` + tc.content + `}]}]}`
+			var inv bedrock.BedrockInvokeRequest
+			require.NoError(t, json.Unmarshal([]byte(body), &inv))
+			inv.ModelID = "us.anthropic.claude-sonnet-4-6"
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := inv.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			var got []bedrock.BedrockContentBlock
+			for _, msg := range rebuilt.Messages {
+				for _, block := range msg.Content {
+					if block.ToolResult != nil {
+						got = block.ToolResult.Content
+					}
+				}
+			}
+			require.Len(t, got, tc.want, "every member must reach Bedrock, got %s", mustMarshalJSON(got))
+			if strings.Contains(tc.content, `"image"`) {
+				assert.True(t, slices.ContainsFunc(got, func(b bedrock.BedrockContentBlock) bool { return b.Image != nil }), "image dropped: %s", mustMarshalJSON(got))
+			}
+			if name == "every supported kind" {
+				assert.Equal(t, "here it is", *got[0].Text)
+				require.NotNil(t, got[1].Image, "image dropped")
+				require.NotNil(t, got[2].Document, "document dropped")
+				assert.Equal(t, "bravo", *got[3].Text)
+			}
+		})
+	}
+}
+
+// BenchmarkToBifrostResponsesRequestToolResult measures the Bedrock ingress on the common
+// single-member tool_result (stays a plain string) and on a multi-member one (structured
+// blocks), so the cost of carrying every member is recorded next to the unchanged case.
+func BenchmarkToBifrostResponsesRequestToolResult(b *testing.B) {
+	png := "iVBORw0KGgo="
+	cases := map[string][]bedrock.BedrockContentBlock{
+		"single text": {{Text: schemas.Ptr("here it is")}},
+		"text+image":  {{Text: schemas.Ptr("here it is")}, {Image: &bedrock.BedrockImageSource{Format: "png", Source: bedrock.BedrockImageSourceData{Bytes: &png}}}},
+	}
+	for name, content := range cases {
+		req := &bedrock.BedrockConverseRequest{
+			ModelID: "us.anthropic.claude-sonnet-4-6",
+			Messages: []bedrock.BedrockMessage{
+				{Role: bedrock.BedrockMessageRoleUser, Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Call get.")}}},
+				{Role: bedrock.BedrockMessageRoleAssistant, Content: []bedrock.BedrockContentBlock{{ToolUse: &bedrock.BedrockToolUse{ToolUseID: "t1", Name: "get", Input: json.RawMessage(`{}`)}}}},
+				{Role: bedrock.BedrockMessageRoleUser, Content: []bedrock.BedrockContentBlock{{ToolResult: &bedrock.BedrockToolResult{ToolUseID: "t1", Content: content}}}},
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := req.ToBifrostResponsesRequest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

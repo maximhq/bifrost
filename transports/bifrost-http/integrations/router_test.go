@@ -588,6 +588,46 @@ func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
 		"the client's exact numeric literal must survive; a re-encode would render it 1.5; schema: %s", schemaStr)
 }
 
+// TestCreateHandler_ConverterRefusalKeepsItsOwnMessage pins that a request converter that
+// refuses the caller's input (providerUtils.InvalidRequestErrorf) answers 400 with its own
+// message, while any other converter error keeps the generic line.
+func TestCreateHandler_ConverterRefusalKeepsItsOwnMessage(t *testing.T) {
+	run := func(t *testing.T, converterErr error) (int, string) {
+		route := RouteConfig{
+			Type:   RouteConfigTypeBedrock,
+			Path:   "/model/{modelId}/converse",
+			Method: fasthttp.MethodPost,
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &bedrock.BedrockConverseRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				return nil, fmt.Errorf("failed to convert bedrock request: %w", converterErr)
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		}
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetBodyString(`{"messages":[]}`)
+		router.createHandler(route)(ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	status, body := run(t, providerUtils.InvalidRequestErrorf("messages[2] tool_result content[1]: an image must carry inline bytes"))
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+	assert.Contains(t, body, "an image must carry inline bytes")
+	assert.NotContains(t, body, "failed to convert request to Bifrost format")
+
+	status, body = run(t, fmt.Errorf("some internal conversion fault"))
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+	assert.Contains(t, body, "failed to convert request to Bifrost format")
+}
+
 // TestCreateHandler_AnthropicRouteSetsPassthroughFlags verifies that a Claude
 // Code request on the Anthropic route is marked for raw-body passthrough by the
 // checkAnthropicPassthrough pre-callback, and that the flags are still set at
