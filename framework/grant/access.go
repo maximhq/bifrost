@@ -38,21 +38,30 @@ type ModelMatcher func(provider, model string, allowed []string) bool
 //
 // There is one scoping slot, not a list. A request is scoped by at most one thing at a time, and
 // composing under one mode is what keeps every answer here decidable.
+//
+// The caller's permits sit at the levels the resolver gave them (see schemas.Permit.Level). Within a
+// level they always union; levelMode says whether levels union or intersect. Under Intersect the
+// lowest level present grants and each level above it caps. Capping levels never add access, and
+// agents are decided by the granting level alone.
 type Access struct {
-	bases   []schemas.Permit
-	scoping schemas.Permit
-	mode    CompositionMode
-	matcher ModelMatcher
+	// bases is every permit the caller holds, as given. Levels are read off each permit when needed.
+	bases     []schemas.Permit
+	levelMode CompositionMode
+	scoping   schemas.Permit
+	mode      CompositionMode
+	matcher   ModelMatcher
 }
 
-// NewAccess folds the permits the caller holds together with the permit scoping this request,
-// under one composition mode.
+// NewAccess folds the permits the caller holds together with the permit scoping this request.
+//
+// levelMode is how the caller's levels combine: Intersect makes each level above the lowest cap it,
+// anything else (Union, or "") reads every permit as one. mode is the scoping permit's, separately.
 //
 // A request composes under exactly one mode. Choosing it belongs to whoever resolved the permits:
 // that layer knows what it asked and what answered. Passing no scoping permit leaves the mode
 // irrelevant and the answer is the caller's permits alone. Nil entries in bases are dropped, so a
 // resolver that found nothing for one source does not have to say so twice.
-func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionMode, matcher ModelMatcher) *Access {
+func NewAccess(bases []schemas.Permit, levelMode CompositionMode, scoping schemas.Permit, mode CompositionMode, matcher ModelMatcher) *Access {
 	held := make([]schemas.Permit, 0, len(bases))
 	for _, base := range bases {
 		if !isNilPermit(base) {
@@ -63,11 +72,63 @@ func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionM
 		scoping = nil
 	}
 	return &Access{
-		bases:   held,
-		scoping: scoping,
-		mode:    mode,
-		matcher: matcher,
+		bases:     held,
+		levelMode: levelMode,
+		scoping:   scoping,
+		mode:      mode,
+		matcher:   matcher,
 	}
+}
+
+// grantingLevel is the lowest level holding a permit, or -1 when there is none. Intersect only:
+// union paths go through granting, levelsAbove or callerAllows.
+func (a *Access) grantingLevel() int {
+	lowest := -1
+	for _, p := range a.bases {
+		if level := p.Level(); lowest < 0 || level < lowest {
+			lowest = level
+		}
+	}
+	return lowest
+}
+
+// levelsAbove returns the levels that cap the granting one, lowest first. Under Union no level caps.
+func (a *Access) levelsAbove() []int {
+	if a.levelMode != Intersect {
+		return nil
+	}
+	granting := a.grantingLevel()
+	var levels []int
+	for _, p := range a.bases {
+		if level := p.Level(); level > granting && !slices.Contains(levels, level) {
+			levels = append(levels, level)
+		}
+	}
+	slices.Sort(levels)
+	return levels
+}
+
+// permitsAt returns the caller's permits at level, in order. Intersect only: union paths go
+// through granting, levelsAbove or callerAllows.
+func (a *Access) permitsAt(level int) []schemas.Permit {
+	var permits []schemas.Permit
+	for _, p := range a.bases {
+		if p.Level() == level {
+			permits = append(permits, p)
+		}
+	}
+	return permits
+}
+
+// granting returns the permits that grant. Under Union every level grants.
+func (a *Access) granting() []schemas.Permit {
+	if a.levelMode != Intersect {
+		if len(a.bases) == 0 {
+			return nil
+		}
+		return slices.Clone(a.bases)
+	}
+	return a.permitsAt(a.grantingLevel())
 }
 
 // Bases implements schemas.Access.
@@ -75,7 +136,15 @@ func (a *Access) Bases() []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	return slices.Clone(a.bases)
+	return a.granting()
+}
+
+// LevelMode implements schemas.Access.
+func (a *Access) LevelMode() string {
+	if a == nil {
+		return ""
+	}
+	return string(a.levelMode)
 }
 
 // Scoping implements schemas.Access.
@@ -104,7 +173,7 @@ func (a *Access) IsProviderAllowed(provider string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsProvider(p, provider) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsProvider(p, provider) })
 	if a.scoping == nil {
 		return base
 	}
@@ -116,7 +185,7 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
 	if a.scoping == nil {
 		return base
 	}
@@ -128,7 +197,7 @@ func (a *Access) AllowsEveryModel(provider string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
 	if a.scoping == nil {
 		return base
 	}
@@ -174,7 +243,7 @@ func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 			return strings.HasPrefix(entry, clientName+"-")
 		})
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
 	if a.scoping == nil {
 		return base
 	}
@@ -186,6 +255,7 @@ func (a *Access) IsAgentAllowed(agentName string) bool {
 	if a == nil || agentName == "" {
 		return false
 	}
+	// Only the granting level decides agents (see Access).
 	base := a.anyBase(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
 	if a.scoping == nil {
 		return base
@@ -198,7 +268,7 @@ func (a *Access) IsRelayAllowed(endpointName string) bool {
 	if a == nil || endpointName == "" {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
 	if a.scoping == nil {
 		return base
 	}
@@ -211,9 +281,21 @@ func (a *Access) PermitsForModel(provider string, model string) []schemas.Permit
 		return nil
 	}
 	permits := make([]schemas.Permit, 0, len(a.bases)+1)
-	for _, base := range a.bases {
-		if a.permitAllowsModel(base, provider, model) {
-			permits = append(permits, base)
+	// The caller's side is named only when it allowed the pair; otherwise a union scope admitted it.
+	allowsPair := func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }
+	if a.callerAllows(allowsPair) {
+		for _, base := range a.granting() {
+			if allowsPair(base) {
+				permits = append(permits, base)
+			}
+		}
+		// The capping levels it passed are named too, so their limits apply.
+		for _, level := range a.levelsAbove() {
+			for _, permit := range a.permitsAt(level) {
+				if allowsPair(permit) {
+					permits = append(permits, permit)
+				}
+			}
 		}
 	}
 	if a.scoping != nil {
@@ -240,7 +322,13 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 		// The request cannot proceed on this provider, so there is no key restriction to report.
 		return nil, false
 	}
-	callerKeys, callerHolds := a.unionKeysHeldBy(a.bases, provider, model)
+	var callerKeys schemas.WhiteList
+	callerHolds := false
+	// Only a caller side that allows the pair restricts keys; otherwise a union scope admitted it.
+	if a.callerAllows(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }) {
+		callerKeys, callerHolds = a.unionKeysHeldBy(a.granting(), provider, model)
+		callerKeys, callerHolds = a.capKeys(callerKeys, callerHolds, provider, model)
+	}
 	var scopeKeys schemas.WhiteList
 	scopeHolds := false
 	if a.scoping != nil {
@@ -270,6 +358,23 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 	keyIDs = make([]string, 0, len(granted))
 	keyIDs = append(keyIDs, granted...)
 	return keyIDs, true
+}
+
+// capKeys narrows the caller's keys by each capping level that restricts this provider's keys. A
+// level with no restriction for the provider leaves them alone.
+func (a *Access) capKeys(keys schemas.WhiteList, holds bool, provider string, model string) (schemas.WhiteList, bool) {
+	for _, level := range a.levelsAbove() {
+		layerKeys, layerHolds := a.unionKeysHeldBy(a.permitsAt(level), provider, model)
+		if !layerHolds {
+			continue
+		}
+		if !holds {
+			keys, holds = layerKeys, true
+			continue
+		}
+		keys = composeKeyIDs(keys, layerKeys, Intersect)
+	}
+	return keys, holds
 }
 
 // unionKeysHeldBy is the union of the key restrictions that permits which authorize model on
@@ -319,6 +424,10 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		if !a.permitsModel(pp, model) {
 			return false
 		}
+		// A candidate a capping level refuses can only be a union scope's, which serves it itself.
+		if isBase && !a.capsAllow(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }) {
+			return false
+		}
 		// Weight does not compose, because it is a preference rather than a permission and there is
 		// no meaningful intersection of two preferences. Instead the scoping permit wins where it
 		// expresses one: it is the more specific context, so a scope that wants a provider preferred
@@ -340,9 +449,14 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		// candidate the keys are this provider permit's own; KeysForModel is where the caller's
 		// permits are read as one.
 		selectedKeyIDs := pp.KeyIDs
+		// Narrow the candidate's keys by the capping levels.
+		if isBase {
+			selectedKeyIDs = a.capCandidateKeys(selectedKeyIDs, provider, model)
+		}
+		// The scope composes with the narrowed keys, matching KeysForModel.
 		if isBase && a.scoping != nil && a.permitAllowsModel(a.scoping, provider, model) {
 			if scoped := providerPermitFor(a.scoping, provider); scoped != nil {
-				selectedKeyIDs = composeKeyIDs(pp.KeyIDs, scoped.KeyIDs, a.mode)
+				selectedKeyIDs = composeKeyIDs(selectedKeyIDs, scoped.KeyIDs, a.mode)
 			}
 		}
 		// A copy, as in KeysForModel: selectedKeyIDs is the permit's own slice whenever nothing composed
@@ -359,6 +473,16 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		return nil
 	}
 	return candidates
+}
+
+// capCandidateKeys narrows one candidate's keys by each capping level, as capKeys does.
+func (a *Access) capCandidateKeys(keyIDs schemas.WhiteList, provider string, model string) schemas.WhiteList {
+	for _, level := range a.levelsAbove() {
+		if layerKeys, layerHolds := a.unionKeysHeldBy(a.permitsAt(level), provider, model); layerHolds {
+			keyIDs = composeKeyIDs(keyIDs, layerKeys, Intersect)
+		}
+	}
+	return keyIDs
 }
 
 // GrantedProvidersForModel implements schemas.Access. Because this gate cannot ask ProvidersForModel
@@ -381,6 +505,10 @@ func (a *Access) GrantedProvidersForModel(model string) []string {
 			return true
 		}
 		if !providerPermitAllowsModel(pp, model) {
+			return false
+		}
+		// Capping levels narrow only the caller's providers, not ones a union scope adds.
+		if isBase && !a.capsAllow(func(p schemas.Permit) bool { return allowsModelByName(p, pp.Provider, model) }) {
 			return false
 		}
 		if intersecting {
@@ -411,7 +539,7 @@ func (a *Access) GrantedProvidersForModel(model string) []string {
 // nothing left to serve it.
 func (a *Access) eachProviderPermit(accept func(owner schemas.Permit, pp *schemas.ProviderPermit, isBase bool) bool) {
 	served := make(map[string]struct{})
-	for _, base := range a.bases {
+	for _, base := range a.granting() {
 		eachProviderPermit(base, func(pp *schemas.ProviderPermit) bool {
 			if accept(base, pp, true) {
 				served[pp.Provider] = struct{}{}
@@ -451,12 +579,16 @@ func (a *Access) MCPToolIncludeList() []string {
 	}
 
 	merged := newUniqueEntries(0)
-	for _, base := range a.bases {
+	for _, base := range a.granting() {
 		for _, entry := range mcpEntries(base) {
 			merged.add(entry)
 		}
 	}
 	base := merged.list()
+	for _, level := range a.levelsAbove() {
+		layer := a.permitsAt(level)
+		base = intersectMCPEntries(base, layer, layerMCPEntries(layer))
+	}
 	if !a.IsScoped() {
 		return base
 	}
@@ -520,40 +652,60 @@ func (a *Access) composeMCPEntries(base, scoped []string) []string {
 		}
 		return merged.list()
 	case Intersect:
-		// A wildcard is passed through only when both sides hold one, because downstream a
-		// "<client>-*" entry reads as every tool of that client. Which side carries the wildcard
-		// decides how the other is consulted, and this is why narrowing needs the permit and not
-		// just its entries: an unrestricted client expands to a bare "<client>-*", so testing a
-		// specific entry for membership in that expansion would drop every tool the scoping permit
-		// in fact permits. The permit is asked instead. In the other direction there is nothing to
-		// ask: a wildcard has to be replaced by the scoping permit's specific entries for the
-		// client, which only the expansion lists.
-		scopedSet := make(map[string]struct{}, len(scoped))
-		for _, entry := range scoped {
-			scopedSet[entry] = struct{}{}
-		}
-		kept := newUniqueEntries(len(base))
-		for _, entry := range base {
-			clientName, isWildcard := strings.CutSuffix(entry, "-"+Wildcard)
-			if !isWildcard {
-				if allowsTool(a.scoping, entry) {
-					kept.add(entry)
-				}
-				continue
-			}
-			if _, unrestrictedOnBothSides := scopedSet[entry]; unrestrictedOnBothSides {
-				kept.add(entry)
-				continue
-			}
-			for _, scopedEntry := range scoped {
-				if strings.HasPrefix(scopedEntry, clientName+"-") {
-					kept.add(scopedEntry)
-				}
-			}
-		}
-		return kept.list()
+		return intersectMCPEntries(base, []schemas.Permit{a.scoping}, scoped)
 	}
 	return []string{}
+}
+
+// intersectMCPEntries keeps the caller's tool patterns that the narrowing permits also allow; scoped
+// is those permits' own expansion. A "<client>-*" wildcard survives only if both sides have it, and
+// is otherwise replaced by the narrowing side's specific tools for that client.
+func intersectMCPEntries(base []string, narrowing []schemas.Permit, scoped []string) []string {
+	scopedSet := make(map[string]struct{}, len(scoped))
+	for _, entry := range scoped {
+		scopedSet[entry] = struct{}{}
+	}
+	kept := newUniqueEntries(len(base))
+	for _, entry := range base {
+		clientName, isWildcard := strings.CutSuffix(entry, "-"+Wildcard)
+		if !isWildcard {
+			if anyPermitAllowsTool(narrowing, entry) {
+				kept.add(entry)
+			}
+			continue
+		}
+		if _, unrestrictedOnBothSides := scopedSet[entry]; unrestrictedOnBothSides {
+			kept.add(entry)
+			continue
+		}
+		for _, scopedEntry := range scoped {
+			if strings.HasPrefix(scopedEntry, clientName+"-") {
+				kept.add(scopedEntry)
+			}
+		}
+	}
+	return kept.list()
+}
+
+// anyPermitAllowsTool reports whether any of permits allows toolPattern.
+func anyPermitAllowsTool(permits []schemas.Permit, toolPattern string) bool {
+	for _, permit := range permits {
+		if allowsTool(permit, toolPattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// layerMCPEntries merges a level's tool patterns in order, reading the level as one permit.
+func layerMCPEntries(layer []schemas.Permit) []string {
+	merged := newUniqueEntries(0)
+	for _, permit := range layer {
+		for _, entry := range mcpEntries(permit) {
+			merged.add(entry)
+		}
+	}
+	return merged.list()
 }
 
 // DeniedPermitsForModel implements schemas.Access.
@@ -568,7 +720,7 @@ func (a *Access) DeniedPermitsForModel(provider string, model string) []schemas.
 	if a == nil {
 		return nil
 	}
-	return a.deniedBy(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
+	return a.deniedBy(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }, true)
 }
 
 // DeniedPermitsForAgent implements schemas.Access.
@@ -576,7 +728,7 @@ func (a *Access) DeniedPermitsForAgent(agentName string) []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	return a.deniedBy(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
+	return a.deniedBy(func(p schemas.Permit) bool { return allowsAgent(p, agentName) }, false)
 }
 
 // DeniedPermitsForRelay implements schemas.Access.
@@ -584,7 +736,7 @@ func (a *Access) DeniedPermitsForRelay(endpointName string) []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	return a.deniedBy(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
+	return a.deniedBy(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) }, true)
 }
 
 // DeniedPermitsForMCPTool implements schemas.Access.
@@ -592,20 +744,36 @@ func (a *Access) DeniedPermitsForMCPTool(toolPattern string) []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	denied := a.deniedBy(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
-	// Each side grants the client some tool but none in common: the scope narrowed them away.
-	if len(denied) == 0 && a.scoping != nil && !a.IsMCPToolAllowed(toolPattern) {
-		return []schemas.Permit{a.scoping}
+	denied := a.deniedBy(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) }, true)
+	// Each side grants the client some tool but none in common: name what narrowed them away.
+	if len(denied) == 0 && !a.IsMCPToolAllowed(toolPattern) {
+		for _, level := range a.levelsAbove() {
+			denied = append(denied, a.permitsAt(level)...)
+		}
+		if a.scoping != nil && a.mode == Intersect {
+			denied = append(denied, a.scoping)
+		}
 	}
 	return denied
 }
 
 // deniedBy identifies which permits refused, given a verdict per permit.
-func (a *Access) deniedBy(permits func(schemas.Permit) bool) []schemas.Permit {
+//
+// When the caller's permits allow but a capping level refuses, the refusing levels are named instead.
+// capped is false for questions the granting level alone decides.
+func (a *Access) deniedBy(permits func(schemas.Permit) bool, capped bool) []schemas.Permit {
 	baseAllows := a.anyBase(permits)
+	var refusingCaps []schemas.Permit
+	if baseAllows && capped {
+		refusingCaps = a.refusingCaps(permits)
+		baseAllows = len(refusingCaps) == 0
+	}
 	if a.scoping == nil {
 		if baseAllows {
 			return nil
+		}
+		if len(refusingCaps) > 0 {
+			return refusingCaps
 		}
 		return a.refusingBases()
 	}
@@ -616,26 +784,77 @@ func (a *Access) deniedBy(permits func(schemas.Permit) bool) []schemas.Permit {
 	if baseAllows {
 		return []schemas.Permit{a.scoping}
 	}
-	refused := a.refusingBases()
+	refused := refusingCaps
+	if len(refused) == 0 {
+		refused = a.refusingBases()
+	}
 	if a.mode == Union && !scopingAllows {
 		refused = append(refused, a.scoping)
 	}
 	return refused
 }
 
-// refusingBases is every permit the caller holds, for naming when none of them permitted. Nil when
-// they hold none.
+// refusingBases returns the granting level's permits, to name when none of them allowed.
 func (a *Access) refusingBases() []schemas.Permit {
-	if len(a.bases) == 0 {
-		return nil
-	}
-	return slices.Clone(a.bases)
+	return a.granting()
 }
 
-// anyBase reports whether any of the caller's permits satisfies permits. The caller's permits are
-// read as one everywhere, and this is the one place that reading is written down.
+// refusingCaps returns the permits of every capping level that refused.
+func (a *Access) refusingCaps(permits func(schemas.Permit) bool) []schemas.Permit {
+	var refused []schemas.Permit
+	for _, level := range a.levelsAbove() {
+		if layer := a.permitsAt(level); !anyPermit(layer, permits) {
+			refused = append(refused, layer...)
+		}
+	}
+	return refused
+}
+
+// callerAllows reports whether the caller's side allows it: any permit under Union, or one permit
+// in every level holding one under Intersect.
+func (a *Access) callerAllows(permits func(schemas.Permit) bool) bool {
+	if a.levelMode != Intersect {
+		return slices.ContainsFunc(a.bases, permits)
+	}
+	present, allowed := map[int]bool{}, map[int]bool{}
+	for _, p := range a.bases {
+		level := p.Level()
+		present[level] = true
+		if permits(p) {
+			allowed[level] = true
+		}
+	}
+	for level := range present {
+		if !allowed[level] {
+			return false
+		}
+	}
+	return len(present) > 0
+}
+
+// capsAllow reports whether every capping level allows it. True when nothing caps the caller.
+func (a *Access) capsAllow(permits func(schemas.Permit) bool) bool {
+	for _, level := range a.levelsAbove() {
+		if layer := a.permitsAt(level); !anyPermit(layer, permits) {
+			return false
+		}
+	}
+	return true
+}
+
+// anyPermit reports whether any permit in layer satisfies permits.
+func anyPermit(layer []schemas.Permit, permits func(schemas.Permit) bool) bool {
+	for _, permit := range layer {
+		if permits(permit) {
+			return true
+		}
+	}
+	return false
+}
+
+// anyBase reports whether any permit of the granting level allows it.
 func (a *Access) anyBase(permits func(schemas.Permit) bool) bool {
-	for _, base := range a.bases {
+	for _, base := range a.granting() {
 		if permits(base) {
 			return true
 		}
