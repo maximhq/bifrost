@@ -3917,11 +3917,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				s.TempTokenSweepWorker.Stop()
 				s.TempTokenSweepWorker = nil
 			}
-			if s.OAuth2SweepWorker != nil {
-				s.OAuth2SweepWorker.stop()
-				s.stopClientGateways()
-				s.OAuth2SweepWorker = nil
-			}
+			s.stopOAuth2Background()
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -3975,11 +3971,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.stopClientGateways()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return err
 	}
 
@@ -4000,11 +3992,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.stopClientGateways()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
@@ -4052,11 +4040,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.stopClientGateways()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
@@ -4302,12 +4286,8 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping temp-token sweep worker...")
 				s.TempTokenSweepWorker.Stop()
 			}
-			if s.OAuth2SweepWorker != nil {
-				logger.Info("stopping oauth2 sweep worker...")
-				s.OAuth2SweepWorker.stop()
-				s.stopClientGateways()
-				s.OAuth2SweepWorker = nil
-			}
+			logger.Info("stopping oauth2 sweep worker and client gateways...")
+			s.stopOAuth2Background()
 			if s.GovernanceHandler != nil {
 				s.GovernanceHandler.StopExpiryCleanupScheduler()
 			}
@@ -4375,6 +4355,17 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	}
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
+	}
+	s.stopClientGateways()
+}
+
+// stopOAuth2Background stops the OAuth2 sweep worker, when one runs, and the client
+// gateways. The gateways are stopped on their own: they exist without a config store,
+// where no sweep worker is started.
+func (s *BifrostHTTPServer) stopOAuth2Background() {
+	if s.OAuth2SweepWorker != nil {
+		s.OAuth2SweepWorker.stop()
+		s.OAuth2SweepWorker = nil
 	}
 	s.stopClientGateways()
 }
