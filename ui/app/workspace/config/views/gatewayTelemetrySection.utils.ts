@@ -7,6 +7,7 @@ export interface TelemetryDestinationDraft {
 	endpoint: string;
 	headers: Record<string, SecretVar>;
 	headerConflict?: boolean; // the headers table holds a rename onto a name another row already has
+	storedEndpoint?: string; // the endpoint as loaded, which the server matches redacted headers by
 }
 
 // The telemetry section's form state. dropAttributes is a comma-separated list.
@@ -64,10 +65,27 @@ export function telemetryDraftFromConfig(telemetry?: ClientGatewayTelemetry): Te
 		destinations: (telemetry?.destinations ?? []).map((d) => ({
 			id: newDestinationId(),
 			endpoint: secretVarText(d.endpoint),
+			storedEndpoint: secretVarText(d.endpoint),
 			headers: Object.fromEntries(Object.entries(d.headers ?? {}).map(([name, value]) => [name, headerSecretVar(value)])),
 		})),
 		dropAttributes: (telemetry?.drop_attributes ?? []).join(", "),
 	};
+}
+
+// The value GET /api/config shows in place of a plain header value.
+const REDACTED_PLACEHOLDER = "<REDACTED>";
+
+const isRedactedPlaceholder = (v: SecretVar) => v.type !== "env" && v.type !== "vault" && v.value === REDACTED_PLACEHOLDER;
+
+// withEndpoint sets a collector's endpoint. Once it differs from the stored one, a header still
+// showing the redacted placeholder is blanked: the server can no longer tell which stored value
+// it stands for and refuses it, so the user types it again before saving.
+export function withEndpoint(row: TelemetryDestinationDraft, endpoint: string): TelemetryDestinationDraft {
+	if (row.storedEndpoint === undefined || endpoint.trim() === row.storedEndpoint.trim()) return { ...row, endpoint };
+	const headers = Object.fromEntries(
+		Object.entries(row.headers).map(([name, value]) => [name, isRedactedPlaceholder(value) ? { value: "", ref: "" } : value]),
+	);
+	return { ...row, endpoint, headers };
 }
 
 // telemetryDraftKey is a comparable form of a draft (row ids ignored), used to

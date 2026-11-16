@@ -5,7 +5,7 @@ import { Switch } from "@/components/ui/switch";
 import { Plus, Trash2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { newDestinationId, type TelemetryDestinationDraft, type TelemetryDraft } from "./gatewayTelemetrySection.utils";
+import { newDestinationId, withEndpoint, type TelemetryDestinationDraft, type TelemetryDraft } from "./gatewayTelemetrySection.utils";
 
 interface GatewayTelemetrySectionProps {
 	value: TelemetryDraft;
@@ -52,7 +52,13 @@ export default function GatewayTelemetrySection({ value, onChange, disabled }: G
 							placeholder="https://otel-collector.example.com"
 							aria-label={t("claudeCode.collectorEndpointLabel")}
 							data-testid="claude-code-telemetry-endpoint-input"
-							onChange={(e) => updateRow(d.id, { endpoint: e.target.value })}
+							onChange={(e) => {
+								const endpoint = e.target.value;
+								onChange((prev) => ({
+									...prev,
+									destinations: prev.destinations.map((r) => (r.id === d.id ? withEndpoint(r, endpoint) : r)),
+								}));
+							}}
 							disabled={disabled}
 						/>
 						<Button

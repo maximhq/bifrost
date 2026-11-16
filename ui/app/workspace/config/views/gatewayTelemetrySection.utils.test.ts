@@ -4,6 +4,7 @@ import {
 	telemetryDraftFromConfig,
 	telemetryDraftKey,
 	telemetryPayloadFromDraft,
+	withEndpoint,
 	type TelemetryDraft,
 } from "./gatewayTelemetrySection.utils";
 
@@ -63,6 +64,45 @@ describe("telemetryDraftKey", () => {
 		});
 		expect(telemetryDraftKey(a)).toBe(telemetryDraftKey(b));
 		expect(telemetryDraftKey(a)).not.toBe(telemetryDraftKey(draft({ enabled: false })));
+	});
+});
+
+describe("withEndpoint", () => {
+	const stored = () =>
+		telemetryDraftFromConfig({
+			enabled: true,
+			destinations: [
+				{
+					endpoint: { value: "https://otel.example.com", type: "plain_text" },
+					headers: {
+						authorization: { value: "<REDACTED>", ref: "", type: "plain_text" },
+						"x-env": { value: "<REDACTED>", ref: "env.OTEL_TOKEN", type: "env" },
+					},
+				},
+			],
+		}).destinations[0];
+
+	it("blanks a redacted header once the endpoint changes, so it must be typed again", () => {
+		const row = withEndpoint(stored(), "https://other.example.com");
+		expect(row.endpoint).toBe("https://other.example.com");
+		expect(row.headers.authorization).toEqual({ value: "", ref: "" });
+		expect(row.headers["x-env"]).toEqual(envRef("env.OTEL_TOKEN"));
+		expect(telemetryPayloadFromDraft({ enabled: true, destinations: [row], dropAttributes: "" }).error).toEqual({
+			kind: "headerMalformed",
+		});
+	});
+
+	it("keeps redacted headers while the endpoint matches the stored one", () => {
+		const row = withEndpoint(stored(), " https://otel.example.com ");
+		expect(row.headers.authorization).toEqual({ value: "<REDACTED>", ref: "" });
+	});
+
+	it("keeps typed values on a new collector", () => {
+		const row = withEndpoint(
+			{ id: "n", endpoint: "", headers: { authorization: { value: "Bearer abc", ref: "" } } },
+			"https://x.example.com",
+		);
+		expect(row.headers.authorization).toEqual({ value: "Bearer abc", ref: "" });
 	});
 });
 

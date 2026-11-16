@@ -157,12 +157,9 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 	// could not be told apart on the next save, which would then fail.
 	seen := make(map[string]int, len(c.Destinations))
 	for i, d := range c.Destinations {
-		if d.Endpoint == nil || !d.Endpoint.IsSet() {
+		key, ok := d.endpointKey()
+		if !ok {
 			continue
-		}
-		key := strings.TrimSpace(d.Endpoint.GetValue())
-		if d.Endpoint.IsFromSecret() {
-			key = d.Endpoint.GetRawRef()
 		}
 		if first, dup := seen[key]; dup {
 			return fmt.Errorf("%s.destinations[%d].endpoint repeats destinations[%d]; list each collector once", path, i, first)
@@ -200,6 +197,43 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 		}
 	}
 	return nil
+}
+
+// DropDuplicateDestinations removes each collector whose endpoint repeats an earlier one and
+// returns the indexes removed. Startup uses it so a config.json listing a collector twice still
+// boots on the first entry, where Validate would refuse the whole block.
+func (c *ClientGatewayTelemetryConfig) DropDuplicateDestinations() []int {
+	if c == nil {
+		return nil
+	}
+	var dropped []int
+	seen := make(map[string]struct{}, len(c.Destinations))
+	kept := make([]ClientGatewayTelemetryDestination, 0, len(c.Destinations))
+	for i, d := range c.Destinations {
+		if key, ok := d.endpointKey(); ok {
+			if _, dup := seen[key]; dup {
+				dropped = append(dropped, i)
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		kept = append(kept, d)
+	}
+	if len(dropped) > 0 {
+		c.Destinations = kept
+	}
+	return dropped
+}
+
+// endpointKey identifies a collector: its env or vault reference, or its trimmed URL.
+func (d ClientGatewayTelemetryDestination) endpointKey() (string, bool) {
+	if d.Endpoint == nil || !d.Endpoint.IsSet() {
+		return "", false
+	}
+	if d.Endpoint.IsFromSecret() {
+		return d.Endpoint.GetRawRef(), true
+	}
+	return strings.TrimSpace(d.Endpoint.GetValue()), true
 }
 
 // StorageJSON is the oauth2_server_config_json written for c. Its secret fields (the issuer URL

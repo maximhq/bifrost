@@ -2,11 +2,11 @@ package tables
 
 import (
 	"encoding/json"
-	"github.com/stretchr/testify/require"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestClientGatewayTelemetryConfig_Validate pins what a switched-on telemetry
@@ -52,6 +52,23 @@ func TestClientGatewayTelemetryConfig_Validate(t *testing.T) {
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// TestClientGatewayTelemetryConfig_DropDuplicateDestinations pins that startup keeps the first
+// of each repeated collector, matching endpoints the way Validate does.
+func TestClientGatewayTelemetryConfig_DropDuplicateDestinations(t *testing.T) {
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://a.example.com")
+	dest := func(endpoint string) ClientGatewayTelemetryDestination {
+		return ClientGatewayTelemetryDestination{Endpoint: schemas.NewSecretVar(endpoint)}
+	}
+	cfg := &ClientGatewayTelemetryConfig{Destinations: []ClientGatewayTelemetryDestination{
+		dest("https://a.example.com"), dest("env.BIFROST_TEST_OTEL_ENDPOINT"), dest("https://a.example.com "), {}, dest("env.BIFROST_TEST_OTEL_ENDPOINT"), {},
+	}}
+	assert.Equal(t, []int{2, 4}, cfg.DropDuplicateDestinations())
+	require.Len(t, cfg.Destinations, 4)
+	assert.NoError(t, cfg.Validate("telemetry"), "what is left passes the duplicate check")
+	assert.Nil(t, cfg.DropDuplicateDestinations(), "nothing more to drop")
+	assert.Nil(t, (*ClientGatewayTelemetryConfig)(nil).DropDuplicateDestinations())
 }
 
 // TestOAuth2ServerConfig_StorageJSONKeepsReferencesOnly pins that the stored config keeps an

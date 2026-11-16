@@ -797,9 +797,6 @@ func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
 	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
 }
 
-// TestUpdateConfig_ClientGatewayTelemetryDestinations pins that a caller admitted with
-// auth bypassed may resend the Claude Code telemetry destinations but not change them,
-
 // TestUpdateConfig_ClientGatewayTelemetryPlainHeaders pins plain telemetry header values, which
 // the config API redacts: a value sent back redacted keeps the stored one (also with auth
 // bypassed, where a change would be refused), a new value replaces it, and headers are matched
@@ -877,6 +874,8 @@ func TestUpdateConfig_ClientGatewayTelemetryPlainHeaders(t *testing.T) {
 	assert.Equal(t, map[string]string{"https://b.example.com": "Bearer token-new"}, headers())
 }
 
+// TestUpdateConfig_ClientGatewayTelemetryDestinations pins that a caller admitted with
+// auth bypassed may resend the Claude Code telemetry destinations but not change them,
 // since a destination decides where its env or vault header values are sent.
 func TestUpdateConfig_ClientGatewayTelemetryDestinations(t *testing.T) {
 	SetLogger(&mockLogger{})
