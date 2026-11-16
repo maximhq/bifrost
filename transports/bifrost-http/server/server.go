@@ -3335,6 +3335,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	s.registerUserLimitsRoutes(middlewares...)
+	handlers.NewCallerHandler(s.WarpCallerRestrictionResolver).RegisterRoutes(s.Router, middlewares...)
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
@@ -3366,6 +3368,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()))
 	}
 	return nil
+}
+
+// registerUserLimitsRoutes registers the per-user limits routes behind
+// middlewares. Per-user limits exist only where the deployment supplies a reader
+// for them (Enterprise access profiles), so without one the routes are absent.
+func (s *BifrostHTTPServer) registerUserLimitsRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
+	if s.WarpUserGovernanceReader == nil {
+		return
+	}
+	handlers.NewUserLimitsHandler(s.WarpUserGovernanceReader).RegisterRoutes(s.Router, middlewares...)
 }
 
 // ObserveWarmupRoutingEmbedding forwards semantic-routing warmup embedding

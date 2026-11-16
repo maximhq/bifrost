@@ -198,6 +198,7 @@ type ServerOptions struct {
 	MaxResponseBytes int
 	Logger           schemas.Logger
 	ToolFilter       func(ctx context.Context, tools []mcp.Tool) []mcp.Tool // optional; see mcp-go's server.WithToolFilter
+	DropBodyFields   []string                                               // top-level fields never sent in an object body, whatever the arguments hold
 }
 
 // PreviewResult is the API-facing summary of a parsed spec.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -35,6 +36,7 @@ type Executor struct {
 	doc             *Document
 	maxBytes        int
 	logger          schemas.Logger
+	dropBodyFields  []string
 }
 
 // NewExecutor validates ServerOptions and returns the executor the synthesized
@@ -69,6 +71,7 @@ func NewExecutor(opts ServerOptions) (*Executor, error) {
 		doc:             opts.Synthesis.Document,
 		maxBytes:        maxBytes,
 		logger:          opts.Logger,
+		dropBodyFields:  opts.DropBodyFields,
 	}, nil
 }
 
@@ -302,6 +305,31 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 	return req, nil
 }
 
+// withoutDroppedFields returns an object payload without the executor's
+// DropBodyFields, copied so the caller's arguments are not edited. A body taken
+// whole as one argument is not bound by its schema's properties, so this is
+// what keeps such a field out of it. Any other payload is returned as is.
+func (e *Executor) withoutDroppedFields(payload any) any {
+	obj, ok := payload.(map[string]any)
+	if !ok || len(e.dropBodyFields) == 0 {
+		return payload
+	}
+	var trimmed map[string]any
+	for _, field := range e.dropBodyFields {
+		if _, has := obj[field]; !has {
+			continue
+		}
+		if trimmed == nil {
+			trimmed = maps.Clone(obj)
+		}
+		delete(trimmed, field)
+	}
+	if trimmed == nil {
+		return payload
+	}
+	return trimmed
+}
+
 // encodeBody serializes the body arguments per the tool's binding.
 func (e *Executor) encodeBody(tool *Tool, args map[string]any) (io.Reader, string, error) {
 	binding := tool.Body
@@ -346,6 +374,7 @@ func (e *Executor) encodeBody(tool *Tool, args map[string]any) (io.Reader, strin
 			return nil, "", nil
 		}
 	}
+	payload = e.withoutDroppedFields(payload)
 	switch binding.ContentType {
 	case ContentTypeForm:
 		values := url.Values{}

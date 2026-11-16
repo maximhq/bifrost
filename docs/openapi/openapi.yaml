@@ -767,6 +767,10 @@ paths:
     $ref: "./paths/management/users.yaml#/users"
   /api/governance/users/{user_id}:
     $ref: "./paths/management/users.yaml#/users-by-id"
+  /api/governance/users/me/limits:
+    $ref: "./paths/management/users.yaml#/users-me-limits"
+  /api/governance/users/{user_id}/limits:
+    $ref: "./paths/management/users.yaml#/users-limits-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
   /api/governance/users/me/vk-creation-policy:
@@ -793,6 +797,8 @@ paths:
     $ref: "./paths/management/session.yaml#/login"
   /api/session/logout:
     $ref: "./paths/management/session.yaml#/logout"
+  /api/session/me:
+    $ref: "./paths/management/session.yaml#/session-me"
   /api/session/is-auth-enabled:
     $ref: "./paths/management/session.yaml#/is-auth-enabled"
   /api/session/ws-ticket:
