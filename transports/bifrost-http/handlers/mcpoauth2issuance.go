@@ -271,6 +271,13 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Below 2025-11-25 metadata documents are not advertised, so a new sign-in with one is refused.
+	// Grants already issued to one keep refreshing.
+	if isClientMetadataDocumentID(clientID) && !clientMetadataDocumentsAllowed(h.store) {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client", "client ID metadata documents are not accepted; register the client instead")
+		return
+	}
+
 	// Validate client exists before using redirect_uri. No state is created until
 	// both the client and its redirect_uri have been verified.
 	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
@@ -529,7 +536,18 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "refresh_token and client_id are required")
 		return
 	}
+	h.refreshGrant(ctx, refreshToken, clientID, resource, oauth2MCPResourceURL(ctx, h.store))
+}
 
+// refreshGrant runs the refresh-token grant for a token bound to clientID:
+// replay detection, identity liveness checks, the resource binding, and an
+// atomic rotation. It writes the token response or OAuth error to ctx. Shared by
+// /oauth2/token and the client gateway token endpoints, which pass their
+// built-in client ID because clients such as Claude Code send none.
+// servedResource is the resource the calling endpoint issues tokens for (/mcp or
+// a client gateway's base URL): a grant bound to any other resource cannot
+// refresh there.
+func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshToken, clientID, resource, servedResource string) {
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
 	if errors.Is(err, configstore.ErrNotFound) {
@@ -630,10 +648,11 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "resource mismatch")
 		return
 	}
-	// The grant is bound to the /mcp resource as it was when it was authorized. A changed issuer_url
-	// moves that resource, and a token minted for the old one is refused by /mcp for its audience, so
-	// the grant cannot refresh; the client authorizes again against the server's current address.
-	if resource != oauth2MCPResourceURL(ctx, h.store) {
+	// The grant is bound to the served resource as it was when it was authorized. A changed issuer_url
+	// moves that resource, and a token minted for the old one is refused by the resource for its
+	// audience, so the grant cannot refresh; the client authorizes again against the server's current
+	// address. A grant for a different resource (a /gateway/claude-code grant at /oauth2/token) is refused too.
+	if resource != servedResource {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return
 	}

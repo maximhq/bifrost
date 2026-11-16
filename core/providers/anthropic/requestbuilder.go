@@ -462,6 +462,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
+				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
 		}
 
@@ -786,6 +787,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
+				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
 		}
 
@@ -994,4 +996,20 @@ func moveCachePrefixKeysLast(body []byte) []byte {
 		}
 	}
 	return append(out, '}')
+}
+
+// addBetaHeadersForMergedExtraParams re-derives beta headers from the body after the
+// ExtraParams passthrough merge. The typed derivation runs before the merge, so a field
+// that only arrives through the merge (thinking.block_binding, for one) would otherwise
+// reach the wire without the beta it needs. It goes through the raw-body probe, which
+// scans messages for signals instead of decoding them, with model set to the canonical
+// name so capability gates match it rather than a Bifrost alias. Derivation dedupes by
+// prefix, so headers already added are not repeated. Only reached when passthrough is on
+// and there are extra params to merge.
+func addBetaHeadersForMergedExtraParams(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, capModel string) {
+	probeBody, err := providerUtils.SetJSONField(jsonBody, "model", capModel)
+	if err != nil {
+		return
+	}
+	_ = AddMissingBetaHeadersToContextFromRawBody(ctx, probeBody, provider)
 }

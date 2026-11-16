@@ -943,6 +943,15 @@
               },
               "description": "Additional allowed headers for CORS and WebSocket"
             },
+            "usageEstimationTokenizers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+              },
+              "uniqueItems": true,
+              "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. Empty counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+            },
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
@@ -1011,6 +1020,11 @@
               "type": "boolean",
               "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
+            },
+            "entityAccessProfileMode": {
+              "type": "string",
+              "enum": ["union", "intersect"],
+              "description": "Enterprise only. How team, business unit and customer access profiles combine with a user's own access, using the same values as a project's access rule. 'union' (default) lets each of them add to it; 'intersect' makes each level holding an active profile cap it instead, and ignores the x-bf-customer-id / x-bf-customer-name scope headers. Maps to client.entity_access_profile_mode."
             },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
@@ -1160,11 +1174,11 @@
             },
             "oauth2ServerConfig": {
               "type": "object",
-              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "description": "OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is 'both' or 'oauth') and for client gateways (gateways.<client>.enabled). Maps to client.oauth2_server_config.",
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or any client gateway is enabled: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1199,6 +1213,82 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "gateways": {
+                  "type": "object",
+                  "description": "Client gateways, one block per coding client, each served at <issuerUrl>/gateway/<client>. Independent of mcpServerAuthMode. Maps to client.oauth2_server_config.gateways.",
+                  "properties": {
+                    "claudeCode": {
+                      "type": "object",
+                      "description": "Claude Code gateway at <issuerUrl>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in. Requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.gateways.claude_code.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Serve the Claude Code gateway protocol under /gateway/claude-code.",
+                          "default": false
+                        },
+                        "managedSettings": {
+                          "type": "object",
+                          "description": "Claude Code managed-settings.json document served to every signed-in client. Omit for no managed policy."
+                        },
+                        "telemetry": {
+                          "type": "object",
+                          "description": "Forward Claude Code's OTLP telemetry (metrics, logs, traces), stamped with the Bifrost identity, to OTLP/HTTP collectors instead of discarding it. Maps to client.oauth2_server_config.gateways.claude_code.telemetry.",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean",
+                              "default": false,
+                              "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                            },
+                            "destinations": {
+                              "type": "array",
+                              "description": "OTLP/HTTP collectors; each signal is posted to <endpoint>/v1/{metrics|logs|traces}. At least one is required when enabled.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "endpoint": {
+                                    "type": "string",
+                                    "description": "Collector base URL (http or https). Supports env.VAR_NAME."
+                                  },
+                                  "headers": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "string",
+                                      "pattern": "\\S"
+                                    },
+                                    "description": "Headers sent with every export. Values can be plain or env./vault. references, like provider keys, and must not be empty."
+                                  }
+                                },
+                                "required": [
+                                  "endpoint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "dropAttributes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": "Attribute keys removed at every level before forwarding, e.g. prompt."
+                            }
+                          },
+                          "if": {
+                            "properties": { "enabled": { "const": true } },
+                            "required": ["enabled"]
+                          },
+                          "then": {
+                            "required": ["destinations"],
+                            "properties": { "destinations": { "minItems": 1 } }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -1654,7 +1744,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -3235,7 +3327,7 @@
                 },
                 "llm": {
                   "type": "object",
-                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when semantic.fallback selects 'llm', where it runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
                   "properties": {
                     "provider": {
                       "type": "string",
@@ -3245,7 +3337,7 @@
                     "model": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                      "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                     },
                     "timeout": {
                       "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
@@ -5494,9 +5586,16 @@
         },
         "modelRouters": {
           "type": "array",
-          "description": "Named model routers, each a complexity classifier with the settings of governance.complexityAnalyzerConfig, the model each tier gets, and the routing that decides which requests it takes after the routing rules. Rendered as top-level model_routers in config.json when non-empty. Routers are separate from governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.",
+          "description": "Named model routers, each a complexity classifier with the settings of governance.complexityAnalyzerConfig, the model each tier gets, and the routing that decides which requests it takes after the routing rules. Rendered as top-level model_routers in config.json whenever declared. With config.json as the source of truth, an explicit list (including []) removes stored routers it does not name; omit the key to leave them alone. Routers are separate from governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.",
           "items": {
             "$ref": "#/$defs/modelRouter"
+          }
+        },
+        "datasheetOverrides": {
+          "type": "array",
+          "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Rendered directly as top-level datasheet_overrides in config.json and matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so UI edits stand until the entry itself changes. With config.json as the source of truth, an explicit list (including []) removes stored overrides it does not name; omit the key to leave them alone.",
+          "items": {
+            "$ref": "#/$defs/datasheetOverride"
           }
         },
         "agents": {
@@ -6997,11 +7096,99 @@
                 "affinity": {
                   "type": "object",
                   "description": "Affinity rules for the Redis pod assignment"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the Redis container, appended after REDIS_PASSWORD / REDISCLI_AUTH (e.g. REDIS_ARGS, REDISEARCH_ARGS for redis-stack-server). With auth enabled, setting extraEnv or envFrom starts Redis through sh -c so REDIS_ARGS is appended after --requirepass.",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "envFrom": {
+                  "type": "array",
+                  "description": "Kubernetes EnvFromSource entries (secretRef / configMapRef) for the Redis container",
+                  "items": {
+                    "type": "object"
+                  }
                 }
               }
             },
             "metrics": {
-              "type": "object"
+              "type": "object",
+              "description": "Prometheus metrics for the bundled Redis via an oliver006/redis_exporter sidecar",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Run the redis_exporter sidecar, add a metrics port to the Redis Service and prometheus.io/* scrape annotations to the pod"
+                },
+                "image": {
+                  "type": "object",
+                  "properties": {
+                    "repository": { "type": "string" },
+                    "tag": { "type": "string" },
+                    "pullPolicy": {
+                      "type": "string",
+                      "enum": ["Always", "IfNotPresent", "Never"]
+                    }
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Port the exporter serves /metrics on (default: 9121)"
+                },
+                "resources": {
+                  "type": "object",
+                  "description": "Resource requests and limits for the exporter container"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the exporter container (e.g. REDIS_EXPORTER_CHECK_KEYS)",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "serviceMonitor": {
+                  "type": "object",
+                  "description": "Prometheus Operator ServiceMonitor for the exporter (requires the monitoring.coreos.com/v1 CRDs)",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "namespace": {
+                      "type": "string",
+                      "description": "Namespace for the ServiceMonitor (default: release namespace)"
+                    },
+                    "interval": {
+                      "type": "string",
+                      "description": "Scrape interval, e.g. 30s (default: Prometheus global)"
+                    },
+                    "scrapeTimeout": {
+                      "type": "string",
+                      "description": "Scrape timeout, e.g. 10s"
+                    },
+                    "labels": {
+                      "type": "object",
+                      "description": "Extra labels on the ServiceMonitor, e.g. the release label your Prometheus selects on",
+                      "additionalProperties": { "type": "string" }
+                    },
+                    "basicAuth": {
+                      "type": "object",
+                      "description": "Credentials Prometheus sends when the exporter has basic auth (REDIS_EXPORTER_BASIC_AUTH_USERNAME / _PASSWORD in metrics.extraEnv). The Secret must be in the ServiceMonitor's namespace.",
+                      "properties": {
+                        "enabled": { "type": "boolean", "description": "Send HTTP basic auth credentials with each scrape" },
+                        "existingSecret": { "type": "string", "minLength": 1, "description": "Secret holding the exporter username and password" },
+                        "usernameKey": { "type": "string", "description": "Key holding the username (default: username)" },
+                        "passwordKey": { "type": "string", "description": "Key holding the password (default: password)" }
+                      },
+                      "additionalProperties": false,
+                      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+                      "then": { "required": ["existingSecret"] }
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -7355,6 +7542,54 @@
           "not": {"required": ["path"]}
         }
       ],
+      "additionalProperties": false
+    },
+    "datasheetOverride": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "not": { "required": ["provider"] },
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": {
+        "required": ["mode"],
+        "properties": { "mode": { "pattern": "\\S" } }
+      },
       "additionalProperties": false
     },
     "relay": {
@@ -8022,7 +8257,12 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
-"excluded_attributes": {
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Span attributes win on conflict. The suffixes path and method, and keys in reserved attribute namespaces (gen_ai., llm., bifrost., http., url., session., service., k8s., langfuse., openinference., otel.), are skipped. Default false.",
+          "default": false
+        },
+        "excluded_attributes": {
           "type": "array",
           "items": { "type": "string" },
           "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
@@ -8033,7 +8273,7 @@
           "description": "Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage on the provider and is ignored when content logging is disabled.",
           "default": false
         },
-                "request_headers": {
+        "request_headers": {
           "type": "array",
           "items": {
             "type": "string"
@@ -8200,6 +8440,19 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure apply_trace_dimensions_to_child_spans per profile instead."
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Deprecated in the profiles wrapper; configure excluded_attributes per profile instead."
+        },
+        "export_raw_payloads": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure export_raw_payloads per profile instead."
         },
         "request_headers": {
           "type": "array",
@@ -9104,6 +9357,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment. Requests for this alias go there instead of Model APIs, and model_id is the served model name (Engine-Builder and BEI deployments ignore it). Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",

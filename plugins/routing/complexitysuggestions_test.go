@@ -311,6 +311,62 @@ func TestComplexitySuggestionsDueRunThatCannotStartIsSkipped(t *testing.T) {
 	assert.Contains(t, skipped.Error, "warming")
 }
 
+// A router whose suggestions are set up but off never runs on a schedule,
+// yet a run, an estimate and an impact replay started on demand work, the run
+// backfilling from the router's logs. A scheduled run queued before they were
+// turned off does not run; a router with no suggestions settings has nothing
+// to run with.
+func TestComplexitySuggestionsOffStillRunOnDemand(t *testing.T) {
+	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	p, store, _ := suggestionPlugin(t) // six requests captured live
+	live := p.ComplexityCaptureStats().Written
+	settings := suggestionTestSettings()
+	settings.Enabled = false
+	settings.Schedule = hourlyFrom(start)
+	serveCaptureRouter(t, p, captureRouterID, settings)
+	schedules := suggestionScheduleStore(t)
+	p.SetComplexitySuggestionSchedules(schedules)
+	ctx := context.Background()
+
+	for _, at := range []time.Duration{10 * time.Minute, time.Hour + time.Second, 25 * time.Hour} {
+		require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(at)))
+	}
+	p.suggestions.wg.Wait()
+	assert.Empty(t, runsOf(t, store), "no scheduled runs while suggestions are off")
+	row, err := schedules.GetComplexitySuggestionSchedule(ctx, captureRouterID)
+	require.NoError(t, err)
+	assert.Nil(t, row, "nor any schedule state")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, id := range []string{"before-1", "before-2", "before-3"} {
+		addRouterLog(t, store, id, captureRouterID, now.Add(-3*24*time.Hour))
+	}
+	estimate, err := p.EstimateComplexitySuggestionRun(ctx, captureRouterID, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, estimate.Backfill)
+	id, err := p.StartComplexitySuggestionRunNow(ctx, captureRouterID, 0)
+	require.NoError(t, err)
+	run := waitForRun(t, store)
+	assert.Equal(t, id, run.ID)
+	assert.Equal(t, logstore.ComplexitySuggestionTriggerManual, run.TriggeredBy)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
+	assert.EqualValues(t, live+3, run.RequestsRead, "read with the requests backfilled from logs")
+	phrases := []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "simple exemplar"}, {Tier: "MEDIUM", Text: "medium exemplar"}, {Tier: "COMPLEX", Text: "complex exemplar"}}
+	_, _, err = p.ComplexitySuggestionImpact(ctx, captureRouterID, 0, phrases, nil)
+	require.NoError(t, err)
+
+	_, err = p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{RunID: "slot", RouterID: captureRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
+	assert.ErrorIs(t, err, errSuggestionsUnavailable, "a scheduled run left queued from before they were turned off")
+
+	serveCaptureRouter(t, p, captureRouterID, nil)
+	_, err = p.StartComplexitySuggestionRunNow(ctx, captureRouterID, 0)
+	assert.ErrorIs(t, err, ErrComplexitySuggestionsOff)
+	_, err = p.EstimateComplexitySuggestionRun(ctx, captureRouterID, 0)
+	assert.ErrorIs(t, err, ErrComplexitySuggestionsOff)
+	_, _, err = p.ComplexitySuggestionImpact(ctx, captureRouterID, 0, phrases, nil)
+	assert.ErrorIs(t, err, ErrComplexitySuggestionsOff)
+}
+
 // Without a config store a node keeps the schedule in memory and runs it
 // itself, at its next run and not again before the one after.
 func TestComplexitySuggestionsScheduleWithoutAConfigStore(t *testing.T) {

@@ -317,6 +317,16 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	h.handleAuthorize(ctx)
 	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document preferring another auth method but supporting none still authorizes: %s", ctx.Response.Body())
 	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
+
+	// Capped below 2025-11-25, /mcp offers no metadata documents, so a new sign-in with one is refused unfetched.
+	h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+	clientID = host.document("/capped.json", nil, nil)
+	fetches := host.fetches.Load()
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "invalid_client")
+	assert.Equal(t, fetches, host.fetches.Load(), "the document is not fetched")
 }
 
 // TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
@@ -328,11 +338,13 @@ func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 		name       string
 		grantTypes any
 		gone       bool
+		capped     bool
 	}{
 		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}},
 		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}},
 		{name: "document omits grant_types", grantTypes: nil},
 		{name: "document is no longer served", grantTypes: []string{"authorization_code", "refresh_token"}, gone: true},
+		{name: "mcp is capped below metadata documents", grantTypes: []string{"authorization_code", "refresh_token"}, capped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, store, _ := newIssuanceHandler(t)
@@ -350,6 +362,9 @@ func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 
 			if tc.gone {
 				delete(host.docs, "/client.json")
+			}
+			if tc.capped {
+				h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
 			}
 
 			ctx := formPostCtx(url.Values{
