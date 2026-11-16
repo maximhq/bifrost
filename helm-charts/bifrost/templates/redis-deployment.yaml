@@ -56,17 +56,24 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- if .Values.vectorStore.redis.auth.enabled }}
-          {{- $server := ternary "redis-stack-server" "redis-server" (contains "redis-stack" .Values.vectorStore.redis.image.repository) }}
+          {{- $stack := contains "redis-stack" .Values.vectorStore.redis.image.repository }}
+          {{- $server := ternary "redis-stack-server" "redis-server" $stack }}
+          {{- /* redis-stack-server saves to /var/lib/redis-stack unless told otherwise, which is not the
+                 volume, so --dir points it at /data. redis-server already runs from /data. */}}
+          {{- $dir := ternary "--dir /data " "" $stack }}
           command:
             {{- /* The launcher does not read REDIS_ARGS (only the image entrypoint does), so with extra env
-                   set the server starts through a shell that appends it. Without extra env the command is
-                   left as it was, so existing pods do not roll. */}}
+                   set the server starts through a shell that appends it. */}}
             {{- if or .Values.vectorStore.redis.master.extraEnv .Values.vectorStore.redis.master.envFrom }}
             - sh
             - -c
-            - exec {{ $server }} --requirepass "$REDIS_PASSWORD" $REDIS_ARGS
+            - exec {{ $server }} {{ $dir }}--requirepass "$REDIS_PASSWORD" $REDIS_ARGS
             {{- else }}
             - {{ $server }}
+            {{- if $stack }}
+            - --dir
+            - /data
+            {{- end }}
             - --requirepass
             - $(REDIS_PASSWORD)
             {{- end }}
