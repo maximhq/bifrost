@@ -5780,7 +5780,11 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
+	// Save would write the preloaded Customer back and copy its id over CustomerID, so a team
+	// moved to another customer (or detached) would snap back; loaded virtual keys would likewise be
+	// repointed at this team. Budgets and the rate limit are still saved with the team, which config
+	// sync relies on for inline declarations.
+	if err := txDB.WithContext(ctx).Omit("Customer", "VirtualKeys").Save(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -5938,7 +5942,11 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
+	// Saving the loaded teams and virtual keys would repoint each one's customer_id at this
+	// customer, including one that moved to another customer after this row was read. Budgets and
+	// the rate limit are still saved with the customer, which config sync relies on for inline
+	// declarations.
+	if err := txDB.WithContext(ctx).Omit("Teams", "VirtualKeys").Save(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
