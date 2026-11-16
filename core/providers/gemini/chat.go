@@ -166,6 +166,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var contentBlocks []schemas.ChatContentBlock
 	var reasoningDetails []schemas.ChatReasoningDetails
+	var reasoningText strings.Builder
 	var contentStr *string
 
 	// Process candidate content to extract text, tool calls, and reasoning.
@@ -191,6 +192,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type:  schemas.BifrostReasoningDetailsTypeText,
 					Text:  &part.Text,
 				})
+				reasoningText.WriteString(part.Text)
 				continue
 			}
 			// Handle regular text
@@ -343,9 +345,15 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Map Google Search grounding supports to OpenAI url_citation annotations
 	annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
 
-	if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
+	if len(toolCalls) > 0 || len(reasoningDetails) > 0 || reasoningText.Len() > 0 || len(annotations) > 0 {
+		var reasoning *string
+		if reasoningText.Len() > 0 {
+			r := reasoningText.String()
+			reasoning = &r
+		}
 		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls:        toolCalls,
+			Reasoning:        reasoning,
 			ReasoningDetails: reasoningDetails,
 			Annotations:      annotations,
 		}
@@ -574,6 +582,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		}
 
 		var textContent string
+		var reasoningText strings.Builder
 		var imageDataURL string
 		var toolCalls []schemas.ChatAssistantMessageToolCall
 		var reasoningDetails []schemas.ChatReasoningDetails
@@ -590,6 +599,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 					Type:  schemas.BifrostReasoningDetailsTypeText,
 					Text:  &part.Text,
 				})
+				reasoningText.WriteString(part.Text)
 
 			case part.Text != "":
 				// Regular text content
@@ -701,6 +711,12 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 			delta.Content = &imageDataURL
 		}
 
+		// Set reasoning if present
+		if reasoningText.Len() > 0 {
+			r := reasoningText.String()
+			delta.Reasoning = &r
+		}
+
 		// Set reasoning details if present
 		if len(reasoningDetails) > 0 {
 			delta.ReasoningDetails = reasoningDetails
@@ -721,7 +737,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	}
 
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || delta.Audio != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || delta.Reasoning != nil || delta.Audio != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}
