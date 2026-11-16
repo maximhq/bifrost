@@ -329454,6 +329454,338 @@
           }
         }
       ]
+    },
+    {
+      "name": "352. Bedrock Invoke Route Anthropic-Native Document Blocks (#9308)",
+      "description": "Regression for #9308. The Bedrock InvokeModel route (POST /bedrock/model/{modelId}/invoke and /invoke-with-response-stream) accepts Claude's native Anthropic Messages body, and BedrockContentBlock.UnmarshalJSON normalizes Anthropic-shaped blocks into Converse fields. It had no \"document\" case, so a {\"type\":\"document\"} block decoded to an empty block and was dropped with HTTP 200 (the model answered as if nothing was attached). A document nested in tool_result.content was lost a second time when the Converse tool result was flattened to its text. Decode errors on this ingress were also swallowed, so a block that could not be decoded emptied its message instead of failing the request. Cases 1-2 pin a text-source document on the non-streaming and streaming routes (the model must see the secret word), case 3 pins a document inside a tool_result, cases 4-5 pin a url source (the gateway fetches it, as it does for every other Bedrock file_url, and the model must see its content; RFC 2324 is a small stable text/plain document), and cases 6-7 pin that a url scheme Bifrost cannot fetch (ftp) fails with a 4xx on both routes instead of being dropped.",
+      "item": [
+        {
+          "name": "Bedrock invoke: Anthropic-native document block reaches the model (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ').toUpperCase();",
+                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the secret word in the attached document? Answer with the word only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"Notes\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"The secret word is PINEAPPLE.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: Anthropic-native document block reaches the model (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke-with-response-stream: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var text = matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e && e.delta && typeof e.delta.text === 'string'; })",
+                  "    .map(function (e) { return e.delta.text; }).join('').toUpperCase();",
+                  "  pm.expect(text, 'streamed text: ' + text.slice(0, 500)).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the secret word in the attached document? Answer with the word only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"Notes\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"The secret word is PINEAPPLE.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke: document nested in tool_result content reaches the model (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke tool_result: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ').toUpperCase();",
+                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"read_notes\",\n      \"description\": \"Read the notes document.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Read the notes with the read_notes tool.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_9308test\",\n          \"name\": \"read_notes\",\n          \"input\": {}\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_9308test\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Here is the notes document.\"\n            },\n            {\n              \"type\": \"document\",\n              \"title\": \"Notes\",\n              \"source\": {\n                \"type\": \"text\",\n                \"media_type\": \"text/plain\",\n                \"data\": \"The secret word is PINEAPPLE.\"\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the secret word in the attached document? Answer with the word only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke: url document source is fetched and reaches the model (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke url source: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ').toUpperCase();",
+                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('HYPER');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What do the letters in the acronym in the title of the attached document stand for? Answer with the first word of the expansion only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"RFC 2324\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://www.rfc-editor.org/rfc/rfc2324.txt\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: url document source is fetched and reaches the model (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke-with-response-stream: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var text = matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e && e.delta && typeof e.delta.text === 'string'; })",
+                  "    .map(function (e) { return e.delta.text; }).join('').toUpperCase();",
+                  "  pm.expect(text, 'streamed text: ' + text.slice(0, 500)).to.include('HYPER');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What do the letters in the acronym in the title of the attached document stand for? Answer with the first word of the expansion only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"RFC 2324\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://www.rfc-editor.org/rfc/rfc2324.txt\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-4XX] Bedrock invoke: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke: an unsupported document url scheme is rejected, not dropped - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text()).to.be.within(400, 499);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the secret word in the attached document? Answer with the word only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"ftp://example.com/secret.pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-4XX] Bedrock invoke-with-response-stream: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke-with-response-stream: an unsupported document url scheme is rejected, not dropped - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text()).to.be.within(400, 499);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the secret word in the attached document? Answer with the word only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"ftp://example.com/secret.pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
