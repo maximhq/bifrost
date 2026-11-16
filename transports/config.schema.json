@@ -7620,7 +7620,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."
+          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; with false, suggestions run only on demand, never on the schedule. A run started without a suggestion model is accepted and then fails."
         },
         "sample_rate": {
           "type": "number",

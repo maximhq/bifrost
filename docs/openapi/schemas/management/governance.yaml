@@ -3451,7 +3451,7 @@ ComplexitySuggestionsConfig:
   properties:
     enabled:
       type: boolean
-      description: Capture a sample of classified requests and run suggestions on the schedule; default false. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block).
+      description: Capture a sample of classified requests and run suggestions on the schedule; default false. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; a router left at false runs suggestions only on demand, each run first embedding the router's logged requests in its window that are not yet captured - the sample_rate share of those whose content was logged, up to max_clustered_requests per run and newest first, so a smaller backlog is embedded in full and older requests past the limit wait for later runs. A run started without a suggestion model is accepted and then fails. Estimates and impact replays need this block but not the suggestion model, which they do not call. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block).
     sample_rate:
       type: number
       exclusiveMinimum: 0
