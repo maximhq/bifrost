@@ -481,7 +481,7 @@ Existing releases that still use `code_keywords`, `technical_keywords`, and `rea
 
 ## Model Routers
 
-`bifrost.modelRouters` declares named model routers. The chart renders them as the top-level `model_routers` section of `config.json`, passing every field through as written. Leave the list empty (the default) to render nothing and keep the routers that are stored.
+`bifrost.modelRouters` declares named model routers. The chart renders them as the top-level `model_routers` section of `config.json`, passing every field through as written. Omit the key (the default) to render nothing and keep the routers that are stored. Any declared list is rendered, `[]` included: with `config.json` as the source of truth, routers the list does not name are removed, so `modelRouters: []` deletes every stored router.
 
 Each router takes an `id` (letters, digits, `_` and `-`), a unique `name`, an optional `description`, the same settings as `complexityAnalyzerConfig` above (`keywords` (required), `classifier`, `semantic`, `decision`, `llm`, `session`, `tier_boundaries`, and `suggestions`), `targets`, and `routing`. `classifier` is `semantic` (the default), `decision`, or `llm`; `llm` classifies with the model in the `llm` block. Routers are separate from `complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
 
