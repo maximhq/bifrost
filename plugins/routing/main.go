@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -70,7 +71,8 @@ func (c *Config) chainMaxDepthOrDefault() *int {
 
 // RoutingPlugin evaluates routing rules for every request.
 type RoutingPlugin struct {
-	rules              rules.Store
+	rules              *rules.Store
+	ownsRules          bool // Init built the rule store, so Cleanup closes it
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	complexityConfig   atomic.Pointer[complexity.AnalyzerConfig]
@@ -131,39 +133,45 @@ type RoutingPlugin struct {
 
 // Init initializes and returns a routing plugin instance.
 //
-// The rule cache is built internally, loaded from configStore.
+// The rule store serves the routing rules live holds and is closed with the plugin.
 //
 // Parameters:
-//   - ctx: base context, used for the initial rule load.
+//   - ctx: base context, used for the plugin's background work.
 //   - config: plugin flags; may be nil, in which case defaults apply.
 //   - logger: logger used by the engine and the rule store.
-//   - configStore: configuration store rules are read from; may be nil.
+//   - configStore: configuration store model routers are read from; may be nil.
+//   - live: the live store holding the routing rules; must not be nil.
 //   - governancePlugin: virtual key state and provider materialization; must not be nil.
 func Init(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
+	live *livestore.Store,
 	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
-	ruleStore, err := rules.NewLocalStore(ctx, logger, configStore)
+	ruleStore, err := rules.NewStore(live, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing rule store: %w", err)
 	}
-	return InitFromStore(ctx, config, logger, configStore, ruleStore, governancePlugin)
+	plugin, err := InitFromStore(ctx, config, logger, configStore, ruleStore, governancePlugin)
+	if err != nil {
+		ruleStore.Close()
+		return nil, err
+	}
+	plugin.ownsRules = true
+	return plugin, nil
 }
 
-// InitFromStore initializes and returns a routing plugin instance with a custom rule store.
-//
-// Use this to supply a rule store implementation other than LocalRuleStore, for example one
-// backed by a shared cache. Parameters are the same as Init, plus the rule store itself,
-// which must not be nil.
+// InitFromStore initializes and returns a routing plugin instance over a rule store the caller
+// built and keeps: the plugin does not close it. Parameters are the same as Init, with the rule
+// store, which must not be nil, in place of the live store.
 func InitFromStore(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
-	ruleStore rules.Store,
+	ruleStore *rules.Store,
 	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
 	if logger == nil {
@@ -257,11 +265,6 @@ func InitFromStore(
 // GetName implements schemas.BasePlugin.
 func (p *RoutingPlugin) GetName() string {
 	return PluginName
-}
-
-// GetRuleStore returns the rule cache backing this plugin.
-func (p *RoutingPlugin) GetRuleStore() rules.Store {
-	return p.rules
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
@@ -725,6 +728,9 @@ func (p *RoutingPlugin) Cleanup() error {
 		p.closeComplexitySuggestions()
 		p.closeComplexityCapture()
 		p.closeModelRouters()
+		if p.ownsRules {
+			p.rules.Close()
+		}
 		if p.semanticClassifier != nil {
 			if err := p.semanticClassifier.Close(); err != nil {
 				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)

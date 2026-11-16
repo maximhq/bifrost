@@ -360,3 +360,40 @@ func TestKeysAreFoundByCreatorAndBusinessUnit(t *testing.T) {
 	require.Equal(t, []string{"vk-a"}, ids(registry.VirtualKeyByCreator, "user-1"))
 	require.Equal(t, []string{"vk-b"}, ids(registry.VirtualKeyByCreator, "user-2"))
 }
+
+// TestRoutingRulesAreFoundByScopeWithTheirTargets checks that routing rules load with their targets
+// and are listed by scope, global rules under one key whatever scope ID they carry, and that a
+// refresh moves a rule whose scope changed.
+func TestRoutingRulesAreFoundByScopeWithTheirTargets(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	team := "team-1"
+	model := "gpt-4o"
+	for _, r := range []*tables.TableRoutingRule{
+		{ID: "r-global", Name: "global", Scope: "global", CelExpression: "true", Priority: 1},
+		{ID: "r-team", Name: "team", Scope: "team", ScopeID: &team, CelExpression: "true", Priority: 2},
+	} {
+		require.NoError(t, db.Omit(clause.Associations).Create(r).Error)
+	}
+	require.NoError(t, db.Create(&tables.TableRoutingTarget{RuleID: "r-team", Model: &model, Weight: 1}).Error)
+	s := loadedGovernance(t, db)
+	ids := func(key string) []string {
+		var out []string
+		for _, r := range s.Collections.RoutingRules.List(registry.RoutingRuleByScope, key) {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	require.Equal(t, []string{"r-global"}, ids(registry.RoutingRuleScopeKey("global", "")))
+	require.Equal(t, []string{"r-global"}, ids(registry.RoutingRuleScopeKey("global", "ignored")))
+	require.Equal(t, []string{"r-team"}, ids(registry.RoutingRuleScopeKey("team", team)))
+	teamRule, ok := s.Collections.RoutingRules.Get("r-team")
+	require.True(t, ok)
+	require.Len(t, teamRule.Targets, 1)
+	require.Equal(t, model, *teamRule.Targets[0].Model)
+
+	require.NoError(t, db.Model(&tables.TableRoutingRule{}).Where("id = ?", "r-team").Updates(map[string]any{"scope": "global", "scope_id": nil}).Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindRoutingRule, ID: "r-team"}}))
+	require.Equal(t, []string{"r-global", "r-team"}, ids(registry.RoutingRuleScopeKey("global", "")))
+	require.Empty(t, ids(registry.RoutingRuleScopeKey("team", team)))
+}

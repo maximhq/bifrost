@@ -34,9 +34,10 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rule-1",
 		Name:          "Complexity Available",
 		CelExpression: `complexity_tier != ""`,
@@ -48,7 +49,7 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -387,8 +388,9 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 	tierTargets := []struct {
 		tier  string
 		model string
@@ -399,7 +401,7 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	}
 	for priority, target := range tierTargets {
 		provider, model := "openai", target.model
-		require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 			ID:            "rule-" + strings.ToLower(target.tier),
 			Name:          "Complexity " + target.tier,
 			CelExpression: `complexity_tier == "` + target.tier + `"`,
@@ -412,7 +414,7 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 		}))
 	}
 
-	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -593,9 +595,10 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rule-1",
 		Name:          "Always match",
 		CelExpression: "true",
@@ -607,7 +610,7 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())

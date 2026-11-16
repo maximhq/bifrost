@@ -1058,7 +1058,7 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { config.Close(ctx) })
 
-	plugin, err := routing.Init(ctx, nil, &testLogger{}, config.ConfigStore, routing.NewMockGovernance())
+	plugin, err := routing.Init(ctx, nil, &testLogger{}, config.ConfigStore, config.LiveStore, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(tierByTextDecision(map[string]string{complexText: "COMPLEX", mediumText: "MEDIUM", simpleText: "SIMPLE"}))

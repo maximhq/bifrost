@@ -6168,14 +6168,19 @@ func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]ta
 	// QueryScope stashed on ctx (the enterprise DAC wrapper attaches one for
 	// request-driven reads). Background callers (engine bootstrap, cache
 	// reloads on context.Background) carry no scope and stay unfiltered.
-	q := s.ScopedDB(ctx).
+	return ReadRoutingRules(s.ScopedDB(ctx).Order("priority ASC, created_at DESC, id ASC"), dest, scopes...)
+}
+
+// ReadRoutingRules reads the routing rules scopes select from db into dest, each with its targets in
+// weight order, the rules in the order db and scopes give.
+func ReadRoutingRules(db *gorm.DB, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
+	q := db.
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
 			return db.Order("weight DESC").
 				Order("COALESCE(provider, '') ASC").
 				Order("COALESCE(model, '') ASC").
 				Order("COALESCE(key_id, '') ASC")
-		}).
-		Order("priority ASC, created_at DESC, id ASC")
+		})
 	for _, scope := range scopes {
 		q = scope(q)
 	}

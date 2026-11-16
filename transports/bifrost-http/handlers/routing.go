@@ -260,9 +260,10 @@ func (h *RoutingHandler) validateRoutingScopeID(ctx context.Context, scope strin
 			return fmt.Errorf("failed to verify customer: %w", err)
 		}
 	case "user":
-		// User ids live outside the config store (they arrive on requests via
-		// the resolved identity context), so existence cannot be verified
-		// here; the id is matched at eval time against the calling user.
+		// User ids are not config store rows (they arrive on requests via the
+		// resolved identity context), so the id is not looked up here and is
+		// matched at eval time against the calling user. A store that does hold
+		// users may refuse one the caller cannot see when the rule is saved.
 	}
 	return nil
 }
@@ -738,6 +739,12 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}
+		// A store may refuse a reference it cannot resolve for the caller with
+		// ErrNotFound, and that is a bad request, not a server failure.
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
@@ -869,6 +876,12 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
+		// A store may refuse a reference it cannot resolve for the caller with
+		// ErrNotFound, and that is a bad request, not a server failure.
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))

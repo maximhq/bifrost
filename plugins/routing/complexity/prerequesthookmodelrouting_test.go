@@ -111,12 +111,13 @@ func modelRoutingTestPluginWithConfig(
 	t.Helper()
 	ctx := context.Background()
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(ctx, logger, nil)
+	ruleStore, err := rules.NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 	for i := range routingRules {
-		require.NoError(t, ruleStore.UpsertRule(ctx, &routingRules[i]))
+		require.NoError(t, ruleStore.Put(ctx, &routingRules[i]))
 	}
-	plugin, err := routing.InitFromStore(ctx, config, logger, nil, ruleStore, governance)
+	plugin, err := routing.InitFromStore(ctx, config, logger, nil, ruleStore.Store, governance)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(decide)

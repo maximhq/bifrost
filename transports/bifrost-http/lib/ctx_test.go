@@ -1876,7 +1876,7 @@ type gateway struct {
 	config     *Config
 	client     *bifrost.Bifrost
 	governance *governance.GovernancePlugin
-	rules      rules.Store
+	rules      *rules.TestRules
 	kv         *kvstore.Store
 }
 
@@ -1930,20 +1930,21 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 	if err != nil {
 		t.Fatalf("governance.Init: %v", err)
 	}
-	ruleStore, err := rules.NewLocalStore(ctx, logger, nil)
+	ruleStore, err := rules.NewTestRules(ctx, t.TempDir(), logger)
 	if err != nil {
-		t.Fatalf("rules.NewLocalStore: %v", err)
+		t.Fatalf("rules.NewTestRules: %v", err)
 	}
+	t.Cleanup(ruleStore.Close)
 	for _, rule := range setup.rules {
-		if err := ruleStore.UpsertRule(ctx, rule); err != nil {
-			t.Fatalf("UpsertRule %s: %v", rule.ID, err)
+		if err := ruleStore.Put(ctx, rule); err != nil {
+			t.Fatalf("Put %s: %v", rule.ID, err)
 		}
 	}
 	kv, err := kvstore.New(kvstore.Config{})
 	if err != nil {
 		t.Fatalf("kvstore.New: %v", err)
 	}
-	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{KVStore: kv}, logger, nil, ruleStore, governancePlugin)
+	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{KVStore: kv}, logger, nil, ruleStore.Store, governancePlugin)
 	if err != nil {
 		t.Fatalf("routing.InitFromStore: %v", err)
 	}
@@ -2405,7 +2406,7 @@ func TestGatewayRuleScopePrecedence(t *testing.T) {
 	}
 	for _, step := range steps {
 		if step.deleteRule != "" {
-			if err := g.rules.DeleteRule(context.Background(), step.deleteRule); err != nil {
+			if err := g.rules.Delete(context.Background(), step.deleteRule); err != nil {
 				t.Fatalf("deleting rule %s: %v", step.deleteRule, err)
 			}
 		}
@@ -2490,7 +2491,7 @@ func TestGatewayRulePinOutsideTheVirtualKeysKeys(t *testing.T) {
 	}
 	g.requireBinding(r, "route", "", "m", "gw-b/m")
 
-	if err := g.rules.UpsertRule(context.Background(), gwRule(t, "R1", "", "", gwTarget(gwA, "m", "a1"), nil)); err != nil {
+	if err := g.rules.Put(context.Background(), gwRule(t, "R1", "", "", gwTarget(gwA, "m", "a1"), nil)); err != nil {
 		t.Fatalf("removing the rule's fallback: %v", err)
 	}
 	u.clearHits()
