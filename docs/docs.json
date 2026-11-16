@@ -290,6 +290,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/routers",
               "features/complexity-router",
               "features/warp",
               "features/compat-plugin",
@@ -1860,7 +1861,25 @@
                 ]
               },
               {
-                "group": "Complexity Analyzer",
+                "group": "Routers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers",
+                  "POST /api/routing/model-routers",
+                  "GET /api/routing/model-routers/defaults",
+                  "GET /api/routing/model-routers/{router_id}",
+                  "PUT /api/routing/model-routers/{router_id}",
+                  "DELETE /api/routing/model-routers/{router_id}",
+                  "POST /api/routing/model-routers/{router_id}/reset",
+                  "PUT /api/routing/model-routers/{router_id}/targets",
+                  "PUT /api/routing/model-routers/{router_id}/routing",
+                  "GET /api/routing/model-routers/{router_id}/status",
+                  "POST /api/routing/model-routers/{router_id}/status/retry",
+                  "POST /api/routing/model-routers/{router_id}/classify"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
