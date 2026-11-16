@@ -120,6 +120,18 @@ test.describe('Claude Code gateway settings', () => {
     expect(clientConfig.mcp_server_auth_mode).toBe('headers')
   })
 
+  test('turns on approval without a Bifrost account, shared with MCP', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com')
+    await claudeCodeGatewayPage.goto()
+    await expect(claudeCodeGatewayPage.allowTempTokenSwitch).not.toBeChecked()
+    await claudeCodeGatewayPage.allowTempTokenSwitch.click()
+    const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.mcp_enable_temp_token_auth).toBe(true)
+    expect(clientConfig.mcp_server_auth_mode).toBe('headers')
+  })
+
   test('requires an issuer URL before enabling', async ({ page, claudeCodeGatewayPage }) => {
     await mockConfig(page)
     await claudeCodeGatewayPage.goto()
