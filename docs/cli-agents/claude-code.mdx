@@ -64,6 +64,30 @@ With Enterprise SSO, Bifrost CLI passes Claude Code a temporary `--settings` fil
 
 See [Coding harness integrations](/quickstart/cli/coding-agents) for model selection, persistent configuration, and removal.
 
+## Select a Bifrost project
+
+With the CLI, select the project for this session:
+
+```bash
+bifrost claude --project-id PROJECT_ID --model anthropic/claude-sonnet-4-6
+# Or select by name:
+bifrost claude --project-name customer-alpha
+```
+
+For direct Claude Code use, keep your gateway and user authentication configuration and add this to the repository's `.claude/settings.json` (shared) or `.claude/settings.local.json` (personal):
+
+```json
+{
+  "env": {
+    "ANTHROPIC_CUSTOM_HEADERS": "x-bf-project-id: PROJECT_ID"
+  }
+}
+```
+
+Use one project header, either `x-bf-project-id` or `x-bf-project-name`. If other custom headers are needed, include them in the same string separated by `\n`; settings scopes replace this string rather than concatenate it. Never commit credentials. Start a new session after changing the selection, and verify the resolved project in Bifrost Logs. See [CLI project selection](/quickstart/cli/coding-agents#attribute-requests-to-a-project) for supported harnesses and [Projects](/enterprise/projects) for membership and accounting.
+
+These settings apply to local Claude Code. Anthropic-hosted cloud sessions do not apply gateway environment variables; see [Anthropic's gateway surface coverage](https://code.claude.com/docs/en/llm-gateway-connect#slack-cloud-sessions-and-remote-control).
+
 ## Static virtual key
 
 Use this when a fixed virtual key is acceptable. Claude Code sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <token>`, which Bifrost accepts as a virtual key. No Anthropic account login is required.

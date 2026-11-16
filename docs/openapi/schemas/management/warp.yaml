@@ -106,6 +106,17 @@ WarpConfig:
         Appended to Warp's built-in system prompt. Additive only: an operator
         can teach Warp local naming conventions, but cannot remove the tool-use
         and scoping instructions the built-in prompt establishes.
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Provider used to embed gateway conversations for semantic search.
@@ -145,10 +156,60 @@ WarpConfig:
       minimum: 1
       maximum: 25
       default: 10
+    topic_discovery_min_requests:
+      type: integer
+      minimum: 10
+      maximum: 20000
+      default: 100
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics.
     vector_store_connected:
       type: boolean
       readOnly: true
       description: Whether the shared runtime vector store is connected.
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      description: |
+        Kinds of configuration change Warp may offer through the Bifrost MCP,
+        each run only after the person confirms it. Reads are always offered;
+        empty, the default, is reads only.
+    management_writes_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the Bifrost MCP serves writes at all. It is the ceiling: with
+        client.bifrost_mcp_allow_writes off, no kind of write is offered,
+        whatever management_writes says.
+    management_tool_sizes:
+      type: array
+      readOnly: true
+      description: |
+        Per kind, how many management tools Warp could be offered and roughly
+        how many tokens their declarations add to every Warp request. Absent
+        while the Bifrost MCP is not loaded.
+      items:
+        type: object
+        properties:
+          kind:
+            type: string
+            enum: [read, create, update, delete, action]
+          tools:
+            type: integer
+          estimated_tokens:
+            type: integer
+            description: Rough estimate (declaration characters / 3).
+        required: [kind, tools, estimated_tokens]
+    bifrost_mcp_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the gateway's Bifrost MCP is loaded. Warp reads configuration
+        through it and does not answer without it: chat returns 503 with reason
+        `no_bifrost_mcp`. False when `client.bifrost_url` is unset or the
+        OpenAPI spec could not be read.
   required:
     - configured
     - enabled
@@ -163,7 +224,19 @@ WarpConfig:
     - log_vector_store_namespace
     - semantic_search_threshold
     - semantic_search_limit
+    - topic_discovery_min_requests
     - vector_store_connected
+    - management_writes
+    - management_writes_available
+    - bifrost_mcp_available
+
+WarpManagementWrite:
+  type: string
+  enum: [create, update, delete, action]
+  description: |
+    A kind of configuration change: create (POST create operations), update
+    (PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests
+    and cache flushes).
 
 WarpConfigInput:
   type: object
@@ -268,6 +341,17 @@ WarpConfigInput:
         policy question with no technically correct ceiling.
     system_prompt_suffix:
       type: string
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Required when `enabled` is true.
@@ -302,7 +386,27 @@ WarpConfigInput:
       maximum: 25
       default: 10
       description: Zero means "use the default", resolved before validation.
+    topic_discovery_min_requests:
+      type: integer
+      oneOf:
+        - const: 0
+        - minimum: 10
+          maximum: 20000
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics, from 10 to 20000. Omitted
+        keeps the stored value; zero means "use the default", resolved before
+        validation. 1 to 9 are refused.
 
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      uniqueItems: true
+      description: |
+        Kinds of configuration change Warp may offer, each run only after the
+        person confirms it. Reads are always offered and are not a kind. Omitted
+        keeps the stored value; [] is reads only.
 WarpUnavailable:
   type: object
   description: |
@@ -318,6 +422,10 @@ WarpUnavailable:
       semantic search specifically is unavailable. Everything else Warp does
       still works, so this is a degraded state rather than an absent one - do
       not hide the launcher for it.
+    - `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,
+      or its OpenAPI spec could not be read). Warp does not answer without it.
+      Show administrators the setup step and everyone else an ask-an-admin
+      message, in place of the composer.
   properties:
     reason:
       type: string
@@ -325,6 +433,7 @@ WarpUnavailable:
         - not_configured
         - no_log_store
         - no_vector_store
+        - no_bifrost_mcp
     message:
       type: string
   required:
@@ -340,6 +449,13 @@ WarpBackfillRequest:
     end_time:
       type: string
       format: date-time
+    restart:
+      type: boolean
+      default: false
+      description: |
+        Discard a resumable checkpoint left by a failed or cancelled run over the
+        same window and scan from the beginning. Omitted, a found checkpoint is
+        resumed automatically.
   required: [start_time, end_time]
 
 WarpBackfillStatus:
@@ -373,6 +489,124 @@ WarpBackfillStatus:
     completed_at: { type: string, format: date-time }
   required: [status, total, scanned, indexed, skipped, failed]
 
+WarpTopicsRequest:
+  type: object
+  properties:
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+  required: [start_time, end_time]
+
+WarpTopicsStatus:
+  type: object
+  description: |
+    A topic clustering job. It shares the backfill's counters, which mean
+    something different here: see each field.
+  properties:
+    id: { type: string }
+    status:
+      type: string
+      enum: [idle, pending, running, cancelling, completed, failed, cancelled]
+    start_time: { type: string, format: date-time }
+    end_time: { type: string, format: date-time }
+    total:
+      type: integer
+      format: int64
+      description: Requests read from the window so far. Equal to `scanned`.
+    scanned:
+      type: integer
+      format: int64
+      description: Requests read from the window. Every model call is one request.
+    indexed:
+      type: integer
+      format: int64
+      description: Topics written.
+    skipped:
+      type: integer
+      format: int64
+      description: |
+        Requests that were indexed but are no longer in the log store, so they
+        were clustered but could not be filed under a topic.
+    failed:
+      type: integer
+      format: int64
+      description: |
+        Topics whose name fell back to their most common words because the
+        model could not be reached.
+    clustered:
+      type: integer
+      format: int64
+      description: Requests that were clustered.
+    assigned:
+      type: integer
+      format: int64
+      description: |
+        Requests given to the nearest topic after clustering stopped. Omitted
+        when a run clustered everything it read.
+    unassigned:
+      type: integer
+      format: int64
+      description: Requests that ended in no topic.
+    capped:
+      type: boolean
+      description: |
+        Set when a run stopped at a read limit before the end of the window.
+        Runs read the whole window, so this is not set.
+    merged:
+      type: integer
+      format: int64
+      description: Clusters folded into another for being near-duplicates.
+    merged_by_name:
+      type: integer
+      format: int64
+      description: Clusters joined after naming because they were given the same name.
+    themes:
+      type: integer
+      format: int64
+      description: |
+        How many themes the active topics were grouped into once the run had
+        written its topics. Omitted when there were too few topics to group,
+        or the grouping could not run (see last_error).
+    merge_threshold:
+      type: number
+      format: double
+      description: |
+        The similarity at or above which two clusters were merged, derived
+        from the run's own clusters. Omitted when the run had nothing to
+        derive one from.
+    topics:
+      type: array
+      description: The topics the run wrote, in the order they were written.
+      items:
+        $ref: '#/WarpTopicSummary'
+    last_error: { type: string }
+    message: { type: string }
+    created_at: { type: string, format: date-time }
+    started_at: { type: string, format: date-time }
+    completed_at: { type: string, format: date-time }
+  required: [status, total, scanned, indexed, skipped, failed]
+
+WarpTopicSummary:
+  type: object
+  properties:
+    label:
+      type: string
+      description: The topic's name.
+    size:
+      type: integer
+      format: int64
+      description: Requests in the topic.
+    cohesion:
+      type: number
+      format: double
+      description: |
+        How alike the topic's requests are, from 0 to 1: their average
+        similarity to the topic's centre.
+  required: [label, size, cohesion]
+
 WarpSessionRequest:
   type: object
   properties:
@@ -395,6 +629,9 @@ WarpSessionRequest:
             enum: [user, assistant]
           content:
             type: string
+          question:
+            type: boolean
+            description: Marks an assistant turn that was a clarifying question rather than an answer.
         required: [role, content]
     conversation_id:
       type: string
@@ -422,6 +659,18 @@ WarpSessionRequest:
       description: |
         Selects the transport, not the behaviour. `true` streams SSE frames;
         `false` returns one JSON body. Both run the same loop.
+    timezone:
+      type: string
+      description: |
+        The asker's IANA zone identifier (e.g. "Asia/Kolkata"), used to resolve
+        calendar days. An empty or unrecognized value falls back to
+        `utc_offset_minutes`.
+      example: Asia/Kolkata
+    utc_offset_minutes:
+      type: integer
+      description: |
+        The asker's current UTC offset in minutes east of UTC (e.g. 330 for IST).
+        Used only when no usable `timezone` is sent. Omitted or out-of-range means UTC.
   required:
     - messages
 
@@ -519,7 +768,52 @@ WarpLogIndexStatus:
       allOf:
         - $ref: '#/WarpBackfillStatus'
       description: The in-flight or latest backfill for the current namespace, when one exists.
+    topics:
+      allOf:
+        - $ref: '#/WarpTopicHealth'
+      description: |
+        How live topic filing is doing, when the index is usable and the log
+        store keeps topics. The counts are deployment-wide, so a caller whose
+        reads are narrowed gets no topics at all.
+    has_indexed_requests:
+      type: boolean
+      description: |
+        Whether the configured namespace holds any indexed request to seed
+        topics from. Reported only when `topics` is present and shows no
+        active topics, so it is also absent when topic health is unavailable
+        (for example to a caller with narrowed reads), not only when the
+        vector store cannot say.
   required: [state, vector_store_connected, embedding_configured]
+
+WarpTopicHealth:
+  type: object
+  description: |
+    The state of live topic filing for the embedding model in use, across
+    the whole deployment. Callers whose reads are narrowed are not given it.
+    A rising unmatched share is the sign the topics no longer fit the
+    traffic and a discovery or a new build is due.
+  properties:
+    active_topics:
+      type: integer
+    themes:
+      type: integer
+    pooled:
+      type: integer
+      format: int64
+      description: Requests waiting in the pool for a topic to be discovered.
+    requests_24h:
+      type: integer
+      format: int64
+      description: Requests filed in the last 24 hours.
+    unmatched_24h:
+      type: integer
+      format: int64
+      description: Of those, the requests that matched no topic.
+    unmatched_share_24h:
+      type: number
+      format: double
+      description: unmatched_24h over requests_24h, or 0 when nothing was filed.
+  required: [active_topics, themes, pooled, requests_24h, unmatched_24h, unmatched_share_24h]
 
 WarpConversation:
   type: object

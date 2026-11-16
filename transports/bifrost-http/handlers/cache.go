@@ -57,6 +57,7 @@ func (h *CacheHandler) clearCache(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear cache")
 		return
 	}
+	lib.RecordAuditChange(ctx, "cache.cleared", "cache", cacheID, cacheID, nil, map[string]any{"cache_id": cacheID})
 
 	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",
@@ -85,6 +86,7 @@ func (h *CacheHandler) clearCacheByKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear cache")
 		return
 	}
+	lib.RecordAuditChange(ctx, "cache.cleared", "cache", cacheKey, cacheKey, nil, map[string]any{"cache_key": cacheKey})
 
 	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",

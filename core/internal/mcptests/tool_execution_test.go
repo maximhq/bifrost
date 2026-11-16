@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -1623,4 +1624,109 @@ func TestInjectedWebSearch_RetryDoesNotReplayTools(t *testing.T) {
 	assert.Equal(t, 2, requests, "turn 1 is not replayed: one tool-call turn, one failed turn")
 	require.NotNil(t, bifrostErr.ExtraFields.BilledUsage, "the failure bills the finished turn")
 	assert.Equal(t, 10, bifrostErr.ExtraFields.BilledUsage.PromptTokens)
+}
+
+// TestToolExecution_InputRequiredUpstream runs Bifrost against a real server whose tools ask for
+// input mid-call (examples/mcps/input-required-server). A gateway caller that can answer gets each
+// request unchanged and completes the call on its retry; anyone else gets a clear error, except a
+// "retry later" answer, which Bifrost retries itself.
+func TestToolExecution_InputRequiredUpstream(t *testing.T) {
+	url := startInputRequiredServer(t)
+	form := &mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{}}
+	formAndURL := &mcpgo.ClientCapabilities{Elicitation: &mcpgo.ElicitationCapability{Form: &struct{}{}, URL: &struct{}{}}}
+	accept := func(content map[string]any) mcpgo.InputResponse {
+		return mcpgo.NewElicitationInputResponse(mcpgo.ElicitationResult{ElicitationResponse: mcpgo.ElicitationResponse{
+			Action: mcpgo.ElicitationResponseActionAccept, Content: content,
+		}})
+	}
+
+	for _, sticky := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sticky=%t", sticky), func(t *testing.T) {
+			cfg := GetSampleHTTPClientConfig(url)
+			cfg.ID, cfg.Name = fmt.Sprintf("input_required_%t", sticky), "inputs"
+			cfg.NeedsSessionStickiness = schemas.Ptr(sticky)
+			manager := setupMCPManager(t, cfg)
+
+			call := func(t *testing.T, tool string, caller *mcpgo.ClientCapabilities, resume *mcpgo.MultiRoundTripParams) (*schemas.ChatMessage, *schemas.BifrostError) {
+				t.Helper()
+				ctx, cancel := CreateTestContextWithCustomTimeout(30 * time.Second)
+				t.Cleanup(cancel)
+				if caller != nil {
+					ctx.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, caller)
+				}
+				if resume != nil {
+					ctx.SetValue(schemas.BifrostContextKeyMCPInputResumption, resume)
+				}
+				name := "inputs-" + tool
+				return manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+				})
+			}
+			text := func(t *testing.T, msg *schemas.ChatMessage) string {
+				t.Helper()
+				require.NotNil(t, msg)
+				require.NotNil(t, msg.Content)
+				require.NotNil(t, msg.Content.ContentStr)
+				return *msg.Content.ContentStr
+			}
+			inputRequired := func(t *testing.T, msg *schemas.ChatMessage, bErr *schemas.BifrostError) *mcpgo.CallToolResult {
+				t.Helper()
+				require.Nil(t, bErr)
+				result := msg.ChatToolMessage.MCPResult(msg.Content)
+				require.NotNil(t, result, "the upstream result must reach the caller unchanged")
+				require.True(t, result.NeedsInput())
+				return result
+			}
+
+			t.Run("no gateway caller", func(t *testing.T) {
+				_, bErr := call(t, "ask_environment", nil, nil)
+				require.NotNil(t, bErr)
+				assert.Contains(t, bErr.Error.Message, "input from the user (elicitation)")
+				msg, bErr := call(t, "busy", nil, nil)
+				require.Nil(t, bErr, "Bifrost retries a retry-later answer itself")
+				assert.Equal(t, "done after retry", text(t, msg))
+			})
+
+			t.Run("form elicitation is answered through the caller", func(t *testing.T) {
+				first, bErr := call(t, "ask_environment", form, nil)
+				result := inputRequired(t, first, bErr)
+				require.Contains(t, result.InputRequests, "environment")
+				msg, bErr := call(t, "ask_environment", form, &mcpgo.MultiRoundTripParams{
+					InputResponses: mcpgo.InputResponses{"environment": accept(map[string]any{"environment": "staging"})},
+					RequestState:   result.RequestState,
+				})
+				require.Nil(t, bErr)
+				assert.Equal(t, "deployed to staging", text(t, msg))
+			})
+
+			t.Run("url elicitation needs a caller that declared url mode", func(t *testing.T) {
+				_, bErr := call(t, "connect_account", form, nil)
+				require.NotNil(t, bErr)
+				assert.Contains(t, bErr.Error.Message, "https://example.com/connect")
+				first, bErr := call(t, "connect_account", formAndURL, nil)
+				result := inputRequired(t, first, bErr)
+				msg, bErr := call(t, "connect_account", formAndURL, &mcpgo.MultiRoundTripParams{
+					InputResponses: mcpgo.InputResponses{"connect": accept(nil)},
+					RequestState:   result.RequestState,
+				})
+				require.Nil(t, bErr)
+				assert.Equal(t, "account connected", text(t, msg))
+			})
+
+			t.Run("sampling is not relayed", func(t *testing.T) {
+				_, bErr := call(t, "summarize", formAndURL, nil)
+				require.NotNil(t, bErr)
+				assert.Contains(t, bErr.Error.Message, "an LLM completion (sampling)")
+			})
+
+			t.Run("retry later reaches the caller", func(t *testing.T) {
+				first, bErr := call(t, "busy", form, nil)
+				result := inputRequired(t, first, bErr)
+				assert.Empty(t, result.InputRequests)
+				msg, bErr := call(t, "busy", form, &mcpgo.MultiRoundTripParams{RequestState: result.RequestState})
+				require.Nil(t, bErr)
+				assert.Equal(t, "done after retry", text(t, msg))
+			})
+		})
+	}
 }

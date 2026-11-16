@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,6 +80,31 @@ func TestLoadBalanceProvider_UnprefixedModelLoadBalances(t *testing.T) {
 	got, err := loadBalance(t, p, ctx, "gpt-4o")
 	require.NoError(t, err)
 	assert.Equal(t, "openai/gpt-4o", got)
+}
+
+// TestLoadBalanceProvider_KeyAliasIsNotRefined covers a virtual key that load balances a bare
+// key alias onto Databricks. The alias must reach key selection under its own name, or alias
+// resolution misses and the refined "system.ai.<alias>" is sent upstream as a model.
+func TestLoadBalanceProvider_KeyAliasIsNotRefined(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("databricks", []string{"*"}),
+	})
+	p := newLoadBalanceTestPlugin(t, vk)
+	mc := modelcatalog.NewTestCatalog(nil)
+	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
+		ID:      "dbx-key",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"my-alias": {ModelID: "my-provisioned-endpoint"}},
+	}})
+	p.modelCatalog = mc
+
+	got, err := loadBalance(t, p, presentCtx("sk-bf-lb"), "my-alias")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/my-alias", got)
+
+	got, err = loadBalance(t, p, presentCtx("sk-bf-lb"), "gpt-5.5")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/system.ai.gpt-5.5", got)
 }
 
 // TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace verifies that a
@@ -204,7 +230,7 @@ func TestLoadBalanceProvider_DuplicateProviderConfigsBothCount(t *testing.T) {
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK",
 		[]configstoreTables.TableVirtualKeyProviderConfig{first, second})
 
-	access := grant.NewAccess([]schemas.Permit{vkPermit(vk, nil)}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{vkPermit(vk, nil)}, "", nil, "", nil)
 	assert.Len(t, access.ProvidersForModel("llama-3.1-8b-instant"), 2)
 }
 
@@ -414,7 +440,7 @@ func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
 	require.NoError(t, err)
 
 	permit := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai", "azure")
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-5")
 	require.Error(t, exclusionErr, "the exact-pair budget is spent, so openai cannot serve the model")
@@ -463,7 +489,7 @@ func TestCandidateExclusionConsultsTheVirtualKeysProviderLimits(t *testing.T) {
 				RateLimits:  rateLimits,
 			}, nil, nil)
 			require.NoError(t, err)
-			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, nil, "", nil)
+			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, "", nil, "", nil)
 
 			decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-4o")
 			// openai's own limit on the key is spent, so it is no candidate, for that limit and no other reason.

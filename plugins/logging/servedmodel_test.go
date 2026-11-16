@@ -38,6 +38,25 @@ func newServedModelPlugin(t *testing.T) *LoggerPlugin {
 	}
 }
 
+// An Interactions poll names no model on the request; the record takes the agent the upstream
+// reports running, so Deep Research polls are filterable and priced by agent. A request that did
+// name a model keeps it.
+func TestApplyServedModelPassthroughFillsMissingModel(t *testing.T) {
+	poll := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{ServedModel: "deep-research-preview-04-2026"}}
+
+	entry := &logstore.Log{Provider: string(schemas.Gemini)}
+	applyServedModel(entry, poll)
+	if entry.Model != "deep-research-preview-04-2026" || entry.ServedModel != nil {
+		t.Fatalf("model=%q served_model=%v, want the agent as the model", entry.Model, entry.ServedModel)
+	}
+
+	named := &logstore.Log{Provider: string(schemas.Gemini), Model: "deep-research-max-preview-04-2026"}
+	applyServedModel(named, poll)
+	if named.Model != "deep-research-max-preview-04-2026" {
+		t.Fatalf("model=%q, a named model is never replaced", named.Model)
+	}
+}
+
 func TestApplyServedModel(t *testing.T) {
 	tests := []struct {
 		name   string

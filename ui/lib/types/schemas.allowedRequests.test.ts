@@ -41,6 +41,14 @@ describe("allowedRequestsSchema", () => {
 		expect(result.success).toBe(true);
 	});
 
+	// Dropping these on parse would make every UI save of a custom provider turn passthrough off.
+	it("keeps the passthrough flags through a parse", () => {
+		const result = allowedRequestsSchema.safeParse({ ...stored, passthrough: true, passthrough_stream: false });
+		expect(result.success).toBe(true);
+		expect(result.data?.passthrough).toBe(true);
+		expect(result.data?.passthrough_stream).toBe(false);
+	});
+
 	it("still accepts an explicit live flag", () => {
 		const result = allowedRequestsSchema.safeParse({ ...stored, live: true });
 		expect(result.success).toBe(true);

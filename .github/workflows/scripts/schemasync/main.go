@@ -103,6 +103,7 @@ var ignoreSchemaProps = map[string]string{
 	// SecretVar-typed for env flexibility, not credentials.
 	"/properties/client/properties/oauth2_server_config/properties/issuer_url": "not a secret; env.X + envFrom pattern",
 	"/properties/client/properties/mcp_external_client_url":                    "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/mcp_client_metadata_url":                    "not a secret; env.X + envFrom pattern",
 	// CA certificates are trust anchors, not private keys; bulky values ride env.X + envFrom.
 	"/properties/governance/properties/providers/items/properties/network_config/properties/ca_cert_pem": "CA trust anchor, not a credential; env.X + envFrom pattern",
 	"/properties/governance/properties/providers/items/properties/proxy_config/properties/ca_cert_pem":   "CA trust anchor, not a credential; env.X + envFrom pattern",
@@ -123,6 +124,9 @@ var ignoreGoFields = map[string]string{
 	// client-level twin. Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
 	"/properties/client|mcp_max_instructions_per_client": "storage column; configured only via mcp.tool_manager_config.max_instructions_per_client",
 	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
+	// Same shape: the client column stores the global MCP protocol cap, which config.json sets
+	// only as mcp.max_protocol_version (applyMCPMaxProtocolVersion).
+	"/properties/client|mcp_max_protocol_version": "storage column; configured only via mcp.max_protocol_version",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
@@ -130,6 +134,12 @@ var ignoreGoFields = map[string]string{
 	// injected_tools is read from providers.<name>, so the schema must not advertise it here
 	// (TestValidateConfigSchema_InjectedTools pins that).
 	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
+	"/properties/governance/properties/providers/items|passthrough":    "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.passthrough",
+
+	// Phrase suggestions are set per model router (model_routers[].suggestions);
+	// the global complexity analyzer config refuses them, so the schema leaves them out.
+	// Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/governance/properties/complexity_analyzer_config|suggestions": "set per model router; refused on the global complexity analyzer config",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
@@ -226,6 +236,10 @@ var narrowedEnumPaths = map[string]struct {
 	"/properties/agents/items/properties/runtime_auth/properties/type": {
 		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
+	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
+		excluded: []string{"baseten", "byteplus", "kimchi", "machgen", "minimax", "sagemaker", "soniox"},
+		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
 }
 

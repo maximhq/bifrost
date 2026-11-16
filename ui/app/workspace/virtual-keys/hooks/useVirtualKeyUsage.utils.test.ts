@@ -1,6 +1,6 @@
 import { RateLimit } from "@/lib/types/governance";
 import { describe, expect, it } from "vitest";
-import { resolveDisplayRateLimit } from "./useVirtualKeyUsage.utils";
+import { resolveDisplayRateLimit, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
 
 const vkRateLimit: RateLimit = {
 	id: "vk-rl",
@@ -52,5 +52,30 @@ describe("resolveDisplayRateLimit", () => {
 
 	it("shows nothing for an unmanaged key with no rate limit", () => {
 		expect(resolveDisplayRateLimit({ isManagedByProfile: false, profileRateLimit: undefined, vkRateLimit: undefined })).toBeUndefined();
+	});
+});
+describe("virtualKeyManagement", () => {
+	// An owned key is never also a user's, so a managed key with an owner is governed by that owner's
+	// profile and stays the owner's to edit, unassign and delete; one without an owner is a user's
+	// managed key, which stays locked.
+	it("a managed key a team, business unit or customer owns is owner-governed", () => {
+		for (const owner of [{ team_id: "t" }, { business_unit_id: "b" }, { customer_id: "c" }]) {
+			expect(virtualKeyManagement({ is_access_profile_managed: true, ...owner })).toEqual({
+				isOwnerGoverned: true,
+				isUserProfileManaged: false,
+			});
+		}
+	});
+
+	it("a managed key with no owner is a user's managed key", () => {
+		expect(virtualKeyManagement({ is_access_profile_managed: true })).toEqual({ isOwnerGoverned: false, isUserProfileManaged: true });
+	});
+
+	it("an unmanaged key is neither, owned or not", () => {
+		expect(virtualKeyManagement({ is_access_profile_managed: false, team_id: "t" })).toEqual({
+			isOwnerGoverned: false,
+			isUserProfileManaged: false,
+		});
+		expect(virtualKeyManagement(undefined)).toEqual({ isOwnerGoverned: false, isUserProfileManaged: false });
 	});
 });

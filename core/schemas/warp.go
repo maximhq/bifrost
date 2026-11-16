@@ -68,6 +68,16 @@ const (
 	// WarpMaxSemanticSearchLimit bounds tool output and scoped rehydration work.
 	WarpMaxSemanticSearchLimit = 25
 
+	// WarpDefaultTopicDiscoveryMinRequests is how many requests that matched no
+	// topic have to be waiting before discovery clusters them into new topics.
+	// WarpMinTopicDiscoveryMinRequests and WarpMaxTopicDiscoveryMinRequests
+	// bound a configured value: below the minimum a pool cannot hold even one
+	// cluster large enough to be a topic, and above the maximum the pool is
+	// pruned before it could ever be reached.
+	WarpDefaultTopicDiscoveryMinRequests = 100
+	WarpMinTopicDiscoveryMinRequests     = 10
+	WarpMaxTopicDiscoveryMinRequests     = 20000
+
 	// WarpDefaultLogVectorStoreNamespace is deliberately Warp-specific: sharing
 	// an embedding namespace with another feature mixes incompatible metadata.
 	WarpDefaultLogVectorStoreNamespace = "BifrostWarpLogs"
@@ -105,6 +115,27 @@ var WarpReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", 
 // IsWarpReasoningEffort reports whether value is one of WarpReasoningEfforts.
 func IsWarpReasoningEffort(value string) bool {
 	return slices.Contains(WarpReasoningEfforts, value)
+}
+
+// The kinds of configuration change Warp may make through the Bifrost MCP, each
+// run only after the person confirms it. Reads are always offered; a deployment
+// turns each of these on in Warp's settings, and none is on by default: every
+// kind adds its tools to every Warp request, and the updates alone can outgrow a
+// model's context window. bifrost_mcp_allow_writes stays the ceiling: with it
+// off the Bifrost MCP serves no writes, whatever is chosen here.
+const (
+	WarpManagementCreate = "create" // POST operations named create*
+	WarpManagementUpdate = "update" // PUT and PATCH
+	WarpManagementDelete = "delete" // DELETE
+	WarpManagementAction = "action" // the other POSTs: test, rotate, flush, ...
+)
+
+// WarpManagementWrites lists the kinds in the order they are shown and stored.
+var WarpManagementWrites = []string{WarpManagementCreate, WarpManagementUpdate, WarpManagementDelete, WarpManagementAction}
+
+// IsWarpManagementWrite reports whether value names one of WarpManagementWrites.
+func IsWarpManagementWrite(value string) bool {
+	return slices.Contains(WarpManagementWrites, value)
 }
 
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
@@ -171,6 +202,11 @@ type WarpConfig struct {
 	LogVectorStoreNamespace string        `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64       `json:"semantic_search_threshold"`
 	SemanticSearchLimit     int           `json:"semantic_search_limit"`
+	// TopicDiscoveryMinRequests is how many unmatched requests start a
+	// discovery; zero means the default.
+	TopicDiscoveryMinRequests int `json:"topic_discovery_min_requests"`
+	// ManagementWrites are the kinds of change Warp may offer (WarpManagementWrites); empty means reads only.
+	ManagementWrites []string `json:"management_writes,omitempty"`
 	// RetiredLogVectorStoreNamespaces is internal lifecycle state. It is stored
 	// so source-log deletion can clean embedding spaces that are no longer read.
 	RetiredLogVectorStoreNamespaces []string `json:"-"`
@@ -267,6 +303,15 @@ func (c *WarpConfig) EffectiveSemanticSearchLimit() int {
 	return min(c.SemanticSearchLimit, WarpMaxSemanticSearchLimit)
 }
 
+// EffectiveTopicDiscoveryMinRequests is how many unmatched requests start a
+// discovery, the default when none is configured.
+func (c *WarpConfig) EffectiveTopicDiscoveryMinRequests() int {
+	if c == nil || c.TopicDiscoveryMinRequests <= 0 {
+		return WarpDefaultTopicDiscoveryMinRequests
+	}
+	return min(max(c.TopicDiscoveryMinRequests, WarpMinTopicDiscoveryMinRequests), WarpMaxTopicDiscoveryMinRequests)
+}
+
 func (c *WarpConfig) EffectiveLogVectorStoreNamespace() string {
 	if c == nil {
 		return WarpDefaultLogVectorStoreNamespace
@@ -316,6 +361,11 @@ const (
 	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
 	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
 	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
+	// WarpUnavailableNoBifrostMCP means the Bifrost MCP is not loaded (no
+	// bifrost_url, or its OpenAPI spec could not be read). Warp needs it to read
+	// configuration, so it does not answer at all without it. The dashboard shows
+	// admins the setup notice and everyone else an ask-an-admin message.
+	WarpUnavailableNoBifrostMCP WarpUnavailableReason = "no_bifrost_mcp"
 )
 
 // WarpUnavailableResponse is the 503 body for both reasons above.
@@ -411,6 +461,18 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Pending is the management call a confirmation card is asking about. It is
+	// persisted with the card and never returned by the conversation API.
+	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpPendingCall is a management write held until the person confirms it.
+// Token is what the card's Confirm option sends back; Arguments is the JSON the
+// model gave the tool.
+type WarpPendingCall struct {
+	Token     string `json:"token"`
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments"`
 }
 
 // WarpStoredQuestionOpt is one pickable answer.

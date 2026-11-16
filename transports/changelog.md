@@ -1,10 +1,19 @@
-## 🔒 Security
+## ✨ Features
 
-- **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
+- **MachGen Provider** - New `machgen` provider for MachGen's image and video models: text-to-image, image edit, and async video generation with retrieve and download. `/v1/models` lists the models each key can use, with their task types. Set up from the UI or `providers.machgen` in config.json
+- **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Trace Dimensions on Child Spans** - An OTEL profile with `apply_trace_dimensions_to_child_spans` set merges the request's `x-bf-dim-*` dimensions onto every exported span (LLM call, plugin, retry, fallback, MCP tool), not only the root HTTP span. Span attributes win on conflict, and `path`, `method` and keys in reserved attribute namespaces (`gen_ai.`, `http.`, `bifrost.`, ...) are skipped (#3770)
+- **Codex WebSocket Through ChatGPT Sign-In** - `/chatgpt_passthrough/backend-api/codex/responses` accepts the WebSocket Codex opens with `supports_websockets = true` and relays it to ChatGPT with the caller's ChatGPT token. Each turn is checked against the virtual key and logged and billed like a turn sent over HTTP. A request without a ChatGPT token gets a 426, which moves Codex to HTTP right away
+
+## 🐞 Fixed
+
+- **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
+- **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
+- **Streaming Panic Recovery** - A panic in a provider stream, a stream chunk converter, a plugin post-hook or chunk hook, or stream teardown no longer takes down the gateway. The client gets a terminal error frame in the route's own format, and logging and billing record the failure
 
 ## 🔧 Maintenance
 
-- **Dependency Upgrades** - Bumped core to v1.13.1 and framework to v1.10.1 across all modules
+- **Runtime Image** - The Docker runtime image moves to Alpine 3.23.7
 
 ## 🗄️ Database Migrations
 

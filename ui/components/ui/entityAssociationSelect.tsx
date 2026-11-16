@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AsyncMultiSelect } from "./asyncMultiselect";
 import { Option } from "./multiselectUtils";
 import { cn } from "./utils";
@@ -63,34 +64,14 @@ interface EntityAssociationSelectProps {
 	noOptionsMessage?: () => string;
 }
 
-// Default placeholder text for each entity type
-const defaultPlaceholders: Record<EntityType, string> = {
-	virtualKey: "Add virtual key names...",
-	team: "Add team names...",
-	customer: "Add customer names...",
-	user: "Add user names...",
-	provider: "Add provider names...",
-	apiKey: "Add API key names...",
-};
-
-// Default no options messages for each entity type
-const defaultNoOptionsMessages: Record<EntityType, string> = {
-	virtualKey: "No virtual keys found",
-	team: "No teams found",
-	customer: "No customers found",
-	user: "No users found",
-	provider: "No providers found",
-	apiKey: "No API keys found",
-};
-
-// Label text for each entity type
+// Label text for each entity type (exported English labels, not rendered by this component)
 export const entityTypeLabels: Record<EntityType, string> = {
-	virtualKey: "Virtual Keys",
-	team: "Teams",
-	customer: "Customers",
-	user: "Users",
-	provider: "Providers",
-	apiKey: "API Keys",
+	virtualKey: "Virtual Keys", // i18n-ignore
+	team: "Teams", // i18n-ignore
+	customer: "Customers", // i18n-ignore
+	user: "Users", // i18n-ignore
+	provider: "Providers", // i18n-ignore
+	apiKey: "API Keys", // i18n-ignore
 };
 
 export function EntityAssociationSelect({
@@ -107,6 +88,7 @@ export function EntityAssociationSelect({
 	formatCreateLabel,
 	noOptionsMessage,
 }: EntityAssociationSelectProps) {
+	const { t } = useTranslation("common");
 	// Convert static options to AsyncMultiSelect format using meta for complex data
 	const defaultOptions = useMemo((): Option<EntityOptionMeta>[] => {
 		return options.map((opt) => ({
@@ -184,7 +166,7 @@ export function EntityAssociationSelect({
 	return (
 		<div className={cn("w-full", className)}>
 			<AsyncMultiSelect<EntityOptionMeta>
-				placeholder={placeholder || defaultPlaceholders[entityType]}
+				placeholder={placeholder || t(`entityAssociation.placeholders.${entityType}`)}
 				disabled={disabled}
 				defaultOptions={defaultOptions}
 				reload={reload}
@@ -196,8 +178,8 @@ export function EntityAssociationSelect({
 				hideSelectedOptions={false}
 				isCreatable={isCreatable}
 				onCreateOption={handleCreateOption}
-				formatCreateLabel={formatCreateLabel || ((value) => `Add "${value}"`)}
-				noOptionsMessage={noOptionsMessage || (() => defaultNoOptionsMessages[entityType])}
+				formatCreateLabel={formatCreateLabel || ((value) => t("entityAssociation.createOption", { value }))}
+				noOptionsMessage={noOptionsMessage || (() => t(`entityAssociation.noOptions.${entityType}`))}
 				views={{
 					option: (props) => {
 						// Access data as Option<EntityOptionMeta> since that's the actual runtime type
@@ -214,7 +196,7 @@ export function EntityAssociationSelect({
 							>
 								<div className="flex items-center justify-between">
 									<span className="text-content-primary font-medium">{data.label}</span>
-									{props.isSelected && <span className="text-primary text-xs">Selected</span>}
+									{props.isSelected && <span className="text-primary text-xs">{t("entityAssociation.selected")}</span>}
 								</div>
 								{data.meta?.description && <span className="text-content-tertiary line-clamp-1 text-xs">{data.meta.description}</span>}
 							</div>

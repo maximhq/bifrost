@@ -6,6 +6,7 @@ export const SKEW_ERROR_PATTERNS = [
 	"loading chunk",
 	"loading css chunk",
 	"failed to load module script",
+	"unable to preload css",
 ] as const;
 
 export function isSkewError(err: unknown): boolean {
@@ -25,11 +26,81 @@ export function isSkewError(err: unknown): boolean {
 // Soft failures preserve the app; hard failures replace an already-unmounted route.
 export type SkewMode = "none" | "soft" | "hard";
 
-let skewMode: SkewMode = "none";
+// "upgrade": the server no longer has the chunk. "blocked": the server has it but the browser could not get it
+// (proxy, firewall, extension, network), so telling the user Bifrost is upgrading would be wrong.
+export type SkewCause = "upgrade" | "blocked";
+
+export interface SkewState {
+	mode: SkewMode;
+	cause: SkewCause | null; // null until the probe settles
+}
+
+// Must match the body ui.go sends for a missing static asset; a proxy 404 does not carry it.
+export const MISSING_ASSET_BODY_PREFIX = "404 - Static asset not found";
+export const PROBE_TIMEOUT_MS = 10_000;
+
+const ASSET_URL_PATTERN = /(?:https?:\/\/[^\s'"()]+?|[^\s'"()]*?)\/assets\/[^\s'"()]+/i;
+
+/** Pulls the failed chunk URL out of a browser or Vite error message, when the message carries one. */
+export function extractAssetUrl(err: unknown): string | undefined {
+	if (!err) return undefined;
+	const message = typeof err === "object" && "message" in err ? String((err as { message?: unknown }).message ?? "") : String(err);
+	const match = message.match(ASSET_URL_PATTERN);
+	return match?.[0].replace(/[.,;:]+$/, "");
+}
+
+function sameOriginAssetUrl(url: string | undefined): string | undefined {
+	if (!url || typeof window === "undefined") return undefined;
+	try {
+		const parsed = new URL(url, window.location.href);
+		if (parsed.origin !== window.location.origin || !parsed.pathname.includes("/assets/")) return undefined;
+		return parsed.href;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Picks the URL to probe: the failed chunk when known, otherwise the chunk this module was loaded from. If the
+ * running build's own chunk is gone too, the server moved to a new build; if it still loads, the build is unchanged.
+ */
+export function resolveProbeUrl(failedUrl?: string, selfUrl: string = import.meta.url): string | undefined {
+	return sameOriginAssetUrl(failedUrl) ?? sameOriginAssetUrl(selfUrl);
+}
+
+/** Re-requests the asset and reports "upgrade" only for Bifrost's own missing-asset 404. */
+export async function classifyLoadFailure(url: string | undefined): Promise<SkewCause> {
+	if (!url) return "blocked";
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+	try {
+		const response = await fetch(url, { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+		if (response.status !== 404) return "blocked";
+		const body = await response.text();
+		return body.startsWith(MISSING_ASSET_BODY_PREFIX) ? "upgrade" : "blocked";
+	} catch {
+		return "blocked";
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+let skewState: SkewState = { mode: "none", cause: null };
+let probeStarted = false;
+let generation = 0;
 const subscribers = new Set<() => void>();
 
+function setSkewState(next: SkewState): void {
+	skewState = next;
+	for (const onChange of subscribers) onChange();
+}
+
+export function getSkewState(): SkewState {
+	return skewState;
+}
+
 export function getSkewMode(): SkewMode {
-	return skewMode;
+	return skewState.mode;
 }
 
 export function subscribeSkew(onChange: () => void): () => void {
@@ -39,15 +110,25 @@ export function subscribeSkew(onChange: () => void): () => void {
 	};
 }
 
-export function reportSkew(mode: "soft" | "hard" = "soft"): void {
-	if (skewMode === "hard") return;
-	if (skewMode === mode) return;
-	skewMode = mode;
-	for (const onChange of subscribers) onChange();
+/** Records a chunk load failure. The first report probes failedUrl once to decide between upgrade and blocked. */
+export function reportSkew(mode: "soft" | "hard" = "soft", failedUrl?: string): void {
+	if (!probeStarted) {
+		probeStarted = true;
+		const startedIn = generation;
+		void classifyLoadFailure(resolveProbeUrl(failedUrl)).then((cause) => {
+			if (startedIn !== generation) return;
+			setSkewState({ ...skewState, cause });
+		});
+	}
+
+	if (skewState.mode === "hard" || skewState.mode === mode) return;
+	setSkewState({ ...skewState, mode });
 }
 
 export function __resetSkewForTests(): void {
-	skewMode = "none";
+	skewState = { mode: "none", cause: null };
+	probeStarted = false;
+	generation += 1;
 	subscribers.clear();
 }
 
@@ -189,41 +270,36 @@ export function startVersionPoll({ fetchVersion, onUpdateReady, onTimeout }: Ver
 	};
 }
 
-function isAssetElementError(target: EventTarget | null): boolean {
-	if (!(target instanceof HTMLScriptElement) && !(target instanceof HTMLLinkElement)) return false;
-	const url = target instanceof HTMLScriptElement ? target.src : target.href;
-	if (!url) return false;
-	try {
-		const parsed = new URL(url, window.location.href);
-		return parsed.origin === window.location.origin && parsed.pathname.includes("/assets/");
-	} catch {
-		return false;
-	}
+function failedAssetElementUrl(target: EventTarget | null): string | undefined {
+	if (!(target instanceof HTMLScriptElement) && !(target instanceof HTMLLinkElement)) return undefined;
+	return sameOriginAssetUrl(target instanceof HTMLScriptElement ? target.src : target.href);
 }
 
 export function installVersionSkewListeners(): void {
 	if (typeof window === "undefined") return;
 
 	// Do not preventDefault: Vite must rethrow so the route boundary can escalate to hard mode.
-	window.addEventListener("vite:preloadError", () => {
-		reportSkew("soft");
+	window.addEventListener("vite:preloadError", (event) => {
+		reportSkew("soft", extractAssetUrl((event as Event & { payload?: unknown }).payload));
 	});
 
 	window.addEventListener("unhandledrejection", (event) => {
 		if (!isSkewError(event.reason)) return;
 		event.preventDefault();
-		reportSkew("soft");
+		reportSkew("soft", extractAssetUrl(event.reason));
 	});
 
 	window.addEventListener(
 		"error",
 		(event) => {
-			if (isAssetElementError(event.target)) {
-				reportSkew("soft");
+			const elementUrl = failedAssetElementUrl(event.target);
+			if (elementUrl) {
+				reportSkew("soft", elementUrl);
 				return;
 			}
-			if (isSkewError((event as ErrorEvent).error ?? (event as ErrorEvent).message)) {
-				reportSkew("soft");
+			const err = (event as ErrorEvent).error ?? (event as ErrorEvent).message;
+			if (isSkewError(err)) {
+				reportSkew("soft", extractAssetUrl(err));
 			}
 		},
 		true,

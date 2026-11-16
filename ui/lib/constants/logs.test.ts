@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes } from "./logs";
+import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels } from "./logs";
 
 describe("logs constants", () => {
 	it.each([
@@ -25,6 +25,13 @@ describe("logs constants", () => {
 		expect(RequestTypes).toContain("realtime.turn");
 		expect(RequestTypeLabels["realtime.turn"]).toBe("Realtime Turn");
 		expect(RequestTypeColors["realtime.turn"]).toBeTruthy();
+	});
+
+	it("registers speech sessions as a known request type, apart from speech streams", () => {
+		expect(RequestTypes).toContain("speech.session");
+		expect(RequestTypeLabels["speech.session"]).toBe("Speech Session");
+		expect(RequestTypeColors["speech.session"]).toBeTruthy();
+		expect(RequestTypeColors["speech.session"]).not.toBe(RequestTypeColors.speech_stream);
 	});
 
 	it("registers model retrieve as a known request type", () => {

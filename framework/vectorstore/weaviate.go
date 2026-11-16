@@ -165,6 +165,45 @@ func isWeaviateAlreadyExists(err error) bool {
 	return strings.Contains(strings.ToLower(clientErr.Error()), "already exists")
 }
 
+// weaviateNoSchemaMessage is how Weaviate answers any GraphQL read while it
+// holds no classes at all: it has no GraphQL provider yet, so it replies 422
+// before resolving the query, and the class lookup in graphQLError never runs.
+const weaviateNoSchemaMessage = "no graphql provider present"
+
+// readError maps a GraphQL read's transport error. An empty schema is
+// ErrNotFound, like a missing class; every other error, including other 422s,
+// is returned unchanged. The GraphQL client wraps the 422 in a derived error
+// (status -1) and its error type has no Unwrap, so DerivedFromError is walked.
+func readError(className string, err error) error {
+	var clientErr *fault.WeaviateClientError
+	for e := err; errors.As(e, &clientErr); e = clientErr.DerivedFromError {
+		if clientErr.StatusCode == http.StatusUnprocessableEntity &&
+			strings.Contains(strings.ToLower(clientErr.Error()), weaviateNoSchemaMessage) {
+			return fmt.Errorf("%w: class %s: %v", ErrNotFound, className, err)
+		}
+	}
+	return err
+}
+
+// graphQLError reports a read's GraphQL errors. Weaviate answers a read of a
+// class that does not exist (never created, or dropped) with a GraphQL error
+// rather than a status, so on that error path the class is looked up: a
+// missing one is ErrNotFound, as on Chromem, which callers treat as nothing
+// stored yet. Successful reads pay nothing for it.
+func (s *WeaviateStore) graphQLError(ctx context.Context, className string, errs []*models.GraphQLError) error {
+	messages := make([]string, 0, len(errs))
+	for _, e := range errs {
+		if e != nil {
+			messages = append(messages, e.Message)
+		}
+	}
+	exists, checkErr := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
+	if checkErr == nil && !exists {
+		return fmt.Errorf("%w: class %s: graphql errors: %v", ErrNotFound, className, messages)
+	}
+	return fmt.Errorf("graphql errors: %v", messages)
+}
+
 // GetChunks returns multiple objects by ID
 func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []string) ([]SearchResult, error) {
 	out := make([]SearchResult, 0, len(ids))
@@ -202,10 +241,13 @@ func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []s
 func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
 	where := buildWeaviateFilter(queries)
 
+	additional := []graphql.Field{{Name: "id"}}
+	includeVectors := IncludeVectorsRequested(ctx)
+	if includeVectors {
+		additional = append(additional, graphql.Field{Name: "vector"})
+	}
 	fields := []graphql.Field{
-		{Name: "_additional", Fields: []graphql.Field{
-			{Name: "id"},
-		}},
+		{Name: "_additional", Fields: additional},
 	}
 	for _, field := range selectFields {
 		fields = append(fields, graphql.Field{Name: field})
@@ -216,25 +258,30 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 		WithLimit(int(limit)).
 		WithFields(fields...)
 
+	// Weaviate's cursor walks a whole class and refuses a filter beside it, so
+	// a filtered read pages by offset instead and its cursor says so. An offset
+	// read cannot go past QUERY_MAXIMUM_RESULTS, 10,000 by default: a filter
+	// that selects more than that has to be narrowed by the caller.
+	offset := 0
 	if where != nil {
 		search = search.WithWhere(where)
-	}
-	if cursor != nil {
+		if cursor != nil && *cursor != "" {
+			if _, err := fmt.Sscanf(*cursor, weaviateOffsetCursorPrefix+"%d", &offset); err != nil || offset < 0 {
+				return nil, nil, fmt.Errorf("%w: invalid cursor %q for a filtered read", ErrQuerySyntax, *cursor)
+			}
+			search = search.WithOffset(offset)
+		}
+	} else if cursor != nil {
 		search = search.WithAfter(*cursor)
 	}
 
 	resp, err := search.Do(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, readError(className, err)
 	}
 
-	// Check for GraphQL errors
 	if len(resp.Errors) > 0 {
-		var errorMsgs []string
-		for _, err := range resp.Errors {
-			errorMsgs = append(errorMsgs, err.Message)
-		}
-		return nil, nil, fmt.Errorf("graphql errors: %v", errorMsgs)
+		return nil, nil, s.graphQLError(ctx, className, resp.Errors)
 	}
 
 	data, ok := resp.Data["Get"].(map[string]interface{})
@@ -273,13 +320,31 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 				searchResult.ID = id
 				nextCursor = &id
 			}
+			if includeVectors {
+				searchResult.Vector = VectorFromAdditional(additional["vector"])
+			}
 		}
 
 		results = append(results, searchResult)
 	}
 
+	if where != nil {
+		nextCursor = nil
+		if limit > 0 && int64(len(results)) >= limit {
+			next := fmt.Sprintf("%s%d", weaviateOffsetCursorPrefix, offset+len(results))
+			nextCursor = &next
+		}
+	}
 	return results, nextCursor, nil
 }
+
+// weaviateOffsetCursorPrefix marks the cursor of a filtered read, which is an
+// offset, so it is never mistaken for the object id an unfiltered one carries.
+const weaviateOffsetCursorPrefix = "offset:"
+
+// FiltersVectorReadsOnServer reports that a filtered read is served by the
+// class's own indexes.
+func (s *WeaviateStore) FiltersVectorReadsOnServer() bool { return true }
 
 // GetNearest with explicit filters only
 func (s *WeaviateStore) GetNearest(
@@ -323,16 +388,11 @@ func (s *WeaviateStore) GetNearest(
 
 	resp, err := search.Do(ctx)
 	if err != nil {
-		return nil, err
+		return nil, readError(className, err)
 	}
 
-	// Check for GraphQL errors
 	if len(resp.Errors) > 0 {
-		var errorMsgs []string
-		for _, err := range resp.Errors {
-			errorMsgs = append(errorMsgs, err.Message)
-		}
-		return nil, fmt.Errorf("graphql errors: %v", errorMsgs)
+		return nil, s.graphQLError(ctx, className, resp.Errors)
 	}
 
 	data, ok := resp.Data["Get"].(map[string]interface{})
@@ -401,11 +461,18 @@ func (s *WeaviateStore) GetNearest(
 }
 
 // Delete removes multiple objects by ID
+// Delete removes one object. Deleting one that is not there is not an error,
+// as on the other backends: Weaviate answers 404, and a caller clearing out
+// an id it may never have written has nothing to act on.
 func (s *WeaviateStore) Delete(ctx context.Context, className string, id string) error {
-	return s.client.Data().Deleter().
+	err := s.client.Data().Deleter().
 		WithClassName(className).
 		WithID(id).
 		Do(ctx)
+	if isWeaviateNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries []Query) ([]DeleteResult, error) {
@@ -422,17 +489,38 @@ func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries
 
 	where := buildWeaviateFilter(queries)
 
-	res, err := s.client.Batch().ObjectsBatchDeleter().
-		WithClassName(className).
-		WithWhere(where).
-		Do(ctx)
-	if err != nil {
-		return nil, err
+	// One batch delete removes at most QUERY_MAXIMUM_RESULTS objects (10,000
+	// by default), so it is repeated while a batch fills that limit and still
+	// deletes something. The counts decide it: Weaviate returns an empty
+	// Results.Objects even on successful deletes.
+	var results []DeleteResult
+	for {
+		res, err := s.client.Batch().ObjectsBatchDeleter().
+			WithClassName(className).
+			WithWhere(where).
+			Do(ctx)
+		if err != nil {
+			return results, err
+		}
+		results = appendWeaviateDeleteResults(results, res)
+		if res.Results == nil || res.Results.Successful == 0 || res.Results.Matches < res.Results.Limit {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
 	}
+	if results == nil {
+		results = []DeleteResult{}
+	}
+	return results, nil
+}
 
-	// NOTE: Weaviate is returning an empty array for Results.Objects, even on successful deletes.
-	results := make([]DeleteResult, 0, len(res.Results.Objects))
-
+// appendWeaviateDeleteResults appends one batch delete's per-object results.
+func appendWeaviateDeleteResults(results []DeleteResult, res *models.BatchDeleteResponse) []DeleteResult {
+	if res == nil || res.Results == nil {
+		return results
+	}
 	for _, obj := range res.Results.Objects {
 		result := DeleteResult{
 			ID: obj.ID.String(),
@@ -458,8 +546,7 @@ func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries
 
 		results = append(results, result)
 	}
-
-	return results, nil
+	return results
 }
 
 func (s *WeaviateStore) Close(ctx context.Context, className string) error {

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+import { renderBuiltUrl } from "./lib/utils/builtUrl";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isEnterpriseBuild = fs.existsSync(path.join(__dirname, "app", "enterprise"));
@@ -62,5 +63,9 @@ export default defineConfig({
 	build: {
 		outDir: "out",
 		emptyOutDir: true,
+	},
+	experimental: {
+		// Resolve chunk and asset URLs against the runtime base path; see lib/utils/builtUrl.ts.
+		renderBuiltUrl,
 	},
 });

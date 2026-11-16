@@ -216,7 +216,7 @@ Exports cover `GetAgentCard`, `GetExtendedAgentCard`, `SendMessage`, `SendStream
 
 ### Content and correlation
 
-Structured content includes request messages, returned tasks and artifacts, and accumulated streaming output when available. Content suppression on a virtual key applies to exports, and connectors with a `disable_content_logging` setting can suppress bodies for that destination. Metadata and metrics remain available. The global log-store content setting and raw-capture setting do not replace connector content controls.
+Structured content includes request messages, returned tasks and artifacts, and accumulated streaming output when available. Content suppression on a virtual key or project applies to exports, and connectors with a `disable_content_logging` setting can suppress bodies for that destination. Metadata and metrics remain available. The global log-store content setting and raw-capture setting do not replace connector content controls.
 
 Raw HTTP capture is separate from structured content. OTel and BigQuery require their existing `export_raw_payloads` opt-in in addition to Agent Gateway capture. Maxim, Datadog, Kafka, Pub/Sub, and Splunk do not export those raw carriers. Prometheus exports no bodies. gRPC operations have structured content but no raw HTTP capture.
 

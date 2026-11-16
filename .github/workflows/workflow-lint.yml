@@ -17,7 +17,12 @@ permissions:
 jobs:
   check-egress-allowlist:
     name: Egress allowlist covers apt + provider-harness hosts
-    runs-on: ubuntu-latest
+    # Pull requests from outside contributors (forks, or authors who are not members
+    # or owners of maximhq) cannot get a runner until @maximhq/bifrost-admin approves
+    # the run through Review deployments. Everyone else lands on ci-trusted-branch,
+    # an environment with no protection rules that only gives the job a name.
+    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: builder-8-32
     timeout-minutes: 5
     steps:
       - name: Harden Runner
@@ -54,3 +59,15 @@ jobs:
 
       - name: Check module path major versions
         run: ./.github/workflows/scripts/module-major.test.sh
+
+      - name: Check test-ref resolver
+        run: ./.github/workflows/scripts/resolve-test-ref.test.sh
+
+      - name: Check Docker Compose installer
+        run: bash ./.github/workflows/scripts/install-docker-compose.test.sh
+
+      - name: Check arm64 runner dependency installer
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.test.sh
+
+      - name: Check apt HTTPS source rewriter
+        run: bash ./.github/workflows/scripts/apt-sources-https.test.sh

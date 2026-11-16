@@ -1,4 +1,4 @@
-import { RateLimit } from "@/lib/types/governance";
+import { RateLimit, VirtualKey } from "@/lib/types/governance";
 
 /** The subset of an access profile's rate limit this derivation needs. */
 export type ProfileRateLimit = Partial<RateLimit> | undefined;
@@ -48,4 +48,22 @@ export function resolveDisplayRateLimit({
 		request_current_usage: profileRateLimit.request_current_usage ?? 0,
 		request_last_reset: profileRateLimit.request_last_reset ?? "",
 	};
+}
+
+/**
+ * How an access profile manages a virtual key, from the server-computed `is_access_profile_managed`
+ * and the key's owner.
+ *
+ * The server never attaches a key a team, business unit or customer owns to a user, so a managed
+ * key with an owner is governed through that owner's profile: it is the owner's key, edited,
+ * unassigned and deleted like any of its keys, and only its providers, budgets, rate limit and MCP
+ * access are the profile's. A managed key with no owner is a user's managed key, locked except for
+ * its name and description.
+ */
+export function virtualKeyManagement(
+	vk: Pick<VirtualKey, "is_access_profile_managed" | "team_id" | "customer_id" | "business_unit_id"> | null | undefined,
+): { isOwnerGoverned: boolean; isUserProfileManaged: boolean } {
+	const managed = vk?.is_access_profile_managed ?? false;
+	const owned = !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id);
+	return { isOwnerGoverned: managed && owned, isUserProfileManaged: managed && !owned };
 }

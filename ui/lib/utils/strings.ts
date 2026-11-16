@@ -75,3 +75,42 @@ export function formatBytes(bytes: number): string {
 	const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
 	return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
+
+/** A duration in seconds as words ("2 minutes 5 seconds"), as the network timeout fields describe their value. */
+export const secondsToHumanReadable = (seconds: number) => {
+	// Handle edge cases
+	if (!seconds || seconds < 0 || isNaN(seconds)) {
+		return "0 seconds";
+	}
+	seconds = Math.floor(seconds);
+	if (seconds < 60) {
+		return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+	}
+	if (seconds < 3600) {
+		const minutes = Math.floor(seconds / 60);
+		const remainingSeconds = seconds % 60;
+		const parts: string[] = [`${minutes} ${minutes === 1 ? "minute" : "minutes"}`];
+		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
+		return parts.join(" ");
+	}
+	if (seconds < 86400) {
+		const hours = Math.floor(seconds / 3600);
+		const minutes = Math.floor((seconds % 3600) / 60);
+		const remainingSeconds = seconds % 60;
+		const parts: string[] = [`${hours} ${hours === 1 ? "hour" : "hours"}`];
+		if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
+		return parts.join(" ");
+	}
+	// For >= 1 day, only show non-zero components
+	const days = Math.floor(seconds / 86400);
+	const hours = Math.floor((seconds % 86400) / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const remainingSeconds = seconds % 60;
+	const parts: string[] = [];
+	parts.push(`${days} ${days === 1 ? "day" : "days"}`);
+	if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hour" : "hours"}`);
+	if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+	if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
+	return parts.join(" ");
+};

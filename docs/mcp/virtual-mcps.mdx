@@ -27,7 +27,7 @@ Virtual MCPs were previously called **MCP Tool Groups**. The feature is now part
 
 A Virtual MCP bundles tools you choose from one or more of your MCP servers. For each server you add, you either expose all of its tools or pick a specific subset. One vMCP can pull from several servers, so a single endpoint can span them.
 
-Each vMCP is served at its own URL, `/mcp/<slug>`, and is reachable only through the virtual keys it's attached to. On enterprise, [access profiles](/enterprise/virtual-mcps) can also grant a vMCP (reachable through the profile's auto-allocated keys).
+Each vMCP is served at its own URL, `/mcp/<slug>` (`/<prefix>/mcp/<slug>` under a `server.base_path`; the dashboard's copy button gives the full address), and is reachable only through the virtual keys it's attached to. On enterprise, [access profiles](/enterprise/virtual-mcps) can also grant a vMCP (reachable through the profile's auto-allocated keys).
 
 ### The endpoint slug
 
@@ -172,13 +172,13 @@ curl -X POST http://localhost:8080/api/mcp/virtual-mcps \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Display name |
-| `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted; immutable after |
+| `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted (a `name` that yields no slug, such as `"!!!"`, then returns `400`); immutable after |
 | `description` | string | No | Free text |
 | `enabled` | boolean | No | Defaults to `true` |
-| `tools` | array | Yes | Tool specs: `mcp_client_id` + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
+| `tools` | array | Yes | Tool specs: `mcp_client_id` (the client's `client_id`, not its name) + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
 
 <Note>
-Unknown `mcp_client_id`s are rejected on save. Unknown tool **names** are not validated on save; they're enforced at call time. A slug already used by another vMCP or a direct MCP client returns `409`.
+Unknown `mcp_client_id`s, including a client's name, are rejected on save with `400`. Unknown tool **names** are not validated on save; they're enforced at call time. A slug already used by another vMCP or a direct MCP client returns `409`.
 </Note>
 
 </Tab>

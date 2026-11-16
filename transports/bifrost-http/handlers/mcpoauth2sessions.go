@@ -168,7 +168,8 @@ func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
 	// it, across all modes. This matches the per-user MCP session revoke.
 	// Re-authentication is gated separately to the bound user, because that path
 	// mints credentials under the user's identity; revoke does not.
-	if _, err := h.store.ConfigStore.GetOAuth2SessionByID(ctx, id); err != nil {
+	grant, err := h.store.ConfigStore.GetOAuth2SessionByID(ctx, id)
+	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "session not found or already revoked")
 			return
@@ -187,5 +188,16 @@ func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to revoke session")
 		return
 	}
+	var before map[string]any
+	targetName := id
+	if grant != nil {
+		targetName = grant.ClientID
+		before = map[string]any{"client_id": grant.ClientID, "bf_mode": grant.BfMode, "scope": grant.Scope}
+		// Session-mode identities are client-asserted session ids, so only user/vk subjects are recorded.
+		if grant.BfMode != "session" {
+			before["bf_sub"] = grant.BfSub
+		}
+	}
+	lib.RecordAuditChange(ctx, "oauth2_session.revoked", "oauth2_session", id, targetName, before, nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

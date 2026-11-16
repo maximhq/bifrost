@@ -49,6 +49,40 @@ test.describe('Virtual Key Management', () => {
     }
   })
 
+  test('details sheet lists the Virtual MCPs the key is assigned to', async ({ virtualKeysManagementPage, request }) => {
+    const stamp = Date.now()
+    const vkName = `e2e-vk-details-vmcp-${stamp}`
+    const vk = (await virtualKeysApi.create(request, { name: vkName, is_active: true })) as VirtualKeyApiResponse
+    managementVKs.push(vkName)
+
+    const vmcpName = `e2e_vk_details_vmcp_${stamp}`
+    const vmcp = await request.post('/api/mcp/virtual-mcps', { data: { name: vmcpName, tools: [] } })
+    expect(vmcp.status(), await vmcp.text()).toBe(201)
+    const vmcpId: number = (await vmcp.json()).virtual_mcp.id
+
+    try {
+      const page = virtualKeysManagementPage.page
+      await virtualKeysManagementPage.searchVirtualKeys(vkName)
+      await virtualKeysManagementPage.getVirtualKeyRow(vkName).getByText(vkName, { exact: true }).click()
+      await expect(page.getByTestId('vk-details-vmcp-none')).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('vk-details-vmcp-none')).toHaveText('No Virtual MCPs assigned')
+      await page.keyboard.press('Escape')
+
+      const attached = await request.post(`/api/mcp/virtual-mcps/${vmcpId}/virtual-keys/${vk.virtual_key.id}`)
+      expect(attached.ok(), await attached.text()).toBeTruthy()
+
+      await virtualKeysManagementPage.goto()
+      await virtualKeysManagementPage.searchVirtualKeys(vkName)
+      await virtualKeysManagementPage.getVirtualKeyRow(vkName).getByText(vkName, { exact: true }).click()
+      const badge = page.getByTestId(`vk-details-vmcp-${vmcpId}`)
+      await expect(badge).toBeVisible({ timeout: 10000 })
+      await expect(badge).toHaveText(vmcpName)
+      await expect(page.getByTestId('vk-details-vmcp-none')).toHaveCount(0)
+    } finally {
+      await request.delete(`/api/mcp/virtual-mcps/${vmcpId}`).catch(() => undefined)
+    }
+  })
+
   test('should edit virtual key name', async ({ virtualKeysManagementPage }) => {
     // First create a virtual key
     const originalName = `Edit Test VK ${Date.now()}`

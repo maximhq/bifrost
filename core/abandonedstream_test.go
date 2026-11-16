@@ -96,6 +96,7 @@ func (p *abandonedUpstreamProvider) ChatCompletion(_ *schemas.BifrostContext, _ 
 // was: the worker's shutdown drain also bills abandoned messages, and a test that
 // only counts could be satisfied by that path instead of the one under test.
 type terminalHookCounter struct {
+	pre     atomic.Int64
 	results atomic.Int64
 	errors  atomic.Int64
 
@@ -116,6 +117,7 @@ func (c *terminalHookCounter) PreRequestHook(_ *schemas.BifrostContext, _ *schem
 	return nil
 }
 func (c *terminalHookCounter) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	c.pre.Add(1)
 	return req, nil, nil
 }
 func (c *terminalHookCounter) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -562,4 +564,121 @@ func TestRequestWorkerCompletesEveryAbandonedTrace(t *testing.T) {
 	if got := tracer.cleared.Load(); got != n {
 		t.Errorf("deferral marker cleared %d of %d times; leftovers would strand later traces", got, n)
 	}
+}
+
+// TestDroppedRequestRunsPostHooks pins that a request rejected before it reaches a worker
+// (dropExcessRequests on a full queue) still runs the post-hooks its pre-hooks paired with.
+// Without them, plugin state opened in PreLLMHook (e.g. bifrost_active_requests) leaks per drop.
+func TestDroppedRequestRunsPostHooks(t *testing.T) {
+	counter := &terminalHookCounter{}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{counter}, DropExcessRequests: true,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	// Swap in a full queue with no worker so every enqueue hits the drop branch.
+	realPq, err := client.getProviderQueue(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("getProviderQueue: %v", err)
+	}
+	full := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	full.queue <- &ChannelMessage{}
+	client.requestQueues.Store(schemas.OpenAI, full)
+	t.Cleanup(func() { client.requestQueues.Store(schemas.OpenAI, realPq) })
+
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	}
+	assertDropped := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 503 {
+			t.Fatalf("want 503 queue-full error, got %+v", bifrostErr)
+		}
+	}
+
+	const n = 5
+	for range n {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, newReq())
+		assertDropped(t, bifrostErr)
+	}
+	for range n {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, newReq())
+		if stream != nil {
+			t.Fatal("dropped stream request returned a stream")
+		}
+		assertDropped(t, bifrostErr)
+	}
+
+	if pre, post := counter.pre.Load(), counter.errors.Load()+counter.results.Load(); pre != 2*n || post != pre {
+		t.Fatalf("PreLLMHook ran %d times, PostLLMHook %d; every dropped request must run its post-hooks", pre, post)
+	}
+	for _, msg := range counter.errorMessages() {
+		if !strings.Contains(msg, "queue is full") {
+			t.Fatalf("PostLLMHook saw %q, want the queue-full error", msg)
+		}
+	}
+}
+
+// instantStreamProvider answers ChatCompletionStream with an already-closed
+// stream, so a benchmark measures the worker's per-attempt setup and nothing else.
+type instantStreamProvider struct{ schemas.Provider }
+
+func (p *instantStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	close(stream)
+	// A completed provider stream releases the attempt's plugin pipeline through this.
+	postHookSpanFinalizer(ctx)
+	return stream, nil
+}
+
+// BenchmarkRequestWorkerStreamAttempt drives one stream attempt through the real
+// requestWorker: dequeue, key selection, post-hook runner setup and stream handoff.
+func BenchmarkRequestWorkerStreamAttempt(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if err != nil {
+		b.Fatalf("Init failed: %v", err)
+	}
+	b.Cleanup(client.Shutdown)
+	cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+	cfg.NetworkConfig.MaxRetries = 0
+	upstream := &instantStreamProvider{Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger())}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+	request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	tracer := client.getTracer()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		msg := client.getChannelMessage(schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: request})
+		msg.Context = ctx
+		pq.queue <- msg
+		select {
+		case stream := <-msg.ResponseStream:
+			for range stream {
+			}
+		case e := <-msg.Err:
+			b.Fatalf("stream attempt failed: %+v", e.Error)
+		}
+		client.releaseChannelMessage(msg)
+	}
+	pq.signalClosing()
+	wg.Wait()
 }
