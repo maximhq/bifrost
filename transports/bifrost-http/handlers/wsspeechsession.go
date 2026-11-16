@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -218,10 +219,30 @@ func (h *WSSpeechSessionHandler) resolveTarget(preReqCtx *schemas.BifrostContext
 	}
 	provider, ok := h.client.GetProviderByKey(providerKey).(schemas.SpeechSessionProvider)
 	if !ok {
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support incremental speech: "+string(providerKey))
+		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", h.noIncrementalSpeechMessage(providerKey))
 	}
 	req.Provider, req.Model = providerKey, model
 	return provider, nil
+}
+
+// noIncrementalSpeechMessage refuses a provider that takes no text incrementally and names the configured ones that do.
+func (h *WSSpeechSessionHandler) noIncrementalSpeechMessage(providerKey schemas.ModelProvider) string {
+	message := "provider does not support incremental speech: " + string(providerKey)
+	configured, err := h.client.GetConfiguredProviders()
+	if err != nil {
+		return message
+	}
+	var capable []string
+	for _, key := range configured {
+		if _, ok := h.client.GetProviderByKey(key).(schemas.SpeechSessionProvider); ok {
+			capable = append(capable, string(key))
+		}
+	}
+	if len(capable) == 0 {
+		return message
+	}
+	slices.Sort(capable)
+	return message + "; it is available for " + strings.Join(capable, ", ")
 }
 
 // dialer opens a provider connection through the pool, which counts it and applies the provider's proxy.
