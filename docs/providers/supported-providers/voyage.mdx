@@ -155,7 +155,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 
 Only float vectors are returned, and `truncation` is not a parameter of this endpoint. Voyage caps a request at 120,000 tokens in total when it chunks documents itself (a larger batch fails with a 400 naming the limit), and chunks hold up to 32,000 tokens: a 68,000-token document comes back as three chunks.
 
-A contextualized model cannot serve as the `embedding_model` of the semantic cache: the cache sends no `input_type`, so the embedding request is refused with a `400` and the semantic lookup is skipped. Use a text model such as `voyage-4-lite` for the cache.
+A contextualized model cannot serve where Bifrost builds the embedding request itself, such as the `embedding_model` of the semantic cache or of semantic routing: those requests carry no `input_type`, so they are refused with a `400` and the lookup is skipped. Use a text model such as `voyage-4-lite` there.
 
 ---
 
