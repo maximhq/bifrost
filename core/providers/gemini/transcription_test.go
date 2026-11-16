@@ -293,6 +293,102 @@ func TestIsGeminiInteractionStreamCompleted(t *testing.T) {
 	assert.False(t, isGeminiInteractionStreamCompleted(&geminiInteractionStreamEvent{Interaction: &geminiInteractionStreamInteraction{Status: "in_progress"}}))
 }
 
+// An upstream that keeps the body open after interaction.completed must still end the
+// stream with the done chunk, not wait for the idle timeout and report an error.
+func TestGeminiInteractionTranscriptionStreamStopsAtCompletedWhileBodyOpen(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"event_type\":\"content.delta\",\"delta\":{\"type\":\"text\",\"text\":\"full \"}}\n\n" +
+			"data: {\"event_type\":\"content.delta\",\"delta\":{\"type\":\"text\",\"text\":\"transcript\"}}\n\n" +
+			"data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\",\"usage\":{\"total_input_tokens\":3,\"total_output_tokens\":2,\"total_tokens\":5}}}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select { // hold the body open past the idle timeout
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, StreamIdleTimeoutInSeconds: 1},
+	}, testNoopLogger{})
+	stream, bifrostErr := provider.TranscriptionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthroughPostHookRunner, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostTranscriptionRequest{
+		Provider: schemas.Gemini,
+		Model:    geminiInteractionTranscriptionModel,
+		Input:    &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
+	})
+	require.Nil(t, bifrostErr)
+	chunks := collectTranscriptionStream(stream)
+
+	require.NotEmpty(t, chunks)
+	last := chunks[len(chunks)-1]
+	require.Nil(t, last.BifrostError, "finished stream must not end in an error")
+	require.NotNil(t, last.BifrostTranscriptionStreamResponse)
+	assert.Equal(t, schemas.TranscriptionStreamResponseTypeDone, last.BifrostTranscriptionStreamResponse.Type)
+	assert.Equal(t, "full transcript", last.BifrostTranscriptionStreamResponse.Text)
+	require.NotNil(t, last.BifrostTranscriptionStreamResponse.Usage)
+	assert.Equal(t, 5, *last.BifrostTranscriptionStreamResponse.Usage.TotalTokens)
+}
+
+// A panic in a post-hook on the stream goroutine must be recovered into a terminal
+// 500 error chunk instead of crashing the process.
+func TestGeminiInteractionTranscriptionStreamRecoversPostHookPanic(t *testing.T) {
+	server, _ := newInteractionTranscriptionServer(t, "text/event-stream",
+		"data: {\"event_type\":\"content.delta\",\"delta\":{\"type\":\"text\",\"text\":\"boom\"}}\n\n"+
+			"data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\"}}\n\n")
+	provider := newInteractionTranscriptionTestProvider(server.URL)
+	panickingPostHook := func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if response != nil {
+			panic("post-hook failure")
+		}
+		return response, err
+	}
+
+	stream, bifrostErr := provider.TranscriptionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), panickingPostHook, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostTranscriptionRequest{
+		Provider: schemas.Gemini,
+		Model:    geminiInteractionTranscriptionModel,
+		Input:    &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
+	})
+	require.Nil(t, bifrostErr)
+	chunks := collectTranscriptionStream(stream)
+
+	require.NotEmpty(t, chunks)
+	last := chunks[len(chunks)-1]
+	require.NotNil(t, last.BifrostError, "panic must surface as a terminal error chunk")
+	assert.Equal(t, providerUtils.ErrStreamPanicMessage, last.BifrostError.Error.Message)
+	require.NotNil(t, last.BifrostError.StatusCode)
+	assert.Equal(t, 500, *last.BifrostError.StatusCode)
+}
+
+// diarization_mode is merged into a copy of the caller's mode map, so the request's
+// ExtraParams stay unchanged across retries and fallbacks.
+func TestToGeminiInteractionTranscriptionRequestDoesNotMutateCallerMode(t *testing.T) {
+	callerMode := map[string]interface{}{"type": "verbatim"}
+	request := &schemas.BifrostTranscriptionRequest{
+		Model: geminiInteractionTranscriptionModel,
+		Input: &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{
+				"mode":             callerMode,
+				"diarization_mode": "speaker_labels",
+			},
+		},
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		converted := ToGeminiInteractionTranscriptionRequest(request, false)
+		require.NotNil(t, converted.GenerationConfig)
+		assert.Equal(t,
+			map[string]interface{}{"type": "verbatim", "diarization_mode": "speaker_labels"},
+			converted.GenerationConfig.TranscriptionConfig["mode"], "attempt %d", attempt)
+	}
+	assert.Equal(t, map[string]interface{}{"type": "verbatim"}, callerMode, "caller's mode map must not be mutated")
+}
+
 func BenchmarkBuildGeminiInteractionTranscriptionRequestBody(b *testing.B) {
 	for _, test := range []struct {
 		name    string

@@ -2089,6 +2089,7 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -2170,6 +2171,11 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 				deltaText = geminiInteractionTextFromSteps(event.Interaction.Steps)
 			}
 			if deltaText == "" {
+				if completed {
+					// interaction.completed is terminal: stop reading so an upstream that
+					// keeps the body open cannot turn a finished stream into an idle timeout.
+					break
+				}
 				continue
 			}
 
@@ -2188,6 +2194,9 @@ func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.Bifr
 				response.ExtraFields.RawResponse = data
 			}
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan, postHookSpanFinalizer)
+			if completed {
+				break
+			}
 		}
 
 		finalResponse := &schemas.BifrostTranscriptionStreamResponse{
