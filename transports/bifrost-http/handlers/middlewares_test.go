@@ -1826,12 +1826,11 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 	}
 }
 
-// TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin pins that the admin's username and
-// password sent as Basic make the request the local admin, as the same credentials sent
-// base64-encoded as a Bearer token already did. Handlers that are admin-only in OSS (Warp's
-// settings, publishing notifications) check that marker, so Basic credentials were refused
-// there.
-func TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin(t *testing.T) {
+// TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin pins that the admin's username and
+// password sent as Basic authenticate the request without marking it the local admin, so
+// admin-only handlers (Warp's settings, publishing notifications) and deployments that skip
+// their access checks for the local admin still require a session or the Bearer form.
+func TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin(t *testing.T) {
 	SetLogger(&mockLogger{})
 	hash, err := encrypt.Hash("password")
 	if err != nil {
@@ -1851,7 +1850,7 @@ func TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin(t *testing.T) {
 			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
 		}
 		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
-		assert.True(t, admin, "%s admin credentials should run as the local admin", strings.Fields(header)[0])
+		assert.False(t, admin, "%s admin credentials should not run as the local admin", strings.Fields(header)[0])
 	}
 }
 
