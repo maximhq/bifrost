@@ -329,3 +329,34 @@ func TestCustomersAreFoundByName(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "cust-1", c.ID)
 }
+
+// TestKeysAreFoundByCreatorAndBusinessUnit checks the key indexes by creator and by owning business
+// unit, and that a key edited to another creator moves between them.
+func TestKeysAreFoundByCreatorAndBusinessUnit(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	ref := func(s string) *string { return &s }
+	for _, k := range []*tables.TableVirtualKey{
+		{ID: "vk-a", Name: "a", Value: *schemas.NewSecretVar("sk-a"), CreatedByUserID: ref("user-1"), BusinessUnitID: ref("bu-1")},
+		{ID: "vk-b", Name: "b", Value: *schemas.NewSecretVar("sk-b"), CreatedByUserID: ref("user-1")},
+		{ID: "vk-c", Name: "c", Value: *schemas.NewSecretVar("sk-c")},
+	} {
+		require.NoError(t, db.Omit(clause.Associations).Create(k).Error)
+	}
+	s := loadedGovernance(t, db)
+	ids := func(index, key string) []string {
+		var out []string
+		for _, k := range s.Collections.VirtualKeys.List(index, key) {
+			out = append(out, k.ID)
+		}
+		return out
+	}
+	require.Equal(t, []string{"vk-a", "vk-b"}, ids(registry.VirtualKeyByCreator, "user-1"))
+	require.Equal(t, []string{"vk-a"}, ids(registry.VirtualKeyByBusinessUnit, "bu-1"))
+	require.Empty(t, ids(registry.VirtualKeyByCreator, ""), "a key with no creator is not listed")
+
+	require.NoError(t, db.Model(&tables.TableVirtualKey{}).Where("id = ?", "vk-b").UpdateColumn("created_by_user_id", "user-2").Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-b"}}))
+	require.Equal(t, []string{"vk-a"}, ids(registry.VirtualKeyByCreator, "user-1"))
+	require.Equal(t, []string{"vk-b"}, ids(registry.VirtualKeyByCreator, "user-2"))
+}

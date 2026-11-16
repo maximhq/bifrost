@@ -254,7 +254,9 @@ func (s *Store) rebuildProviderKeyLists(_ context.Context, changes []Change[regi
 // it holds, and removing the holder removes them. Keys and teams keep their records when the
 // team or customer above them is removed, re-read with the reference cleared, and key-scoped
 // model configs go with their key. Every read of keys goes through o's keyReads, interning the
-// keys' grant sets, and every read of limits reads o's limit owners with the registry's own.
+// keys' grant sets, at most DefaultReadBatch keys at a time, since each key read binds the keys' IDs
+// again in its grant preloads; and every read of limits reads o's limit owners with the registry's
+// own.
 func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	var err error
 	if c.Customers, err = s.Register(KindCustomer, []Kind{KindBudget, KindRateLimit}, Loader[registry.Customer]{
@@ -283,8 +285,11 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	},
 		UniqueIndex(registry.VirtualKeyByValue, registry.VirtualKeyValue),
 		MultiIndex(registry.VirtualKeyByPreviousValue, registry.VirtualKeyPreviousValue),
-		ChildOf(KindTeam, registry.VirtualKeyTeamID, reads.ByTeams, SetNull),
-		ChildOf(KindCustomer, registry.VirtualKeyCustomerID, reads.ByCustomers, SetNull),
+		MultiIndex(registry.VirtualKeyByCreator, func(k *registry.VirtualKey) []string { return []string{registry.VirtualKeyCreator(k)} }),
+		MultiIndex(registry.VirtualKeyByBusinessUnit, func(k *registry.VirtualKey) []string { return []string{registry.VirtualKeyBusinessUnitID(k)} }),
+		ReadInBatches[registry.VirtualKey](DefaultReadBatch),
+		ChildIDsOf(KindTeam, registry.VirtualKeyTeamID, registry.VirtualKeyIDsByTeams, SetNull),
+		ChildIDsOf(KindCustomer, registry.VirtualKeyCustomerID, registry.VirtualKeyIDsByCustomers, SetNull),
 		Uses(c.GrantSets, func(k *registry.VirtualKey) Hash { return Hash(k.Grants) }),
 	); err != nil {
 		return err

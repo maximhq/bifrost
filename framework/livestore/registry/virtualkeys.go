@@ -41,10 +41,14 @@ type VirtualKey struct {
 	ProviderLimits []ProviderLimit
 }
 
-// Index names of the virtual key collection, for GetBy.
+// Index names of the virtual key collection, for GetBy and List.
 const (
 	VirtualKeyByValue         = "value"
 	VirtualKeyByPreviousValue = "prev_value"
+	// VirtualKeyByCreator lists the keys a user created, by created_by_user_id.
+	VirtualKeyByCreator = "creator"
+	// VirtualKeyByBusinessUnit lists the keys a business unit owns, by business_unit_id.
+	VirtualKeyByBusinessUnit = "business_unit"
 )
 
 // HasActivePreviousValue reports whether the key still accepts its retired value at now.
@@ -74,6 +78,12 @@ func VirtualKeyPreviousValue(k *VirtualKey) []string {
 	return []string{k.PreviousValue}
 }
 
+// VirtualKeyCreator is the user who created a key, "" for none.
+func VirtualKeyCreator(k *VirtualKey) string { return k.CreatedByUserID }
+
+// VirtualKeyBusinessUnitID is the business unit that owns a key, "" for none.
+func VirtualKeyBusinessUnitID(k *VirtualKey) string { return k.BusinessUnitID }
+
 // VirtualKeyTeamID is the team a key sits under, "" for none.
 func VirtualKeyTeamID(k *VirtualKey) string { return k.TeamID }
 
@@ -100,17 +110,30 @@ func (r KeyReads) Page(ctx context.Context, db *gorm.DB, after string, limit int
 
 // ByID reads the virtual keys with these IDs; an ID with no row is left out.
 func (r KeyReads) ByID(ctx context.Context, db *gorm.DB, ids []string) ([]*VirtualKey, error) {
-	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("id IN ?", ids) })
+	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where(queryscope.InStrings(q, "id", ids)) })
 }
 
-// ByTeams reads the virtual keys under these teams.
-func (r KeyReads) ByTeams(ctx context.Context, db *gorm.DB, teamIDs []string) ([]*VirtualKey, error) {
-	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("team_id IN ?", teamIDs) })
+// VirtualKeyIDsByTeams returns the IDs of the virtual keys under these teams. A team's refresh
+// reads only the IDs: reading a key binds its ID again in every grant preload, so the store reads
+// the keys themselves by ID, in batches, however many a team has.
+func VirtualKeyIDsByTeams(ctx context.Context, db *gorm.DB, teamIDs []string) ([]string, error) {
+	return virtualKeyIDsWhere(ctx, db, "team_id", teamIDs)
 }
 
-// ByCustomers reads the virtual keys directly under these customers.
-func (r KeyReads) ByCustomers(ctx context.Context, db *gorm.DB, customerIDs []string) ([]*VirtualKey, error) {
-	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("customer_id IN ?", customerIDs) })
+// VirtualKeyIDsByCustomers returns the IDs of the virtual keys directly under these customers, for a
+// customer's refresh, as VirtualKeyIDsByTeams does for a team's.
+func VirtualKeyIDsByCustomers(ctx context.Context, db *gorm.DB, customerIDs []string) ([]string, error) {
+	return virtualKeyIDsWhere(ctx, db, "customer_id", customerIDs)
+}
+
+// virtualKeyIDsWhere returns the IDs of the virtual keys whose column is one of ids, which bind as
+// one argument.
+func virtualKeyIDsWhere(ctx context.Context, db *gorm.DB, column string, ids []string) ([]string, error) {
+	var out []string
+	if err := db.WithContext(ctx).Table("governance_virtual_keys").Where(queryscope.InStrings(db, column, ids)).Pluck("id", &out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // VirtualKeyFromTable builds a key's record from its table struct, which must carry its grants;
