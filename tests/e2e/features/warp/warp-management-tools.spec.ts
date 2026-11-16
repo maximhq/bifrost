@@ -37,6 +37,7 @@ const configuredWarp = {
   management_writes: [] as string[],
   management_writes_available: true,
   management_tool_sizes: sizes as object[] | undefined,
+  bifrost_mcp_available: true,
 }
 
 // Returns the bodies of the saves the page sent.
@@ -49,7 +50,15 @@ async function mockWarp(page: Page, overrides: Partial<typeof configuredWarp> = 
     body.flags = body.flags.map((flag) => (flag.id === 'warp' ? { ...flag, enabled: true } : flag))
     await route.fulfill({ response, json: body })
   })
+  // The Bifrost MCP is loaded exactly when the tool sizes are known, as the server reports it.
   let current = { ...configuredWarp, ...overrides }
+  current = { ...current, bifrost_mcp_available: !!current.management_tool_sizes }
+  // The upgrade notice would open over the form: acknowledged, and past its reminder cap so a setup notice
+  // (no Bifrost MCP) stays a banner. Its own behaviour is pinned in warp-mcp-notice.spec.ts.
+  await page.addInitScript(() => {
+    localStorage.setItem('bifrost.warpBifrostMCPNoticeSeen', '1')
+    localStorage.setItem('bifrost.warpBifrostMCPNoticeLaterCount', '5')
+  })
   await page.route('**/api/warp/config', async (route) => {
     if (route.request().method() === 'PUT') {
       const body = route.request().postDataJSON() as { management_writes?: string[] }

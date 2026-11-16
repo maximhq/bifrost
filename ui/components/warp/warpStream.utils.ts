@@ -381,6 +381,7 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 
 	switch (code) {
 		case "not_configured":
+		case "no_bifrost_mcp":
 		case "max_iterations":
 		case "timeout":
 		case "upstream_error":
@@ -403,6 +404,7 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 
 type WarpErrorCode =
 	| "not_configured"
+	| "no_bifrost_mcp"
 	| "max_iterations"
 	| "timeout"
 	| "upstream_error"
@@ -436,6 +438,7 @@ export function encodeTurnError(code: string | undefined, message: string): stri
 
 const WARP_ERROR_CODES = new Set([
 	"not_configured",
+	"no_bifrost_mcp",
 	"upstream_error",
 	"access_denied",
 	"budget_exceeded",

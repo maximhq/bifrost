@@ -13193,14 +13193,28 @@ const WMG08 = folder("WMG-08 With /api writes off Warp offers no write, whatever
   warpRestore("WMG-08"),
 ]);
 
-const WMG09 = folder("WMG-09 Without bifrost_url Warp has no management tools", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; bifrost_url cleared, restored at the end.`, [
+const WMG09 = folder("WMG-09 Without bifrost_url Warp does not answer", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; bifrost_url cleared, restored at the end. Warp reads configuration through the Bifrost MCP, so without it the chat is refused with 503 no_bifrost_mcp before any model call, and the Warp config reports it.`, [
   bmcReady("WMG-09"),
   ...warpOn("WMG-09"),
   readConfig("WMG-09"),
   putConfig("WMG-09", "setup: clear bifrost_url", ["cc.bifrost_url = null;"], [A.status(200)]),
+  // The Bifrost MCP unloads in the background after the save; wait until the Warp config says it is gone.
+  request("WMG-09", "the Warp config reports no Bifrost MCP", "GET", "/api/warp/config", {
+    asserts: [A.status(200)],
+    extraTests: [
+      "var available = pm.response.json().bifrost_mcp_available;",
+      "var polls = Number(pm.collectionVariables.get('wmg09_polls') || 0);",
+      "if (available !== false && polls < 20) { pm.collectionVariables.set('wmg09_polls', polls + 1); setTimeout(function () {}, 500); postman.setNextRequest(pm.info.requestName); return; }",
+      "pm.collectionVariables.unset('wmg09_polls');",
+      "pm.test('bifrost_mcp_available is false', function () { pm.expect(available, 'body: ' + pm.response.text()).to.equal(false); });",
+    ],
+  }),
   llmScript("WMG-09", "wmg09", TEXT_OK),
-  warpAsk("WMG-09", "ask a configuration question", "wmg09", "Which providers are configured?", [turnOK()]),
-  llmCaptured("WMG-09", "no management tool was offered", "wmg09", [modelRequests(1, { atLeast: true }), declaresNone(0, ["listProviders", "getConfig", "createVirtualKey"])]),
+  request("WMG-09", "a configuration question is refused with no_bifrost_mcp", "POST", "/api/warp/chat", {
+    body: { messages: [{ role: "user", content: `${marker("wmg09")} Which providers are configured?` }], stream: false },
+    asserts: [A.status(503), A.custom("the reason is no_bifrost_mcp", ["pm.expect(pm.response.json().reason, 'body: ' + pm.response.text()).to.equal('no_bifrost_mcp');"])],
+  }),
+  llmCaptured("WMG-09", "no model request was made", "wmg09", [modelRequests(0)]),
   restoreConfig("WMG-09"),
   bmcWait("WMG-09"),
   warpRestore("WMG-09"),
