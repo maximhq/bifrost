@@ -50,6 +50,7 @@
 		"recognizeApplication": "只有在确认这是你认可的应用及其回调目标后，才继续：",
 		"publishedBy": "由 <code0>{{host}}</code0> 发布",
 		"localhostWarning": "此应用只会返回到你自己的计算机，因此无法验证其名称。本地运行的任何应用都可能使用它。",
+		"deviceSignInConfirm": "仅当此登录由你本人发起，且你输入的代码与终端中显示的代码一致时才继续。",
 		"signInRedirectBody": "此授权需要已登录的 Bifrost 账户。正在带你前往登录，登录后会直接返回此处。",
 		"signInToBifrost": "登录 Bifrost"
 	},
@@ -68,5 +69,17 @@
 		"continue": "继续",
 		"whereToFind": "在哪里可以找到设置令牌？",
 		"notConfigured": "此服务器上未配置设置令牌，因此暂时无法继续设置。"
+	},
+	"device": {
+		"title": "登录 Claude Code",
+		"subtitle": "请确认终端中显示的代码与下方代码一致。",
+		"codeLabel": "设备代码",
+		"checking": "正在验证…",
+		"continue": "继续",
+		"signedInTitle": "你已登录",
+		"signedInBody": "返回 Claude Code 完成操作。你可以关闭此窗口。",
+		"verifyFailed": "无法验证此代码。请在 Claude Code 中重新运行 /login。",
+		"invalidLink": "登录链接不是有效的网址。请检查网关的颁发者 URL 设置。",
+		"unreachable": "无法连接到 Bifrost。请检查网络连接后重试。"
 	}
 }

@@ -50,6 +50,7 @@
 		"recognizeApplication": "Continua solo se riconosci questa applicazione e la sua destinazione di callback:",
 		"publishedBy": "Pubblicata da <code0>{{host}}</code0>",
 		"localhostWarning": "Questa applicazione ritorna solo al tuo computer, quindi il suo nome non può essere verificato. Qualsiasi app in esecuzione in locale potrebbe usarlo.",
+		"deviceSignInConfirm": "Continua solo se hai avviato tu questo accesso e il codice inserito corrisponde a quello nel tuo terminale.",
 		"signInRedirectBody": "Questa autorizzazione richiede un account Bifrost con accesso effettuato. Ti portiamo ad accedere, poi tornerai subito qui.",
 		"signInToBifrost": "Accedi a Bifrost"
 	},
@@ -68,5 +69,17 @@
 		"continue": "Continua",
 		"whereToFind": "Dove trovo il token di configurazione?",
 		"notConfigured": "Su questo server non è configurato alcun token di configurazione, quindi non è ancora possibile continuare."
+	},
+	"device": {
+		"title": "Accedi a Claude Code",
+		"subtitle": "Verifica che il codice mostrato nel terminale corrisponda a quello qui sotto.",
+		"codeLabel": "Codice dispositivo",
+		"checking": "Verifica in corso…",
+		"continue": "Continua",
+		"signedInTitle": "Accesso effettuato",
+		"signedInBody": "Torna a Claude Code per completare. Puoi chiudere questa finestra.",
+		"verifyFailed": "Impossibile verificare questo codice. Esegui di nuovo /login in Claude Code.",
+		"invalidLink": "Il link di accesso non è un indirizzo web valido. Controlla l’URL dell’emittente impostato nel gateway.",
+		"unreachable": "Impossibile raggiungere Bifrost. Controlla la connessione e riprova."
 	}
 }
