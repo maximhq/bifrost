@@ -160,12 +160,11 @@ func newMCPServer(instructions string) *server.MCPServer {
 	// Dedicated provider-harness schema parity probe. This is a read-only,
 	// non-executing tool: the harness uses tool_choice=none and inspects only
 	// the provider-bound request's declaration, never calls this handler.
-	closedSchemaTool := mcp.NewTool(
+	closedSchemaTool := mcp.NewToolWithRawSchema(
 		"closed_schema_probe",
-		mcp.WithDescription("Read-only schema parity probe; no execution required"),
-		mcp.WithString("probe", mcp.Required(), mcp.Description("Synthetic probe label")),
+		"Read-only schema parity probe; no execution required",
+		json.RawMessage(`{"type":"object","properties":{"probe":{"type":"string","description":"Synthetic probe label"}},"required":["probe"],"additionalProperties":false}`),
 	)
-	closedSchemaTool.InputSchema.AdditionalProperties = false
 	s.AddTool(closedSchemaTool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("schema parity fixture"), nil
 	})
