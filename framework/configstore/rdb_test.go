@@ -3,6 +3,7 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -2156,6 +2157,56 @@ func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	var got tables.TableOAuth2RefreshToken
 	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
 	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
+}
+
+func TestDeleteVirtualKey_LogsGrantRevocationOnlyOnceCommitted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ml := newMockLogger()
+	store.logger = ml
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-log",
+		Name:     "Log VK",
+		Value:    *schemas.NewSecretVar("vk-log-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOAuth2RefreshToken{
+		ID: "rt-vk-log", TokenHash: "hash-vk-log", FamilyID: "fam-vk-log", ClientID: "client-1",
+		BfMode: string(schemas.MCPAuthModeVK), BfSub: vk.ID, Scope: "mcp", Resource: "https://example.test/mcp", CreatedAt: time.Now(),
+	}).Error)
+	revocationLogs := func() int {
+		ml.mu.Lock()
+		defer ml.mu.Unlock()
+		n := 0
+		for _, msg := range ml.debugMessages {
+			if strings.Contains(msg, "reason=virtual_key_deleted") {
+				n++
+			}
+		}
+		return n
+	}
+	tokenRevoked := func() bool {
+		var got tables.TableOAuth2RefreshToken
+		require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-log").Error)
+		return got.RevokedAt != nil
+	}
+
+	// Inside a caller's transaction that rolls back: nothing is revoked and nothing is logged.
+	rollback := errors.New("caller rolls back")
+	err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID, tx))
+		return rollback
+	})
+	require.ErrorIs(t, err, rollback)
+	assert.False(t, tokenRevoked(), "the rolled-back delete must leave the grant active")
+	assert.Zero(t, revocationLogs(), "a rolled-back revocation must not be logged")
+
+	// On its own transaction the revocation commits and is logged once.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+	assert.True(t, tokenRevoked())
+	assert.Equal(t, 1, revocationLogs())
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {

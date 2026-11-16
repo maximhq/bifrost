@@ -76,12 +76,12 @@ func (m *mockRotateConfigStore) ExecuteTransaction(_ context.Context, fn func(tx
 	return fn(nil)
 }
 
-func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) error {
+func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) (int64, error) {
 	if m.revokeErr != nil {
-		return m.revokeErr
+		return 0, m.revokeErr
 	}
 	m.revokedGrants = append(m.revokedGrants, bfMode+":"+bfSub)
-	return nil
+	return 1, nil
 }
 
 func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {

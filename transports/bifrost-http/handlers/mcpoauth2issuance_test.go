@@ -648,6 +648,45 @@ func TestHandleToken_RefreshRotationAndReplay(t *testing.T) {
 		assert.Contains(t, string(after.Response.Body()), "invalid_grant")
 	})
 
+	t.Run("debug lines trace a replay and never carry a token", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		capLogger := &captureLogger{}
+		SetLogger(capLogger)
+		defer SetLogger(&mockLogger{})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedRefresh(t, store, "refresh-plain-1")
+
+		rotate := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		h.handleToken(rotate)
+		require.Equal(t, fasthttp.StatusOK, rotate.Response.StatusCode())
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rotate.Response.Body(), &resp))
+
+		replay := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		replay.Request.Header.Set("x-request-id", "req-replay")
+		h.handleToken(replay)
+		require.Equal(t, fasthttp.StatusBadRequest, replay.Response.StatusCode())
+
+		logs := strings.Join(capLogger.debugs, "\n")
+		assert.Contains(t, logs, "[oauth2-token] event=refresh.rotated")
+		assert.Contains(t, logs, "event=refresh.lookup")
+		assert.Contains(t, logs, "outcome=previously_revoked refresh_token_id=rt-1 family_id=fam-1")
+		assert.Contains(t, logs, "event=family.revoked")
+		assert.Contains(t, logs, "reason=refresh_replay family_id=fam-1 refresh_token_id=rt-1 revoked_rows=1")
+		assert.NotEmpty(t, rotate.Request.Header.Peek("x-request-id"), "an untraced token request gets a request ID")
+		assert.Contains(t, logs, `request_id="`+string(rotate.Request.Header.Peek("x-request-id"))+`"`)
+		assert.Contains(t, logs, `request_id="req-replay"`)
+		assert.Contains(t, logs, `grant_type="refresh_token"`)
+		assert.Contains(t, logs, `status=400 error=invalid_grant error_description="refresh token not found or revoked"`)
+		for _, secret := range []string{"refresh-plain-1", resp["refresh_token"].(string), resp["access_token"].(string)} {
+			assert.NotContains(t, logs, secret)
+		}
+	})
+
 	t.Run("client_id mismatch is rejected", func(t *testing.T) {
 		h, store, _ := newIssuanceHandler(t)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})

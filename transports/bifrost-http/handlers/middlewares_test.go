@@ -3908,6 +3908,11 @@ type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
 	errors []string
+	debugs []string
+}
+
+func (l *captureLogger) Debug(format string, args ...any) {
+	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) Error(format string, args ...any) {
