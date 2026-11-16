@@ -1028,3 +1028,142 @@ func TestOpenAISpeechRoutesCarryVertexGeminiTTS(t *testing.T) {
 		}
 	}
 }
+
+// speechCaptureUpstream records the body of the last request and answers with audio.
+type speechCaptureUpstream struct {
+	mu   sync.Mutex
+	body []byte
+}
+
+func (u *speechCaptureUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.body = body
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "audio/mpeg")
+	_, _ = w.Write([]byte("ID3-audio"))
+}
+
+func (u *speechCaptureUpstream) last() []byte {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.body
+}
+
+type openAISpeechTestAccount struct{ baseURL string }
+
+func (a openAISpeechTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a openAISpeechTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.OpenAI {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "openai-speech-test-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a openAISpeechTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.OpenAI {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// TestOpenAISpeechRouteForwardsExtraParamsOnlyWhenNestedAndOptedIn pins how a provider-specific speech
+// field (a Cloud TTS volume_gain_db) reaches the provider on the OpenAI-compatible route: nested under
+// extra_params with x-bf-passthrough-extra-params: true, the same opt-in chat completions use.
+func TestOpenAISpeechRouteForwardsExtraParamsOnlyWhenNestedAndOptedIn(t *testing.T) {
+	upstream := &speechCaptureUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: openAISpeechTestAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	r := router.New()
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	send := func(optIn bool, body string) []byte {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/openai/v1/audio/speech")
+		ctx.Request.Header.SetContentType("application/json")
+		if optIn {
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+		}
+		ctx.Request.SetBodyString(body)
+		r.Handler(&ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		return upstream.last()
+	}
+
+	t.Run("nested under extra_params with the header reaches the provider", func(t *testing.T) {
+		sent := send(true, `{"model":"openai/tts-1","input":"hello","voice":"alloy","extra_params":{"volume_gain_db":3}}`)
+		assert.Equal(t, float64(3), gjson.GetBytes(sent, "volume_gain_db").Num, "sent: %s", sent)
+		assert.False(t, gjson.GetBytes(sent, "extra_params").Exists(), "the wrapper itself must not reach the provider: %s", sent)
+	})
+	t.Run("nested without the header stays out", func(t *testing.T) {
+		sent := send(false, `{"model":"openai/tts-1","input":"hello","voice":"alloy","extra_params":{"volume_gain_db":3}}`)
+		assert.False(t, gjson.GetBytes(sent, "volume_gain_db").Exists(), "sent: %s", sent)
+	})
+}
+
+// speechAudioUpstream answers every request with fixed audio bytes.
+type speechAudioUpstream struct{ audio []byte }
+
+func (u speechAudioUpstream) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(u.audio)
+}
+
+// TestOpenAISpeechRouteLabelsTheAudioItReturns pins that the Content-Type and the attachment filename
+// follow the audio, not a fixed mp3 label.
+func TestOpenAISpeechRouteLabelsTheAudioItReturns(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		format      string
+		audio       []byte
+		contentType string
+		filename    string
+	}{
+		{"wav", "wav", []byte("RIFF\x24\x00\x00\x00WAVEfmt "), "audio/wav", "speech.wav"},
+		{"ogg opus", "opus", []byte("OggS\x00\x02opus-frames"), "audio/ogg", "speech.opus"},
+		{"flac", "flac", []byte("fLaC\x00\x00\x00\x22flac-frames"), "audio/flac", "speech.flac"},
+		{"mp3", "mp3", []byte("ID3\x04\x00mp3-frames"), "audio/mpeg", "speech.mp3"},
+		{"no format", "", []byte("ID3\x04\x00mp3-frames"), "audio/mpeg", "speech.mp3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(speechAudioUpstream{audio: tc.audio})
+			defer server.Close()
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: openAISpeechTestAccount{baseURL: server.URL},
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(client.Shutdown)
+			r := router.New()
+			NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+			body := `{"model":"openai/tts-1","input":"hello","voice":"alloy"`
+			if tc.format != "" {
+				body += `,"response_format":"` + tc.format + `"`
+			}
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/openai/v1/audio/speech")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(body + "}")
+			r.Handler(&ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			assert.Equal(t, tc.audio, ctx.Response.Body())
+			assert.Equal(t, tc.contentType, string(ctx.Response.Header.ContentType()))
+			assert.Equal(t, "attachment; filename="+tc.filename, string(ctx.Response.Header.Peek("Content-Disposition")))
+		})
+	}
+}

@@ -1791,6 +1791,22 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.model_router_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.modelRouter")}
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", model_router_ids: [log.model_router_id!] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-model-router-link"
+											>
+												{log.model_router_name || log.model_router_id}
+											</Link>
+										}
+									/>
+								)}
 								{complexityRouting.tier && (
 									<LogEntryDetailsView
 										className="w-full"
@@ -2850,7 +2866,7 @@ export function LogDetailView({
 							<SpeechView
 								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
 								speechOutput={log.speech_output}
-								isStreaming={log.stream}
+								isStreaming={log.stream && log.status === "processing"}
 							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (

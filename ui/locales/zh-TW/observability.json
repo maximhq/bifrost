@@ -70,7 +70,8 @@
 			"decision": "決策模型",
 			"llm": "LLM",
 			"skipped": "已跳過"
-		}
+		},
+		"modelRouter": "路由器"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1228,7 +1229,10 @@
 		"exactRoundTripID": "精確往返 ID",
 		"nothingRecorded": "在此時間範圍內沒有任何記錄",
 		"topics": "主題",
-		"searchTopics": "搜尋主題"
+		"searchTopics": "搜尋主題",
+		"modelRouters": "路由器",
+		"searchModelRouters": "搜尋路由器",
+		"loadFailed": "無法載入此清單。"
 	},
 	"requestTypes": {
 		"chat_completion": "對話",
@@ -1257,6 +1261,7 @@
 		"decisions": "決策",
 		"speech": "語音生成",
 		"speech_stream": "流式語音生成",
+		"speech_session": "語音生成工作階段",
 		"transcription": "語音轉寫",
 		"transcription_stream": "流式語音轉寫",
 		"image_generation": "影象生成",

@@ -77,7 +77,8 @@
 		"webhookEndpoints": "Webhook 端點",
 		"agent": "代理",
 		"relay": "中繼",
-		"relays": "中繼"
+		"relays": "中繼",
+		"modelRouters": "路由器"
 	},
 	"aboutField": "關於{{field}}",
 	"thisField": "此欄位",

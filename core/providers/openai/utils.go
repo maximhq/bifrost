@@ -19,8 +19,11 @@ type responseHandler[T any] func(responseBody []byte, response *T, requestBody [
 // defaultSupportsReasoningContentBlocks: gpt-oss and every vLLM-served model carry
 // replayed reasoning as content blocks; the o-series and GPT-5 carry it as summary[] entries.
 func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model string) bool {
-	return provider == schemas.VLLM || strings.Contains(strings.ToLower(model), "gpt-oss")
+	return provider == schemas.VLLM || isGPTOSS(model)
 }
+
+// isGPTOSS reports whether model is gpt-oss, which accepts sampling params at any effort.
+func isGPTOSS(model string) bool { return strings.Contains(strings.ToLower(model), "gpt-oss") }
 
 // joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
 // vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding

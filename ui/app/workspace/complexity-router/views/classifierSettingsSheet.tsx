@@ -7,32 +7,49 @@ import { useTranslation } from "react-i18next";
 interface Props {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	// The shared provider alert and decision-model fields, built once by the page so the
-	// primary sheet and the embedding sheet's fallback section stay identical.
-	decisionSettings: ReactNode;
+	title: string;
+	description: string;
+	// The sheet is `${testIdPrefix}-sheet`, its buttons `${testIdPrefix}-sheet-close-button`
+	// and `${testIdPrefix}-sheet-save-button`.
+	testIdPrefix: string;
+	// The classifier's fields, built once by the page so the primary sheet and the
+	// embedding sheet's fallback section stay identical.
+	children: ReactNode;
 	canSave: boolean;
 	isSaving: boolean;
 	onSave: () => void;
 	submitError: string | null;
 }
 
-// DecisionSettingsSheet holds the decision model's set-once settings when it is the
-// primary classifier, mirroring the embedding sheet so the page itself is left
-// for the tier guidance operators actually iterate on.
-export default function DecisionSettingsSheet({ open, onOpenChange, decisionSettings, canSave, isSaving, onSave, submitError }: Props) {
+// ClassifierSettingsSheet holds a model-based classifier's set-once settings when it
+// is the primary classifier, mirroring the embedding sheet so the page itself is
+// left for what operators actually iterate on: the decision model's tier guidance,
+// or the llm classifier's prompt.
+export default function ClassifierSettingsSheet({
+	open,
+	onOpenChange,
+	title,
+	description,
+	testIdPrefix,
+	children,
+	canSave,
+	isSaving,
+	onSave,
+	submitError,
+}: Props) {
 	const { t } = useTranslation("models");
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: tCommon } = useTranslation("common");
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-decision-sheet">
+			<SheetContent className="flex flex-col p-0" data-testid={`${testIdPrefix}-sheet`}>
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
-					<SheetTitle>{tcpx("decisionSheetTitle")}</SheetTitle>
-					<SheetDescription>{tcpx("decisionSheetDescription")}</SheetDescription>
+					<SheetTitle>{title}</SheetTitle>
+					<SheetDescription>{description}</SheetDescription>
 				</SheetHeader>
 
 				<div className="custom-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-					{decisionSettings}
+					{children}
 					{submitError && (
 						<div
 							role="alert"
@@ -49,7 +66,7 @@ export default function DecisionSettingsSheet({ open, onOpenChange, decisionSett
 						variant="outline"
 						size="sm"
 						onClick={() => onOpenChange(false)}
-						data-testid="complexity-router-decision-sheet-close-button"
+						data-testid={`${testIdPrefix}-sheet-close-button`}
 					>
 						{tCommon("close")}
 					</Button>
@@ -58,7 +75,7 @@ export default function DecisionSettingsSheet({ open, onOpenChange, decisionSett
 						size="sm"
 						onClick={onSave}
 						disabled={!canSave || isSaving}
-						data-testid="complexity-router-decision-sheet-save-button"
+						data-testid={`${testIdPrefix}-sheet-save-button`}
 					>
 						{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
 						{isSaving ? t("routing.saving") : tcpx("saveChanges")}

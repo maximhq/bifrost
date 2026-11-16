@@ -9691,3 +9691,526 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
 	}
 }
+
+// customToolProvider answers with a function call to apply_patch, the way a wire that
+// took the rewritten custom tool does, and records what it was sent.
+type customToolProvider struct {
+	stubProvider
+	gotResponses *schemas.BifrostResponsesRequest
+	gotChat      *schemas.BifrostChatRequest
+}
+
+func applyPatchFunctionCallResponse() *schemas.BifrostResponsesResponse {
+	return &schemas.BifrostResponsesResponse{
+		Status: schemas.Ptr(schemas.ResponsesResponseStatusCompleted),
+		Output: []schemas.ResponsesMessage{{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr("call_1"),
+				Name:      schemas.Ptr("apply_patch"),
+				Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`),
+			},
+		}},
+	}
+}
+
+func (p *customToolProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.gotResponses = req
+	return applyPatchFunctionCallResponse(), nil
+}
+
+func (p *customToolProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.gotChat = req
+	return applyPatchFunctionCallResponse().ToBifrostChatResponse(), nil
+}
+
+// ResponsesStream replays a function-call stream through the runner it was handed and
+// records what the post hooks received.
+func (p *customToolProvider) ResponsesStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.gotResponses = req
+	item := applyPatchFunctionCallResponse().Output[0]
+	item.Arguments = schemas.Ptr("")
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(`{"input":"*** Begin`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(` Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, ItemID: item.ID, Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: applyPatchFunctionCallResponse()},
+	}
+	out := make(chan *schemas.BifrostStreamChunk, len(events))
+	for _, event := range events {
+		result, bifrostErr := runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		if bifrostErr != nil {
+			continue
+		}
+		out <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: result.ResponsesStreamResponse}
+	}
+	close(out)
+	return out, nil
+}
+
+// stubCustomToolsRows gives openai/gpt-5 a supports_custom_tools true row; nothing else has one.
+func stubCustomToolsRows(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.OpenAI && model == "gpt-5" {
+			return &schemas.ModelCapabilities{SupportsCustomTools: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+func applyPatchResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("patch it")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:        schemas.ResponsesToolTypeCustom,
+			Name:        schemas.Ptr("apply_patch"),
+			Description: schemas.Ptr("Apply a patch"),
+			ResponsesToolCustom: &schemas.ResponsesToolCustom{Format: &schemas.ResponsesToolCustomFormat{
+				Type: "grammar", Syntax: schemas.Ptr("lark"), Definition: schemas.Ptr("start: /.+/"),
+			}},
+		}}},
+	}
+}
+
+// Without a supports_custom_tools true row, every provider gets the custom tool as a
+// function tool and the client gets a custom_tool_call back, on the native Responses
+// route and on the chat fallback, which used to drop the tool.
+func TestDispatchResponses_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		chatFallback bool
+	}{
+		{"anthropic native", schemas.Anthropic, "claude-sonnet-4-5", false},
+		{"openai without a row", schemas.OpenAI, "gpt-4.1-mini", false},
+		{"groq chat fallback", schemas.Groq, "openai/gpt-oss-120b", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.chatFallback {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+			}
+			provider := &customToolProvider{stubProvider: stubProvider{key: tc.provider}}
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+			if bifrostErr != nil {
+				t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+			}
+
+			var sentType, sentName string
+			if tc.chatFallback {
+				if provider.gotChat == nil || len(provider.gotChat.Params.Tools) != 1 {
+					t.Fatalf("the chat fallback must keep the tool, got %+v", provider.gotChat)
+				}
+				sentType, sentName = string(provider.gotChat.Params.Tools[0].Type), provider.gotChat.Params.Tools[0].Function.Name
+			} else {
+				sentType, sentName = string(provider.gotResponses.Params.Tools[0].Type), *provider.gotResponses.Params.Tools[0].Name
+			}
+			if sentType != "function" || sentName != "apply_patch" {
+				t.Fatalf("want function apply_patch on the wire, got %s %s", sentType, sentName)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom {
+				t.Fatal("the caller's request must stay untouched")
+			}
+
+			var call *schemas.ResponsesMessage
+			for i := range resp.Output {
+				if resp.Output[i].Type != nil && *resp.Output[i].Type == schemas.ResponsesMessageTypeCustomToolCall {
+					call = &resp.Output[i]
+				}
+			}
+			if call == nil || call.ResponsesCustomToolCall == nil || call.ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a restored custom_tool_call with the raw input, got %+v", resp.Output)
+			}
+		})
+	}
+}
+
+// A stored response created with a rewritten custom tool is restored on GET /v1/responses/{id},
+// plain and streamed, with no prepared request to carry the names.
+func TestResponsesRetrieve_RestoresCustomToolCalls(t *testing.T) {
+	rewritten := providerUtils.RewriteResponsesCustomTools(nil, schemas.OpenAI, applyPatchResponsesRequest(schemas.OpenAI, "gpt-4.1"))
+	tools, err := providerUtils.MarshalSorted(rewritten.Params.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := `{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}","status":"completed"}`
+	stored := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","tools":` + string(tools) + `,"output":[` + call + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "true" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(stored))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"response.created","sequence_number":0,"response":` + strings.Replace(stored, `"output":[`+call+`]`, `"output":[]`, 1) + `}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":` + strings.Replace(call, `{\"input\":\"*** Begin Patch\"}`, "", 1) + `}`,
+			`{"type":"response.function_call_arguments.done","sequence_number":2,"output_index":0,"item_id":"fc_1","arguments":"{\"input\":\"*** Begin Patch\"}"}`,
+			`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":` + call + `}`,
+			`{"type":"response.completed","sequence_number":4,"response":` + stored + `}`,
+		} {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+	}))
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	client := newStreamTestClient(t, account)
+	isRestored := func(item *schemas.ResponsesMessage) bool {
+		return item != nil && item.Type != nil && *item.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			item.ResponsesCustomToolCall != nil && item.ResponsesCustomToolCall.Input == "*** Begin Patch"
+	}
+
+	resp, bifrostErr := client.ResponsesRetrieveRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve failed: %+v", bifrostErr.Error)
+	}
+	if len(resp.Output) != 1 || !isRestored(&resp.Output[0]) {
+		t.Fatalf("want a restored custom_tool_call, got %+v", resp.Output)
+	}
+
+	stream, bifrostErr := client.ResponsesRetrieveStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1", Stream: schemas.Ptr(true)})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve stream failed: %+v", bifrostErr.Error)
+	}
+	var inputDone, itemDone, completed bool
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			t.Fatalf("a restored call must not stream function argument events: %+v", event)
+		case schemas.ResponsesStreamResponseTypeCustomToolCallInputDone:
+			inputDone = event.Input != nil && *event.Input == "*** Begin Patch"
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			itemDone = isRestored(event.Item)
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = event.Response != nil && len(event.Response.Output) == 1 && isRestored(&event.Response.Output[0])
+		}
+	}
+	if !inputDone || !itemDone || !completed {
+		t.Fatalf("stream not restored: input_done=%v item_done=%v completed=%v", inputDone, itemDone, completed)
+	}
+}
+
+// A model whose row says true gets the custom tool unchanged and its call is not touched.
+func TestDispatchResponses_CustomToolsPassThroughWithTrueRow(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+	req := applyPatchResponsesRequest(schemas.OpenAI, "gpt-5")
+	resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	if got := provider.gotResponses.Params.Tools[0].Type; got != schemas.ResponsesToolTypeCustom {
+		t.Fatalf("want the custom tool forwarded, got %s", got)
+	}
+	if got := *resp.Output[0].Type; got != schemas.ResponsesMessageTypeFunctionCall {
+		t.Fatalf("a function call to a tool that was not rewritten must stay as-is, got %s", got)
+	}
+}
+
+func TestDispatchResponsesStream_RestoresCustomToolCallEvents(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	req := applyPatchResponsesRequest(schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	identity := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	stream, bifrostErr := (&Bifrost{}).dispatchResponsesStream(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, identity, nil)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	var types []schemas.ResponsesStreamResponseType
+	input := ""
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		types = append(types, event.Type)
+		if event.Type == schemas.ResponsesStreamResponseTypeCustomToolCallInputDone {
+			input = *event.Input
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted && *event.Response.Output[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+			t.Fatalf("the completed response must carry the custom_tool_call, got %s", *event.Response.Output[0].Type)
+		}
+	}
+	want := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}
+	if !slices.Equal(types, want) {
+		t.Fatalf("event types:\n got  %v\n want %v", types, want)
+	}
+	if input != "*** Begin Patch" {
+		t.Fatalf("the done event must carry the raw input, got %q", input)
+	}
+}
+
+// Codex sends its exec custom tool inside an additional_tools item, nested in the
+// "functions" namespace. OpenAI takes additional_tools items, but a model without a
+// true row must still get exec as a function tool, so the item is lifted first.
+func TestPrepareResponsesRequest_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	for _, tc := range []struct {
+		model     string
+		rewritten bool
+	}{{"gpt-4.1-mini", true}, {"gpt-5", false}} {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			if !tc.rewritten {
+				if prepared.CustomToolNames != nil || len(prepared.Input) != 1 {
+					t.Fatalf("a model with a true row keeps the additional_tools item, got %+v", prepared)
+				}
+				return
+			}
+			if len(prepared.Input) != 0 || prepared.Params == nil || len(prepared.Params.Tools) != 1 {
+				t.Fatalf("want exec lifted to the top level, got input %d tools %+v", len(prepared.Input), prepared.Params)
+			}
+			exec := prepared.Params.Tools[0]
+			if exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+				t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+			}
+			if _, ok := prepared.CustomToolNames["exec"]; !ok {
+				t.Fatalf("exec must be restored on the way out, got %v", prepared.CustomToolNames)
+			}
+		})
+	}
+}
+
+// The chat route rewrites too, for every provider without a true row.
+func TestPrepareChatRequest_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chat := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:   schemas.ChatToolTypeCustom,
+			Custom: &schemas.ChatToolCustom{Name: "ApplyPatch", Format: &schemas.ChatToolCustomFormat{Type: "text"}},
+		}}}}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Groq, schemas.Gemini, schemas.Bedrock} {
+		prepared := prepareChatRequest(ctx, nil, provider, chat(provider, "some-model"))
+		tool := prepared.Params.Tools[0]
+		if tool.Type != schemas.ChatToolTypeFunction || tool.Function == nil || tool.Function.Name != "ApplyPatch" {
+			t.Fatalf("%s: want function ApplyPatch, got %+v", provider, tool)
+		}
+	}
+	supported := chat(schemas.OpenAI, "gpt-5")
+	if got := prepareChatRequest(ctx, nil, schemas.OpenAI, supported).Params.Tools[0].Type; got != schemas.ChatToolTypeCustom {
+		t.Fatalf("a model with a true row keeps the custom tool, got %s", got)
+	}
+}
+
+// countTokensProvider records the count tokens and compaction requests it was sent.
+type countTokensProvider struct {
+	stubProvider
+	gotCount      *schemas.BifrostResponsesRequest
+	gotCompaction *schemas.BifrostCompactionRequest
+	compactOutput []schemas.ResponsesMessage
+}
+
+func (p *countTokensProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	p.gotCount = req
+	return &schemas.BifrostCountTokensResponse{}, nil
+}
+
+func (p *countTokensProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	p.gotCompaction = req
+	return &schemas.BifrostCompactionResponse{Output: p.compactOutput}, nil
+}
+
+// handleCountTokens runs one count tokens attempt and returns what the provider received.
+func handleCountTokens(t *testing.T, ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	t.Helper()
+	provider := &countTokensProvider{stubProvider: stubProvider{key: req.Provider}}
+	msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CountTokensRequest, CountTokensRequest: req}}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, config, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("count tokens failed: %v", bifrostErr.Error.Message)
+	}
+	if provider.gotCount == nil {
+		t.Fatal("the provider never received the count tokens request")
+	}
+	return provider.gotCount
+}
+
+// Count tokens must measure the request dispatch would send. It used to reach OpenAI's
+// converter, which rewrote custom tools for pre-GPT-5 models; moving the rewrite to
+// prepareResponsesRequest left count tokens sending custom tools those models reject.
+func TestCountTokens_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{
+		{schemas.OpenAI, "gpt-4.1-mini", true},
+		{schemas.Anthropic, "claude-sonnet-4-5", true},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{schemas.OpenAI, "gpt-5", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeCustom, Name: schemas.Ptr("apply_patch"),
+			}}
+			req.Input = append(req.Input, schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+					ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+				},
+			})
+			got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+
+			tool, choice, call := got.Params.Tools[0], got.Params.ToolChoice.ResponsesToolChoiceStruct, got.Input[1]
+			if !tc.rewritten {
+				if tool.Type != schemas.ResponsesToolTypeCustom || *call.Type != schemas.ResponsesMessageTypeCustomToolCall {
+					t.Fatalf("a model with a true row keeps custom tools and calls, got %s / %s", tool.Type, *call.Type)
+				}
+				return
+			}
+			if tool.Type != schemas.ResponsesToolTypeFunction || *tool.Name != "apply_patch" {
+				t.Fatalf("want function apply_patch counted, got %s %v", tool.Type, tool.Name)
+			}
+			if choice.Type != schemas.ResponsesToolChoiceTypeFunction {
+				t.Fatalf("want the custom choice pointed at the function, got %s", choice.Type)
+			}
+			if *call.Type != schemas.ResponsesMessageTypeFunctionCall || call.Arguments == nil || *call.Arguments != `{"input":"*** Begin Patch"}` {
+				t.Fatalf("want the replayed call counted as a function call, got %s %v", *call.Type, call.Arguments)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom || *req.Input[1].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched, since fallbacks re-run the preparation")
+			}
+		})
+	}
+}
+
+// Codex declares exec inside an additional_tools item; count tokens lifts it out and
+// rewrites it, like dispatch, instead of sending the custom tool in the raw item.
+func TestCountTokens_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4.1-mini", Input: []schemas.ResponsesMessage{
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+	}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if len(got.Input) != 0 || got.Params == nil || len(got.Params.Tools) != 1 {
+		t.Fatalf("want exec lifted to the top level, got input %d params %+v", len(got.Input), got.Params)
+	}
+	if exec := got.Params.Tools[0]; exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+		t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+	}
+}
+
+// Namespaces are flattened for count tokens on wires without namespace support, as for dispatch.
+func TestCountTokens_FlattensNamespaceTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: schemas.Ptr("clock"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("sleep"), ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}}},
+	}}}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	for _, tool := range got.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeNamespace {
+			t.Fatalf("namespace sent to a wire without namespace support: %+v", got.Params.Tools)
+		}
+	}
+}
+
+// Prompt-cache breakpoints change no token count, so count tokens does not inject them;
+// the billing header is part of the measured request, so it is restored.
+func TestCountTokens_SkipsPromptCacheInjectionKeepsBillingHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	got := handleCountTokens(t, ctx, promptCacheOn(), responsesReqWithText("stable prefix"))
+	if got.Input[0].Content.ContentBlocks[0].CacheControl != nil {
+		t.Fatal("count tokens must not inject prompt-cache breakpoints")
+	}
+
+	ctx, req := billingHeaderRequest(t)
+	req.Provider, req.Model = schemas.Anthropic, "claude-sonnet-4"
+	got = handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if blocks := got.Input[0].Content.ContentBlocks; len(blocks) != 2 || *blocks[0].Text != billingHeaderFixture {
+		t.Fatalf("want the billing header restored into the counted system message, got %+v", blocks)
+	}
+}
+
+// Compaction replays the conversation, so custom calls in it are sent as function calls
+// to a model without a true row, and come back as custom calls.
+func TestCompaction_ReplayedCustomCallsAsFunctions(t *testing.T) {
+	stubCustomToolsRows(t)
+	customCall := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+				ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+			},
+		}
+	}
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{{schemas.XAI, "grok-4", true}, {schemas.OpenAI, "gpt-5", false}} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostCompactionRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{customCall()}}
+			echoed := applyPatchFunctionCallResponse().Output
+			provider := &countTokensProvider{stubProvider: stubProvider{key: tc.provider}, compactOutput: echoed}
+			msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CompactionRequest, CompactionRequest: req}}
+			resp, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil)
+			if bifrostErr != nil {
+				t.Fatalf("compaction failed: %v", bifrostErr.Error.Message)
+			}
+			sent, out := *provider.gotCompaction.Input[0].Type, *resp.CompactionResponse.Output[0].Type
+			if !tc.rewritten {
+				if sent != schemas.ResponsesMessageTypeCustomToolCall || out != schemas.ResponsesMessageTypeFunctionCall {
+					t.Fatalf("a model with a true row is left alone, sent %s got %s", sent, out)
+				}
+				return
+			}
+			if sent != schemas.ResponsesMessageTypeFunctionCall {
+				t.Fatalf("want the replayed custom call sent as a function call, got %s", sent)
+			}
+			if out != schemas.ResponsesMessageTypeCustomToolCall || resp.CompactionResponse.Output[0].ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a function call kept by compaction restored, got %+v", resp.CompactionResponse.Output[0])
+			}
+			if *req.Input[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched")
+			}
+		})
+	}
+}

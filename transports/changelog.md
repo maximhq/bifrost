@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

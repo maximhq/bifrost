@@ -77,7 +77,8 @@
 		"modelLimits": "모델 한도",
 		"agent": "에이전트",
 		"relay": "릴레이",
-		"relays": "릴레이"
+		"relays": "릴레이",
+		"modelRouters": "라우터"
 	},
 	"aboutField": "{{field}} 정보",
 	"thisField": "이 필드",

@@ -99,6 +99,11 @@ func TestGetVKFromRequest(t *testing.T) {
 			wantVK: vk,
 		},
 		{
+			name:   "xi-api-key header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("xi-api-key", vk) },
+			wantVK: vk,
+		},
+		{
 			name:   "no header returns empty string",
 			setup:  func(*fasthttp.RequestCtx) {},
 			wantVK: "",

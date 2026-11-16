@@ -77,7 +77,8 @@
 		"webhookEndpoints": "webhook endpoints",
 		"agent": "agent",
 		"relay": "relay",
-		"relays": "relays"
+		"relays": "relays",
+		"modelRouters": "routers"
 	},
 	"aboutField": "About {{field}}",
 	"thisField": "this field",

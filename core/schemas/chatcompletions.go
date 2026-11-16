@@ -902,7 +902,9 @@ func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
 }
 
 type ChatToolCustom struct {
-	Format *ChatToolCustomFormat `json:"format,omitempty"` // The input format
+	Name        string                `json:"name,omitempty"`        // OpenAI Chat wire nests the custom tool name here
+	Description *string               `json:"description,omitempty"` // Description of the custom tool
+	Format      *ChatToolCustomFormat `json:"format,omitempty"`      // The input format
 }
 
 type ChatToolCustomFormat struct {

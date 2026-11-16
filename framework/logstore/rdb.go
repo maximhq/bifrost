@@ -439,6 +439,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if len(filters.ModelRouterIDs) > 0 {
+		baseQuery = baseQuery.Where("model_router_id IN ?", filters.ModelRouterIDs)
+	}
 	if len(filters.AgentNames) > 0 {
 		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
 	}
@@ -1731,6 +1734,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
+		"model_router_id", "model_router_name",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",

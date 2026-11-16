@@ -254,6 +254,15 @@ MCPClientCreateRequestBase:
       description: Display name for the MCP client
     is_code_mode_client:
       type: boolean
+    server_type_on_slug:
+      type: string
+      enum: [inherit, enabled, disabled]
+      default: inherit
+      description: |
+        Code mode on this client's own /mcp/<slug> endpoint only. "inherit" follows
+        is_code_mode_client, "enabled" turns code mode on there, "disabled" serves the
+        client's tools directly there. /mcp, Virtual MCP endpoints and LLM requests
+        always follow is_code_mode_client.
 
     is_ping_available:
       type: boolean
@@ -768,6 +777,12 @@ MCPClientUpdateRequest:
     is_code_mode_client:
       type: boolean
       description: Whether this client is available in code mode
+    server_type_on_slug:
+      type: string
+      enum: [inherit, enabled, disabled]
+      description: |
+        Code mode on this client's own /mcp/<slug> endpoint only. Omit to keep the
+        current value; "inherit" goes back to following is_code_mode_client.
     is_ping_available:
       type: boolean
       description: |
@@ -1024,6 +1039,10 @@ MCPClientConfig:
     is_code_mode_client:
       type: boolean
       description: Whether this client is available in code mode
+    server_type_on_slug:
+      type: string
+      enum: [inherit, enabled, disabled]
+      description: Code mode on this client's own /mcp/<slug> endpoint; "inherit" follows is_code_mode_client
     connection_type:
       $ref: '#/MCPConnectionType'
     connection_string:

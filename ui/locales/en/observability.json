@@ -70,7 +70,8 @@
 			"decision": "Decision model",
 			"llm": "LLM",
 			"skipped": "Skipped"
-		}
+		},
+		"modelRouter": "Router"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1233,7 +1234,10 @@
 		"exactRoundTripID": "Exact round trip ID",
 		"nothingRecorded": "Nothing recorded in this time range",
 		"topics": "Topics",
-		"searchTopics": "Search topics"
+		"searchTopics": "Search topics",
+		"modelRouters": "Routers",
+		"searchModelRouters": "Search routers",
+		"loadFailed": "Could not load this list."
 	},
 	"requestTypes": {
 		"chat_completion": "Chat",
@@ -1262,6 +1266,7 @@
 		"decisions": "Decisions",
 		"speech": "Speech",
 		"speech_stream": "Speech Stream",
+		"speech_session": "Speech Session",
 		"transcription": "Transcription",
 		"transcription_stream": "Transcription Stream",
 		"image_generation": "Image Generation",

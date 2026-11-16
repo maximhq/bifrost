@@ -1297,14 +1297,17 @@ func parseAgentCorrelationIDFilter(ctx *fasthttp.RequestCtx, filters *logstore.S
 	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
 }
 
-// parseComplexityFilters extracts the structured complexity filters shared by
-// log search, aggregate, and histogram endpoints.
+// parseComplexityFilters extracts the structured complexity and model routing
+// filters shared by log search, aggregate, and histogram endpoints.
 func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
 	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
 		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
 	}
 	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
 		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
+	}
+	if modelRouterIDs := string(ctx.QueryArgs().Peek("model_router_ids")); modelRouterIDs != "" {
+		filters.ModelRouterIDs = parseCommaSeparated(modelRouterIDs)
 	}
 }
 

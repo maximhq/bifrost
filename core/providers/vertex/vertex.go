@@ -274,8 +274,9 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 		var meta struct {
 			Type string `json:"type"`
 		}
+		// sonic's syntax error quotes the input, so it must not reach the error text.
 		if err := sonic.Unmarshal(jsonData, &meta); err != nil {
-			return nil, fmt.Errorf("failed to parse auth credentials JSON: %w", err)
+			return nil, fmt.Errorf("failed to parse auth credentials JSON: invalid JSON")
 		}
 
 		// Map string to google.CredentialsType with a security whitelist
@@ -315,8 +316,26 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 
 	// Cache the token source. If another goroutine raced and stored first, use
 	// that one — both are equally valid, but sharing maximises token reuse.
-	actual, _ := provider.tokenSources.LoadOrStore(clientKey, tokenSource)
+	actual, _ := provider.tokenSources.LoadOrStore(clientKey, &sanitizedTokenSource{tokenSource})
 	return actual.(oauth2.TokenSource), nil
+}
+
+// sanitizedTokenSource strips raw token responses from oauth2 errors, which reach messages, logs and
+// nested causes: the "\nResponse: <body>" suffix and an executable's own failure message (the code is
+// kept). The error is always rebuilt so no RetrieveError body survives in the chain.
+type sanitizedTokenSource struct{ oauth2.TokenSource }
+
+func (s *sanitizedTokenSource) Token() (*oauth2.Token, error) {
+	token, err := s.TokenSource.Token()
+	if err == nil {
+		return token, nil
+	}
+	msg, _, _ := strings.Cut(err.Error(), "\nResponse:")
+	if prefix, rest, found := strings.Cut(msg, "unsuccessful response: ("); found {
+		code, _, _ := strings.Cut(rest, ")")
+		msg = prefix + "unsuccessful response: (" + code + ")"
+	}
+	return nil, errors.New(msg)
 }
 
 // GetProviderKey returns the provider identifier for Vertex.
@@ -362,13 +381,18 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	pageToken := ""
 
 	// Getting oauth2 token
+	// An API-key-only key gets here only on an unfiltered listing; "not supported" keeps ListAllModels treating it as expected.
+	authHint := " for list models"
+	if vertexKeyUsesAPIKeyOnly(key) {
+		authHint = " (api key auth not supported for list models)"
+	}
 	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error creating auth token source%s: %v", authHint, err), err)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error getting auth token%s: %v", authHint, err), err)
 	}
 
 	// Iterate over all supported Vertex publishers to include Google, Anthropic, and Mistral models
@@ -869,11 +893,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 	}
 
 	// If auth query is set, add it to the URL
@@ -1327,12 +1347,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
-
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 
 		// Getting oauth2 token
 		tokenSource, err := provider.getAuthTokenSource(key)
@@ -4666,6 +4681,15 @@ func stripVertexCountTokensUnsupportedFields(jsonBody []byte) []byte {
 	return out
 }
 
+// setAnthropicBetaHeader sends the filtered betas as anthropic-beta, the only place Vertex reads them.
+func (provider *VertexProvider) setAnthropicBetaHeader(ctx *schemas.BifrostContext, req *fasthttp.Request) {
+	if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+}
+
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
@@ -4767,6 +4791,9 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		provider.setAnthropicBetaHeader(ctx, req)
+	}
 
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)

@@ -51,7 +51,7 @@ type AnthropicRequestBuildConfig struct {
 
 	// BetaHeaderOverrides / ProviderExtraHeaders feed into the body-side
 	// anthropic_beta injection when the provider's defaults set
-	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
+	// InjectBetaHeadersIntoBody = true (Bedrock InvokeModel only). Both come from the
 	// caller's NetworkConfig at request time.
 	BetaHeaderOverrides  map[string]bool
 	ProviderExtraHeaders map[string]schemas.SecretVar
@@ -96,7 +96,7 @@ type AnthropicProviderRequestDefaults struct {
 	RemapToolVersions bool
 
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
-	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
+	// body as "anthropic_beta" (Bedrock InvokeModel only; others use the HTTP header).
 	InjectBetaHeadersIntoBody bool
 
 	// InlineURLSources fetches URL-sourced images and documents and rewrites them
@@ -152,17 +152,17 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	},
 	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
-	// required, beta headers in body (not HTTP), cache_control.scope stripped
-	// at marshal time, tool versions remapped.
+	// required, cache_control.scope stripped at marshal time, tool versions
+	// remapped. Betas go in the anthropic-beta header only: Vertex ignores the
+	// body field and rejects values it does not list (verified live 2026-11-11).
 	schemas.Vertex: {
-		DeleteModelField:          true,
-		DeleteRegionField:         true,
-		AddAnthropicVersion:       true,
-		AnthropicVersion:          "vertex-2023-10-16",
-		StripCacheControlScope:    true,
-		RemapToolVersions:         true,
-		InjectBetaHeadersIntoBody: true,
-		CachePrefixKeysLast:       true,
+		DeleteModelField:       true,
+		DeleteRegionField:      true,
+		AddAnthropicVersion:    true,
+		AnthropicVersion:       "vertex-2023-10-16",
+		StripCacheControlScope: true,
+		RemapToolVersions:      true,
+		CachePrefixKeysLast:    true,
 	},
 	// vLLM and SGLang serve /v1/messages without signing their thinking; the model
 	// needs its own unsigned reasoning back on the next turn.

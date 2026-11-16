@@ -355,6 +355,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
 	{IDs: []string{"mcp_tool_logs_add_round_trip_id_column"}, run: migrationAddRoundTripIDColumnToMCPToolLogs},
 	{IDs: []string{"agent_logs_add_caller_correlation_id_column"}, run: migrationAddCallerCorrelationIDColumnToAgentLogs},
+	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
+	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3009,6 +3011,11 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_model_router_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_model_router_id ON logs(model_router_id) WHERE model_router_id IS NOT NULL",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_session_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
 	},
@@ -4523,6 +4530,59 @@ func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logg
 		return fmt.Errorf("error while adding complexity routing columns: %w", err)
 	}
 	return nil
+}
+
+// migrationAddModelRoutingColumns adds model_router_id and model_router_name
+// to the logs table. They record the model router that took a request after
+// the routing rules, and stay NULL for requests no router took.
+func migrationAddModelRoutingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_model_routing_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{modelRoutingColumnsMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding model routing columns: %w", err)
+	}
+	return nil
+}
+
+// modelRoutingColumns are the logs columns that record the model router a
+// request was routed by.
+var modelRoutingColumns = []string{"model_router_id", "model_router_name"}
+
+func modelRoutingColumnsMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	const migrationName = "logs_add_model_routing_columns"
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRoutingColumns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// The router a request was routed by cannot be recaptured, so a
+			// rollback is refused while any log records one.
+			if err := refuseRollbackWhileRecorded(tx, migrationName, []any{&Log{}}, modelRoutingColumns...); err != nil {
+				return err
+			}
+			for _, column := range modelRoutingColumns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // migrationAddSessionIDColumn adds the generic session identity resolved at
@@ -6376,4 +6436,70 @@ func userEmailColumnMigration(ctx context.Context, logger schemas.Logger) *migra
 			return eachTable(tx, dropColumnIfExists)
 		},
 	}
+}
+
+// migrationAddComplexitySuggestionTables creates the storage for the
+// complexity router's phrase suggestions: the suggestions, the runs that wrote
+// them, and the retry list of captured request vectors whose delete failed.
+// See complexitysuggestions.go.
+func migrationAddComplexitySuggestionTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_model_routing_suggestion_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies part-way leaves none of the three. No
+	// boundDDLLockWait: this only creates tables that do not exist yet.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&ComplexitySuggestion{}, &ComplexitySuggestionRun{}, &ComplexityVectorDelete{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackComplexitySuggestionTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackComplexitySuggestionTables drops the suggestion tables, but only
+// while model_routing_suggestions and model_routing_vector_deletes are empty. A
+// suggestion row carries the user's accept and dismiss decisions, which no
+// rerun can rebuild; a vector delete row is a deleted log whose vector is
+// still in the vector store, and dropping it would leave the vector there for
+// good. The runs table is history only and is not checked. On PostgreSQL both
+// are locked first, so nothing can write between the check and the DROP.
+func rollbackComplexitySuggestionTables(tx *gorm.DB) error {
+	guarded := []struct {
+		model  any
+		table  string
+		reason string
+	}{
+		{&ComplexitySuggestion{}, "model_routing_suggestions", "model_routing_suggestions holds accepted and dismissed suggestions that cannot be rebuilt from the logs"},
+		{&ComplexityVectorDelete{}, "model_routing_vector_deletes", "model_routing_vector_deletes lists deleted logs whose vectors are still in the vector store"},
+	}
+	for _, g := range guarded {
+		if !tx.Migrator().HasTable(g.model) {
+			continue
+		}
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE " + g.table + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock %s before rollback: %w", g.table, err)
+			}
+		}
+		var present []struct{ One int }
+		if err := tx.Model(g.model).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check %s before rollback: %w", g.table, err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_model_routing_suggestion_tables is non-rollbackable: %s; clear it first if the rollback is genuinely intended", g.reason)
+		}
+	}
+	return tx.Migrator().DropTable(&ComplexityVectorDelete{}, &ComplexitySuggestionRun{}, &ComplexitySuggestion{})
 }

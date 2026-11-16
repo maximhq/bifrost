@@ -630,11 +630,16 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
-	// Content summary: extract text from the found user message.
-	// Falls back to BuildInputContentSummary for non-chat inputs (speech, image, etc.).
+	// Content summary: text of the last user message. When there is none, or it
+	// has no text, BuildInputContentSummary falls back to the latest tool result
+	// or tool call, then to non-chat inputs (speech, image, etc.). The reset
+	// matters: SerializeFields already filled ContentSummary with the full-text
+	// search summary, which must not leak into the row.
+	dbEntry.ContentSummary = ""
 	if idx >= 0 {
 		dbEntry.ContentSummary = extractChatMessageText(&dbEntry.InputHistoryParsed[idx])
-	} else {
+	}
+	if dbEntry.ContentSummary == "" {
 		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
 	}
 	// Bound content summary to prevent large prompts from bloating the DB row.
@@ -2977,4 +2982,97 @@ func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) erro
 
 func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
+}
+
+// Complexity suggestion methods - delegated directly. Suggestions, runs and
+// pending vector deletes hold no payloads, so they stay in the database.
+
+// UpsertComplexitySuggestions writes suggestions whole.
+func (h *HybridLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error {
+	return h.inner.UpsertComplexitySuggestions(ctx, suggestions)
+}
+
+// ReconcileComplexitySuggestions writes a run's outcome without overwriting a
+// decision made since the run read the rows.
+func (h *HybridLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	return h.inner.ReconcileComplexitySuggestions(ctx, writes)
+}
+
+// ListComplexitySuggestions returns the selected suggestions.
+func (h *HybridLogStore) ListComplexitySuggestions(ctx context.Context, filter ComplexitySuggestionFilter) ([]ComplexitySuggestion, error) {
+	return h.inner.ListComplexitySuggestions(ctx, filter)
+}
+
+// CountComplexitySuggestionsByStatus counts suggestions per status.
+func (h *HybridLogStore) CountComplexitySuggestionsByStatus(ctx context.Context, filter ComplexitySuggestionFilter) (map[string]int, error) {
+	return h.inner.CountComplexitySuggestionsByStatus(ctx, filter)
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionStatus(ctx, id, from, to, resolvedAt)
+}
+
+// DeleteComplexitySuggestions removes suggestions outright.
+func (h *HybridLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
+	return h.inner.DeleteComplexitySuggestions(ctx, ids)
+}
+
+// UpsertComplexitySuggestionRun writes a run whole.
+func (h *HybridLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	return h.inner.UpsertComplexitySuggestionRun(ctx, run)
+}
+
+// InsertComplexitySuggestionRun writes a run unless one with its ID exists.
+func (h *HybridLogStore) InsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) (bool, error) {
+	return h.inner.InsertComplexitySuggestionRun(ctx, run)
+}
+
+// ListComplexitySuggestionRuns returns up to limit of the selected runs,
+// newest first.
+func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error) {
+	return h.inner.ListComplexitySuggestionRuns(ctx, filter, limit)
+}
+
+// UpdateComplexitySuggestionRunStatus ends a run, only from the given statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionRunStatus(ctx, id, from, to, finishedAt)
+}
+
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs.
+func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
+	return h.inner.PruneComplexitySuggestionRuns(ctx, routerID, keep)
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs.
+func (h *HybridLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	return h.inner.DeleteComplexityRouterSuggestions(ctx, routerID)
+}
+
+// AddComplexityVectorDeletes records deleted logs whose captured vector delete
+// failed.
+func (h *HybridLogStore) AddComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	return h.inner.AddComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListComplexityVectorDeletes(ctx context.Context, limit int) ([]ComplexityVectorDelete, error) {
+	return h.inner.ListComplexityVectorDeletes(ctx, limit)
+}
+
+// DeleteComplexityVectorDeletes removes exactly the given (log, namespace)
+// rows.
+func (h *HybridLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	return h.inner.DeleteComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityReplayUsage reads the usage of the given logs.
+func (h *HybridLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error) {
+	return h.inner.ListComplexityReplayUsage(ctx, logIDs)
+}
+
+// EachComplexityRouterLog pages the requests a model router took; IDs and
+// timestamps live in the index store.
+func (h *HybridLogStore) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error {
+	return h.inner.EachComplexityRouterLog(ctx, routerID, from, to, fn)
 }

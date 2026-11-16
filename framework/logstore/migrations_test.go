@@ -1563,3 +1563,28 @@ func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
 	require.NoError(t, roundTripIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
 	assert.False(t, db.Migrator().HasColumn(&MCPToolLog{}, "round_trip_id"))
 }
+
+// TestModelRoutingColumnsMigration_NonRollbackable pins that rolling
+// logs_add_model_routing_columns back is refused while any log records a
+// router: that attribution cannot be recaptured, so the drop would
+// delete data rather than reverse a schema change.
+func TestModelRoutingColumnsMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "model-routing.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&Log{ID: "log-1", Timestamp: now, CreatedAt: now, Object: "chat_completion", Provider: "openai", Model: "m", Status: "success"}).Error)
+	require.NoError(t, db.Model(&Log{}).Where("id = ?", "log-1").Update("model_router_name", "Support").Error)
+
+	err = modelRoutingColumnsMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while a log records a model router")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, column := range modelRoutingColumns {
+		assert.True(t, db.Migrator().HasColumn(&Log{}, column), "logs.%s survives a refused rollback", column)
+	}
+
+	require.NoError(t, db.Model(&Log{}).Where("id = ?", "log-1").Update("model_router_name", nil).Error)
+	require.NoError(t, modelRoutingColumnsMigration(ctx, testLogger{}).Rollback(db), "with nothing recorded the rollback is a genuine reversal")
+	assert.False(t, db.Migrator().HasColumn(&Log{}, "model_router_id"))
+}
