@@ -107,6 +107,11 @@ func TestBifrostMCPExposesEveryOperation(t *testing.T) {
 	if _, ok := tools["createChatCompletion"]; !ok {
 		t.Error("the inference route is not a tool")
 	}
+	for _, self := range []string{"bifrostMCPMessage", "bifrostMCPStream"} {
+		if _, ok := tools[self]; ok {
+			t.Errorf("/v1/mcp is served as a tool on itself (%s)", self)
+		}
+	}
 }
 
 // Every denied route names an operation the spec defines, so a stale entry

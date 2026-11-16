@@ -1569,6 +1569,8 @@
                   "GET /ws",
                   "GET /mcp",
                   "POST /mcp",
+                  "GET /v1/mcp",
+                  "POST /v1/mcp",
                   "GET /metrics",
                   "POST /inspect"
                 ]
