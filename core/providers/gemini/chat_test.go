@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -623,4 +624,141 @@ func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
 	assert.Contains(t, response, "chart below")
 	assert.Contains(t, response, "[image/png")
 	assert.Contains(t, response, "[audio/mp3")
+}
+
+func TestGeminiThoughtPartsPopulateReasoningAndWireFields(t *testing.T) {
+	t.Run("stream_thought_parts_populate_delta_reasoning_and_wire_fields", func(t *testing.T) {
+		resp := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-thought",
+			ModelVersion: "gemini-2.5-pro",
+			Candidates: []*gemini.Candidate{
+				{
+					Index: 0,
+					Content: &gemini.Content{
+						Role: string(gemini.RoleModel),
+						Parts: []*gemini.Part{
+							{Text: "Step 1: analyze ", Thought: true},
+							{Text: "Step 2: verify.", Thought: true},
+						},
+					},
+				},
+			},
+		}
+
+		chunks, bifrostErr, isLast := resp.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.Nil(t, bifrostErr)
+		require.False(t, isLast)
+		require.Len(t, chunks, 1)
+
+		delta := chunks[0].Choices[0].ChatStreamResponseChoice.Delta
+		require.NotNil(t, delta)
+		require.NotNil(t, delta.Reasoning)
+		assert.Equal(t, "Step 1: analyze Step 2: verify.", *delta.Reasoning)
+		require.Len(t, delta.ReasoningDetails, 2)
+		assert.Equal(t, schemas.BifrostReasoningDetailsTypeText, delta.ReasoningDetails[0].Type)
+
+		wireBytes, err := schemas.Marshal(chunks[0])
+		require.NoError(t, err)
+		assert.Equal(t, "Step 1: analyze Step 2: verify.", gjson.GetBytes(wireBytes, "choices.0.delta.reasoning").String())
+		assert.Equal(t, "Step 1: analyze Step 2: verify.", gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_content").String())
+		assert.True(t, gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(wireBytes, "choices.0.delta.reasoning_details").Array())
+	})
+
+	t.Run("non_stream_thought_parts_populate_reasoning_and_wire_fields", func(t *testing.T) {
+		resp := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-nonstream-thought",
+			ModelVersion: "gemini-2.5-pro",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:        0,
+					FinishReason: gemini.FinishReasonStop,
+					Content: &gemini.Content{
+						Role: string(gemini.RoleModel),
+						Parts: []*gemini.Part{
+							{Text: "Internal reasoning.", Thought: true},
+							{Text: "Final answer."},
+						},
+					},
+				},
+			},
+		}
+
+		bifrostResp := resp.ToBifrostChatResponse()
+		require.NotNil(t, bifrostResp)
+		require.Len(t, bifrostResp.Choices, 1)
+
+		msg := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg)
+		require.NotNil(t, msg.Content)
+		require.NotNil(t, msg.Content.ContentStr)
+		assert.Equal(t, "Final answer.", *msg.Content.ContentStr)
+		require.NotNil(t, msg.ChatAssistantMessage)
+		require.NotNil(t, msg.ChatAssistantMessage.Reasoning)
+		assert.Equal(t, "Internal reasoning.", *msg.ChatAssistantMessage.Reasoning)
+		require.Len(t, msg.ChatAssistantMessage.ReasoningDetails, 1)
+
+		wireBytes, err := schemas.Marshal(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "Internal reasoning.", gjson.GetBytes(wireBytes, "choices.0.message.reasoning").String())
+		assert.Equal(t, "Internal reasoning.", gjson.GetBytes(wireBytes, "choices.0.message.reasoning_content").String())
+		assert.True(t, gjson.GetBytes(wireBytes, "choices.0.message.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(wireBytes, "choices.0.message.reasoning_details").Array())
+		assert.Equal(t, "Final answer.", gjson.GetBytes(wireBytes, "choices.0.message.content").String())
+	})
+
+	t.Run("encrypted_signature_only_keeps_reasoning_nil", func(t *testing.T) {
+		sig := []byte{0x01, 0x02, 0x03}
+		resp := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-sig-only",
+			ModelVersion: "gemini-2.5-pro",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:        0,
+					FinishReason: gemini.FinishReasonStop,
+					Content: &gemini.Content{
+						Role: string(gemini.RoleModel),
+						Parts: []*gemini.Part{
+							{
+								FunctionCall: &gemini.FunctionCall{
+									Name: "lookup",
+									ID:   "call_1",
+									Args: json.RawMessage(`{"q":"test"}`),
+								},
+								ThoughtSignature: sig,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		chunks, bifrostErr, _ := resp.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.Nil(t, bifrostErr)
+		require.Len(t, chunks, 1)
+		delta := chunks[0].Choices[0].ChatStreamResponseChoice.Delta
+		assert.Nil(t, delta.Reasoning)
+		require.NotEmpty(t, delta.ReasoningDetails)
+
+		streamWireBytes, err := schemas.Marshal(chunks[0])
+		require.NoError(t, err)
+		assert.False(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning").Exists())
+		assert.False(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_content").Exists())
+		assert.True(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(streamWireBytes, "choices.0.delta.reasoning_details").Array())
+
+		nonStreamResp := resp.ToBifrostChatResponse()
+		require.NotNil(t, nonStreamResp)
+		msg := nonStreamResp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		assert.Nil(t, msg.ChatAssistantMessage.Reasoning)
+		require.NotEmpty(t, msg.ChatAssistantMessage.ReasoningDetails)
+
+		nonStreamWireBytes, err := schemas.Marshal(nonStreamResp)
+		require.NoError(t, err)
+		assert.False(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning").Exists())
+		assert.False(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_content").Exists())
+		assert.True(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_details").IsArray())
+		assert.NotEmpty(t, gjson.GetBytes(nonStreamWireBytes, "choices.0.message.reasoning_details").Array())
+	})
 }
