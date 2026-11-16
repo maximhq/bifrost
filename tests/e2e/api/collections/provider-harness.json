@@ -330641,20 +330641,214 @@
       ]
     },
     {
-      "name": "352. Streamed usage bills each cached prompt token once (stream cache usage)",
+      "name": "352. Bedrock Converse caller anthropic_beta union with gateway-derived betas (#4965 / PR #5011) (caller anthropic_beta union)",
+      "description": "A caller can send extra Anthropic betas to a Claude model on Bedrock Converse through additionalModelRequestFieldPaths.anthropic_beta (a top-level body key on /v1/chat/completions and /v1/responses, collected as an extra param and applied by applyBedrockExtraParams in core/providers/bedrock/utils.go). On the Chat path the gateway derives its own betas first (fine-grained-tool-streaming-2025-05-14 for eager_input_streaming function tools via applyBedrockFineGrainedToolStreaming, and server-tool betas such as context-management-2025-06-27 for memory_* via the server-tool tunnel) and only then applies extra params. mergeAdditionalModelRequestFields replaced the whole anthropic_beta key with the caller's list, so the gateway-derived betas never reached Bedrock: eager tools streamed arguments in one burst, and a tunneled server tool went out without the beta it needs. The fix unions the two lists (caller values first, deduplicated). Cases 1-2 are red before the fix on the Chat path; case 3 pins the same invariant on /v1/responses, which already applied extra params before the eager beta. Each case reads the logged raw_request (the harness profile stores raw requests) and asserts additionalModelRequestFields.anthropic_beta. Go-level pin: TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta.",
+      "item": [
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            },\n            \"content\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\",\n            \"content\"\n          ]\n        }\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 memory server tool keeps its beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat memory: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat memory: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"context-management-2025-06-27\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat memory: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"memory_20250818\",\n      \"name\": \"memory\"\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union responses eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union responses eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union responses eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"write_file\",\n      \"description\": \"Write a file\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\",\n          \"content\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "353. Streamed usage bills each cached prompt token once (stream cache usage)",
       "description": "Issue #5354 / PR #5355. Anthropic splits streaming usage across message_start (nested message.usage) and message_delta (top-level usage), and upstreams disagree on where the prompt-side split goes. Anthropic, Vertex and Bedrock put the uncached input_tokens and the cache counters on message_start and usually only output_tokens on message_delta. Some Anthropic-compatible upstreams (kimi-code) put the whole prompt in message_start.input_tokens with zero cache counters and re-report the split on message_delta. The streaming accumulators kept the larger input_tokens and then folded the cache counters on top, so the second shape billed every cached token twice (20532 + 20224 = 40756).\n\nBoth stream accumulators in core/providers/anthropic/anthropic.go (HandleAnthropicChatCompletionStreaming for /v1/chat/completions, HandleAnthropicResponsesStream for /v1/responses and /anthropic/v1/messages) now treat each usage object as a snapshot: a prompt-side counter is overwritten only when the frame carried that key (reportedAnthropicStreamPromptCounters, read from the raw frame), and the cache counters are folded in once at stream end.\n\nEach route sends the same ~5k-token system prefix twice with a block-level cache_control: turn 1 writes (or, on a warm cache, reads), turn 2 must read, and both turns must bill the same prompt total with each cached token counted once. The live upstreams here use the Anthropic split, so these rows pin the invariant the fix must keep on the common shape (the first version of the fix billed only the uncached input on it); the double count itself needs a kimi-shaped upstream and is pinned red/green by TestStreamFinalUsageCountsCachedTokensOnce in cancelbilling_test.go. Rows: (1-2) Anthropic /v1/chat/completions, (3-4) /v1/responses, (5-6) the /anthropic/v1/messages SDK surface, read the way @anthropic-ai/sdk accumulates usage, (7-8) Vertex Claude /v1/chat/completions, which reuses the same chat stream handler.",
       "item": [
         {
-          "name": "352.1 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "353.1 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.1 streams with HTTP 200', function () {",
+                  "pm.test('353.1 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf352_prompt_1');",
+                  "pm.collectionVariables.unset('bf353_prompt_1');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -330669,23 +330863,23 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.1 the stream completes without an error event', function () {",
+                  "pm.test('353.1 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.1 the stream reports prompt usage', function () {",
+                  "pm.test('353.1 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.1 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.1 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf352_prompt_1', String(prompt));"
+                  "pm.collectionVariables.set('bf353_prompt_1', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -330717,13 +330911,13 @@
           }
         },
         {
-          "name": "352.2 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "353.2 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.2 streams with HTTP 200', function () {",
+                  "pm.test('353.2 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -330740,27 +330934,27 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.2 the stream completes without an error event', function () {",
+                  "pm.test('353.2 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.2 the stream reports prompt usage', function () {",
+                  "pm.test('353.2 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.2 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.2 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('352.2 the cache read turn reports a cache read', function () {",
+                  "pm.test('353.2 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf352_prompt_1'), 10);",
-                  "pm.test('352.2 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf353_prompt_1'), 10);",
+                  "pm.test('353.2 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -330795,16 +330989,16 @@
           }
         },
         {
-          "name": "352.3 anthropic claude-sonnet-4-6 /v1/responses streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "353.3 anthropic claude-sonnet-4-6 /v1/responses streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.3 streams with HTTP 200', function () {",
+                  "pm.test('353.3 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf352_prompt_2');",
+                  "pm.collectionVariables.unset('bf353_prompt_2');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -330821,23 +331015,23 @@
                   "    prompt = u.input_tokens; read = d.cached_read_tokens || d.cached_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.3 the stream completes without an error event', function () {",
+                  "pm.test('353.3 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached response.completed or response.incomplete: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.3 the stream reports prompt usage', function () {",
+                  "pm.test('353.3 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.3 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.3 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf352_prompt_2', String(prompt));"
+                  "pm.collectionVariables.set('bf353_prompt_2', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -330868,13 +331062,13 @@
           }
         },
         {
-          "name": "352.4 anthropic claude-sonnet-4-6 /v1/responses streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "353.4 anthropic claude-sonnet-4-6 /v1/responses streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.4 streams with HTTP 200', function () {",
+                  "pm.test('353.4 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -330893,27 +331087,27 @@
                   "    prompt = u.input_tokens; read = d.cached_read_tokens || d.cached_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.4 the stream completes without an error event', function () {",
+                  "pm.test('353.4 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached response.completed or response.incomplete: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.4 the stream reports prompt usage', function () {",
+                  "pm.test('353.4 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.4 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.4 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('352.4 the cache read turn reports a cache read', function () {",
+                  "pm.test('353.4 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf352_prompt_2'), 10);",
-                  "pm.test('352.4 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf353_prompt_2'), 10);",
+                  "pm.test('353.4 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -330947,16 +331141,16 @@
           }
         },
         {
-          "name": "352.5 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "353.5 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.5 streams with HTTP 200', function () {",
+                  "pm.test('353.5 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf352_prompt_3');",
+                  "pm.collectionVariables.unset('bf353_prompt_3');",
                   "if (pm.response.code !== 200) { return; }",
                   "var snap = { input_tokens: null, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -330972,23 +331166,23 @@
                   "});",
                   "var read = snap.cache_read_input_tokens, write = snap.cache_creation_input_tokens;",
                   "var prompt = snap.input_tokens === null ? null : snap.input_tokens + read + write;",
-                  "pm.test('352.5 the stream completes without an error event', function () {",
+                  "pm.test('353.5 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached message_stop: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.5 the stream reports prompt usage', function () {",
+                  "pm.test('353.5 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.5 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.5 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf352_prompt_3', String(prompt));"
+                  "pm.collectionVariables.set('bf353_prompt_3', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -331020,13 +331214,13 @@
           }
         },
         {
-          "name": "352.6 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "353.6 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.6 streams with HTTP 200', function () {",
+                  "pm.test('353.6 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -331044,27 +331238,27 @@
                   "});",
                   "var read = snap.cache_read_input_tokens, write = snap.cache_creation_input_tokens;",
                   "var prompt = snap.input_tokens === null ? null : snap.input_tokens + read + write;",
-                  "pm.test('352.6 the stream completes without an error event', function () {",
+                  "pm.test('353.6 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached message_stop: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.6 the stream reports prompt usage', function () {",
+                  "pm.test('353.6 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.6 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.6 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('352.6 the cache read turn reports a cache read', function () {",
+                  "pm.test('353.6 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf352_prompt_3'), 10);",
-                  "pm.test('352.6 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf353_prompt_3'), 10);",
+                  "pm.test('353.6 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -331099,16 +331293,16 @@
           }
         },
         {
-          "name": "352.7 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "353.7 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.7 streams with HTTP 200', function () {",
+                  "pm.test('353.7 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf352_prompt_4');",
+                  "pm.collectionVariables.unset('bf353_prompt_4');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -331123,23 +331317,23 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.7 the stream completes without an error event', function () {",
+                  "pm.test('353.7 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.7 the stream reports prompt usage', function () {",
+                  "pm.test('353.7 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.7 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.7 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf352_prompt_4', String(prompt));"
+                  "pm.collectionVariables.set('bf353_prompt_4', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -331171,13 +331365,13 @@
           }
         },
         {
-          "name": "352.8 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "353.8 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('352.8 streams with HTTP 200', function () {",
+                  "pm.test('353.8 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -331194,27 +331388,27 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('352.8 the stream completes without an error event', function () {",
+                  "pm.test('353.8 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('352.8 the stream reports prompt usage', function () {",
+                  "pm.test('353.8 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('352.8 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('353.8 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('352.8 the cache read turn reports a cache read', function () {",
+                  "pm.test('353.8 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf352_prompt_4'), 10);",
-                  "pm.test('352.8 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf353_prompt_4'), 10);",
+                  "pm.test('353.8 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
