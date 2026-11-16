@@ -403,4 +403,25 @@ func TestResponsesRequestHashIgnoresItemIDs(t *testing.T) {
 	if got := hash(build("fc_aaa", "msg_aaa", "toolu_1", "bye")); got == base {
 		t.Fatal("hash must still change when content differs")
 	}
+
+	// item_reference carries no content; its ID is what it refers to, so it must
+	// keep contributing to the hash.
+	buildRef := func(refID string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ResponsesMessage{
+					{ID: bifrost.Ptr(refID), Type: bifrost.Ptr(schemas.ResponsesMessageTypeItemReference)},
+				},
+			},
+		}
+	}
+	if hash(buildRef("msg_ref_1")) == hash(buildRef("msg_ref_2")) {
+		t.Fatal("hash must differ for item_reference items that point at different IDs")
+	}
+	if hash(buildRef("msg_ref_1")) != hash(buildRef("msg_ref_1")) {
+		t.Fatal("hash must be stable for the same item_reference ID")
+	}
 }
