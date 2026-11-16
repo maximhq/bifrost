@@ -630,11 +630,16 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
-	// Content summary: extract text from the found user message.
-	// Falls back to BuildInputContentSummary for non-chat inputs (speech, image, etc.).
+	// Content summary: text of the last user message. When there is none, or it
+	// has no text, BuildInputContentSummary falls back to the latest tool result
+	// or tool call, then to non-chat inputs (speech, image, etc.). The reset
+	// matters: SerializeFields already filled ContentSummary with the full-text
+	// search summary, which must not leak into the row.
+	dbEntry.ContentSummary = ""
 	if idx >= 0 {
 		dbEntry.ContentSummary = extractChatMessageText(&dbEntry.InputHistoryParsed[idx])
-	} else {
+	}
+	if dbEntry.ContentSummary == "" {
 		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
 	}
 	// Bound content summary to prevent large prompts from bloating the DB row.
@@ -2548,6 +2553,11 @@ func (h *HybridLogStore) SetDistributedLocker(locker DistributedLocker) {
 	if lockable, ok := h.inner.(interface{ SetDistributedLocker(DistributedLocker) }); ok {
 		lockable.SetDistributedLocker(locker)
 	}
+}
+
+// SwapWarpQuestion replaces one message's stored question only if it still holds expected.
+func (h *HybridLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	return h.inner.SwapWarpQuestion(ctx, ownerID, conversationID, messageID, expected, replacement)
 }
 
 // DeleteWarpConversationIfEmpty removes a thread only if it has no messages.

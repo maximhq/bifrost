@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "활성화되면 전체 오류 세부 정보가 서버 콘솔 로그에 기록돼요. 디버깅에는 유용하지만 프로덕션 환경에서는 노이즈가 발생할 수 있어요.",
 		"asyncJobTtl": "비동기 작업 결과 TTL(초)",
 		"asyncJobTtlHelp": "비동기 작업의 기본 수명은 초 단위이에요. 결과는 만료 후 자동으로 정리돼요.",
+		"bifrostUrl": "Bifrost URL",
+		"bifrostUrlHelp": "클라이언트가 이 게이트웨이에 접속하는 URL이며 기본 경로를 포함합니다. <code0>/v1/mcp</code0>와 Warp의 구성 도구에 필요해요. 이들의 호출은 여기로 들어온 것처럼 처리되므로 결과의 링크가 이 URL을 가리킵니다. 비워 두면 둘 다 비활성화되며, 요청이 보낸 Host 헤더를 대신 사용하지 않아요.",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "OpenAPI URL",
+		"openapiUrlHelp": "<code0>/v1/mcp</code0>가 도구를 생성하는 OpenAPI 스펙입니다. http(s) URL 또는 폐쇄망 설치를 위한 앱 디렉터리 기준 상대 경로를 지정합니다. 비워 두면 이 빌드의 게시된 스펙을 읽습니다.",
+		"openapiUrlPlaceholder": "이 빌드의 게시된 스펙",
 		"languageHelp": "대시보드 표시 언어예요. 이 브라우저에 저장되고 바로 적용돼요.",
 		"headerForwarding": "헤더 전달",
 		"headerForwardingHelp": "LLM 제공업체에 전달되는 추가 헤더를 제어해요.",
@@ -244,6 +250,8 @@
 		"deleteExpiredVirtualKeysHelp": "활성화되면 일일 정리 작업은 만료된 모든 가상 키를 삭제하고 제거된 키를 나열하는 알림을 게시합니다. 각 키는 만료 후 <b0>Delete</b0> 스위치에서 이를 재정의할 수 있습니다. 꺼짐으로 설정된 키는 유지되고 켜짐으로 설정된 키는 비활성화된 동안에도 삭제됩니다.",
 		"enforceVkObjectOwnership": "공급자 개체를 가상 키 생성으로 제한",
 		"enforceVkObjectOwnershipHelp": "활성화되면 가상 키로 생성된 파일, 배치, 비디오, 컨테이너, 캐시된 콘텐츠 및 라이브 세션은 동일한 키로만 읽거나 나열하거나 삭제할 수 있습니다. 다른 가상 키에는 찾을 수 없음 오류가 발생하며 목록에 표시되지 않습니다. 가상 키가 없는 요청은 영향을 받지 않습니다. 생성 키는 비활성화된 동안에도 기록되므로, 다시 활성화하면 생성 키를 기록할 수 없는 개체를 제외하고 그 동안 생성된 개체에도 적용됩니다.",
+		"bifrostMcpAllowWrites": "Bifrost MCP를 통한 구성 변경 허용",
+		"bifrostMcpAllowWritesHelp": "게이트웨이의 GET이 아닌 /api 작업을 <code0>/v1/mcp</code0>에서 도구로 제공합니다. 추론, 배치, 파일 경로는 항상 제공됩니다. 파괴적인 도구는 MCP 클라이언트에 확인을 요청합니다.",
 		"proofRequired": "이 변경 사항을 확인하려면 현재 관리자 비밀번호를 입력하세요. 대시보드 보호가 꺼져 있으므로 이 세션은 로그인되지 않습니다. 비밀번호를 모르는 경우 대신 설정 토큰을 사용하세요.",
 		"skipAccessProfileKeyCreation": "액세스 프로필용 사용자 가상 키 만들지 않기",
 		"skipAccessProfileKeyCreationHelp": "사용 설정하면 사용자의 첫 액세스 프로필이 해당 사용자의 가상 키를 만들지 않습니다. 사용자가 이미 소유한 키나 사용자를 위해 추가한 키는 프로필이 있는 동안 계속 프로필의 관리를 받습니다.",
@@ -405,6 +413,7 @@
 		"toastSyncIntervalInvalid": "도구 동기화 간격은 0 또는 양수여야 합니다.",
 		"toastMaxInstructionsPerServerInvalid": "서버당 최대 명령 길이는 0 또는 양수여야 합니다.",
 		"toastMaxInstructionsTotalInvalid": "최대 명령어 길이의 총합은 0이거나 양수여야 합니다.",
+		"toastOpenAPIMaxSpecInvalid": "OpenAPI 사양 크기 제한은 0에서 {{max}} MiB 사이의 정수여야 합니다.",
 		"toastIssuerUrlRequired": "MCP 인증 모드가 OAuth 또는 Both일 때는 발급자 URL이 필요해요. 먼저 설정 > 보안에서 설정하세요.",
 		"oauthPrivateAllowlist": "OAuth 비공개 네트워크 허용 목록",
 		"oauthPrivateAllowlistHelp": "MCP 서버에 대한 OAuth 검색, 클라이언트 등록 및 토큰 요청이 루프백 또는 개인 주소로 확인될 때 도달할 수 있는 호스트, IP 주소 또는 CIDR 범위(구성표 또는 포트 없음)입니다. <code0>localhost</code0>, <code1>127.0.0.1</code1> 또는 <code2>10.20.0.0/16</code2>. 대시보드 인증이 활성화되어 추가된 MCP 서버에 적용됩니다. 변경하려면 대시보드 인증이 필요합니다. 링크-로컬 및 클라우드 메타데이터 주소는 항상 차단됩니다.",
@@ -415,6 +424,8 @@
 		"maxProtocolVersionHelp": "Bifrost가 MCP 서버에 제시하는 최신 MCP 프로토콜 버전이에요. 자동은 Bifrost가 지원하는 최신 버전을 사용해요. 각 서버에서 이 설정을 재정의할 수 있어요.",
 		"maxInstructionsTotal": "최대 명령 길이 총계(바이트)",
 		"maxInstructionsTotalHelp": "발신자가 볼 수 있는 모든 서버의 천장. <code0>Gateway 및 LLM 요청</code0>에서는 모든 MCP 보유 요청을 처리하므로 이를 올리면 요청별 토큰이 발생합니다. 기본값인 16384를 사용하려면 0으로 설정하세요.",
+		"maxOpenAPISpecSize": "최대 OpenAPI 사양 크기(MiB)",
+		"maxOpenAPISpecSizeHelp": "OpenAPI MCP 서버가 허용하는 가장 큰 문서 크기입니다(붙여넣기, 업로드, URL에서 가져오기 모두 해당). 파싱 중에는 이 크기의 몇 배에 해당하는 메모리를 사용합니다. 0으로 설정하면 기본값 32를 사용합니다.",
 		"allowedRedirectUris": "허용된 리디렉션 URI",
 		"allowedRedirectUrisHelp": "원격 MCP 클라이언트가 사용할 수 있는 정확한 콜백 URI(예: <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. 모든 https 콜백을 허용하려면 <code1>*</code1>를 추가하세요. 부분 와일드카드는 지원되지 않습니다. 루프백 콜백 및 <code2>cursor://anysphere.cursor-mcp</code2>는 항상 허용됩니다. 이 목록을 변경하려면 대시보드 인증이 필요합니다.",
 		"allowedRedirectUrisPlaceholder": "콜백 URI 추가(Enter)",
@@ -1071,6 +1082,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "구성 도구",
+			"description": "Warp는 Bifrost의 구성을 읽을 수 있습니다. 추가로 허용할 변경 종류를 선택하세요. 각 변경은 여전히 사용자의 확인을 기다립니다.",
+			"reads": "구성 읽기",
+			"readsHelp": "프로바이더, 가상 키, 팀, 예산, 라우팅 규칙 등.",
+			"alwaysOn": "항상 켜짐",
+			"size_one": "도구 {{count}}개 · 약 {{tokens}} 토큰",
+			"size_other": "도구 {{count}}개 · 약 {{tokens}} 토큰",
+			"kinds": {
+				"create": {
+					"label": "생성",
+					"help": "가상 키, 팀, 라우팅 규칙 등을 추가합니다."
+				},
+				"update": {
+					"label": "업데이트",
+					"help": "가상 키의 예산처럼 기존 리소스를 변경합니다."
+				},
+				"delete": {
+					"label": "삭제",
+					"help": "리소스를 제거합니다. 삭제는 되돌릴 수 없다는 안내가 표시됩니다."
+				},
+				"action": {
+					"label": "기타 작업",
+					"help": "프로바이더 테스트나 캐시 비우기 같은 작업을 실행합니다."
+				}
+			},
+			"notLoaded": "Bifrost MCP가 로드되면 변경 종류를 선택할 수 있습니다.",
+			"writesOff": "Bifrost MCP 전체에서 변경이 꺼져 있습니다. Warp에서 선택하려면 보안 설정에서 <link0>Bifrost MCP를 통한 구성 변경 허용</link0>을 켜세요.",
+			"contextWarning": "켠 종류는 모두 Warp 요청마다 전송됩니다. 이 설정에서는 도구가 약 {{tokens}} 토큰입니다. 컨텍스트 창이 작은 모델은 응답하지 않을 수 있습니다.",
+			"contextReadsOnly": "읽기는 Warp 요청마다 약 {{tokens}} 토큰의 도구를 추가합니다."
+		},
 		"saved": "Warp 설정을 저장했습니다.",
 		"badRange": "유효한 백필 시간 범위를 선택하세요.",
 		"backfillStarted": "Warp 임베딩 백필을 시작했습니다.",

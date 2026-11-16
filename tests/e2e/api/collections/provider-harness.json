@@ -265331,7 +265331,7 @@
       "description": "Management-plane regression for connection_type \"openapi\": POST /api/mcp/openapi/preview parses Swagger 2.0 and OpenAPI 3.0/3.1/3.2 documents into the same tool set, POST /api/mcp/client registers a client whose MCP server is synthesized from the document (tools carry the <client>-<tool> prefix, the stored document is not echoed by GET /api/mcp/clients), and the create path refuses auth types the synthesized server cannot honor and tool names the document does not define. The upstream is the public Swagger Petstore because the harness profile has no admin auth configured, which confines registrations to public targets; no tool is called. The openai keyword in case names is only a harness filter label.",
       "item": [
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.0 petstore yields listPets/createPet/getPetById",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.0 petstore yields listPets/createPet/getPetById",
           "event": [
             {
               "listen": "test",
@@ -265388,7 +265388,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a spec with only operation-level servers needs no base url",
+          "name": "mcp-openapi-spec preview of a spec with only operation-level servers needs no base url",
           "event": [
             {
               "listen": "test",
@@ -265442,7 +265442,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a Swagger 2.0 petstore yields the same tools",
+          "name": "mcp-openapi-spec preview of a Swagger 2.0 petstore yields the same tools",
           "event": [
             {
               "listen": "test",
@@ -265494,7 +265494,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.1 petstore normalizes null type arrays",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.1 petstore normalizes null type arrays",
           "event": [
             {
               "listen": "test",
@@ -265549,7 +265549,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.2 petstore resolves $self and the query method",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.2 petstore resolves $self and the query method",
           "event": [
             {
               "listen": "test",
@@ -265606,7 +265606,230 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a non-OpenAPI document is a 400",
+          "name": "mcp-openapi-spec preview gives every argument a name clients accept: a user spec's metadata_<key> and filter[status] are renamed, not reinterpreted - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var tool = (body.tools || []).filter(function (t) { return t.name === 'listLogs'; })[0];",
+                  "pm.test('listLogs is a tool', function () {",
+                  "  pm.expect(tool, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "var props = ((tool && tool.input_schema) || {}).properties || {};",
+                  "pm.test('every argument name matches the Anthropic API rule, or clients drop the tool', function () {",
+                  "  var bad = Object.keys(props).filter(function (n) { return !/^[a-zA-Z0-9_.-]{1,64}$/.test(n); });",
+                  "  pm.expect(bad, JSON.stringify(Object.keys(props))).to.eql([]);",
+                  "});",
+                  "pm.test('a user spec is not reinterpreted: metadata_<key> stays one string argument under a valid name', function () {",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.have.property('metadata__key_');",
+                  "  pm.expect(props.metadata__key_.type).to.eql('string');",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.not.have.property('metadata');",
+                  "});",
+                  "pm.test('filter[status] is offered as filter_status_', function () {",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.have.property('filter_status_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Log API\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://logs.example.com\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/logs\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listLogs\\\",\\n        \\\"summary\\\": \\\"List logs\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"metadata_<key>\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"description\\\": \\\"Filter on custom metadata; replace <key> with the metadata key.\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          },\\n          {\\n            \\\"name\\\": \\\"filter[status]\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "mcp-openapi-spec wire names: create a client whose listLogs calls the local echo upstream - #9460",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): harness shards and parallel runs never collide on this client.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('openapiWireNamesId', 'harness-openapi-wirenames-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('openapiWireNamesName', 'harness_openapi_wirenames_' + run);",
+                  "// A run that stopped before its cleanup leaves its client behind. Remove this case's own leftovers once they are over an hour old,",
+                  "// which no run still in progress can own.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_openapi_wirenames_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover wire-names clients listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  var cutoff = Date.now() - 3600000;",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    var name = (c.config && c.config.name) || '';",
+                  "    var m = /^harness_openapi_wirenames_(\\d{13})(?:_|$)/.exec(name);",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover wire-names client ' + name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        var gone = dres.code === 500 && dres.text().indexOf('not found') !== -1;",
+                  "        pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('wire-names openapi client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{openapiWireNamesId}}\",\n  \"name\": \"{{openapiWireNamesName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listLogs\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Log API\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"http://127.0.0.1:8783/v1\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/echo\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listLogs\\\",\\n        \\\"summary\\\": \\\"List logs\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"metadata_<key>\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"description\\\": \\\"Filter on custom metadata; replace <key> with the metadata key.\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          },\\n          {\\n            \\\"name\\\": \\\"filter[status]\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\",\n    \"base_url\": \"http://127.0.0.1:8783/v1\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mcp-openapi-spec wire names: executing listLogs sends metadata_<key> and filter[status] upstream under their spec names, not the renamed argument names - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The relay fixture's /v1/echo answers with the method, path and query it received, and the openapi",
+                  "// tool returns that body as its content: the assertions below read the upstream boundary itself.",
+                  "pm.test('listLogs executes with a 200 and no tool error', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.not.equal(true);",
+                  "});",
+                  "var echoed = null;",
+                  "try { echoed = JSON.parse(String(pm.response.json().content || '')); } catch (e) { echoed = null; }",
+                  "pm.test('the tool result is the upstream echo', function () {",
+                  "  pm.expect(echoed, 'content is not the echo JSON: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(echoed.method, pm.response.text()).to.eql('GET');",
+                  "  pm.expect(echoed.path, pm.response.text()).to.eql('/v1/echo');",
+                  "});",
+                  "pm.test('metadata__key_ and filter_status_ reach the upstream as metadata_<key> and filter[status]', function () {",
+                  "  var query = (echoed && echoed.query) || {};",
+                  "  pm.expect(query, JSON.stringify(query)).to.eql({ 'filter[status]': 'open', 'metadata_<key>': 'search' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"openapi-wire-names\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"{{openapiWireNamesName}}-listLogs\",\n    \"arguments\": \"{\\\"metadata__key_\\\":\\\"search\\\",\\\"filter_status_\\\":\\\"open\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mcp-openapi-spec wire names: cleanup deletes the client - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('wire-names openapi client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.collectionVariables.unset('openapiWireNamesId');",
+                  "pm.collectionVariables.unset('openapiWireNamesName');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{openapiWireNamesId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{openapiWireNamesId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] mcp-openapi-spec preview of a non-OpenAPI document is a 400",
           "event": [
             {
               "listen": "test",
@@ -265648,7 +265871,102 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
+          "name": "mcp-openapi-spec preview of a spec_url above 5 MiB is parsed under the 32 MiB default",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost's own spec at an immutable release tag is 5.06 MiB: above the old 5 MiB limit (413), under the 32 MiB default.",
+                  "pm.test('openapi preview of a 5.06 MiB spec is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 2000)).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the whole document was read', function () {",
+                  "  pm.expect(body.spec_size, 'spec_size').to.be.above(5 * 1024 * 1024);",
+                  "});",
+                  "pm.test('its operations become tools', function () {",
+                  "  pm.expect(body.tool_count, 'tool_count').to.be.above(100);",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, 'tool names').to.include('listProviders');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec_url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.3.1/docs/openapi/openapi.json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] mcp-openapi-spec PUT /api/config rejects a null mcp_openapi_max_spec_mb",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// null would decode as 0 and silently reset the limit; it is refused before any state changes, and an explicit 0 is the reset.",
+                  "pm.test('mcp-openapi-spec null mcp_openapi_max_spec_mb: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('mcp-openapi-spec null mcp_openapi_max_spec_mb: the error names the field', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('mcp_openapi_max_spec_mb');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7, \"mcp_openapi_max_spec_mb\": null}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {
               "listen": "prerequest",
@@ -265722,7 +266040,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec list shows the prefixed tools and omits the document",
+          "name": "mcp-openapi-spec list shows the prefixed tools and omits the document",
           "event": [
             {
               "listen": "test",
@@ -265779,7 +266097,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec stored document is served on demand",
+          "name": "mcp-openapi-spec stored document is served on demand",
           "event": [
             {
               "listen": "test",
@@ -265813,7 +266131,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec cleanup deletes the client",
+          "name": "mcp-openapi-spec cleanup deletes the client",
           "event": [
             {
               "listen": "test",
@@ -265845,7 +266163,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec create with auth_type oauth is refused",
+          "name": "[EXPECT-400] mcp-openapi-spec create with auth_type oauth is refused",
           "event": [
             {
               "listen": "test",
@@ -265897,7 +266215,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec create with a tool the document does not define is refused",
+          "name": "[EXPECT-400] mcp-openapi-spec create with a tool the document does not define is refused",
           "event": [
             {
               "listen": "test",
@@ -265949,7 +266267,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec create a per-user-headers client synthesized from the document",
+          "name": "mcp-openapi-spec create a per-user-headers client synthesized from the document",
           "event": [
             {
               "listen": "prerequest",
@@ -266023,7 +266341,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec verify-headers is refused for an openapi client",
+          "name": "[EXPECT-400] mcp-openapi-spec verify-headers is refused for an openapi client",
           "event": [
             {
               "listen": "test",
@@ -266066,7 +266384,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec cleanup deletes the per-user-headers client",
+          "name": "mcp-openapi-spec cleanup deletes the per-user-headers client",
           "event": [
             {
               "listen": "test",
@@ -329456,7 +329774,1156 @@
       ]
     },
     {
-      "name": "352. Wally provider (wally provider)",
+      "name": "349. Request trace endpoint (log-trace) [SERIAL]",
+      "description": "GET /api/logs/{id}/trace serves the causal chain Warp's get_request_trace tool builds (the two now share logstore.BuildRequestTrace), so the Bifrost MCP and API clients can explain one request. The case sends one request, waits for its log row through the session listing, and requires the trace to be rooted at it with one successful openai node; an unknown id must return 404. Red before the change: the route did not exist. The seeded log is deleted at the end.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log-trace seed: one request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logTraceSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with OK.\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh session per run, so the wait below never sees an earlier run's row.",
+                  "pm.collectionVariables.set('logTraceSession', 'harness-log-trace-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logTraceId', pm.response.headers.get('x-bifrost-request-id') || '');",
+                  "pm.test('log-trace seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('log-trace seed: request id returned', function () {",
+                  "  pm.expect(pm.collectionVariables.get('logTraceId'), 'no x-bifrost-request-id header').to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace: wait for the seeded log row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logTraceSession}}&limit=10"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace wait: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logTraceTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logTraceTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  // The row is written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('logTraceTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logTraceTries');",
+                  "pm.test('log-trace wait: the seeded row is logged', function () {",
+                  "  pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + pm.response.text()).to.include(pm.collectionVariables.get('logTraceId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace: trace of the seeded request",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/{{logTraceId}}/trace"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('logTraceId');",
+                  "var trace = pm.response.json();",
+                  "pm.test('log-trace: the chain is rooted at the seeded request', function () {",
+                  "  pm.expect(trace.root_id, 'root: ' + pm.response.text()).to.equal(id);",
+                  "  pm.expect(trace.chain_length, 'length: ' + pm.response.text()).to.be.at.least(1);",
+                  "  pm.expect(trace.nodes[0].id, 'first node: ' + pm.response.text()).to.equal(id);",
+                  "  pm.expect(trace.nodes[0].provider, 'provider: ' + pm.response.text()).to.equal('openai');",
+                  "  pm.expect(trace.truncated_chain, 'truncated: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(trace.final_status, 'final status: ' + pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-404] openai log-trace: unknown id is not found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/harness-log-trace-missing-{{$guid}}/trace"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace: unknown id returns 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace cleanup: delete the seeded log",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"{{logTraceId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('logTraceId');",
+                  "pm.collectionVariables.unset('logTraceSession');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "344. Semantic log search endpoint (log-search) [SERIAL]",
+      "description": "GET /api/logs/search serves the search Warp's semantic_search_logs tool runs (the two share Service.SearchLogs and SemanticSearcher), so the Bifrost MCP and API clients can find logged conversations by meaning. Three deterministic rows require 400 for a search with no query, for more than 5 phrasings, and for a filter search by meaning cannot apply (objects), which used to be silently ignored; before the change /api/logs/search fell through to /api/logs/{id} and returned 404. The live rows configure Warp as folder 119 does, send one conversation with a distinctive phrase, wait for its log row, then search by two phrasings of that phrase until live indexing has embedded it, and require the row among the matches at or above the threshold. Requires the warp flag to be unlocked, an embedding provider in the profile and the vector store to be reachable; the seeded log, the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai log-search: a search with no query is refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: no query returns 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: more than 5 phrasings are refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a&query=b&query=c&query=d&query=e&query=f"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: six phrasings return 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a filter search by meaning cannot apply is refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&objects=embedding"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: objects is refused, not ignored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the filter').to.include('cannot filter on objects');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: roots_only is refused, not ignored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: roots_only is refused, not ignored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the filter').to.include('cannot filter on roots_only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&roots_only=true"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: fallback_hops_only is refused, not ignored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: fallback_hops_only is refused, not ignored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the filter').to.include('cannot filter on fallback_hops_only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&fallback_hops_only=true"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a malformed max_cost is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: max_cost=abc returns 400 instead of searching without a cost bound', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the parameter').to.include('max_cost');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&max_cost=abc"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a malformed min_tokens is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: min_tokens=many returns 400 instead of searching without a token bound', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the parameter').to.include('min_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&min_tokens=many"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: an unrecognised period is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: period=last_quarter returns 400 instead of searching all time', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the parameter').to.include('period');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&period=last_quarter"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: six identical phrasings count toward the limit of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: six copies of one query return 400 instead of folding to one', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"6 queries given\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a&query=a&query=a&query=a&query=a&query=a"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a list filter that names no value is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: providers=, returns 400 instead of searching every provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"providers\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&providers=,"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a filter given twice is refused, not half-applied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: a repeated max_cost returns 400 instead of applying one of them', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"max_cost\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&max_cost=100&max_cost=1"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a metadata filter with no key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: metadata_ with no key returns 400 instead of being dropped', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"metadata\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&metadata_=prod"
+          }
+        },
+        {
+          "name": "openai log-search setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = pm.response.code === 200 ? (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0] : undefined;",
+                  "pm.test('log-search: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "// Saved only from a successful read, so cleanup never restores from an error body.",
+                  "if (flag) { pm.collectionVariables.set('logSearchFlagWas', flag.enabled ? 'true' : 'false'); } else { pm.collectionVariables.unset('logSearchFlagWas'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai log-search setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the flag's saved state cleanup could not put it back, so the flag is not changed.",
+                  "if (!pm.collectionVariables.get('logSearchFlagWas')) {",
+                  "  pm.test('log-search: warp flag snapshot saved before enabling it', function () { pm.expect.fail('the feature flag read failed; not enabling a flag cleanup could not restore'); });",
+                  "  pm.execution.skipRequest();",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai log-search setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Saved only from a successful read, so neither the configure step nor cleanup uses an error body.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('logSearchConfigWas', pm.response.text()); } else { pm.collectionVariables.unset('logSearchConfigWas'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-search: configure Warp with no base URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var wasRaw = pm.collectionVariables.get('logSearchConfigWas');",
+                  "if (!wasRaw) {",
+                  "  pm.test('log-search: warp config snapshot saved before configuring', function () { pm.expect.fail('the warp config read failed; not overwriting a config cleanup could not restore'); });",
+                  "  pm.execution.skipRequest();",
+                  "  return;",
+                  "}",
+                  "var was = JSON.parse(wasRaw);",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || '',",
+                  "  // Pinned, not inherited: a high saved threshold, or a low saved limit (which caps the search's limit), would hide the seeded row. Cleanup's PUT of the snapshot restores the saved ones.",
+                  "  semantic_search_threshold: 0.3,",
+                  "  semantic_search_limit: 25",
+                  "};",
+                  "pm.collectionVariables.set('logSearchConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('log-search: config has no base_url', function () {",
+                  "  pm.expect(pm.response.json(), 'base_url should be gone: ' + pm.response.text()).to.not.have.property('base_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-search seed: a distinctive conversation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logSearchSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Write one sentence about a lighthouse keeper who collects seashells shaped like violins.\"}], \"max_tokens\": 40}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logSearchSession', 'harness-log-search-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logSearchId', pm.response.headers.get('x-bifrost-request-id') || '');",
+                  "pm.test('log-search seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search: wait for the seeded log row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logSearchSession}}&limit=10"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search wait: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logSearchTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logSearchTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  pm.collectionVariables.set('logSearchTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logSearchTries');",
+                  "pm.test('log-search wait: the seeded row is logged', function () {",
+                  "  pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + pm.response.text()).to.include(pm.collectionVariables.get('logSearchId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search: the seeded conversation is found by meaning",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a+lighthouse+keeper+who+collects+seashells+shaped+like+violins&query=violin-shaped+shells+collected+by+a+lighthouse+keeper&limit=25"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logSearchTries'); return; }",
+                  "var body = pm.response.json();",
+                  "var id = pm.collectionVariables.get('logSearchId');",
+                  "var hit = (body.rows || []).filter(function (r) { return r.id === id; })[0];",
+                  "var tries = Number(pm.collectionVariables.get('logSearchTries') || 0);",
+                  "// Live indexing embeds the row after it is written; until then the search returns nothing.",
+                  "if (!hit && tries < 15) {",
+                  "  pm.collectionVariables.set('logSearchTries', tries + 1);",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logSearchTries');",
+                  "pm.test('log-search: the seeded row is a match above the threshold', function () {",
+                  "  pm.expect(hit, 'seeded row not found: ' + pm.response.text()).to.not.equal(undefined);",
+                  "  pm.expect(hit.score, 'score: ' + pm.response.text()).to.be.at.least(body.threshold);",
+                  "  pm.expect(body.returned, 'returned: ' + pm.response.text()).to.equal((body.rows || []).length);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search cleanup: delete the seeded log",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"{{logSearchId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('logSearchId');",
+                  "pm.collectionVariables.unset('logSearchSession');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot means setup never changed the config (it refused to), so there is nothing to restore.",
+                  "if (!pm.collectionVariables.get('logSearchConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai log-search cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot means setup never changed the flag (it refused to), so there is nothing to restore.",
+                  "if (!pm.collectionVariables.get('logSearchFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('logSearchFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('logSearchFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "351. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /me/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/me/limits"
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/{user_id}/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /{user_id}/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/u-harness/limits"
+          }
+        }
+      ]
+    },
+    {
+      "name": "350. Caller identity endpoint (session-me)",
+      "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and Bifrost MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
+      "item": [
+        {
+          "name": "openai session-me: the harness caller is described",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('session-me: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('session-me: an admin caller identifies no user and is unrestricted', function () {",
+                  "  pm.expect(body.identified, 'identified: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(body.unrestricted, 'unrestricted: ' + pm.response.text()).to.equal(true);",
+                  "  pm.expect(body, 'no user id for an unidentified caller: ' + pm.response.text()).to.not.have.property('user_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "352. Bedrock Converse caller anthropic_beta union with gateway-derived betas (#4965 / PR #5011) (caller anthropic_beta union)",
+      "description": "A caller can send extra Anthropic betas to a Claude model on Bedrock Converse through additionalModelRequestFieldPaths.anthropic_beta (a top-level body key on /v1/chat/completions and /v1/responses, collected as an extra param and applied by applyBedrockExtraParams in core/providers/bedrock/utils.go). On the Chat path the gateway derives its own betas first (fine-grained-tool-streaming-2025-05-14 for eager_input_streaming function tools via applyBedrockFineGrainedToolStreaming, and server-tool betas such as context-management-2025-06-27 for memory_* via the server-tool tunnel) and only then applies extra params. mergeAdditionalModelRequestFields replaced the whole anthropic_beta key with the caller's list, so the gateway-derived betas never reached Bedrock: eager tools streamed arguments in one burst, and a tunneled server tool went out without the beta it needs. The fix unions the two lists (caller values first, deduplicated). Cases 1-2 are red before the fix on the Chat path; case 3 pins the same invariant on /v1/responses, which already applied extra params before the eager beta. Each case reads the logged raw_request (the harness profile stores raw requests) and asserts additionalModelRequestFields.anthropic_beta. Go-level pin: TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta.",
+      "item": [
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            },\n            \"content\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\",\n            \"content\"\n          ]\n        }\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions bedrock/global.anthropic.claude-sonnet-4-6 memory server tool keeps its beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union chat memory: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union chat memory: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"context-management-2025-06-27\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union chat memory: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union chat memory: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"memory_20250818\",\n      \"name\": \"memory\"\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses bedrock/global.anthropic.claude-sonnet-4-6 eager_input_streaming tool keeps fine-grained beta beside caller anthropic_beta - #4965",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('caller anthropic_beta union responses eager: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('caller anthropic_beta union responses eager: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the Converse body Bifrost sent to Bedrock. The log row is written by the batching writer,",
+                  "// so poll until it parses. Bounded: ten reads a second apart. It may be a JSON string of the body, so unwrap up to twice.",
+                  "var want = [\"interleaved-thinking-2025-05-14\",\"fine-grained-tool-streaming-2025-05-14\"];",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var fields = rr.additionalModelRequestFields || {};",
+                  "      var betas = fields.anthropic_beta;",
+                  "      if (typeof betas === 'string') { betas = [betas]; }",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta is a list', function () { pm.expect(betas, 'additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(fields).slice(0, 600)).to.be.an('array'); });",
+                  "      want.forEach(function (b) {",
+                  "        pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta carries ' + b, function () { pm.expect(betas || [], b + ' missing; a caller anthropic_beta replaced the gateway-derived betas: ' + JSON.stringify(fields).slice(0, 600)).to.include(b); });",
+                  "      });",
+                  "      pm.test('caller anthropic_beta union responses eager: outbound anthropic_beta has no duplicates', function () { var seen = {}; (betas || []).forEach(function (b) { pm.expect(seen[b], 'duplicate ' + b).to.not.eql(true); seen[b] = true; }); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('caller anthropic_beta union responses eager: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"write_file\",\n      \"description\": \"Write a file\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\",\n          \"content\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"additionalModelRequestFieldPaths\": {\n    \"anthropic_beta\": [\n      \"interleaved-thinking-2025-05-14\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "353. Wally provider (wally provider)",
       "description": "Wally (RunAnywhere) serves open-weight models through an OpenAI-compatible chat API at https://inference.runanywhere.ai/v1. Bifrost reaches it through the shared OpenAI chat handlers, serves /v1/responses by converting to chat, and lists models from /models. Wally has no /completions, /embeddings or /responses endpoint, so text completion and embeddings are declared unsupported in provider-capabilities.json and covered by the shared documented-unsupported checks. Model ids name upstream vendors (deepseek-v4.1-flash, minimax-m3), so filter-collection.mjs routes these rows exclusively to the wally partition.",
       "item": [
         {

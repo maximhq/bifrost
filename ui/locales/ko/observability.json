@@ -1116,6 +1116,8 @@
 			"groupTracesBySessionHelp": "활성화되면 동일한 x-bf-session-id 헤더를 공유하는 요청이 단일 추적으로 그룹화되고, 각 요청은 최상위 형제 범위로 나타납니다. 인바운드 W3C 추적 상위를 전달하는 요청은 자체 분산 추적에 유지되며 영향을 받지 않어요.",
 			"disableRootSpanContent": "루트 스팬 콘텐츠 비활성화",
 			"disableRootSpanContentHelp": "활성화되면 입력/출력 메시지 콘텐츠가 루트 범위에서만 삭제돼요. 기본 세대(llm.call) 범위는 전체 콘텐츠를 유지해요.",
+			"applyTraceDimensionsToChildSpans": "하위 스팬에 디멘션 적용",
+			"applyTraceDimensionsToChildSpansHelp": "활성화하면 요청 디멘션(x-bf-dim-* 헤더)이 루트 스팬뿐 아니라 내보내는 모든 스팬에 병합되어 하위 스팬을 디멘션별로 필터링하거나 그룹화할 수 있습니다. path, method 및 gen_ai.* 같은 예약된 네임스페이스는 건너뜁니다. 각 디멘션이 모든 스팬에 추가되므로 카디널리티가 높은 값은 컬렉터 수집 비용을 높입니다.",
 			"enableMetricsExport": "측정항목 내보내기 활성화",
 			"enableMetricsExportHelp": "클러스터 배포 시 적절한 집계를 위해 측정항목을 OTEL 수집기로 푸시",
 			"overheadBreakdown": "간접비 분석",
