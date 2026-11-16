@@ -190,7 +190,7 @@ You can also write the full Workers AI ID, `cloudflare/@cf/cloudflare/clef-flash
 - **Images are supported.** `input_image` parts are moved into Clef's `images` field. Send them as base64 data URLs.
 - **Validation is strict.** Clef returns a `422` for a `null` input or for any field it does not define, so do not pass extra params to it.
 
-A model Workers AI does not serve returns Cloudflare's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use Clef as its classifier; pick **Cloudflare** and it starts on `@cf/cloudflare/clef-flash`.
+A model Workers AI does not serve returns Cloudflare's own error. A [router](/features/routers#choosing-the-decision-model) can use Clef as its classifier; pick **Cloudflare** and it starts on `@cf/cloudflare/clef-flash`.
 
 ---
 

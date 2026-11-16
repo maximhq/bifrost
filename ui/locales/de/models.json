@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "Der Komplexitäts-Router wird zu Routern weiterentwickelt",
-				"body": "Router können mehrere Klassifikatoren betreiben, jeder mit eigenen Modellen und den Anfragen, die er übernimmt. Diese Seite funktioniert weiter wie bisher; für neue Einrichtungen empfehlen wir, Router auszuprobieren.",
+				"body": "Mit Routern können Sie mehrere Router erstellen, jeweils mit eigenem Klassifikator und eigenen Modellen. Diese Seite funktioniert weiter wie bisher; wir empfehlen, sowohl für bestehende als auch für neue Einrichtungen zu Routern zu wechseln.",
 				"action": "Router öffnen"
 			}
 		},

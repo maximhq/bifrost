@@ -1752,7 +1752,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		}
 		// Check hashability before saving client settings. loadAuthConfig accepts
 		// this prepared hash, so initial setup does not hash the password twice.
-		if firstAdmin && !isBcryptHash(fileAuth.AdminPassword.GetValue()) {
+		if firstAdmin && !isPasswordHash(fileAuth.AdminPassword.GetValue()) {
 			hashed, hashErr := encrypt.Hash(fileAuth.AdminPassword.GetValue())
 			if hashErr != nil {
 				return fmt.Errorf("invalid initial admin password: %w", hashErr)
@@ -6549,11 +6549,10 @@ func validateRateLimitLinkOwnership(tx *gorm.DB, rateLimitID *string, ownerType,
 	return nil
 }
 
-// isBcryptHash checks if a string looks like a bcrypt hash
-func isBcryptHash(s string) bool {
-	return strings.HasPrefix(s, "$2a$") ||
-		strings.HasPrefix(s, "$2b$") ||
-		strings.HasPrefix(s, "$2y$")
+// isPasswordHash checks if a string is already a password hash (PBKDF2 or bcrypt)
+// rather than a plaintext password.
+func isPasswordHash(s string) bool {
+	return encrypt.IsPasswordHash(s)
 }
 
 // preserveSecretVar returns a new SecretVar with the given value but preserving
@@ -6630,7 +6629,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		var passwordMatch bool
 		if filePassword == "" {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == ""
-		} else if isBcryptHash(filePassword) {
+		} else if isPasswordHash(filePassword) {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == filePassword
 		} else {
 			passwordMatch, _ = encrypt.CompareHash(dbAuthConfig.AdminPassword.GetValue(), filePassword)
@@ -6651,9 +6650,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 			}
 		}
 	}
-	// Hash password if it's plaintext (not already a bcrypt hash)
+	// Hash password if it is plaintext (not already a PBKDF2 or bcrypt hash)
 	hashedPassword := filePassword
-	if hashedPassword != "" && !isBcryptHash(hashedPassword) {
+	if hashedPassword != "" && !isPasswordHash(hashedPassword) {
 		var err error
 		hashedPassword, err = encrypt.Hash(hashedPassword)
 		if err != nil {

@@ -1,4 +1,5 @@
 - [fix]: Cloudflare 520-524 origin errors from providers behind Cloudflare, such as OpenAI, now retry on the same key as transient instead of reaching the caller (#8967) [@wangrat](https://github.com/wangrat)
+- feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)
 - fix: a caller's `additionalModelRequestFieldPaths.anthropic_beta` on Bedrock Converse is now unioned with the betas Bifrost derives (fine-grained tool streaming, server-tool betas such as memory's context-management) instead of replacing them, so eager tools stream incrementally and tunneled server tools keep the beta they need (thanks [@fus3r](https://github.com/fus3r)!)
 - fix: gemini - decisions reject an empty input, a non-image data URL in `input_image`, and an image, file or audio part given as a single instruction object before calling Gemini, and read a part's `detail` case-insensitively (thanks [@Xytronix](https://github.com/Xytronix)!)
 - feat: Kimchi provider for chat, Responses and embeddings
