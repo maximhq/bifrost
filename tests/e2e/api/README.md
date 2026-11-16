@@ -221,6 +221,28 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Azure disable_store on Responses requests
+
+Folder 359 pins that `openai_config.disable_store` on the Azure provider reaches Azure's
+`/openai/v1/responses` as `store: false`. The isolated profile's Azure provider sets the option, and
+the fixture models `store-false-required` and `store-true-required` answer only a request whose body
+carries exactly that `store`, refusing any other with a 400 that names the value received. The
+Responses cases send `store: true` on `/v1/responses` (unary and streamed) and on the OpenAI SDK route
+`/openai/v1/responses`, and must come back 200. A chat completion with
+`store: true` must still reach Azure with `store: true`, since the option applies to Responses
+requests only. These cases make no live provider calls and are skipped unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Provider 5xx failover and 429 retry-hint propagation](#provider-5xx-failover-and-429-retry-hint-propagation),
+then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "359. Azure Responses honour openai_config.disable_store (azure disable store)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

@@ -379,6 +379,7 @@ Sources:
 - [x] **Responses on Azure** (`POST /openai/deployments/{deployment}/responses?api-version=2025-04-01-preview`) — built: folder 148.5
 - [x] **Web search on Azure Responses** (`web_search_preview`) — gated: folder 150.4 [PREVIEW] (needs an Azure web-search deployment)
 - [x] **Code interpreter on Azure Responses** — audited: covered (weak: status/shape assertions only)
+- [x] **`openai_config.disable_store` on Azure Responses** (`store: false` forced on unary and streamed requests, chat completions untouched) — built: folder 359 against the local provider-error fixture (red before the fix, green after)
 
 ### Other Azure endpoints
 

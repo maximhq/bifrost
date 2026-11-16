@@ -3383,6 +3383,40 @@ func TestSchemaProviderRawRequest(t *testing.T) {
 	})
 }
 
+// Azure honours openai_config.disable_store on its Responses requests, so its provider entry takes
+// the same openai_config block as openai, with the same contents.
+func TestSchemaAzureOpenAIConfig(t *testing.T) {
+	compiled := compileSchema(t)
+	azureConfig := func(openaiConfig string) string {
+		return `{
+			"providers": {
+				"azure": {
+					"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["*"], "azure_key_config": {"endpoint": "https://example.openai.azure.com"}}],
+					"openai_config": ` + openaiConfig + `
+				}
+			}
+		}`
+	}
+
+	t.Run("disable_store validates successfully", func(t *testing.T) {
+		if err := validateConfig(t, compiled, azureConfig(`{"disable_store": true}`)); err != nil {
+			t.Errorf("azure provider with openai_config.disable_store should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("non-boolean disable_store is rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, azureConfig(`{"disable_store": "true"}`)); err == nil {
+			t.Error("azure openai_config.disable_store must be a boolean")
+		}
+	})
+
+	t.Run("unknown openai_config field is rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, azureConfig(`{"disable_store": true, "store": false}`)); err == nil {
+			t.Error("azure openai_config must reject fields it does not define")
+		}
+	})
+}
+
 func TestSchemaGovernanceProviders(t *testing.T) {
 	schema := loadSchema(t)
 

@@ -490,6 +490,48 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ---
 
+## Disable Store (optional)
+
+The Responses API stores responses by default (`store=true`), so later requests can reference the stored items. Stored items live on the Azure OpenAI resource that produced them: when keys for the same model point at several resources, a follow-up request that lands on a different resource is rejected with a 400. Enable **Disable Store** to have Bifrost force `store=false` on every Azure Responses API request, overriding any `store` value the client sends.
+
+<Tabs>
+<Tab title="Web UI">
+
+Open the Azure provider, go to the **OpenAI Config** tab, turn on **Disable Store**, and click **Save OpenAI Configuration**.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-api-key",
+          "value": "env.AZURE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT"
+          }
+        }
+      ],
+      "openai_config": {
+        "disable_store": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+The setting applies to every request Bifrost sends to Azure's OpenAI-compatible `/openai/v1/responses` endpoint, including chat completions that Bifrost converts to Responses requests (the compat `convert_chat_to_responses` option, or a model listed as Responses-only). Chat Completions sent to `/openai/v1/chat/completions` go out unchanged, since that endpoint also serves non-OpenAI models, and so do Responses requests for models that Bifrost serves through chat completions. Anthropic models use the `/anthropic/v1/messages` endpoint, which has no `store` parameter. Clients that continue a conversation with `previous_response_id` need stored responses and cannot be used with this setting.
+
+---
+
 ## Beta Headers
 
 For Anthropic models on Azure, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request. Azure supports most Anthropic beta features.

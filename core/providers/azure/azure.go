@@ -50,6 +50,7 @@ type AzureProvider struct {
 	credentials         sync.Map // map of tenant ID:client ID to azcore.TokenCredential
 	sendBackRawRequest  bool     // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool     // Whether to include raw response in BifrostResponse
+	disableStore        bool     // Whether to force store=false on outgoing OpenAI-compatible Responses API requests
 }
 
 func (p *AzureProvider) getOrCreateAuth(
@@ -212,6 +213,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		disableStore:        config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 	}, nil
 }
 
@@ -600,6 +602,9 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	if v := resolveAPIVersion(ctx, ""); v != "" {
 		path += "?api-version=" + v
 	}
+	if provider.disableStore {
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -681,6 +686,9 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			path += "?api-version=" + v
 		}
 		url = fmt.Sprintf("%s/%s", endpoint, path)
+		if provider.disableStore {
+			ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		}
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
