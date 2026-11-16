@@ -169,6 +169,43 @@ func TestGeminiInteractionTranscriptionRoutesToInteractionsEndpoint(t *testing.T
 	assert.Equal(t, 15, *response.Usage.TotalTokens)
 }
 
+// Word timestamps requested with timestamp_granularities come back as word_info
+// annotations (offsets as duration strings) and must map to Words in seconds,
+// alongside the unchanged transcript text.
+func TestGeminiInteractionTranscriptionMapsWordAnnotations(t *testing.T) {
+	server, captured := newInteractionTranscriptionServer(t, "application/json",
+		`{"status":"completed","output_text":"Hello world","steps":[{"type":"model_output","content":[{"type":"text","text":"Hello world","annotations":[`+
+			`{"type":"word_info","text":"Hello","speaker":"spk_1","start_offset":"0.100s","end_offset":"0.400s"},`+
+			`{"type":"word_info","text":"world","speaker":"spk_1","start_offset":"0.500s","end_offset":"0.800s"},`+
+			`{"type":"word_info","text":"bad","start_offset":"not-a-duration","end_offset":"1s"},`+
+			`{"type":"other","text":"ignored","start_offset":"1s","end_offset":"2s"}]}]}]}`)
+	provider := newInteractionTranscriptionTestProvider(server.URL)
+
+	response, bifrostErr := provider.Transcription(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostTranscriptionRequest{
+		Provider: schemas.Gemini,
+		Model:    geminiInteractionTranscriptionModel,
+		Input:    &schemas.TranscriptionInput{File: interactionTranscriptionTestAudio},
+		Params:   &schemas.TranscriptionParameters{TimestampGranularities: []string{"word"}},
+	})
+	require.Nil(t, bifrostErr)
+
+	assert.Equal(t, map[string]interface{}{
+		"transcription_config": map[string]interface{}{
+			"mode": map[string]interface{}{"type": "verbatim", "timestamp_granularities": []interface{}{"word"}},
+		},
+	}, captured.body["generation_config"])
+	assert.Equal(t, "Hello world", response.Text)
+	require.Len(t, response.Words, 2, "only parseable word_info annotations become words")
+	assert.Equal(t, "Hello", response.Words[0].Word)
+	assert.InDelta(t, 0.1, response.Words[0].Start, 1e-9)
+	assert.InDelta(t, 0.4, response.Words[0].End, 1e-9)
+	require.NotNil(t, response.Words[0].Speaker)
+	assert.Equal(t, "spk_1", *response.Words[0].Speaker)
+	assert.Equal(t, "world", response.Words[1].Word)
+	assert.InDelta(t, 0.5, response.Words[1].Start, 1e-9)
+	assert.InDelta(t, 0.8, response.Words[1].End, 1e-9)
+}
+
 func TestGeminiInteractionTranscriptionPrefersOutputText(t *testing.T) {
 	server, _ := newInteractionTranscriptionServer(t, "application/json",
 		`{"output_text":"  from output text  ","steps":[{"content":[{"type":"text","text":"from steps"}]}]}`)

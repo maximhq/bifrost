@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -12,11 +13,23 @@ import (
 const geminiInteractionTranscriptionModel = "gemini-3.5-transcribe"
 
 type geminiInteractionContent struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"`
-	MIMEType string `json:"mime_type,omitempty"`
+	Type        string                        `json:"type"`
+	Text        string                        `json:"text,omitempty"`
+	Data        string                        `json:"data,omitempty"`
+	MIMEType    string                        `json:"mime_type,omitempty"`
+	Annotations []geminiInteractionAnnotation `json:"annotations,omitempty"` // word_info entries when word timestamps are requested
 }
+
+// geminiInteractionAnnotation is a word_info annotation on transcription output text.
+type geminiInteractionAnnotation struct {
+	Type        string `json:"type,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Speaker     string `json:"speaker,omitempty"`
+	StartOffset string `json:"start_offset,omitempty"` // duration string, e.g. "0.100s"
+	EndOffset   string `json:"end_offset,omitempty"`
+}
+
+const geminiInteractionWordInfoAnnotation = "word_info"
 
 type geminiInteractionTranscriptionRequest struct {
 	Model            string                             `json:"model"`
@@ -161,8 +174,40 @@ func (response *geminiInteractionResponse) ToBifrostTranscriptionResponse() *sch
 	if textContent != "" {
 		bifrostResp.Task = schemas.Ptr("transcribe")
 	}
+	bifrostResp.Words = geminiInteractionWordsFromSteps(response.Steps)
 	bifrostResp.Usage = geminiInteractionUsageToTranscriptionUsage(response.Usage)
 	return bifrostResp
+}
+
+// geminiInteractionWordsFromSteps maps word_info annotations (present when
+// timestamp_granularities includes "word") to Bifrost words with times in seconds.
+// A word whose offsets cannot be parsed is skipped rather than given a false time.
+func geminiInteractionWordsFromSteps(steps []geminiInteractionStep) []schemas.TranscriptionWord {
+	var words []schemas.TranscriptionWord
+	for _, step := range steps {
+		for _, content := range step.Content {
+			for _, annotation := range content.Annotations {
+				if annotation.Type != geminiInteractionWordInfoAnnotation {
+					continue
+				}
+				start, startErr := time.ParseDuration(annotation.StartOffset)
+				end, endErr := time.ParseDuration(annotation.EndOffset)
+				if startErr != nil || endErr != nil {
+					continue
+				}
+				word := schemas.TranscriptionWord{
+					Word:  annotation.Text,
+					Start: start.Seconds(),
+					End:   end.Seconds(),
+				}
+				if annotation.Speaker != "" {
+					word.Speaker = schemas.Ptr(annotation.Speaker)
+				}
+				words = append(words, word)
+			}
+		}
+	}
+	return words
 }
 
 func geminiInteractionTextFromSteps(steps []geminiInteractionStep) string {
