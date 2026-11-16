@@ -3107,3 +3107,34 @@ func TestHeldStreamFirstTokenDeadline(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkHandleStreamingSpeech streams 64 speech chunks through the router's chunk loop, as SSE events and as the raw
+// audio of a route that sets RawAudio.
+func BenchmarkHandleStreamingSpeech(b *testing.B) {
+	audio := bytes.Repeat([]byte("a"), 4096)
+	chunks := make([]*schemas.BifrostStreamChunk, 64)
+	for i := range chunks {
+		chunks[i] = &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: audio}}
+	}
+	sse := RouteConfig{StreamConfig: &StreamConfig{
+		SpeechStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+			return "", resp, nil
+		},
+	}}
+	for name, config := range map[string]RouteConfig{"sse": sse, "raw audio": rawAudioConfig()} {
+		b.Run(name, func(b *testing.B) {
+			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			b.ReportAllocs()
+			for b.Loop() {
+				stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
+				for _, chunk := range chunks {
+					stream <- chunk
+				}
+				close(stream)
+				ctx := &fasthttp.RequestCtx{}
+				router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+				_, _ = io.Copy(io.Discard, ctx.Response.BodyStream())
+			}
+		})
+	}
+}
