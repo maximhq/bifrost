@@ -1266,8 +1266,12 @@ paths:
   # Logging
   /api/logs:
     $ref: "./paths/management/logging.yaml#/logs"
+  /api/logs/search:
+    $ref: "./paths/management/logging.yaml#/logs-search"
   /api/logs/{id}:
     $ref: "./paths/management/logging.yaml#/logs-by-id"
+  /api/logs/{id}/trace:
+    $ref: "./paths/management/logging.yaml#/logs-trace-by-id"
   /api/logs/sessions/{session_id}:
     $ref: "./paths/management/logging.yaml#/logs-sessions-by-id"
   /api/logs/sessions/{session_id}/summary:

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -365,6 +367,26 @@ func semanticVectorFilterFields(queries []vectorstore.Query) map[string]vectorst
 		fields[query.Field] = query
 	}
 	return fields
+}
+
+// A bound the vector store cannot hold as an int64 (infinite, or past its range)
+// is left to the post-filter: converted, an infinite max_latency became the
+// smallest int64 on amd64 and the prefilter matched nothing. Finite bounds stay.
+func TestWarpSemanticVectorFiltersSkipUnrepresentableBounds(t *testing.T) {
+	inf, negInf, huge, finite := math.Inf(1), math.Inf(-1), 1e300, 2.5
+	fields := semanticVectorFilterFields(semanticVectorFilters(&logstore.SearchFilters{MinLatency: &negInf, MaxLatency: &inf, MinCost: &negInf, MaxCost: &huge}))
+	_, hasLatency := fields["latency_ms"]
+	_, hasCost := fields["cost_micro_usd"]
+	require.False(t, hasLatency, "an infinite latency bound must not reach the vector store")
+	require.False(t, hasCost, "an infinite or out-of-range cost bound must not reach the vector store")
+
+	queries := semanticVectorFilters(&logstore.SearchFilters{MaxLatency: &finite, MaxCost: &finite})
+	fields = semanticVectorFilterFields(queries)
+	require.Equal(t, int64(3), fields["latency_ms"].Value)
+	require.Equal(t, int64(2_500_000), fields["cost_micro_usd"].Value)
+
+	// The exact bound still applies after hydration.
+	require.True(t, matchesSemanticFilters(&logstore.Log{Latency: &finite}, &logstore.SearchFilters{MaxLatency: &inf}))
 }
 
 // The store-side prefilter must match the way the post-filter matches.
@@ -800,4 +822,123 @@ func TestWarpSemanticSearchToldToJudgeRowsByContent(t *testing.T) {
 	require.Contains(t, tool.description, "several phrasings")
 	require.Contains(t, tool.schemaJSON, `"queries"`)
 	require.Contains(t, SemanticSearchGuidance, "drop every row whose content is not about the topic")
+}
+
+// GET /api/logs/search runs the same search as the tool, for the caller on the
+// context: a restricted caller's visibility fans out the vector prefilters, and
+// Warp's own default of narrowing an unscoped question to the asker's traffic
+// does not apply. Bad queries are refused before anything is embedded, and a
+// deployment without the log index says so.
+func TestWarpServiceSearchLogsForAnAPICaller(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	vectors := newFakeWarpVectorStore()
+	embedded := 0
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		embedded++
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+		WithVectorStore(vectors),
+		WithEmbeddingExecutor(executor),
+		WithLogReader(reader),
+		WithCallerRestrictionResolver(func(context.Context) CallerRestriction {
+			return CallerRestriction{Restricted: true, Logs: &LogVisibility{TeamIDs: []string{"team-1"}}}
+		}),
+	)
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyUserID, "asking-user")
+
+	result, err := service.SearchLogs(ctx, []string{"refund requests"}, nil, 5)
+	require.NoError(t, err)
+	require.NotNil(t, result.Rows)
+	fields := map[string]bool{}
+	for _, queries := range vectors.calls {
+		for _, query := range queries {
+			fields[query.Field] = true
+		}
+	}
+	require.True(t, fields["team_ids"], "the caller's visibility prefilters the index")
+	require.False(t, fields["user_id"], "the API does not narrow to the asker's own traffic")
+
+	embedded = 0
+	_, err = service.SearchLogs(ctx, []string{"  "}, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	_, err = service.SearchLogs(ctx, []string{"a", "b", "c", "d", "e", "f"}, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	require.Zero(t, embedded, "a refused query set is never embedded")
+
+	unindexed := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
+	_, err = unindexed.SearchLogs(ctx, []string{"refund requests"}, nil, 5)
+	require.ErrorIs(t, err, ErrUnavailable)
+	_, err = unindexed.SearchLogs(ctx, nil, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery, "a bad request is a 400 even where search is unavailable")
+	_, err = unindexed.SearchLogs(ctx, []string{"refund requests"}, &logstore.SearchFilters{RootsOnly: true}, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery, "an unsupported filter is a 400 even where search is unavailable")
+}
+
+// A filter search by meaning cannot apply is refused, naming it, rather than
+// dropped: a dropped filter widens the result without saying so. This holds
+// for the API and for Warp's tool, and nothing is embedded first.
+func TestWarpSemanticSearchRefusesFiltersItCannotApply(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	embedded := 0
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		embedded++
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+		WithVectorStore(newFakeWarpVectorStore()),
+		WithEmbeddingExecutor(executor),
+		WithLogReader(reader),
+	)
+	_, err := service.SearchLogs(context.Background(), []string{"refunds"}, &logstore.SearchFilters{SessionID: "s-1", Objects: []string{"embedding"}, TopicIDs: []string{"t-1"}, Providers: []string{"openai"}}, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	require.ErrorContains(t, err, "cannot filter on objects, topic_ids.")
+	require.NotContains(t, err.Error(), "cannot filter on providers")
+	require.NotContains(t, err.Error(), "cannot filter on objects, session_id")
+
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
+	_, err = runTool(t, SemanticSearchToolName, &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{Unrestricted: true}}, map[string]any{
+		"queries": []any{"refunds"}, "filters": map[string]any{"topic_ids": []any{"t-1"}},
+	})
+	require.ErrorContains(t, err, "cannot filter on topic_ids")
+	require.Zero(t, embedded)
+}
+
+// Every SearchFilters field is either applied by search by meaning or refused
+// by name. A new field fails here until it is put on one side.
+func TestWarpSemanticFiltersClassifyEveryField(t *testing.T) {
+	applied := map[string]bool{
+		"StartTime": true, "EndTime": true, "Providers": true, "Models": true, "Status": true,
+		"VirtualKeyIDs": true, "UserIDs": true, "Apps": true, "TeamIDs": true, "CustomerIDs": true,
+		"BusinessUnitIDs": true, "MinLatency": true, "MaxLatency": true, "MinCost": true, "MaxCost": true,
+		"ContentSearch": true, "SessionID": true,
+		"RankingLimit": true, // a ranking option, not a filter
+	}
+	typ := reflect.TypeOf(logstore.SearchFilters{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		var filters logstore.SearchFilters
+		value := reflect.ValueOf(&filters).Elem().Field(i)
+		switch value.Kind() {
+		case reflect.String:
+			value.SetString("x")
+		case reflect.Bool:
+			value.SetBool(true)
+		case reflect.Slice:
+			value.Set(reflect.MakeSlice(value.Type(), 1, 1))
+		case reflect.Map:
+			value.Set(reflect.MakeMapWithSize(value.Type(), 1))
+			value.SetMapIndex(reflect.New(value.Type().Key()).Elem(), reflect.New(value.Type().Elem()).Elem())
+		case reflect.Pointer:
+			value.Set(reflect.New(value.Type().Elem()))
+		default:
+			t.Fatalf("SearchFilters.%s has kind %s; teach this test to set it", field.Name, value.Kind())
+		}
+		refused := len(unsupportedSemanticFilters(&filters)) > 0
+		if refused == applied[field.Name] {
+			t.Errorf("SearchFilters.%s: refused=%v, but applied=%v", field.Name, refused, applied[field.Name])
+		}
+	}
 }
