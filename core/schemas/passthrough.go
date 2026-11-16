@@ -185,6 +185,9 @@ type BifrostPassthroughUsage struct {
 	Cost *BifrostCost
 }
 
+// PassthroughModelListFilter rewrites a provider's raw model-list body, keeping only the models keep accepts.
+type PassthroughModelListFilter func(body []byte, keep func(model string) bool) ([]byte, error)
+
 type BifrostPassthroughResponse struct {
 	StatusCode       int
 	Headers          map[string]string

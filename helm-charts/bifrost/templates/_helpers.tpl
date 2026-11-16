@@ -216,6 +216,11 @@ env.BIFROST_WEAVIATE_API_KEY
 {{- end -}}
 {{- end -}}
 
+{{- /* Redis exporter port; the metrics values are optional, so the default lives here. */ -}}
+{{- define "bifrost.redis.metricsPort" -}}
+{{- .Values.vectorStore.redis.metrics.port | default 9121 -}}
+{{- end }}
+
 {{- define "bifrost.redis.host" -}}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- .Values.vectorStore.redis.external.host }}
@@ -468,6 +473,9 @@ false
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.usageEstimationTokenizers }}
+{{- $_ := set $client "usage_estimation_tokenizers" .Values.bifrost.client.usageEstimationTokenizers }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpAgentDepth }}
 {{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
 {{- end }}
@@ -491,6 +499,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
 {{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
+{{- end }}
+{{- if .Values.bifrost.client.entityAccessProfileMode }}
+{{- $_ := set $client "entity_access_profile_mode" .Values.bifrost.client.entityAccessProfileMode }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
@@ -1097,11 +1108,17 @@ false
 {{- end }}
 {{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
 {{- end }}
-{{- /* Model routers, each with its targets and routing, rendered as declared. Like
-       governance.routingRules, an empty list renders nothing, so installs that do not set it keep
-       their stored routers. */ -}}
-{{- if .Values.bifrost.modelRouters }}
-{{- $_ := set $config "model_routers" .Values.bifrost.modelRouters }}
+{{- /* Model routers, each with its targets and routing, rendered as declared. Rendered whenever the
+       key is declared, [] included: with config.json as the source of truth an explicit list removes
+       stored routers it does not name, and omitting the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "modelRouters" }}
+{{- $_ := set $config "model_routers" (default (list) .Values.bifrost.modelRouters) }}
+{{- end }}
+{{- /* Datasheet overrides. Rendered whenever the key is declared, [] included: with config.json as
+       the source of truth an explicit list removes stored overrides it does not name, and omitting
+       the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "datasheetOverrides" }}
+{{- $_ := set $config "datasheet_overrides" (default (list) .Values.bifrost.datasheetOverrides) }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -1941,6 +1958,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
+{{- end }}
+{{- if hasKey $inputConfig "apply_trace_dimensions_to_child_spans" }}
+{{- $_ := set $otelConfig "apply_trace_dimensions_to_child_spans" $inputConfig.apply_trace_dimensions_to_child_spans }}
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}

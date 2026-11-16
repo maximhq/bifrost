@@ -106,6 +106,17 @@ WarpConfig:
         Appended to Warp's built-in system prompt. Additive only: an operator
         can teach Warp local naming conventions, but cannot remove the tool-use
         and scoping instructions the built-in prompt establishes.
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Provider used to embed gateway conversations for semantic search.
@@ -157,6 +168,48 @@ WarpConfig:
       type: boolean
       readOnly: true
       description: Whether the shared runtime vector store is connected.
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      description: |
+        Kinds of configuration change Warp may offer through the Bifrost MCP,
+        each run only after the person confirms it. Reads are always offered;
+        empty, the default, is reads only.
+    management_writes_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the Bifrost MCP serves writes at all. It is the ceiling: with
+        client.bifrost_mcp_allow_writes off, no kind of write is offered,
+        whatever management_writes says.
+    management_tool_sizes:
+      type: array
+      readOnly: true
+      description: |
+        Per kind, how many management tools Warp could be offered and roughly
+        how many tokens their declarations add to every Warp request. Absent
+        while the Bifrost MCP is not loaded.
+      items:
+        type: object
+        properties:
+          kind:
+            type: string
+            enum: [read, create, update, delete, action]
+          tools:
+            type: integer
+          estimated_tokens:
+            type: integer
+            description: Rough estimate (declaration characters / 3).
+        required: [kind, tools, estimated_tokens]
+    bifrost_mcp_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the gateway's Bifrost MCP is loaded. Warp reads configuration
+        through it and does not answer without it: chat returns 503 with reason
+        `no_bifrost_mcp`. False when `client.bifrost_url` is unset or the
+        OpenAPI spec could not be read.
   required:
     - configured
     - enabled
@@ -173,6 +226,17 @@ WarpConfig:
     - semantic_search_limit
     - topic_discovery_min_requests
     - vector_store_connected
+    - management_writes
+    - management_writes_available
+    - bifrost_mcp_available
+
+WarpManagementWrite:
+  type: string
+  enum: [create, update, delete, action]
+  description: |
+    A kind of configuration change: create (POST create operations), update
+    (PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests
+    and cache flushes).
 
 WarpConfigInput:
   type: object
@@ -277,6 +341,17 @@ WarpConfigInput:
         policy question with no technically correct ceiling.
     system_prompt_suffix:
       type: string
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Required when `enabled` is true.
@@ -323,6 +398,15 @@ WarpConfigInput:
         keeps the stored value; zero means "use the default", resolved before
         validation. 1 to 9 are refused.
 
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      uniqueItems: true
+      description: |
+        Kinds of configuration change Warp may offer, each run only after the
+        person confirms it. Reads are always offered and are not a kind. Omitted
+        keeps the stored value; [] is reads only.
 WarpUnavailable:
   type: object
   description: |
@@ -338,6 +422,10 @@ WarpUnavailable:
       semantic search specifically is unavailable. Everything else Warp does
       still works, so this is a degraded state rather than an absent one - do
       not hide the launcher for it.
+    - `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,
+      or its OpenAPI spec could not be read). Warp does not answer without it.
+      Show administrators the setup step and everyone else an ask-an-admin
+      message, in place of the composer.
   properties:
     reason:
       type: string
@@ -345,6 +433,7 @@ WarpUnavailable:
         - not_configured
         - no_log_store
         - no_vector_store
+        - no_bifrost_mcp
     message:
       type: string
   required:
@@ -360,6 +449,13 @@ WarpBackfillRequest:
     end_time:
       type: string
       format: date-time
+    restart:
+      type: boolean
+      default: false
+      description: |
+        Discard a resumable checkpoint left by a failed or cancelled run over the
+        same window and scan from the beginning. Omitted, a found checkpoint is
+        resumed automatically.
   required: [start_time, end_time]
 
 WarpBackfillStatus:
@@ -533,6 +629,9 @@ WarpSessionRequest:
             enum: [user, assistant]
           content:
             type: string
+          question:
+            type: boolean
+            description: Marks an assistant turn that was a clarifying question rather than an answer.
         required: [role, content]
     conversation_id:
       type: string
@@ -560,6 +659,18 @@ WarpSessionRequest:
       description: |
         Selects the transport, not the behaviour. `true` streams SSE frames;
         `false` returns one JSON body. Both run the same loop.
+    timezone:
+      type: string
+      description: |
+        The asker's IANA zone identifier (e.g. "Asia/Kolkata"), used to resolve
+        calendar days. An empty or unrecognized value falls back to
+        `utc_offset_minutes`.
+      example: Asia/Kolkata
+    utc_offset_minutes:
+      type: integer
+      description: |
+        The asker's current UTC offset in minutes east of UTC (e.g. 330 for IST).
+        Used only when no usable `timezone` is sent. Omitted or out-of-range means UTC.
   required:
     - messages
 

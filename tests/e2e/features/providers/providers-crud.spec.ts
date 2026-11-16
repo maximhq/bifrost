@@ -736,6 +736,27 @@ test.describe("Providers", () => {
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
     });
 
+    test("should show the elevenlabs passthrough route on the built-in ElevenLabs provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      if (!(await providersPage.providerExists("elevenlabs"))) {
+        await providersPage.addKnownProviderFromDropdown("elevenlabs");
+        createdProviders.push("elevenlabs");
+      }
+      await expect(providersPage.getProviderItem("elevenlabs")).toBeVisible({ timeout: 15000 });
+
+      // Reload so the sheet opens on the saved provider, not on the list that was refreshing after the add.
+      await providersPage.goto();
+      await providersPage.selectProvider("elevenlabs");
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/elevenlabs_passthrough/");
+      await expect(hint).not.toContainText("x-model-provider");
+      // A built-in provider forwards every route until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("All routes");
+    });
+
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
       providersPage,
       request,

@@ -52,6 +52,7 @@ type TableWarpConfig struct {
 	SemanticSearchThreshold         float64 `gorm:"default:0" json:"semantic_search_threshold"`
 	SemanticSearchLimit             int     `gorm:"default:0" json:"semantic_search_limit"`
 	TopicDiscoveryMinRequests       int     `gorm:"default:0" json:"topic_discovery_min_requests"`
+	ManagementWrites                *string `gorm:"type:text" json:"management_writes,omitempty"` // JSON list of schemas.WarpManagementWrites; null is reads only
 	RetiredLogVectorStoreNamespaces *string `gorm:"type:text" json:"-"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`

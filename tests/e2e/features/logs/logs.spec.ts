@@ -529,6 +529,19 @@ test.describe("LLM Logs", () => {
         await expect(row).toContainText('get_weather({"city":"Paris"})');
         await expect(row).not.toContainText(summary);
       });
+
+      test("should preview a chat custom tool call as name(input)", async ({ page, logsPage }) => {
+        const turn = {
+          ...syntheticLog(`synthetic-customcall-${Date.now()}`, 0, "success"),
+          input_history: [
+            { role: "system", content: "You are an agent." },
+            { role: "assistant", tool_calls: [{ id: "call_1", type: "custom", custom: { name: "code_exec", input: "print(1)" } }] },
+          ],
+        };
+        await mockLogs(page, turn, {});
+        await logsPage.goto();
+        await expect(logsPage.tableRows.first()).toContainText("code_exec(print(1))");
+      });
     });
 
     test.describe("Speech stream rows", () => {
