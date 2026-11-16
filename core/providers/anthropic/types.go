@@ -2188,6 +2188,20 @@ const AnthropicUsageIterationTypeCompaction = "compaction"
 // Server-side fallback iterations are not added — top-level already mirrors the
 // billed serving attempt and declining attempts must not be summed. When
 // iterations are absent, top-level fields are already complete.
+// anthropicCacheCreationTotal returns the cache-write tokens a usage object bills. cache_creation is
+// the 5m/1h split OF cache_creation_input_tokens, a breakdown and not an addend, so it stands in for
+// the total only when the top-level counter is absent. Every Anthropic usage converter goes through
+// this, so the same usage object bills the same on each route.
+func anthropicCacheCreationTotal(u *AnthropicUsage) int {
+	if u == nil {
+		return 0
+	}
+	if u.CacheCreationInputTokens != 0 {
+		return u.CacheCreationInputTokens
+	}
+	return u.CacheCreation.Ephemeral5mInputTokens + u.CacheCreation.Ephemeral1hInputTokens
+}
+
 func billableAnthropicUsage(u *AnthropicUsage) *AnthropicUsage {
 	if u == nil {
 		return nil
