@@ -3859,6 +3859,7 @@ func TestInvokeRequest_UnsupportedOrMalformedDocumentIsRejected(t *testing.T) {
 		"url without url":         {`{"type":"document","source":{"type":"url"}}`, "requires source.url"},
 		"url with ftp scheme":     {`{"type":"document","source":{"type":"url","url":"ftp://example.com/a.pdf"}}`, `unsupported document url scheme "ftp"`},
 		"url with file scheme":    {`{"type":"document","source":{"type":"url","url":"file:///etc/passwd"}}`, `unsupported document url scheme "file"`},
+		"url without host":        {`{"type":"document","source":{"type":"url","url":"https:///report.pdf"}}`, "document url has no host"},
 		"url with s3 scheme":      {`{"type":"document","source":{"type":"url","url":"s3://bucket/key.pdf"}}`, `unsupported document url scheme "s3"`},
 		"url without scheme":      {`{"type":"document","source":{"type":"url","url":"example.com/a.pdf"}}`, `unsupported document url scheme ""`},
 		"content source":          {`{"type":"document","source":{"type":"content","content":[{"type":"text","text":"x"}]}}`, `unsupported document source type "content"`},

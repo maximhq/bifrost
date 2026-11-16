@@ -348,6 +348,9 @@ func anthropicDocumentToBedrock(sourceType, mediaType, data, sourceURL, title st
 		default:
 			return nil, fmt.Errorf("unsupported document url scheme %q: only http and https are supported", parsed.Scheme)
 		}
+		if parsed.Hostname() == "" {
+			return nil, fmt.Errorf("document url has no host")
+		}
 		// The extension is only a fallback hint for a server that answers octet-stream;
 		// a recognised Content-Type from the fetch still wins.
 		format, _ = bedrockDocumentFormatFromPath(sourceURL)
