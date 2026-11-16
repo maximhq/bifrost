@@ -1728,6 +1728,8 @@
 	},
 	"gateways": {
 		"title": "Gateways",
+		"loadFailed": "Não foi possível carregar as definições dos gateways",
+		"reloadFailed": "Guardado, mas não foi possível recarregar as definições atualizadas. Recarregue-as antes de fazer mais alterações.",
 		"description": "Permita que os clientes de programação iniciem sessão no Bifrost com o seu próprio <code0>/login</code0>, em vez de uma chave virtual configurada manualmente. Cada cliente tem o seu próprio URL e os seus pedidos são executados com a chave virtual ou a conta escolhida pelo programador.",
 		"issuerLabel": "URL do emissor",
 		"issuerDescription": "O URL público estável do Bifrost. Cada gateway é servido em <code0/>. É o mesmo emissor usado pelo servidor OAuth do MCP, pelo que alterá-lo também afeta os clientes MCP com sessão iniciada por OAuth. Suporta a sintaxe de variáveis de ambiente (por ex., <code1>env.BIFROST_ISSUER_URL</code1>).",

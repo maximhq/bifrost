@@ -189,6 +189,47 @@ test.describe('Claude Code gateway settings', () => {
     await expect(page.getByText('Set the issuer URL before enabling Claude Code sign-in.')).toBeVisible()
     expect(puts).toBe(0)
   })
+
+  test('shows a load error with a retry when the configuration cannot be read', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com')
+    // The page reads the stored settings (from_db=true); the layout's own config read is left alone.
+    let failing = true
+    await page.route('**/api/config*', async route => {
+      const url = new URL(route.request().url())
+      if (failing && route.request().method() === 'GET' && url.searchParams.get('from_db') === 'true') {
+        await route.fulfill({ status: 500, json: { error: { message: 'config store unavailable' } } })
+        return
+      }
+      await route.fallback()
+    })
+    await page.goto('/workspace/config/gateways')
+
+    await expect(page.getByTestId('gateways-load-error')).toContainText('Failed to load the gateway settings')
+    failing = false
+    await page.getByTestId('gateways-load-retry-btn').click()
+    await expect(claudeCodeGatewayPage.enabledSwitch).toBeVisible()
+    await expect(page.getByTestId('gateways-load-error')).toHaveCount(0)
+  })
+
+  test('locks the form while a save is in flight', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com')
+    let release!: () => void
+    const released = new Promise<void>(resolve => { release = resolve })
+    await page.route('**/api/config*', async route => {
+      if (route.request().method() !== 'PUT') return route.fallback()
+      await released
+      await route.fulfill({ json: { status: 'success', message: 'configuration updated successfully' } })
+    })
+    await claudeCodeGatewayPage.goto()
+    await claudeCodeGatewayPage.enabledSwitch.click()
+    await claudeCodeGatewayPage.saveBtn.click()
+
+    // An edit made now would be overwritten by the refetch after the save.
+    await expect(claudeCodeGatewayPage.managedSettingsInput).toBeDisabled()
+    await expect(claudeCodeGatewayPage.issuerURLInput).toBeDisabled()
+    release()
+    await expect(claudeCodeGatewayPage.managedSettingsInput).toBeEnabled()
+  })
 })
 
 test.describe('Claude Code device sign-in page', () => {

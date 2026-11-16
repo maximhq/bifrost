@@ -1747,6 +1747,8 @@
 	},
 	"gateways": {
 		"title": "ゲートウェイ",
+		"loadFailed": "ゲートウェイの設定を読み込めませんでした",
+		"reloadFailed": "保存しましたが、更新された設定を再読み込みできませんでした。さらに変更する前に再読み込みしてください。",
 		"description": "コーディングクライアントが、手動で設定した仮想キーではなく独自の <code0>/login</code0> で Bifrost にサインインできるようにします。クライアントごとに専用の URL があり、そのリクエストは開発者が選んだ仮想キーまたはアカウントで実行されます。",
 		"issuerLabel": "発行者 URL",
 		"issuerDescription": "Bifrost の固定の公開 URL です。各ゲートウェイは <code0/> で提供されます。MCP OAuth サーバーと同じ発行者を使うため、変更すると OAuth でサインインした MCP クライアントにも影響します。環境変数構文に対応しています（例: <code1>env.BIFROST_ISSUER_URL</code1>）。",
