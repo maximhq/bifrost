@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "Längerer Text wird mit einem Hinweis gekürzt. Auf 0 setzen, um den Standardwert 4096 zu verwenden.",
 		"maxProtocolVersion": "Maximale Protokollversion",
 		"maxProtocolVersionHelp": "Neueste MCP-Protokollversion, die Bifrost MCP-Servern anbietet. Auto verwendet die neueste von Bifrost unterstützte Version. Jeder Server kann dies überschreiben.",
+		"serverMaxProtocolVersion": "Protokollversion des Bifrost-MCP-Servers",
+		"serverMaxProtocolVersionHelp": "Neueste MCP-Protokollversion, die der eigene MCP-Endpunkt von Bifrost Clients bereitstellt. Auto stellt jede von Bifrost unterstützte Version bereit. Unter 2025-11-25 ist die Anmeldung mit Client-ID-Metadatendokumenten deaktiviert und Clients registrieren sich stattdessen dynamisch.",
 		"maxInstructionsTotal": "Maximale Gesamtlänge der Anweisungen (Bytes)",
 		"maxInstructionsTotalHelp": "Obergrenze über alle Server, die ein Aufrufer sehen kann. Bei <code0>Gateway and LLM requests</code0> wird sie bei jeder Anfrage mit MCP mitgesendet, ein höherer Wert erhöht also die Tokens pro Anfrage. Auf 0 setzen, um den Standardwert 16384 zu verwenden.",
 		"maxOpenAPISpecSize": "Maximale OpenAPI-Spec-Größe (MiB)",

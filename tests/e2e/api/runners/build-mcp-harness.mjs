@@ -13251,6 +13251,45 @@ const WMG11 = folder("WMG-11 By default Warp offers reads only, and a write it n
   warpRestore("WMG-11"),
 ]);
 
+// ================================================================ Server max protocol version
+// mcp_server_max_protocol_version caps what Bifrost's own /mcp serves; below 2025-11-25 its OAuth server also stops
+// offering Client ID Metadata Documents. Both apply on save, without a restart.
+const setServerCap = (id, title, v) => putConfig(id, title, [`cc.mcp_server_max_protocol_version = ${lit(v)};`], [A.status(200)]);
+const protocolHeader = (v) => [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: v }];
+const LIST = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+
+const EP83 = folder("EP-83 Server max protocol version caps /mcp", `Setup: ${FLEET}; mcp_server_max_protocol_version 2025-06-18, then auto.`, [
+  ...fleetSetup("EP-83"),
+  readConfig("EP-83"),
+  setServerCap("EP-83", "setup: cap /mcp at 2025-06-18", "2025-06-18"),
+  modernRpc("EP-83", `tools/list on ${MODERN} is refused`, "tools/list", {}, [A.status(400), rpcError(-32022)]),
+  rpc("EP-83", "initialize asking for 2025-11-25 settles on 2025-06-18", init("2025-11-25"), { headers: protocolHeader("2025-11-25"), asserts: [A.status(200), A.custom("protocolVersion is \"2025-06-18\"", ["pm.expect(pm.response.json().result.protocolVersion, 'body: ' + pm.response.text()).to.equal('2025-06-18');"])] }),
+  rpc("EP-83", "tools/list declaring 2025-11-25 is refused", LIST, { headers: protocolHeader("2025-11-25"), asserts: [A.status(400), A.custom("body names the version", ["pm.expect(pm.response.text()).to.equal('Unsupported protocol version: 2025-11-25\\n');"])] }),
+  rpc("EP-83", "tools/list declaring 2025-06-18 is served", LIST, { headers: protocolHeader("2025-06-18"), asserts: [A.status(200), rpcResult()] }),
+  rpc("EP-83", "tools/list without the header is served", LIST, { asserts: [A.status(200), rpcResult()] }),
+  setServerCap("EP-83", "teardown: lift the cap (auto)", "auto"),
+  modernRpc("EP-83", `tools/list on ${MODERN} is served again`, "tools/list", {}, [A.status(200), rpcResult()]),
+  ...fleetTeardown("EP-83"),
+]);
+
+const CIMD_CLIENT = "https%3A%2F%2Fclient.mcp-harness.example%2Foauth%2Fclient.json";
+const cimdFlag = (on) => A.custom(`client_id_metadata_document_supported is ${on ? "true" : "absent"}`, [
+  "var b = pm.response.json();",
+  on ? "pm.expect(b.client_id_metadata_document_supported, 'body: ' + pm.response.text()).to.equal(true);" : "pm.expect(b, 'body: ' + pm.response.text()).to.not.have.property('client_id_metadata_document_supported');",
+  "pm.expect(b.registration_endpoint).to.equal(pm.variables.get('base_url') + '/oauth2/register');",
+]);
+const OAS46 = folder("OAS-46 A server cap below 2025-11-25 turns off Client ID Metadata Documents", `Setup: ${BOTH}; mcp_server_max_protocol_version 2025-06-18, then auto. The metadata document is never fetched: the refusal comes first.`, withMode("OAS-46", "both", [
+  readConfig("OAS-46"),
+  request("OAS-46", "uncapped: metadata documents are advertised", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), cimdFlag(true)] }),
+  setServerCap("OAS-46", "setup: cap /mcp at 2025-06-18", "2025-06-18"),
+  request("OAS-46", "capped: metadata documents are not advertised, registration stays", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), O.noStore(), cimdFlag(false)] }),
+  request("OAS-46", "capped: authorize with a metadata document client is refused", "GET", authorizePath({
+    response_type: "code", client_id: CIMD_CLIENT, redirect_uri: LOOPBACK_CB, state: "s1", code_challenge: CHALLENGE, code_challenge_method: "S256", resource: "{{base_url}}/mcp", scope: "mcp",
+  }), { noAuth: true, noRedirect: true, asserts: [A.status(400), O.error("invalid_client"), O.desc("not accepted"), O.noLocation()] }),
+  setServerCap("OAS-46", "teardown: lift the cap (auto)", "auto"),
+  request("OAS-46", "auto: metadata documents are advertised again", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), cimdFlag(true)] }),
+]));
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -13267,8 +13306,8 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),

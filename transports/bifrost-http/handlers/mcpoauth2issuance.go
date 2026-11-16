@@ -271,6 +271,13 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Below 2025-11-25 metadata documents are not advertised, so a new sign-in with one is refused.
+	// Grants already issued to one keep refreshing.
+	if isClientMetadataDocumentID(clientID) && !clientMetadataDocumentsAllowed(h.store) {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client", "client ID metadata documents are not accepted; register the client instead")
+		return
+	}
+
 	// Validate client exists before using redirect_uri. No state is created until
 	// both the client and its redirect_uri have been verified.
 	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)

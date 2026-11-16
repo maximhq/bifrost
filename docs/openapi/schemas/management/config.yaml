@@ -124,6 +124,16 @@ ClientConfig:
         omitting it or sending "" keeps the stored value. Deployments upgraded
         with existing MCP servers start at "2025-06-18"; fresh installs start
         on "auto". A change reconnects affected servers at the new version.
+    mcp_server_max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: >
+        Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves
+        to clients. "auto", or an empty value, serves every version Bifrost
+        supports. Below "2025-11-25", sign-in with Client ID Metadata
+        Documents is turned off and clients register dynamically instead;
+        sign-ins already granted keep working. On update, omitting it or
+        sending "" keeps the stored value. Applies without a restart.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode

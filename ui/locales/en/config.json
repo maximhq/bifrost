@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "Longer text is truncated with a notice. Set to 0 to use the default of 4096.",
 		"maxProtocolVersion": "Max Protocol Version",
 		"maxProtocolVersionHelp": "Newest MCP protocol version Bifrost offers to MCP servers. Auto uses the latest Bifrost supports. Each server can override this.",
+		"serverMaxProtocolVersion": "Bifrost MCP Server Protocol Version",
+		"serverMaxProtocolVersionHelp": "Newest MCP protocol version Bifrost's own MCP endpoint serves to clients. Auto serves every version Bifrost supports. Below 2025-11-25, sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead.",
 		"maxInstructionsTotal": "Max Instruction Length Total (bytes)",
 		"maxInstructionsTotalHelp": "Ceiling across every server a caller can see. At <code0>Gateway and LLM requests</code0> this rides on every MCP-bearing request, so raising it raises per-request tokens. Set to 0 to use the default of 16384.",
 		"maxOpenAPISpecSize": "Max OpenAPI Spec Size (MiB)",

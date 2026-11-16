@@ -20168,8 +20168,9 @@ var excludedGoFields = map[string]map[string]bool{
 		// deliberately without a deprecated client-level twin in the schema.
 		"mcp_max_instructions_per_client": true,
 		"mcp_max_instructions_total":      true,
-		// Configured only as mcp.max_protocol_version.
-		"mcp_max_protocol_version": true,
+		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
+		"mcp_max_protocol_version":        true,
+		"mcp_server_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// Phrase suggestions are a model router's: the type is shared with
@@ -23830,17 +23831,20 @@ func TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion(t *testing.T) {
 			initTestLogger()
 			store := createTestSQLiteConfigStore(t, t.TempDir())
 			ctx := context.Background()
-			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored}
+			// mcp.server_max_protocol_version follows the same rules for /mcp.
+			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored, MCPServerMaxProtocolVersion: tc.stored}
 			require.NoError(t, store.UpdateClientConfig(ctx, clientConfig))
 			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
-			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file}
+			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file, ServerMaxProtocolVersion: tc.file}
 
 			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tc.fileIsTruth)
 
 			assert.Equal(t, tc.want, mcpCfg.MaxProtocolVersion, "value handed to bifrost.Init")
+			assert.Equal(t, tc.want, mcpCfg.ServerMaxProtocolVersion, "server value handed on")
 			persisted, err := store.GetClientConfig(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, persisted.MCPMaxProtocolVersion, "stored value")
+			assert.Equal(t, tc.want, persisted.MCPServerMaxProtocolVersion, "stored server value")
 		})
 	}
 }

@@ -2554,6 +2554,10 @@
           "$ref": "#/$defs/mcp_max_protocol_version",
           "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
         },
+        "server_max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. 'auto' serves every version Bifrost supports. Below '2025-11-25', sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead. Omitted keeps the stored value."
+        },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
           "oneOf": [

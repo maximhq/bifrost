@@ -317,6 +317,11 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 		SendError(ctx, fasthttp.StatusBadRequest, "redirect_uri is no longer approved")
 		return nil
 	}
+	// A flow started before /mcp was capped below metadata documents cannot finish with one.
+	if isClientMetadataDocumentID(req.ClientID) && !clientMetadataDocumentsAllowed(h.store) {
+		SendError(ctx, fasthttp.StatusBadRequest, "client ID metadata documents are no longer accepted")
+		return nil
+	}
 	return req
 }
 
