@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "較長的文字會被截斷並帶有通知。設定為 0 以使用預設值 4096。",
 		"maxProtocolVersion": "最高協定版本",
 		"maxProtocolVersionHelp": "Bifrost 向 MCP 伺服器提供的最新 MCP 協定版本。自動會使用 Bifrost 支援的最新版本。每個伺服器都可以覆寫此設定。",
+		"serverMaxProtocolVersion": "Bifrost MCP 伺服器協定版本",
+		"serverMaxProtocolVersionHelp": "Bifrost 自身 MCP 端點向用戶端提供的最新 MCP 協定版本。自動會提供 Bifrost 支援的所有版本。低於 2025-11-25 時，將關閉使用用戶端 ID 中繼資料文件的登入，用戶端改為動態註冊。",
 		"maxInstructionsTotal": "最大指令長度總計（位元組）",
 		"maxInstructionsTotalHelp": "呼叫者可以看到每台伺服器的上限。在 <code0>Gateway 和 LLM 請求 </code0> 中，這取決於每個包含 MCP 的請求，因此提高它會提高每個請求的代幣。設定為 0 以使用預設值 16384。",
 		"maxOpenAPISpecSize": "OpenAPI 規格大小上限（MiB）",

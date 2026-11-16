@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "超出长度的文本会被截断并附带提示。设为 0 可使用默认值 4096。",
 		"maxProtocolVersion": "最高协议版本",
 		"maxProtocolVersionHelp": "Bifrost 向 MCP 服务器提供的最新 MCP 协议版本。Auto 使用 Bifrost 支持的最新版本。每个服务器可单独覆盖此设置。",
+		"serverMaxProtocolVersion": "Bifrost MCP 服务器协议版本",
+		"serverMaxProtocolVersionHelp": "Bifrost 自身 MCP 端点向客户端提供的最新 MCP 协议版本。Auto 提供 Bifrost 支持的所有版本。低于 2025-11-25 时，将关闭使用客户端 ID 元数据文档的登录，客户端改为动态注册。",
 		"maxInstructionsTotal": "指令总长度上限（字节）",
 		"maxInstructionsTotalHelp": "调用方可见的所有服务器指令总长度上限。在 <code0>网关和 LLM 请求</code0>中，这些指令会随每个包含 MCP 的请求发送，因此提高上限会增加每个请求的 token 数。设为 0 可使用默认值 16384。",
 		"maxOpenAPISpecSize": "OpenAPI 规范最大大小（MiB）",

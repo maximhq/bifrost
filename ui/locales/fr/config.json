@@ -453,7 +453,9 @@
 		"issuerUrlNotSet": "Non définie.",
 		"issuerUrlEditInSecurity": "Modifier dans Paramètres > Sécurité",
 		"maxProtocolVersion": "Version maximale du protocole",
-		"maxProtocolVersionHelp": "Version de protocole MCP la plus récente que Bifrost propose aux serveurs MCP. Auto utilise la dernière version prise en charge par Bifrost. Chaque serveur peut remplacer ce réglage."
+		"maxProtocolVersionHelp": "Version de protocole MCP la plus récente que Bifrost propose aux serveurs MCP. Auto utilise la dernière version prise en charge par Bifrost. Chaque serveur peut remplacer ce réglage.",
+		"serverMaxProtocolVersion": "Version de protocole du serveur MCP de Bifrost",
+		"serverMaxProtocolVersionHelp": "Version de protocole MCP la plus récente que le point de terminaison MCP de Bifrost sert aux clients. Auto sert toutes les versions prises en charge par Bifrost. En dessous de 2025-11-25, la connexion avec des documents de métadonnées d'ID client est désactivée et les clients s'enregistrent dynamiquement à la place."
 	},
 	"modelSettings": {
 		"title": "Paramètres des modèles",

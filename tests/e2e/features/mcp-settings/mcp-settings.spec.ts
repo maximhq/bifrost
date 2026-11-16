@@ -316,13 +316,38 @@ test.describe('MCP Settings', () => {
     // Both tests rewrite the shared global cap, so they must not interleave.
     test.describe.configure({ mode: 'serial' })
     let original: string
+    let originalServer: string
 
     test.beforeEach(async ({ request }) => {
-      original = ((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version as string | undefined) || 'auto'
+      const clientConfig = (await coreConfigApi.get(request)).client_config
+      original = (clientConfig.mcp_max_protocol_version as string | undefined) || 'auto'
+      originalServer = (clientConfig.mcp_server_max_protocol_version as string | undefined) || 'auto'
     })
 
     test.afterEach(async ({ request }) => {
-      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: original })
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_max_protocol_version: original,
+        mcp_server_max_protocol_version: originalServer,
+      })
+    })
+
+    test('should save the Bifrost MCP server cap separately from the upstream cap', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25', mcp_server_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.serverMaxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectServerMaxProtocolVersion('2025-06-18')
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      const saved = (await coreConfigApi.get(request)).client_config
+      expect(saved.mcp_server_max_protocol_version).toBe('2025-06-18')
+      expect(saved.mcp_max_protocol_version).toBe('2025-11-25')
+
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.serverMaxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
     })
 
     test('should save a global max protocol version and show it after reload', async ({ mcpSettingsPage, request }) => {

@@ -1705,6 +1705,10 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
 	s.reloadBifrostMCP(ctx)
+	// Cluster peers reload here too, so every node's /mcp follows the cap.
+	if s.MCPServerHandler != nil {
+		s.MCPServerHandler.UpdateServerMaxProtocolVersion(config.MCPServerMaxProtocolVersion)
+	}
 	// This path also serves cluster peers, so one node's allowlist edit
 	// reaches every node's OAuth client.
 	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {

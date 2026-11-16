@@ -342,6 +342,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:                   config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                       config.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                     config.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:               config.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                  config.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                    config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                         config.AsyncJobResultTTL,
@@ -670,6 +671,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:                 dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                     dbConfig.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                   dbConfig.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:             dbConfig.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                dbConfig.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                  dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                       dbConfig.AsyncJobResultTTL,
@@ -1937,8 +1939,9 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		// config row. Without carrying it here, a boot with no mcp section in
 		// config.json would hand bifrost.Init a zero and the checkers would
 		// silently fall back to the built-in default.
-		ToolSyncInterval:   time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
-		MaxProtocolVersion: clientConfig.MCPMaxProtocolVersion,
+		ToolSyncInterval:         time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
+		MaxProtocolVersion:       clientConfig.MCPMaxProtocolVersion,
+		ServerMaxProtocolVersion: clientConfig.MCPServerMaxProtocolVersion,
 	}, nil
 }
 

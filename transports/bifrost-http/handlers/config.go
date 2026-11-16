@@ -740,6 +740,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Checked before any live change below. Omitted keeps the current cap, so a caller unaware of
+	// the field never lifts it; "auto" lifts it.
+	if err := setMCPProtocolCap("mcp_max_protocol_version", payload.ClientConfig.MCPMaxProtocolVersion, &updatedConfig.MCPMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setMCPProtocolCap("mcp_server_max_protocol_version", payload.ClientConfig.MCPServerMaxProtocolVersion, &updatedConfig.MCPServerMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -806,14 +817,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
-	}
-	// Omitted keeps the current cap, so a caller unaware of the field never lifts it; "auto" lifts it.
-	if v := payload.ClientConfig.MCPMaxProtocolVersion; v != "" {
-		if err := schemas.ValidateMCPMaxProtocolVersion("mcp_max_protocol_version", v); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
-		}
-		updatedConfig.MCPMaxProtocolVersion = v
 	}
 	// 0 means the built-in default, so compare against the current value
 	// instead of the > 0 guard used by other numeric fields.
@@ -1901,4 +1904,16 @@ func effectiveGlobalProxyType(t network.GlobalProxyType) network.GlobalProxyType
 		return network.GlobalProxyTypeHTTP
 	}
 	return t
+}
+
+// setMCPProtocolCap validates v and stores it in dst; "" leaves dst as it is.
+func setMCPProtocolCap(field, v string, dst *string) error {
+	if v == "" {
+		return nil
+	}
+	if err := schemas.ValidateMCPMaxProtocolVersion(field, v); err != nil {
+		return err
+	}
+	*dst = v
+	return nil
 }

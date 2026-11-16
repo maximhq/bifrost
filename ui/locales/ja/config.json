@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "これより長いテキストは通知付きで切り詰められます。0 にするとデフォルトの 4096 を使用します。",
 		"maxProtocolVersion": "最大プロトコルバージョン",
 		"maxProtocolVersionHelp": "Bifrost が MCP サーバーに提示する最新の MCP プロトコルバージョンです。Auto は Bifrost が対応する最新バージョンを使用します。サーバーごとに上書きできます。",
+		"serverMaxProtocolVersion": "Bifrost MCP サーバーのプロトコルバージョン",
+		"serverMaxProtocolVersionHelp": "Bifrost 自身の MCP エンドポイントがクライアントに提供する最新の MCP プロトコルバージョンです。Auto は Bifrost が対応するすべてのバージョンを提供します。2025-11-25 より前に設定すると、クライアント ID メタデータドキュメントによるサインインは無効になり、クライアントは代わりに動的に登録します。",
 		"maxInstructionsTotal": "最大インストラクション長・合計（バイト）",
 		"maxInstructionsTotalHelp": "呼び出し元から見えるすべてのサーバーの合計上限です。<code0>Gateway and LLM requests</code0> では MCP を含むすべてのリクエストに付加されるため、値を上げるとリクエストあたりのトークン数が増えます。0 にするとデフォルトの 16384 を使用します。",
 		"maxOpenAPISpecSize": "OpenAPI 仕様の最大サイズ（MiB）",

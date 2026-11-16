@@ -426,6 +426,8 @@
 		"maxInstructionsPerServerHelp": "긴 텍스트는 공지와 함께 잘립니다. 기본값인 4096을 사용하려면 0으로 설정하세요.",
 		"maxProtocolVersion": "최대 프로토콜 버전",
 		"maxProtocolVersionHelp": "Bifrost가 MCP 서버에 제시하는 최신 MCP 프로토콜 버전이에요. 자동은 Bifrost가 지원하는 최신 버전을 사용해요. 각 서버에서 이 설정을 재정의할 수 있어요.",
+		"serverMaxProtocolVersion": "Bifrost MCP 서버 프로토콜 버전",
+		"serverMaxProtocolVersionHelp": "Bifrost 자체 MCP 엔드포인트가 클라이언트에 제공하는 최신 MCP 프로토콜 버전이에요. 자동은 Bifrost가 지원하는 모든 버전을 제공해요. 2025-11-25 미만으로 설정하면 클라이언트 ID 메타데이터 문서를 사용한 로그인이 꺼지고, 클라이언트는 대신 동적으로 등록해요.",
 		"maxInstructionsTotal": "최대 명령 길이 총계(바이트)",
 		"maxInstructionsTotalHelp": "발신자가 볼 수 있는 모든 서버의 천장. <code0>Gateway 및 LLM 요청</code0>에서는 모든 MCP 보유 요청을 처리하므로 이를 올리면 요청별 토큰이 발생합니다. 기본값인 16384를 사용하려면 0으로 설정하세요.",
 		"maxOpenAPISpecSize": "최대 OpenAPI 사양 크기(MiB)",

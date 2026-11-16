@@ -947,6 +947,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_max_protocol_version?: string; // "" or "auto" = newest; omitted on save keeps the stored value
+	mcp_server_max_protocol_version?: string; // cap on what Bifrost's /mcp serves; "" or "auto" = newest
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
