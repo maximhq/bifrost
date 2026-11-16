@@ -12,6 +12,7 @@ import {
 } from "@/components/entitySelectors/entitySelector";
 import { useGetVirtualMCPQuery, useGetVirtualMCPsQuery } from "@/lib/store";
 import { useEffect, useMemo } from "react";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export type VirtualMCPSelectorOption = EntitySelectorOption;
 
@@ -44,7 +45,7 @@ export function VirtualMCPSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props
 			currentData?.virtual_mcps?.map((vmcp) => ({
 				value: String(vmcp.id),
 				label: vmcp.name || String(vmcp.id),
-				description: vmcp.endpoint_slug ? `/mcp/${vmcp.endpoint_slug}` : undefined,
+				description: vmcp.endpoint_slug ? withBasePath(`/mcp/${vmcp.endpoint_slug}`) : undefined,
 			})),
 		[currentData],
 	);

@@ -209,6 +209,5 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 // wwwAuthenticateValue returns the WWW-Authenticate header value pointing at
 // the /mcp resource metadata endpoint, per RFC 9728 §5.
 func wwwAuthenticateValue(ctx *fasthttp.RequestCtx, store *lib.Config) string {
-	base := oauth2IssuerURL(ctx, store)
-	return fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"`, base)
+	return fmt.Sprintf(`Bearer resource_metadata="%s"`, oauth2ResourceMetadataURL(oauth2IssuerURL(ctx, store)))
 }

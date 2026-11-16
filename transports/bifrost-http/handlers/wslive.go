@@ -94,7 +94,7 @@ func (h *WSLiveHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.upgrade(ctx, up, func(clientConn *realtimeClientConn) {
-		h.serveSession(clientConn, up.preReqCtx, up.auth, up.path, up.middlewareValues)
+		h.serveSession(clientConn, up.preReqCtx, up.setupHeaders, up.path, up.middlewareValues)
 	})
 }
 
@@ -121,7 +121,7 @@ func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
 
 // openSideband selects a key and dials the provider's attach endpoint on it.
 func (h *WSLiveHandler) openSideband(up *liveRequest) (*liveSidebandRelay, *schemas.BifrostError) {
-	ctx, cancel := h.gateway.sessionContext(up.auth, up.preReqCtx, up.middlewareValues, up.path)
+	ctx, cancel := h.gateway.sessionContext(up.setupHeaders, up.preReqCtx, up.middlewareValues, up.path)
 	startedAt := time.Now()
 	hooks, bifrostErr := h.gateway.admitSideband(ctx, up.providerKey, up.sessionID)
 	if bifrostErr != nil {
@@ -179,7 +179,7 @@ func (h *WSLiveHandler) serveSideband(relay *liveSidebandRelay, clientConn *real
 }
 
 // serveSession runs one live session: bootstrap, admission, dial, relay, close.
-func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *schemas.BifrostContext, auth *authHeaders, path string, middlewareValues map[any]any) {
+func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *schemas.BifrostContext, setupHeaders *sessionHeaders, path string, middlewareValues map[any]any) {
 	clientConn.startHeartbeat()
 	defer clientConn.stopHeartbeat()
 
@@ -203,7 +203,7 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 	}
 	defer h.sessions.Remove(clientConn.conn)
 
-	admission, bifrostErr := h.gateway.admit(auth, preReqCtx, middlewareValues, path, target, session.ID())
+	admission, bifrostErr := h.gateway.admit(setupHeaders, preReqCtx, middlewareValues, path, target, session.ID())
 	if bifrostErr != nil {
 		clientConn.writeRealtimeError(bifrostErr)
 		return

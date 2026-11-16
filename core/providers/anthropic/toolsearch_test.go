@@ -1188,3 +1188,400 @@ func TestToolSearch_AnthropicResponseRendersResultContent(t *testing.T) {
 	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, resp.Content[1].Type)
 	assertNestedToolSearchResult(t, &resp.Content[1], []string{tsDiscoveredTool})
 }
+
+// codexClientToolSearchCtx converts a Codex-shaped request carrying a client-run
+// tool_search, the way the gateway does before dispatch, and returns its context.
+func codexClientToolSearchCtx(t *testing.T) *schemas.BifrostContext {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("file an issue")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			responsesToolFromJSON(t, `{"type":"tool_search","execution":"client","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}`),
+		}},
+	}
+	_, err := ToAnthropicResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	return ctx
+}
+
+// assertCodexClientToolSearchCall checks item is the client tool_search_call Codex
+// dispatches: execution client, the tool_use id as call_id, the query as an object.
+func assertCodexClientToolSearchCall(t *testing.T, item *schemas.ResponsesMessage) {
+	t.Helper()
+	require.NotNil(t, item)
+	require.NotNil(t, item.Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *item.Type)
+	encoded, err := sonic.Marshal(item)
+	require.NoError(t, err)
+	body := string(encoded)
+	assert.Contains(t, body, `"execution":"client"`)
+	assert.Contains(t, body, `"call_id":"toolu_search_1"`)
+	assert.Contains(t, body, `"arguments":{"query":"linear issue"}`, "Codex reads arguments as a JSON object")
+	assert.NotContains(t, body, `"name":`, "OpenAI's tool_search_call carries no name")
+}
+
+// Claude's call to the client tool_search function comes back to Codex as a
+// tool_search_call it runs itself, not a function_call it has no handler for.
+func TestToolSearch_CodexClientCallNonStreaming(t *testing.T) {
+	t.Parallel()
+	ctx := codexClientToolSearchCtx(t)
+	resp := &AnthropicMessageResponse{
+		ID: "msg_codex_ts", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonToolUse,
+		Content: []AnthropicContentBlock{{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    schemas.Ptr("toolu_search_1"),
+			Name:  schemas.Ptr("tool_search"),
+			Input: json.RawMessage(`{"query":"linear issue"}`),
+		}},
+	}
+	out := resp.ToBifrostResponsesResponse(ctx)
+	require.NotNil(t, out)
+	require.Len(t, out.Output, 1)
+	assertCodexClientToolSearchCall(t, &out.Output[0])
+}
+
+// A function the caller itself named tool_search (Claude Code's own search, no
+// client tool_search tool declared) stays a function_call.
+func TestToolSearch_CallerFunctionNamedToolSearchStaysFunctionCall(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := &AnthropicMessageResponse{
+		ID: "msg_cc_ts", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+		Content: []AnthropicContentBlock{{
+			Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_search_1"),
+			Name: schemas.Ptr("tool_search"), Input: json.RawMessage(`{"query":"linear issue"}`),
+		}},
+	}
+	out := resp.ToBifrostResponsesResponse(ctx)
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *out.Output[0].Type)
+}
+
+// The streaming path emits the same tool_search_call: output_item.added/done of that
+// type, no function_call argument events (Codex has no function_call to attach them
+// to), and the item in response.completed.
+func TestToolSearch_CodexClientCallStreaming(t *testing.T) {
+	t.Parallel()
+	ctx := codexClientToolSearchCtx(t)
+	part1, part2 := `{"query":"lin`, `ear issue"}`
+	stopReason := AnthropicStopReasonToolUse
+	chunks := []*AnthropicStreamEvent{
+		{Type: AnthropicStreamEventTypeContentBlockStart, Index: schemas.Ptr(0), ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_search_1"), Name: schemas.Ptr("tool_search"), Input: json.RawMessage(`{}`),
+		}},
+		{Type: AnthropicStreamEventTypeContentBlockDelta, Index: schemas.Ptr(0), Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &part1}},
+		{Type: AnthropicStreamEventTypeContentBlockDelta, Index: schemas.Ptr(0), Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &part2}},
+		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(0)},
+		{Type: AnthropicStreamEventTypeMessageDelta, Delta: &AnthropicStreamDelta{StopReason: &stopReason}},
+		{Type: AnthropicStreamEventTypeMessageStop},
+	}
+	state := newToolSearchTestState()
+	var events []*schemas.BifrostResponsesStreamResponse
+	for i, c := range chunks {
+		resps, berr, _ := c.ToBifrostResponsesStream(ctx, len(events), state)
+		require.Nil(t, berr, "chunk %d", i)
+		events = append(events, resps...)
+	}
+
+	var added, done, completed *schemas.ResponsesMessage
+	for _, e := range events {
+		switch e.Type {
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			t.Errorf("unexpected %s for a client tool_search_call", e.Type)
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			added = e.Item
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			done = e.Item
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			require.NotNil(t, e.Response)
+			require.Len(t, e.Response.Output, 1)
+			completed = &e.Response.Output[0]
+		}
+	}
+	require.NotNil(t, added)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *added.Type)
+	assertCodexClientToolSearchCall(t, done)
+	assertCodexClientToolSearchCall(t, completed)
+}
+
+// A caller that declares its own function named tool_search next to a client-run
+// tool_search keeps both: the client search goes upstream under a name no declared
+// tool uses, its history and the restore key follow that name, and Claude's call to
+// the caller's own tool_search stays a function_call.
+func TestToolSearch_CodexClientSearchNameAvoidsCallerFunction(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var history []schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"file an issue"},
+		{"type":"tool_search_call","call_id":"call_ts_1","execution":"client","arguments":{"query":"linear"}},
+		{"type":"tool_search_output","call_id":"call_ts_1","execution":"client","tools":[]}
+	]`), &history))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    history,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+			responsesToolFromJSON(t, `{"type":"function","name":"tool_search","description":"the caller's own search","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}`),
+			responsesToolFromJSON(t, `{"type":"function","name":"tool_search_1","parameters":{"type":"object","properties":{}}}`),
+		}},
+	}
+	out, err := ToAnthropicResponsesRequest(ctx, req)
+	require.NoError(t, err)
+
+	names := make(map[string]int)
+	for _, tool := range out.Tools {
+		names[tool.Name]++
+	}
+	for name, n := range names {
+		assert.Equal(t, 1, n, "tool name %q declared %d times", name, n)
+	}
+	require.Contains(t, names, "tool_search_2", "client search must take the first free name: %v", names)
+	assert.Equal(t, "tool_search_2", clientToolSearchFrom(ctx))
+
+	body, err := sonic.Marshal(out.Messages)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"id":"call_ts_1","name":"tool_search_2"`, "history tool_use must use the upstream name")
+
+	resp := &AnthropicMessageResponse{
+		ID: "msg_both", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonToolUse,
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_own"), Name: schemas.Ptr("tool_search"), Input: json.RawMessage(`{"q":"x"}`)},
+			{Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_client"), Name: schemas.Ptr("tool_search_2"), Input: json.RawMessage(`{"query":"y"}`)},
+		},
+	}
+	got := resp.ToBifrostResponsesResponse(ctx)
+	require.Len(t, got.Output, 2)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *got.Output[0].Type, "the caller's own tool_search stays a function_call")
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *got.Output[1].Type)
+}
+
+// A tool_search_output can load tool types core does not declare (only functions and
+// namespaces are hoisted); a tool_reference to one would name an undeclared tool, so
+// only function tools are referenced.
+func TestRewriteClientToolSearchHistory_ReferencesOnlyDeclaredTypes(t *testing.T) {
+	t.Parallel()
+	var input []schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+		{"type":"tool_search_output","call_id":"call_ts_1","execution":"client","tools":[
+			{"type":"custom","name":"apply_patch"},
+			{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}},
+			{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"create_issue"}]}
+		]}
+	]`), &input))
+	out := rewriteClientToolSearchHistory(input, clientToolSearchFunctionName, nil)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Output)
+	var refs []string
+	for _, block := range out[0].Output.ResponsesFunctionToolCallOutputBlocks {
+		require.NotNil(t, block.ToolName)
+		refs = append(refs, *block.ToolName)
+	}
+	assert.Equal(t, []string{"get_weather", "mcp__linear__create_issue"}, refs)
+}
+
+// The response converter tolerates a nil context, as the rest of it does.
+func TestToolSearch_ResponseConversionNilContext(t *testing.T) {
+	t.Parallel()
+	resp := &AnthropicMessageResponse{
+		ID: "msg_nil_ctx", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonEndTurn,
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hello")}},
+	}
+	var out *schemas.BifrostResponsesResponse
+	require.NotPanics(t, func() { out = resp.ToBifrostResponsesResponse(nil) })
+	require.NotNil(t, out)
+	require.Len(t, out.Output, 1)
+}
+
+// ToAnthropicResponsesRequest accepts a nil context for a request without input (the
+// tool round-trip tests rely on it), including one that declares a client-run
+// tool_search: there is no context to record the search name on, and the tools still
+// convert.
+func TestToolSearch_ClientSearchRequestNilContext(t *testing.T) {
+	t.Parallel()
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+		}},
+	}
+	var out *AnthropicMessageRequest
+	require.NotPanics(t, func() {
+		var err error
+		out, err = ToAnthropicResponsesRequest(nil, req)
+		require.NoError(t, err)
+	})
+	require.Len(t, out.Tools, 1)
+	assert.Equal(t, "tool_search", out.Tools[0].Name)
+}
+
+// A client-run tool_search added mid-conversation by a tool_addition block is the same
+// search as one in tools[]: it goes upstream as a function under the request's
+// collision-safe name, that name is recorded for the restore, and its history maps
+// onto tool_use / tool_result. On a model that takes mid-conversation system messages
+// the tool_addition carries the function; on one that does not, the block is dropped
+// with its message, so the function is declared in tools instead of leaving the
+// history naming an undeclared tool.
+func TestToolSearch_InlineClientSearch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		model  string
+		inline bool
+	}{
+		{model: "claude-sonnet-5-5", inline: true},
+		{model: "claude-sonnet-4-6", inline: false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var input []schemas.ResponsesMessage
+			require.NoError(t, schemas.Unmarshal([]byte(`[
+				{"type":"message","role":"user","content":"file an issue"},
+				{"type":"tool_search_call","call_id":"call_ts_1","execution":"client","arguments":{"query":"linear"}},
+				{"type":"tool_search_output","call_id":"call_ts_1","execution":"client","tools":[]},
+				{"type":"message","role":"system","content":[
+					{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"tool_search","execution":"client","description":"Search the deferred tools"}}}
+				]}
+			]`), &input))
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    tc.model,
+				Input:    input,
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+					responsesToolFromJSON(t, `{"type":"function","name":"tool_search","description":"the caller's own search","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}`),
+				}},
+			}
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			require.NoError(t, err)
+
+			assert.Equal(t, "tool_search_1", clientToolSearchFrom(ctx), "an inline-only client search must be recorded for the restore")
+			body, err := sonic.Marshal(out)
+			require.NoError(t, err)
+			wire := string(body)
+			assert.NotContains(t, wire, "tool_search_tool_", "a client-run tool_search must not become Anthropic's server search")
+			assert.Contains(t, wire, `"id":"call_ts_1","name":"tool_search_1"`, "history tool_use must use the upstream name: %s", wire)
+			declared := map[string]int{}
+			for _, tool := range out.Tools {
+				declared[tool.Name]++
+			}
+			assert.Equal(t, 1, declared["tool_search"], "the caller's own tool_search is declared once: %s", wire)
+			if tc.inline {
+				assert.True(t, messagesAddTool(out.Messages, "tool_search_1"), "the tool_addition must carry the search function: %s", wire)
+				assert.Contains(t, wire, `"name":"tool_search_1","description":"Search the deferred tools"`, wire)
+				assert.Zero(t, declared["tool_search_1"], "a search the tool_addition carries is not also declared in tools: %s", wire)
+			} else {
+				assert.False(t, messagesAddTool(out.Messages, "tool_search_1"), wire)
+				assert.Equal(t, 1, declared["tool_search_1"], "a dropped inline search must be declared in tools: %s", wire)
+			}
+
+			resp := &AnthropicMessageResponse{
+				ID: "msg_inline", Type: "message", Role: "assistant", Model: tc.model,
+				StopReason: AnthropicStopReasonToolUse,
+				Content: []AnthropicContentBlock{{
+					Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_search_1"),
+					Name: schemas.Ptr("tool_search_1"), Input: json.RawMessage(`{"query":"linear issue"}`),
+				}},
+			}
+			got := resp.ToBifrostResponsesResponse(ctx)
+			require.Len(t, got.Output, 1)
+			assertCodexClientToolSearchCall(t, &got.Output[0])
+		})
+	}
+}
+
+// The search function's input_schema is serialized the same way whichever path declares
+// it: a caller's schema whose keys arrive in a non-canonical order goes upstream as the
+// same bytes from tools[] and from the dropped-tool_addition fallback, so equivalent
+// requests keep one prompt-cache prefix.
+func TestToolSearch_ClientSearchSchemaBytesMatchAcrossPaths(t *testing.T) {
+	t.Parallel()
+	const search = `{"type":"tool_search","execution":"client","description":"Search the deferred tools","parameters":{"required":["query"],"properties":{"query":{"type":"string"}},"type":"object"}}`
+	schemaBytes := func(t *testing.T, req *schemas.BifrostResponsesRequest) string {
+		t.Helper()
+		out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.NoError(t, err)
+		for _, tool := range out.Tools {
+			if tool.Name == "tool_search" {
+				encoded, err := sonic.Marshal(tool.InputSchema)
+				require.NoError(t, err)
+				return string(encoded)
+			}
+		}
+		t.Fatalf("no tool_search function in tools")
+		return ""
+	}
+	user := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("file an issue")}}
+
+	declared := schemaBytes(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6",
+		Input:  []schemas.ResponsesMessage{user},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{responsesToolFromJSON(t, search)}},
+	})
+	var inline []schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[{"type":"message","role":"user","content":"file an issue"},
+		{"type":"message","role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":`+search+`}}]}]`), &inline))
+	fallback := schemaBytes(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", Input: inline,
+	})
+	assert.Equal(t, declared, fallback, "the dropped-tool_addition fallback must serialize the schema like tools[]")
+}
+
+// A context reused for a later request that declares no client-run tool_search must not
+// carry the earlier request's search name: Claude's call to the caller's own function of
+// that name stays a function_call.
+func TestToolSearch_ReusedContextDropsStaleSearchName(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	user := []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	_, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", Input: user,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`)}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tool_search", clientToolSearchFrom(ctx))
+
+	_, err = ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", Input: user,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			responsesToolFromJSON(t, `{"type":"function","name":"tool_search","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}`),
+		}},
+	})
+	require.NoError(t, err)
+	resp := &AnthropicMessageResponse{
+		ID: "msg_reuse", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonToolUse,
+		Content: []AnthropicContentBlock{{
+			Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_own"),
+			Name: schemas.Ptr("tool_search"), Input: json.RawMessage(`{"q":"x"}`),
+		}},
+	}
+	got := resp.ToBifrostResponsesResponse(ctx)
+	require.Len(t, got.Output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *got.Output[0].Type, "a stale search name restored the caller's own function as a tool_search_call")
+}
+
+// The dropped-tool_addition fallback declares the search through the normal tool
+// conversion, so the search's own flags (here a cache_control breakpoint) survive as
+// they do for a search declared in tools[].
+func TestToolSearch_InlineFallbackKeepsToolFlags(t *testing.T) {
+	t.Parallel()
+	var input []schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[{"type":"message","role":"user","content":"file an issue"},
+		{"type":"message","role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":
+			{"type":"tool_search","execution":"client","cache_control":{"type":"ephemeral"}}}}]}]`), &input))
+	out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", Input: input,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Tools, 1)
+	assert.Equal(t, "tool_search", out.Tools[0].Name)
+	require.NotNil(t, out.Tools[0].CacheControl, "the search's cache_control breakpoint was lost")
+}

@@ -48,7 +48,7 @@ func TestRefuseUnauthenticatedRealtime_AnonymousAllowedWhenNotEnforced(t *testin
 }
 
 // TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed proves a virtual-key caller is admitted.
-// The credential is recorded the same way createBifrostContextFromAuth records it at upgrade.
+// The credential is recorded the same way createBifrostContextFromHeaders records it at upgrade.
 func TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()

@@ -94,7 +94,8 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	support := resolveParamSupport(ctx, request.Model)
 
 	_, hasExtraContextManagement := params.ExtraParams["context_management"]
-	dropAnthropicFields := len(params.ContextManagement) > 0 || hasExtraContextManagement ||
+	_, hasSafeguards := params.ExtraParams["safeguards"]
+	dropAnthropicFields := len(params.ContextManagement) > 0 || hasExtraContextManagement || hasSafeguards ||
 		params.CacheControl != nil || params.Speed != nil || params.InferenceGeo != nil ||
 		params.TaskBudget != nil || params.Container != nil || len(params.MCPServers) > 0
 
@@ -188,6 +189,7 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
 		if dropAnthropicFields {
 			delete(paramsCopy.ExtraParams, "context_management")
+			delete(paramsCopy.ExtraParams, "safeguards")
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")
@@ -287,6 +289,8 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 
 	_, hasExtraContextManagement := params.ExtraParams["context_management"]
 	dropContextManagement := len(params.ContextManagement) > 0 || hasExtraContextManagement
+	// Claude Code's auto-mode classifier payload, carried in ExtraParams by the Anthropic route.
+	_, dropSafeguards := params.ExtraParams["safeguards"]
 
 	_, hasExtraReasoningEffort := params.ExtraParams["reasoning_effort"]
 	hasReasoningEffort := hasExtraReasoningEffort || (params.Reasoning != nil &&
@@ -298,7 +302,7 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 	dropParallelToolCalls := !support.parallelToolCalls && params.ParallelToolCalls != nil
 	dropTextFormat := !support.responseSchema && params.Text != nil && params.Text.Format != nil
 
-	if !dropContextManagement && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
+	if !dropContextManagement && !dropSafeguards && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
 		!dropParallelToolCalls && !dropTextFormat {
 		return request
 	}
@@ -328,10 +332,13 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 		textCopy.Format = nil
 		paramsCopy.Text = &textCopy
 	}
-	if paramsCopy.ExtraParams != nil && (dropContextManagement || dropReasoningEffort) {
+	if paramsCopy.ExtraParams != nil && (dropContextManagement || dropSafeguards || dropReasoningEffort) {
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
 		if dropContextManagement {
 			delete(paramsCopy.ExtraParams, "context_management")
+		}
+		if dropSafeguards {
+			delete(paramsCopy.ExtraParams, "safeguards")
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")

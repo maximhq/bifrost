@@ -635,6 +635,49 @@ func TestDisabledThinkingStrip(t *testing.T) {
 		}
 	})
 
+	// Haiku 5.5 follows Opus 5: "disabled" is accepted at effort "high" or below
+	// and is a 400 at "xhigh" or "max". Bifrost now sends output_config.effort to
+	// Haiku 5.5, so the pairing has to be caught here as it is for Opus 5.
+	t.Run("haiku55_disabled_follows_effort", func(t *testing.T) {
+		const model = "claude-haiku-5-5"
+		for _, tc := range []struct {
+			effort, want string
+		}{
+			{"low", "disabled"},
+			{"medium", "disabled"},
+			{"high", "disabled"},
+			{"xhigh", "adaptive"},
+			{"max", "adaptive"},
+		} {
+			req := &AnthropicMessageRequest{
+				Model:        model,
+				MaxTokens:    4096,
+				Thinking:     &AnthropicThinking{Type: "disabled"},
+				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr(tc.effort)},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			if req.Thinking == nil || req.Thinking.Type != tc.want {
+				t.Errorf("typed, effort %q: thinking = %+v, want type %q", tc.effort, req.Thinking, tc.want)
+			}
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tc.effort {
+				t.Errorf("typed, effort %q: the requested effort must be preserved, got %+v", tc.effort, req.OutputConfig)
+			}
+
+			body := []byte(`{"model":"` + model + `","max_tokens":4096,"output_config":{"effort":"` + tc.effort +
+				`"},"thinking":{"type":"disabled"}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+			if err != nil {
+				t.Fatalf("raw, effort %q: unexpected error: %v", tc.effort, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != tc.want {
+				t.Errorf("raw, effort %q: thinking.type = %q, want %q; body: %s", tc.effort, got, tc.want, string(result))
+			}
+			if got := providerUtils.GetJSONField(result, "output_config.effort").String(); got != tc.effort {
+				t.Errorf("raw, effort %q: effort must be preserved, got %q; body: %s", tc.effort, got, string(result))
+			}
+		}
+	})
+
 	// The unconditional half of the gate reads supports_reasoning_disable, so a
 	// row moves this passthrough strip without a release — in both directions.
 	t.Run("datasheet_outranks_the_name_fallback", func(t *testing.T) {
@@ -940,6 +983,8 @@ func TestThinkingDisplayUpdatesModelGate(t *testing.T) {
 		{"claude-opus-4-6", nil, "omitted"},
 		{"claude-sonnet-4-6", nil, "omitted"},
 		{"claude-haiku-4-5", nil, "omitted"},
+		// Adaptive-only, but writes no progress updates: keeps the downgrade.
+		{"claude-haiku-5-5", nil, "omitted"},
 		{"claude-opus-4-6", &yes, "updates"},
 		{"claude-opus-5-5", &no, "omitted"},
 	}

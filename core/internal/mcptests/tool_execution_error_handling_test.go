@@ -50,7 +50,7 @@ func TestToolExecution_Timeout(t *testing.T) {
 	// Should timeout (either error or result indicates timeout)
 	if bifrostErr != nil {
 		// Error occurred - check if it's a timeout error
-		assert.Contains(t, strings.ToLower(bifrostErr.Error.Message), "timeout",
+		assert.Contains(t, strings.ToLower(bifrostErr.Error.Message), "timed out",
 			"Error should indicate timeout: %s", bifrostErr.Error.Message)
 	} else if result != nil {
 		// May return result with error message

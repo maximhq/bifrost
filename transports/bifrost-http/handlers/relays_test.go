@@ -3,9 +3,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"github.com/fasthttp/router"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -15,9 +18,13 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 
+	"fmt"
+
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -219,6 +226,121 @@ func TestRelaysHandlerDelegatesMutationsAndReloads(t *testing.T) {
 	assert.NotContains(t, peer.Names(), "docs", "a deleted relay stops being served on the peer")
 }
 
+// TestRelaysHandlerRequiresGenuineAuthForDialChanges: a caller let through the fail-open bypass
+// (dashboard auth disabled or unconfigured) cannot choose where a relay sends its credential or
+// which gateway secret it sends, the relay counterpart of the provider, provider-key, plugin and
+// webhook gates. Repointing base_url while sending back the redacted credential would hand the
+// stored secret to the new host; an env. reference would send the gateway's own environment.
+// Edits that keep every such setting still pass, and an authenticated admin is never refused.
+func TestRelaysHandlerRequiresGenuineAuthForDialChanges(t *testing.T) {
+	t.Setenv("RELAY_GATE_TEST_SECRET", "gateway-env-secret")
+	h, store, manager := newRelaysTestHandler(t)
+	tlsServer := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(tlsServer.Close)
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.Certificate().Raw}))
+	const createBody = `{"name":"tavily","base_url":"https://search.example.com","auth":{"type":"bearer"},"credential":{"value":"tvly-secret-123456789"},"extra_headers":{"X-Tenant":"acme"}}`
+	created := pteRequest(fasthttp.MethodPost, createBody, "")
+	h.create(created)
+	require.Equal(t, fasthttp.StatusCreated, created.Response.StatusCode(), string(created.Response.Body()))
+
+	// The body the UI would send back: what GET returned, credential redacted.
+	readView := func(t *testing.T) map[string]any {
+		t.Helper()
+		get := pteRequest(fasthttp.MethodGet, "", "tavily")
+		h.get(get)
+		require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+		var view map[string]any
+		require.NoError(t, json.Unmarshal(get.Response.Body(), &view))
+		return view
+	}
+	bypassed := func(method string, body any, name string) *fasthttp.RequestCtx {
+		raw, ok := body.(string)
+		if !ok {
+			data, err := json.Marshal(body)
+			require.NoError(t, err)
+			raw = string(data)
+		}
+		ctx := pteRequest(method, raw, name)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	assertUnchanged := func(t *testing.T) {
+		t.Helper()
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search.example.com", stored.BaseURL)
+		assert.Equal(t, "tvly-secret-123456789", stored.Credential.Value.GetValue())
+		assert.Nil(t, stored.ProxyConfig)
+		assert.Nil(t, stored.Network)
+		tenant := stored.ExtraHeaders["X-Tenant"]
+		assert.Equal(t, "acme", tenant.GetValue())
+	}
+
+	t.Run("create is refused", func(t *testing.T) {
+		ctx := bypassed(fasthttp.MethodPost, `{"name":"exfil","base_url":"https://attacker.example.com","auth":{"type":"bearer"},"credential":{"value":"env.RELAY_GATE_TEST_SECRET"}}`, "")
+		h.create(ctx)
+		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "base_url")
+		assert.Contains(t, string(ctx.Response.Body()), "credential.value")
+		assert.Equal(t, []string{"tavily"}, manager.Names(), "the refused relay is not served")
+	})
+
+	refused := map[string]func(view map[string]any){
+		"base_url": func(view map[string]any) { view["base_url"] = "https://attacker.example.com" },
+		"credential.value": func(view map[string]any) {
+			view["credential"] = map[string]any{"value": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"extra_headers.X-Tenant": func(view map[string]any) {
+			view["extra_headers"] = map[string]any{"X-Tenant": "env.RELAY_GATE_TEST_SECRET"}
+		},
+		"network.insecure_skip_verify": func(view map[string]any) {
+			view["network"] = map[string]any{"insecure_skip_verify": true}
+		},
+		"network.ca_cert_pem": func(view map[string]any) {
+			view["network"] = map[string]any{"ca_cert_pem": caPEM}
+		},
+		"proxy_config.url": func(view map[string]any) {
+			view["proxy_config"] = map[string]any{"type": "http", "url": "http://attacker.example.com:3128"}
+		},
+	}
+	for path, mutate := range refused {
+		t.Run("update of "+path+" is refused", func(t *testing.T) {
+			view := readView(t)
+			mutate(view)
+			ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+			h.update(ctx)
+			assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), path)
+			assertUnchanged(t)
+		})
+	}
+
+	t.Run("update that keeps every dial setting passes", func(t *testing.T) {
+		view := readView(t)
+		view["description"] = "edited while auth is off"
+		ctx := bypassed(fasthttp.MethodPut, view, "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "edited while auth is off", stored.Description)
+		assertUnchanged(t)
+	})
+
+	t.Run("authenticated admin may repoint the relay", func(t *testing.T) {
+		view := readView(t)
+		view["base_url"] = "https://search-eu.example.com"
+		data, err := json.Marshal(view)
+		require.NoError(t, err)
+		ctx := pteRequest(fasthttp.MethodPut, string(data), "tavily")
+		h.update(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetRelay(context.Background(), "tavily")
+		require.NoError(t, err)
+		assert.Equal(t, "https://search-eu.example.com", stored.BaseURL)
+	})
+}
+
 // TestRelaysHandlerFetchOpenAPISpec: the route import's URL source returns the document text as
 // served (YAML stays YAML, nothing is parsed) with the URL it was read from after redirects, and
 // refuses what the MCP preview refuses: a non-http(s) URL, an unreachable document, and loopback
@@ -291,3 +413,246 @@ func TestOpenAPISpecFetchClientsByCaller(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// relayLogsTestHandler wires a sqlite log store into the handler, so the Relay Logs API can be
+// exercised the way the LLM logs API is.
+func relayLogsTestHandler(t *testing.T, hideDeleted bool) (*RelaysHandler, logstore.LogStore) {
+	t.Helper()
+	logs, err := logstore.NewLogStore(context.Background(), &logstore.Config{
+		Enabled: true, Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-logs.db")},
+	}, &mockLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = logs.Close(context.Background()) })
+	cfg := &lib.Config{LogsStore: logs, ClientConfig: &configstore.ClientConfig{HideDeletedVirtualKeysInFilters: hideDeleted}}
+	h := NewRelaysHandler(relay.NewManager(nil, nil), nil, cfg, nil)
+	return h, logs
+}
+
+func relayLogsGet(query string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/api/relay-logs?" + query)
+	return ctx
+}
+
+type fakeRelayRedactedKeys struct{ existing []string }
+
+func (f fakeRelayRedactedKeys) GetAllRedactedKeys(context.Context, []string) []schemas.Key {
+	return nil
+}
+func (f fakeRelayRedactedKeys) GetAllRedactedRoutingRules(context.Context, []string) []tables.TableRoutingRule {
+	return nil
+}
+func (f fakeRelayRedactedKeys) GetAllRedactedVirtualKeys(_ context.Context, ids []string) []tables.TableVirtualKey {
+	var out []tables.TableVirtualKey
+	for _, id := range ids {
+		for _, known := range f.existing {
+			if id == known {
+				out = append(out, tables.TableVirtualKey{ID: id, Name: "key-" + id})
+			}
+		}
+	}
+	return out
+}
+
+// TestRelayLogsAPIMirrorsLLMLogsAPI pins the query surface the LLM logs API has and Relay Logs
+// did not: a server-resolved period that wins over an explicit window, latency bounds, a
+// session filter, cancelled calls in the stats, and a histogram bucket that follows the window.
+func TestRelayLogsAPIMirrorsLLMLogsAPI(t *testing.T) {
+	h, logs := relayLogsTestHandler(t, false)
+	now := time.Now().UTC()
+	_, err := logs.BatchCreateRelayLogsIfNotExists(context.Background(), []*logstore.RelayLog{
+		{ID: "recent", RequestID: "recent", Timestamp: now.Add(-10 * time.Minute), RelayName: "docs", Status: logstore.RelayLogStatusSuccess, Latency: schemas.Ptr(40.0), SessionID: schemas.Ptr("s-1"),
+			App: schemas.Ptr("Acme, Inc"), RequestBody: schemas.Ptr(`{"q":"wombat"}`), AgentCorrelationID: schemas.Ptr("a-1"), ParentRequestID: schemas.Ptr("p-1")},
+		{ID: "gone", RequestID: "gone", Timestamp: now.Add(-10 * time.Minute), RelayName: "docs", Status: logstore.RelayLogStatusCancelled, Latency: schemas.Ptr(400.0)},
+		{ID: "old", RequestID: "old", Timestamp: now.Add(-2 * time.Hour), RelayName: "docs", Status: logstore.RelayLogStatusSuccess, Latency: schemas.Ptr(900.0)},
+	})
+	require.NoError(t, err)
+
+	t.Run("period wins over an explicit window", func(t *testing.T) {
+		start, end := now.Add(-3*time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)
+		ctx := relayLogsGet("period=1h&start_time=" + start + "&end_time=" + end)
+		h.searchLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var page logstore.RelayLogSearchResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.EqualValues(t, 2, page.Pagination.TotalCount, "the two-hour-old row is outside the period")
+	})
+	t.Run("an unsupported period is refused, not read as no window", func(t *testing.T) {
+		for _, handle := range []func(*fasthttp.RequestCtx){h.searchLogs, h.logStats, h.logHistogram} {
+			ctx := relayLogsGet("period=yesterday")
+			handle(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+	})
+	t.Run("latency and session filters", func(t *testing.T) {
+		ctx := relayLogsGet("min_latency=100&max_latency=500")
+		h.searchLogs(ctx)
+		var page logstore.RelayLogSearchResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.Len(t, page.Logs, 1)
+		require.Equal(t, "gone", page.Logs[0].ID)
+		ctx = relayLogsGet("session_id=s-1")
+		h.searchLogs(ctx)
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.Len(t, page.Logs, 1)
+		require.Equal(t, "recent", page.Logs[0].ID)
+	})
+	t.Run("apps, content search and correlation ids are read as on /api/logs", func(t *testing.T) {
+		for _, query := range []string{
+			"apps=" + url.QueryEscape(`["Acme, Inc"]`), // a JSON array keeps a comma inside a name
+			"content_search=wombat",
+			"agent_correlation_id=a-1",
+			"parent_request_id=p-1",
+		} {
+			ctx := relayLogsGet(query)
+			h.searchLogs(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var page logstore.RelayLogSearchResult
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+			require.Len(t, page.Logs, 1, query)
+			require.Equal(t, "recent", page.Logs[0].ID, query)
+		}
+	})
+	t.Run("a value that does not parse is ignored, as on /api/logs", func(t *testing.T) {
+		ctx := relayLogsGet("billable=maybe&min_cost=abc&max_latency=fast&start_time=yesterday&limit=many&offset=x")
+		h.searchLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var page logstore.RelayLogSearchResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.EqualValues(t, 3, page.Pagination.TotalCount, "every unparseable filter is dropped")
+		for _, query := range []string{"limit=0", "limit=100000", "offset=-1"} {
+			ctx = relayLogsGet(query)
+			h.searchLogs(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: a number out of range is refused, as on /api/logs", query)
+		}
+	})
+	t.Run("status filters by row status, named as on /api/logs", func(t *testing.T) {
+		var page logstore.RelayLogSearchResult
+		ctx := relayLogsGet("status=cancelled")
+		h.searchLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.Len(t, page.Logs, 1)
+		require.Equal(t, "gone", page.Logs[0].ID)
+		ctx = relayLogsGet("status=success,cancelled")
+		h.searchLogs(ctx)
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.EqualValues(t, 3, page.Pagination.TotalCount)
+		// The old name is gone: it filters nothing.
+		ctx = relayLogsGet("statuses=cancelled")
+		h.searchLogs(ctx)
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.EqualValues(t, 3, page.Pagination.TotalCount)
+	})
+	t.Run("stats count cancelled calls", func(t *testing.T) {
+		ctx := relayLogsGet("period=1h")
+		h.logStats(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var stats relayLogStatsResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &stats))
+		require.EqualValues(t, 1, stats.CancelledCount)
+		require.InDelta(t, 50, stats.SuccessRate, 1e-9)
+	})
+	t.Run("latency histogram carries the percentiles /api/logs/histogram/latency does", func(t *testing.T) {
+		ctx := relayLogsGet("period=1h&bucket_size=3600")
+		h.logLatencyHistogram(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var hist logstore.LatencyHistogramResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &hist))
+		var requests int64
+		var p99 float64
+		for _, b := range hist.Buckets {
+			requests += b.TotalRequests
+			p99 = max(p99, b.P99Latency)
+		}
+		require.EqualValues(t, 2, requests, "the two finished calls in the window")
+		require.Greater(t, p99, 40.0, "the slow call sets the tail")
+		ctx = relayLogsGet("period=1h&bucket_size=420")
+		h.logLatencyHistogram(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	})
+	t.Run("delete is audited and answered as /api/logs delete is", func(t *testing.T) {
+		_, err := logs.BatchCreateRelayLogsIfNotExists(context.Background(), []*logstore.RelayLog{
+			{ID: "doomed", RequestID: "doomed", Timestamp: now.Add(-3 * time.Hour), RelayName: "docs", Status: logstore.RelayLogStatusSuccess},
+		})
+		require.NoError(t, err)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+		ctx.Request.SetBodyString(`{"ids":["doomed","never-existed"]}`)
+		h.deleteLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.JSONEq(t, `{"message":"Relay logs deleted successfully"}`, string(ctx.Response.Body()))
+		changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+		require.Len(t, changes, 1)
+		require.Equal(t, "relay_logs.deleted", changes[0].EventName)
+		require.Contains(t, string(changes[0].Before), "doomed")
+		_, err = logs.FindRelayLog(context.Background(), "doomed")
+		require.ErrorIs(t, err, logstore.ErrNotFound)
+	})
+	t.Run("histogram bucket follows the window and validates an override", func(t *testing.T) {
+		ctx := relayLogsGet("period=1h")
+		h.logHistogram(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var hist logstore.RelayHistogramResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &hist))
+		require.Equal(t, logstore.DefaultBucketSize(ResolvePeriod("1h", "")), hist.BucketSizeSeconds)
+		require.NotEqual(t, int64(3600), hist.BucketSizeSeconds, "an hour window is not drawn as one bucket")
+
+		ctx = relayLogsGet("period=1h&bucket_size=420")
+		h.logHistogram(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "a size that does not divide an hour is refused, as on /api/logs/histogram")
+		ctx = relayLogsGet("period=1h&bucket_size_seconds=300")
+		h.logHistogram(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &hist))
+		require.EqualValues(t, 300, hist.BucketSizeSeconds)
+	})
+}
+
+// TestRelayLogRoutesFollowLogging pins that the Relay Logs API is mounted apart from the relay
+// management API, so the server mounts it only with the LLM logs API: with logging off, both 404.
+func TestRelayLogRoutesFollowLogging(t *testing.T) {
+	h, _ := relayLogsTestHandler(t, false)
+	served := func(register func(*router.Router)) int {
+		r := router.New()
+		register(r)
+		ctx := relayLogsGet("")
+		r.Handler(ctx)
+		return ctx.Response.StatusCode()
+	}
+	assert.Equal(t, fasthttp.StatusNotFound, served(func(r *router.Router) { h.RegisterRoutes(r) }), "management routes alone do not serve relay logs")
+	assert.Equal(t, fasthttp.StatusOK, served(func(r *router.Router) { h.RegisterRoutes(r); h.RegisterLogRoutes(r) }))
+}
+
+// TestRelayLogsFilterDataResolvesDeletedVirtualKeys pins hide_deleted_virtual_keys_in_filters on
+// the Relay Logs filter data, as the LLM logs filter data honours it.
+func TestRelayLogsFilterDataResolvesDeletedVirtualKeys(t *testing.T) {
+	for _, hideDeleted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hide_deleted=%v", hideDeleted), func(t *testing.T) {
+			h, logs := relayLogsTestHandler(t, hideDeleted)
+			h.SetRedactedKeysManager(fakeRelayRedactedKeys{existing: []string{"vk-live"}})
+			now := time.Now().UTC()
+			_, err := logs.BatchCreateRelayLogsIfNotExists(context.Background(), []*logstore.RelayLog{
+				{ID: "a", RequestID: "a", Timestamp: now, RelayName: "docs", Status: logstore.RelayLogStatusSuccess, VirtualKeyID: schemas.Ptr("vk-live"), VirtualKeyName: schemas.Ptr("live")},
+				{ID: "b", RequestID: "b", Timestamp: now, RelayName: "docs", Status: logstore.RelayLogStatusSuccess, VirtualKeyID: schemas.Ptr("vk-gone"), VirtualKeyName: schemas.Ptr("gone")},
+			})
+			require.NoError(t, err)
+			ctx := relayLogsGet("dimensions=virtual_keys")
+			h.logFilterData(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var data logstore.RelayFilterData
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &data))
+			names := map[string]string{}
+			for _, option := range data.VirtualKeys {
+				names[option.ID] = option.Name
+			}
+			require.Equal(t, "live", names["vk-live"])
+			if hideDeleted {
+				require.NotContains(t, names, "vk-gone", "a deleted key is hidden")
+			} else {
+				require.Equal(t, "gone (deleted)", names["vk-gone"], "a deleted key is labelled")
+			}
+		})
+	}
+}

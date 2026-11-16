@@ -70,14 +70,14 @@ func DefaultNamespaceToolSupport(ctx *schemas.BifrostContext, baseProvider schem
 	}
 }
 
-// defaultToolNamespace is the namespace OpenAI-family models address top-level tools
+// DefaultToolNamespace is the namespace OpenAI-family models address top-level tools
 // under. Codex >= 0.147 declares it explicitly on every request
 // (openai/codex#37022, "Canonicalize default tools under the functions namespace")
 // and normalizes a missing, empty or explicit "functions" namespace to the same tool
 // identity. Bedrock Mantle reserves the name and rejects an explicit declaration:
 // "Invalid Value: 'tools.namespace'. User-defined namespace 'functions' collides
 // with an existing tool namespace."
-const defaultToolNamespace = "functions"
+const DefaultToolNamespace = "functions"
 
 // namespaceDescriptionSeparator joins a namespace's description onto each hoisted
 // member's description, so the context the namespace carried is not lost.
@@ -138,7 +138,7 @@ func UnwrapDefaultNamespaceTools(req *schemas.BifrostResponsesRequest) (*schemas
 }
 
 func isDefaultNamespaceTool(tool schemas.ResponsesTool) bool {
-	return tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && *tool.Name == defaultToolNamespace
+	return tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && *tool.Name == DefaultToolNamespace
 }
 
 // FlattenResponsesNamespaceTools rewrites a Responses request for a wire that does not

@@ -1,4 +1,6 @@
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { waitForNetworkIdle } from "../../core/utils/test-helpers";
+import { createTaskHistoryOperation } from "./agentLogs.data";
 
 // History is mocked so grouping tests do not require creating gateway traffic.
 const root = {
@@ -129,4 +131,48 @@ test.describe("Agent log context grouping", () => {
     await expect(page.getByText("fresh member", {exact: true})).toBeHidden();
   });
 
+});
+
+test.describe("Agent Task conversation history", () => {
+  for (const view of ["operation", "session"] as const) {
+    test(`expands and collapses Task history in the ${view} view`, async ({ page }) => {
+      const operation = createTaskHistoryOperation();
+      await page.route("**/api/agents/history**", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/stats")) {
+          return route.fulfill({ json: { total_entries: 1, success_count: 1, error_count: 0, success_rate: 100, average_latency: 0 } });
+        }
+        if (url.pathname.endsWith("/histogram")) {
+          return route.fulfill({ json: { buckets: [], bucket_size_seconds: 60 } });
+        }
+        if (url.pathname.endsWith("/filterdata")) return route.fulfill({ json: {} });
+        if (url.pathname.endsWith(`/history/${operation.id}`)) {
+          return route.fulfill({ json: operation });
+        }
+        if (!url.pathname.endsWith("/history")) return route.continue();
+        return route.fulfill({ json: {
+          logs: [operation],
+          pagination: { limit: 100, offset: 0, sort_by: "timestamp", order: "asc", total_count: 1, selected_offset: 0 },
+        } });
+      });
+      const selected = view === "operation" ? `selected_log=${operation.id}` : `selected_session=${operation.context_id}`;
+      await page.goto(`/workspace/agent-logs?polling=false&period=30d&agent_log_tab=conversation&${selected}`);
+      await waitForNetworkIdle(page);
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByRole("heading", { name: view === "operation" ? "Agent operation" : "Agent session", exact: true })).toBeVisible();
+      await expect(dialog.getByText("A total of 8 issues were raised yesterday.", { exact: true })).toBeVisible();
+      const history = dialog.getByTestId("agent-conversation-history");
+      const toggle = history.getByTestId("agent-conversation-history-toggle");
+      const progress = history.getByText("Checked all support issues.", { exact: true });
+      await expect(toggle).toBeVisible();
+      await expect(progress).toBeHidden();
+      await toggle.click();
+      await expect(history).toHaveAttribute("open", "");
+      await expect(progress).toBeVisible();
+      await expect(history.getByText("Count yesterday's support issues", { exact: true })).toBeVisible();
+      await toggle.click();
+      await expect(history).not.toHaveAttribute("open", "");
+      await expect(progress).toBeHidden();
+    });
+  }
 });

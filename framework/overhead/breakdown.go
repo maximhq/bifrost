@@ -260,11 +260,26 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 			}
 		}
 	}
+	// A relay call says it was streamed on its own span: a fast, empty or non-SSE stream may carry
+	// no stream-overhead figure, and must not be read as a unary call (its whole stream would then
+	// land in the scheduling residual).
+	if !isStreaming {
+		for _, sp := range trace.Spans {
+			if sp != nil && sp.Kind == schemas.SpanKindRelay {
+				if streamed, _ := sp.Attributes[schemas.AttrBifrostRelayStreamed].(bool); streamed {
+					isStreaming = true
+					break
+				}
+			}
+		}
+	}
 	if upstreamOK && !isStreaming {
 		var llmSelfNs int64
 		var firstLLM time.Time
 		for _, s := range trace.Spans {
-			if s == nil || s.Kind != schemas.SpanKindLLMCall || isBackground(s) {
+			// A relay span plays the llm.call role for a relayed call: it envelops the upstream call
+			// and the relay's own glue (request building, reply copy, usage reading, pricing).
+			if s == nil || (s.Kind != schemas.SpanKindLLMCall && s.Kind != schemas.SpanKindRelay) || isBackground(s) {
 				continue
 			}
 			if self := spanWall(s) - childDur[s.SpanID]; self > 0 {

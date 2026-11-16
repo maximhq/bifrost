@@ -161,6 +161,8 @@ oauth-config-by-id:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '401':
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

@@ -475,6 +475,8 @@ Define routing rules in your `config.json` file under the governance configurati
 **Loading from config.json:**
 Routes are automatically loaded on startup from the `config.json` governance section. Changes require application restart.
 
+`id` is optional in `config.json`. A rule with an `id` is matched to the stored rule by `id`; a rule without one is matched by `name`, `scope` and `scope_id`, and gets a generated ID the first time it is stored. See [Matching rules across restarts](/deployment-guides/config-json/governance#matching-rules-across-restarts).
+
 **Example with Multiple Rules:**
 ```json
 {
@@ -875,7 +877,7 @@ Rules within the same scope are evaluated in **ascending priority order**:
 Priority 0 → Priority 5 → Priority 10 → Priority 100 (first match wins)
 ```
 
-Two rules in the same scope cannot share a priority: creating or updating a rule with a priority already taken in its scope returns `409 Conflict`. Rules in different scopes, or for different virtual keys, teams or customers, can use the same number. Rules synced from `config.json` are checked on the final set, so swapping two priorities in one change works, but two rules in one scope that both omit `priority` (and so both default to `0`) fail the sync.
+Two rules in the same scope cannot share a priority: creating or updating a rule with a priority already taken in its scope returns `409 Conflict`. Rules in different scopes, or for different virtual keys, teams or customers, can use the same number. Rules synced from `config.json` are checked on the final set, so swapping two priorities in one change works. When two rules in one scope end up on the same priority (for example both omit `priority` and default to `0`), the first one in the file is applied and the other is skipped with a warning. A rule whose priority is held by a stored rule that `config.json` does not declare is skipped the same way, and startup continues.
 
 **Best Practice:** Use priority 0-10 for critical rules, 100+ for fallbacks.
 
@@ -1046,6 +1048,14 @@ Enable debug logging to see routing rule evaluation:
 [RoutingEngine] Rule rule-2 evaluation result: matched=true
 [RoutingEngine] Rule matched! Selected target: provider=groq, model=gpt-3.5-turbo (weight=1), fallbacks=[azure/gpt-4o]
 ```
+
+### Rule From config.json Skipped at Startup
+
+**Symptom**: A rule from `config.json` is not applied, and the startup log has a warning like `priority 7 in scope global is already held by stored rule "route-old" ("Primary"), which is not in config.json`. Releases before optional rule IDs exited instead, with `routing rule with priority 7 already exists for scope 'global'`.
+
+**Cause**: The rule's `id` (or, for a rule without an `id`, its name or scope) changed in `config.json`, so it was treated as a new rule. With the default `source_of_truth` (`split`), the stored rule under the old identity is not deleted and still holds the priority.
+
+**Solution**: Delete the stored rule named in the warning (in the UI or with `DELETE /api/routing/rules/{rule_id}`), or restore the rule's old `id` or name in `config.json`, then restart. Omitting `id` and keeping `name` stable avoids the problem for rules whose ID you do not need to control.
 
 ### Routing Stops Working After a Downgrade
 

@@ -138,6 +138,10 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over the 3-element literal {name, strict, schema}",
 	},
+	"handlers.toolMeta": {
+		status: bounded,
+		reason: "loops over the fixed 3-element uiResourcePaths package var and edits a copy of one tool's _meta, never a request body",
+	},
 	"integrations.createAnthropicMessagesRouteConfig": {
 		status: bounded,
 		reason: "the sjson call sits in a ResponsesResponseConverter closure defined inside a " +
@@ -151,6 +155,11 @@ var reviewedSites = map[string]siteReview{
 	"mistral.normalizeMistralStreamContent": {
 		status: elementSized,
 		reason: "rewrites each choice-sized delta once, then replaces the choices array outside the loop",
+	},
+	"schemas.applyObjects": {
+		status: elementSized,
+		reason: "each write rewrites one provider stream frame's own bytes (frames are capped at their own end by " +
+			"splitRawJSONFrames); the reassembled raw response is never rewritten inside the loop",
 	},
 	"anthropic.BuildAnthropicChatRequestBody": {
 		status: bounded,

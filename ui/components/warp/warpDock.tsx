@@ -3,6 +3,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 import { useIsNarrowerThan } from "@/hooks/use-mobile";
 import { useWarp } from "@/lib/contexts/warpContext";
 import { lazy, Suspense } from "react";
+import { useTranslation } from "react-i18next";
 
 // Lazy: the dock is on every page, and the panel pulls in the markdown renderer. Loading it on
 // first open keeps that out of the app bundle; once loaded, answers render without a fallback.
@@ -13,6 +14,7 @@ const WarpPanel = lazy(() => import("@/components/warp/warpPanel"));
 const WARP_DOCK_MIN_WIDTH = 1024;
 
 export default function WarpDock({ children }: { children: React.ReactNode }) {
+	const { t } = useTranslation("shell");
 	const warp = useWarp();
 	const isMobile = useIsNarrowerThan(WARP_DOCK_MIN_WIDTH);
 	const isOpen = !!warp?.isOpen;
@@ -29,7 +31,7 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 				{isOpen && !isMobile && (
 					<>
 						<ResizableHandle
-							aria-label="Resize Warp panel"
+							aria-label={t("warp.dock.resize")}
 							className="bg-transparent md:-translate-x-1.5"
 							data-testid="warp-dock-resize-handle"
 						/>
@@ -56,8 +58,8 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 					{/* Override SheetContent's sm:w-3/4 so the sheet stays full width. */}
 					<SheetContent side="right" className="w-[calc(100%_-_16px)] p-0 sm:w-full sm:max-w-none" data-testid="warp-dock-sheet">
 						{/* Radix names the dialog from SheetTitle, not the panel's own heading. */}
-						<SheetTitle className="sr-only">Warp</SheetTitle>
-						<SheetDescription className="sr-only">Ask Warp questions about this deployment&apos;s logs, usage and spend.</SheetDescription>
+						<SheetTitle className="sr-only">{t("nav.warp")}</SheetTitle>
+						<SheetDescription className="sr-only">{t("warp.dock.description")}</SheetDescription>
 						<Suspense fallback={null}>
 							<WarpPanel />
 						</Suspense>

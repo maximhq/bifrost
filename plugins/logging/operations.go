@@ -25,6 +25,8 @@ const (
 	logStatusSuccess    = "success"
 	logStatusError      = "error"
 	logStatusCancelled  = "cancelled"
+	// An MCP round whose server asked the caller for input; the retry is its own row.
+	logStatusInputRequired = "input_required"
 )
 
 func logStatusForError(err *schemas.BifrostError) string {
@@ -115,6 +117,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	if data.App != "" {
 		entry.App = new(clampString(data.App, maxPersistedAppLen))
 	}
+	entry.ClientIP = optionalString(data.ClientIP)
 	return p.store.CreateIfNotExists(ctx, entry)
 }
 
@@ -385,6 +388,17 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 	}
 }
 
+// speechSessionObject is the object of a speech session's row, which an HTTP speech stream's is not.
+const speechSessionObject = "speech.session"
+
+// applySpeechSessionInput records the text a speech session spoke as the row's input.
+func applySpeechSessionInput(entry *logstore.Log, result *schemas.BifrostResponse, contentLoggingEnabled bool) {
+	if !contentLoggingEnabled || result == nil || result.SpeechStreamResponse == nil || result.SpeechStreamResponse.SessionInput == "" {
+		return
+	}
+	entry.SpeechInputParsed = &schemas.SpeechInput{Input: result.SpeechStreamResponse.SessionInput}
+}
+
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -456,7 +470,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
 		}
 		// Speech output
-		if streamResponse.Data.AudioOutput != nil {
+		if streamResponse.Data.AudioOutput != nil && len(streamResponse.Data.AudioOutput.Audio) > 0 {
 			entry.SpeechOutputParsed = streamResponse.Data.AudioOutput
 		}
 		// Image generation output
@@ -491,6 +505,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			// Raw response
 			if streamResponse.Data.RawResponse != nil {
 				entry.RawResponse = *streamResponse.Data.RawResponse
+				entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 			}
 		}
 	}
@@ -1474,6 +1489,51 @@ func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context, limit int
 		}
 		return KeyPair{}
 	}), nil
+}
+
+// GetAvailableMCPUsers returns the users ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "user_id", "user_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available users from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPTeams returns the teams ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "team_id", "team_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available teams from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPCustomers returns the customers ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "customer_id", "customer_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available customers from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPBusinessUnits returns the business units ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "business_unit_id", "business_unit_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available business units from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPProjects returns the projects ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "project_id", "project_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available projects from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
 }
 
 // extractUniqueMCPKeyPairs extracts unique non-empty key pairs from MCP logs using the provided extractor function

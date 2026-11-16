@@ -307,6 +307,8 @@ func mergeCachedWriteTokenDetails(total, next *schemas.ChatCachedWriteTokenDetai
 	}
 	total.CachedWriteTokens5m += next.CachedWriteTokens5m
 	total.CachedWriteTokens1h += next.CachedWriteTokens1h
+	total.CachedWriteTokens30m += next.CachedWriteTokens30m
+	total.CachedWriteTokens12h += next.CachedWriteTokens12h
 	return total
 }
 

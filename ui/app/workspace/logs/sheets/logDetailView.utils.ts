@@ -270,13 +270,19 @@ export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
 }
 export type FallbackChainOutcome = "succeeded" | "failed" | "in_progress";
 
+// Only fallback attempts look up through parent_request_id; on an index-zero row it can be a session id.
+export function fallbackChainRootId(log: LogEntry): string {
+	return log.fallback_index > 0 && log.parent_request_id ? log.parent_request_id : log.id;
+}
+
 // The chain a row belongs to: the root request plus the fallback attempts that
 // carry its id as parent_request_id, in the order they ran.
 export function buildFallbackChain(log: LogEntry, root: LogEntry | undefined, children: LogEntry[] | undefined): LogEntry[] {
-	const rootId = log.parent_request_id || log.id;
+	const rootId = fallbackChainRootId(log);
 	const byId = new Map<string, LogEntry>();
-	for (const entry of [root, log.id === rootId ? log : undefined, ...(children ?? []), log.parent_request_id ? log : undefined]) {
-		if (entry) byId.set(entry.id, entry);
+	if (root?.id === rootId) byId.set(root.id, root);
+	for (const entry of [log, ...(children ?? [])]) {
+		if (entry.id === rootId || (entry.parent_request_id === rootId && entry.fallback_index > 0)) byId.set(entry.id, entry);
 	}
 	return [...byId.values()].sort((a, b) => a.fallback_index - b.fallback_index || a.timestamp.localeCompare(b.timestamp));
 }

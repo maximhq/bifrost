@@ -133,6 +133,7 @@ var chatParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"presence_penalty":       true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"reasoning_effort":       true,
@@ -167,6 +168,7 @@ var responsesParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"previous_response_id":   true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"safety_identifier":      true,
@@ -1167,7 +1169,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 }
 
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
@@ -1246,7 +1248,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	mt, mh := startTransportSpan(ctx, "response-marshal")
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 	if mt != nil {
 		mt.EndSpan(mh, schemas.SpanStatusOk, "")
 	}
@@ -1506,37 +1508,52 @@ func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) 
 	return files, nil
 }
 
-// attachDecisionFiles gives each image part sent by reference the bytes of the file
-// part its name points at. files is nil for a JSON request, where no part can name a
-// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
-// own multipart rules also give: a name with no file part, two parts naming one file,
-// and a file part no image part names. A file part takes precedence over data.
+// attachDecisionFiles gives each part that names a file part, an image sent by
+// reference or an input_file, the bytes of the file part its name points at, so a
+// large file arrives as raw bytes rather than base64 in the JSON. files is nil for a
+// JSON request, where no part can name a file. Only what the request cannot be built
+// from is rejected, each a 400 Typesafe's own multipart rules also give: a name with
+// no file part, two parts naming one file, and a file part no part names. An image's
+// file part takes precedence over its data; an input_file sends its bytes one way
+// only, so naming a file part as well as sending data or a url is rejected.
 func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
 	used := make(map[string]string, len(files))
 	for m := range input.Messages {
 		parts := input.Messages[m].Content.Parts
 		for i := range parts {
 			part := &parts[i]
-			if !part.IsAsset() || part.Name == nil {
+			if part.Name == nil {
+				continue
+			}
+			var label string
+			switch {
+			case part.IsAsset():
+				label = fmt.Sprintf("input_image part %q", *part.ID)
+			case part.Type == schemas.DecisionInputPartTypeFile:
+				label = "input_file part"
+				if part.Data.File != nil || part.URL != nil {
+					return fmt.Errorf("input_file part names file part %q and also sends data or url; send its bytes one way", *part.Name)
+				}
+			default:
 				continue
 			}
 			if files == nil {
-				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+				return fmt.Errorf("%s names file part %q, which needs a multipart request", label, *part.Name)
 			}
 			data, ok := files[*part.Name]
 			if !ok {
-				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+				return fmt.Errorf("%s names part %q, which the request does not carry", label, *part.Name)
 			}
 			if other, taken := used[*part.Name]; taken {
-				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+				return fmt.Errorf("%s and %s both name part %q", other, label, *part.Name)
 			}
-			used[*part.Name] = *part.ID
+			used[*part.Name] = label
 			part.Data.File = data
 		}
 	}
 	for name := range files {
 		if _, ok := used[name]; !ok {
-			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+			return fmt.Errorf("multipart part %q is not named by any input_image or input_file part", name)
 		}
 	}
 	return nil
@@ -1784,32 +1801,6 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
-// speechAttachmentFilename derives the download filename from the requested
-// audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
-// format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
-// with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
-// or empty formats fall back to mp3 (the API default).
-func speechAttachmentFilename(responseFormat string) string {
-	ext := "mp3"
-	switch {
-	case strings.HasPrefix(responseFormat, "opus"):
-		ext = "opus"
-	case strings.HasPrefix(responseFormat, "aac"):
-		ext = "aac"
-	case strings.HasPrefix(responseFormat, "flac"):
-		ext = "flac"
-	case strings.HasPrefix(responseFormat, "wav"):
-		ext = "wav"
-	case strings.HasPrefix(responseFormat, "pcm"):
-		ext = "pcm"
-	case strings.HasPrefix(responseFormat, "ulaw"):
-		ext = "ulaw"
-	case strings.HasPrefix(responseFormat, "alaw"):
-		ext = "alaw"
-	}
-	return "speech." + ext
-}
-
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -1822,7 +1813,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 	// Filename tracks the requested audio format (prepareSpeechRequest guarantees
 	// req.SpeechParameters is non-nil, so ResponseFormat is safe to read here).
-	attachmentFilename := speechAttachmentFilename(req.ResponseFormat)
+	attachmentFilename := lib.SpeechAttachmentFilename(req.ResponseFormat)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	if bifrostCtx == nil {
@@ -1873,7 +1864,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Type", lib.SpeechContentType(req.ResponseFormat, resp.Audio))
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
@@ -2487,7 +2478,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
-			runCompleter(false)
+			lib.RunRecovered("stream transport post-hook completer", func() { runCompleter(false) })
 			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
 			// other goroutine can be mid-send on eventCh when this closes it. Closing it
 			// while a send was still in flight would panic ("send on closed channel").
@@ -2495,9 +2486,20 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
 			if traceCompleter != nil {
-				traceCompleter(transportLogs)
+				lib.RunRecovered("stream trace completer", func() { traceCompleter(transportLogs) })
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, an error frame goes to the client, upstream is cancelled and
+		// drained, then the teardown closes the stream.
+		defer lib.RecoverStreamProducer(cancel, stream, func() {
+			if errorJSON, err := sonic.Marshal(lib.SanitizeBifrostErrorForClient(lib.StreamProducerPanicError())); err == nil {
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
+				reader.SendError(errorJSON)
+			}
+		})
 
 		var includeEventType bool
 		var skipDoneMarker bool

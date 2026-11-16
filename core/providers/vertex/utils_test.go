@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1460,6 +1461,102 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 	}
 }
 
+// TestVertexPassthroughInteractionsReportsRun pins the Vertex route for stored interactions: a
+// finished run's usage rides on ProviderJob, to be settled once, and never on PassthroughUsage,
+// which governance and the request row would bill on every read. The poll path keeps the project
+// prefix and version the client addressed, so the sweeper can read the run again.
+func TestVertexPassthroughInteractionsReportsRun(t *testing.T) {
+	const completed = `{"id":"i-1","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}`
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("alt") == "sse" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"event_type\":\"interaction.completed\",\"interaction\":" + completed + "}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(completed))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+
+	const path = "/projects/client-proj/locations/global/interactions"
+	checkJob := func(label string, resp *schemas.BifrostPassthroughResponse) {
+		t.Helper()
+		if resp == nil {
+			t.Fatalf("%s: no response", label)
+		}
+		if resp.PassthroughUsage != nil {
+			t.Fatalf("%s: PassthroughUsage=%+v, want none billed on the request", label, resp.PassthroughUsage)
+		}
+		job := resp.ProviderJob
+		if job == nil || job.ID != "i-1" || !job.Created || !job.Terminal || job.PollPath != path+"/i-1" || job.APIVersion != "v1beta1" {
+			t.Fatalf("%s: job=%+v, want the created, finished run polled at %s/i-1 under v1beta1", label, job, path)
+		}
+		if job.Usage == nil || job.Usage.LLMUsage == nil || job.Usage.LLMUsage.TotalTokens != 1050 {
+			t.Fatalf("%s: job usage=%+v, want the run's usage", label, job.Usage)
+		}
+		if resp.ServedModel != "deep-research-preview-04-2026" {
+			t.Fatalf("%s: served model=%q", label, resp.ServedModel)
+		}
+	}
+
+	req := &schemas.BifrostPassthroughRequest{
+		Method:      http.MethodPost,
+		Path:        path,
+		APIVersion:  "v1beta1",
+		Body:        []byte(`{"agent":"deep-research-preview-04-2026","input":"hi"}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
+	}
+	checkJob("unary", resp)
+
+	streamReq := *req
+	streamReq.RawQuery = "alt=sse"
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, &streamReq)
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %s", bifrostErr.GetErrorString())
+	}
+	var final *schemas.BifrostPassthroughResponse
+	for drained := false; !drained; {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				drained = true
+				break
+			}
+			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) == 0 {
+				final = chunk.BifrostPassthroughResponse
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PassthroughStream did not finish")
+		}
+	}
+	checkJob("stream", final)
+}
+
 func TestPassthroughWireFormat(t *testing.T) {
 	tests := []struct {
 		path string
@@ -1686,11 +1783,9 @@ func BenchmarkApplyVertexSessionRouting(b *testing.B) {
 	}
 }
 
-// Vertex reads the anthropic-beta header when it validates a beta-gated request field:
-// thinking.display "updates" still 400s ("Input should be 'summarized', 'omitted'") with the beta
-// only in the anthropic_beta body array. The non-stream chat path sends the header next to the
-// body field, as the Responses and streaming paths already do.
-func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
+// Vertex enables betas from the anthropic-beta header only: the anthropic_beta body field is
+// ignored and 400s on values it does not list (inline-tools-2026-09-15), verified live 2026-11-11.
+func TestVertexSendsBetasAsHeader(t *testing.T) {
 	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
 	var mu sync.Mutex
 	var betaHeader, body string
@@ -1700,6 +1795,10 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 		betaHeader, body = r.Header.Get("anthropic-beta"), string(raw)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "count-tokens") {
+			_, _ = w.Write([]byte(`{"input_tokens":1}`))
+			return
+		}
 		_, _ = w.Write([]byte(anthropicResponse))
 	}))
 	defer upstream.Close()
@@ -1721,13 +1820,25 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 	}}
 	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
 
+	assertWire := func(t *testing.T, want string) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if betaHeader != want {
+			t.Errorf("anthropic-beta header = %q, want %q (body: %s)", betaHeader, want, body)
+		}
+		if gjson.Get(body, "anthropic_beta").Exists() {
+			t.Errorf("anthropic_beta must not be in the Vertex body: %s", body)
+		}
+	}
+
 	for _, tc := range []struct {
 		name    string
 		display string
 		want    string
 	}{
-		{"updates sends the beta", "updates", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader},
-		{"summarized needs no beta", "summarized", ""},
+		{"chat updates sends the beta", "updates", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader},
+		{"chat summarized needs no beta", "summarized", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &schemas.BifrostChatRequest{
@@ -1740,16 +1851,23 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 			if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr != nil {
 				t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if betaHeader != tc.want {
-				t.Errorf("anthropic-beta header = %q, want %q (body: %s)", betaHeader, tc.want, body)
-			}
-			if bodyBeta := gjson.Get(body, "anthropic_beta.0").String(); bodyBeta != tc.want {
-				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
-			}
+			assertWire(t, tc.want)
 		})
 	}
+
+	t.Run("count tokens sends the beta", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {anthropic.AnthropicMidConversationToolChangesBetaHeader}})
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    "claude-opus-5-5",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+		}
+		if _, bifrostErr := provider.CountTokens(ctx, key, req); bifrostErr != nil {
+			t.Fatalf("CountTokens: %s", bifrostErr.GetErrorString())
+		}
+		assertWire(t, anthropic.AnthropicMidConversationToolChangesBetaHeader)
+	})
 }
 
 // vertexModelGarden serves ids as the google publisher's catalog and answers 404 for the
@@ -1845,6 +1963,54 @@ func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
 			}
 			if hits.Load() == 0 {
 				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// erroringTokenSource is a token source whose every Token call fails with err.
+type erroringTokenSource struct{ err error }
+
+func (s erroringTokenSource) Token() (*oauth2.Token, error) { return nil, s.err }
+
+// A token failure on list models reports the underlying cause in the message (the only field the
+// list-models warning and the UI tooltip show). Only an API-key-only key, which reaches the token
+// path on an unfiltered listing, says "not supported": ListAllModels treats that as expected, while
+// a WIF or service-account failure must surface as a real error.
+func TestVertexListModelsTokenErrorSurfacesCause(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		apiKeyOnly    bool
+		wantSupported bool
+	}{
+		{name: "oauth key", apiKeyOnly: false, wantSupported: true},
+		{name: "api key only key", apiKeyOnly: true, wantSupported: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, "gemini-2.5-flash"))
+			key.Models = schemas.WhiteList{"*"}
+			if tc.apiKeyOnly {
+				key.Value = *schemas.NewSecretVar("vertex-api-key")
+				key.VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar("")
+			}
+			cause := "vertex aws federation: aws region could not be determined"
+			provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), erroringTokenSource{err: errors.New(cause)})
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Vertex, Unfiltered: true})
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected a token error")
+			}
+			msg := bifrostErr.Error.Message
+			if !strings.Contains(msg, cause) {
+				t.Errorf("message %q does not carry the cause %q", msg, cause)
+			}
+			if got := !strings.Contains(msg, "not supported"); got != tc.wantSupported {
+				t.Errorf("message %q: classified supported = %v, want %v", msg, got, tc.wantSupported)
+			}
+			if n := hits.Load(); n != 0 {
+				t.Errorf("Model Garden called %d times without a token", n)
 			}
 		})
 	}

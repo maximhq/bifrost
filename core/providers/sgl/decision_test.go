@@ -97,7 +97,7 @@ func TestToSGLDecisionRequest_Rejections(t *testing.T) {
 	t.Parallel()
 	for name, input := range map[string]schemas.DecisionInput{
 		"asset image": {Messages: []schemas.DecisionInputMessage{
-			sglUserMessage(sglTextPart("see r1"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r1"), Data: []byte{0x89, 0x50}}),
+			sglUserMessage(sglTextPart("see r1"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r1"), Data: schemas.DecisionData{File: []byte{0x89, 0x50}}}),
 		}},
 		"empty input": {},
 		"image without url": {Messages: []schemas.DecisionInputMessage{

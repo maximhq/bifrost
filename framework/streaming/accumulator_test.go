@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +124,39 @@ func TestAccumulatedChatStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testin
 	requireNoError(err)
 	if data.ServiceTier == nil || *data.ServiceTier != schemas.BifrostServiceTierPriority {
 		t.Fatalf("expected priority service tier, got %v", data.ServiceTier)
+	}
+}
+
+// TestAccumulatedChatStreamKeepsRawResponseFormat verifies the joined raw keeps the format its chunks declared, so a
+// chunk without a declaration (a synthetic tail) does not clear it.
+func TestAccumulatedChatStreamKeepsRawResponseFormat(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-raw-format")
+
+	declared := newChatChunkResponse(0, "Hello", nil, nil)
+	declared.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}`
+	declared.ChatResponse.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
+	if _, err := accumulator.processChatStreamingResponse(ctx, declared, nil); err != nil {
+		t.Fatalf("declared chunk: %v", err)
+	}
+	tail := newChatChunkResponse(1, "", bifrost.Ptr("stop"), nil)
+	tail.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, tail, nil)
+	if err != nil {
+		t.Fatalf("tail chunk: %v", err)
+	}
+
+	if processed == nil || processed.Data == nil || processed.Data.RawResponse == nil {
+		t.Fatal("expected accumulated raw response on final chunk")
+	}
+	if want := `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}` + "\n\n" + `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`; *processed.Data.RawResponse != want {
+		t.Fatalf("accumulated raw = %q, want %q", *processed.Data.RawResponse, want)
+	}
+	if processed.Data.RawResponseFormat != schemas.RawResponseFormatOpenAIChatCompletionChunk {
+		t.Fatalf("accumulated raw format = %q, want %q", processed.Data.RawResponseFormat, schemas.RawResponseFormatOpenAIChatCompletionChunk)
 	}
 }
 
@@ -1150,5 +1184,82 @@ func TestBuildChatMessageFromChunksKeepsGeneratedImages(t *testing.T) {
 	}
 	if len(got.Images) != 1 || got.Images[0].ImageURL.URL != imageURL {
 		t.Fatalf("streamed image missing from accumulated message: %s", encoded)
+	}
+}
+
+// passthroughStreamChunk returns a passthrough stream chunk carrying body at chunkIndex.
+func passthroughStreamChunk(chunkIndex int, body string) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode:  200,
+		Body:        []byte(body),
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughStreamRequest, ChunkIndex: chunkIndex},
+	}}
+}
+
+// TestPassthroughStreamKeepsEachChunkOnceInOrder verifies a passthrough body fed by several plugins, out of order, is
+// accumulated once per chunk in ChunkIndex order, in the snapshot and on the final chunk, and that a reset lets a
+// retried attempt start again from index 0.
+func TestPassthroughStreamKeepsEachChunkOnceInOrder(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-dedupe")
+	feed := func(result *schemas.BifrostResponse) *ProcessedStreamResponse {
+		t.Helper()
+		processed, err := accumulator.processPassthroughStreamingResponse(ctx, result, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processed
+	}
+
+	for _, chunk := range []*schemas.BifrostResponse{passthroughStreamChunk(1, "b"), passthroughStreamChunk(0, "a"), passthroughStreamChunk(1, "b"), passthroughStreamChunk(0, "a"), passthroughStreamChunk(2, "c")} {
+		feed(chunk)
+	}
+	snapshot := accumulator.GetAccumulatedResponse("passthrough-dedupe")
+	if snapshot == nil || snapshot.PassthroughResponse == nil || string(snapshot.PassthroughResponse.Body) != "abc" {
+		t.Fatalf("snapshot = %+v, want body %q", snapshot, "abc")
+	}
+	if snapshot.PassthroughResponse.ExtraFields.RequestType != schemas.PassthroughStreamRequest {
+		t.Fatalf("snapshot request type = %q", snapshot.PassthroughResponse.ExtraFields.RequestType)
+	}
+
+	accumulator.ResetStreamAccumulator("passthrough-dedupe")
+	feed(passthroughStreamChunk(0, "x"))
+	feed(passthroughStreamChunk(1, "y"))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed := feed(passthroughStreamChunk(2, ""))
+	if processed.Data == nil || string(processed.Data.PassthroughOutput.Body) != "xy" {
+		t.Fatalf("final body = %+v, want %q", processed.Data, "xy")
+	}
+}
+
+// BenchmarkPassthroughStreamAccumulate measures accumulating a 1 MB passthrough stream (256 chunks of 4 KB, each fed by
+// two plugins) and assembling its body on the final chunk.
+func BenchmarkPassthroughStreamAccumulate(b *testing.B) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	b.Cleanup(accumulator.Cleanup)
+	chunks := make([]*schemas.BifrostResponse, 256)
+	for index := range chunks {
+		chunks[index] = passthroughStreamChunk(index, strings.Repeat("x", 4096))
+	}
+	final := passthroughStreamChunk(len(chunks), "")
+	b.SetBytes(256 * 4096)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-bench")
+		for _, chunk := range chunks {
+			for range 2 {
+				if _, err := accumulator.processPassthroughStreamingResponse(ctx, chunk, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		if _, err := accumulator.processPassthroughStreamingResponse(ctx, final, nil); err != nil {
+			b.Fatal(err)
+		}
+		accumulator.ResetStreamAccumulator("passthrough-bench")
 	}
 }

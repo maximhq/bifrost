@@ -44,9 +44,9 @@ type OAuth2Provider interface {
 	InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode MCPAuthMode) (*OAuth2FlowInitiation, string, error)
 
 	// CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
-	// Returns the SessionID stored on the flow row (populated for session-mode,
-	// empty otherwise).
-	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error)
+	// Returns the caller and MCP client the new token was stored for, as the
+	// flow row recorded them.
+	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (*UserOAuthCompletion, error)
 
 	// RefreshAccessToken refreshes any MCP OAuth token — the single shared
 	// client credential or a per-identity credential alike — looked up by the
@@ -241,6 +241,14 @@ type OAuth2Token struct {
 	ExpiresAt       time.Time  `json:"expires_at"`
 	Scopes          []string   `json:"scopes"`
 	LastRefreshedAt *time.Time `json:"last_refreshed_at,omitempty"`
+}
+
+// UserOAuthCompletion is what completing a per-user OAuth flow established: the
+// caller the new token belongs to and the MCP client it is for.
+type UserOAuthCompletion struct {
+	AuthMode    MCPAuthMode // the flow's mode, naming which identity keys the token
+	Identity    string      // the user ID, the virtual key ID or the session ID, per AuthMode
+	MCPClientID string
 }
 
 // OauthFlowInitiation represents the response when initiating an OAuth flow

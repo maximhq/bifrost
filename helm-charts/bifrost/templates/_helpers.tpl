@@ -510,6 +510,9 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
+{{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
 {{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
 {{- end }}
@@ -543,6 +546,9 @@ false
 {{- $server := dict }}
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if .Values.bifrost.server.basePath }}
+{{- $_ := set $server "base_path" .Values.bifrost.server.basePath }}
 {{- end }}
 {{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
 {{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
@@ -1091,6 +1097,12 @@ false
 {{- end }}
 {{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
 {{- end }}
+{{- /* Model routers, each with its targets and routing, rendered as declared. Like
+       governance.routingRules, an empty list renders nothing, so installs that do not set it keep
+       their stored routers. */ -}}
+{{- if .Values.bifrost.modelRouters }}
+{{- $_ := set $config "model_routers" .Values.bifrost.modelRouters }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
@@ -1347,6 +1359,9 @@ false
 {{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
+{{- if hasKey .Values.storage.logsStore "captureClientIp" }}
+{{- $_ := set (index $config "logs_store") "capture_client_ip" .Values.storage.logsStore.captureClientIp }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
@@ -1553,6 +1568,8 @@ false
 {{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
 {{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
 {{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- with $client.oauthConfig.resource }}{{- $_ := set $oauthCfg "resource" . }}{{- end }}
+{{- with $client.oauthConfig.useClientMetadataDocument }}{{- $_ := set $oauthCfg "use_client_metadata_document" . }}{{- end }}
 {{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
 {{- if $oauthCfg }}
 {{- $_ := set $cc "oauth_config" $oauthCfg }}
@@ -1585,11 +1602,17 @@ false
 {{- if hasKey $client "needsSessionStickiness" }}
 {{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
+{{- if hasKey $client "perUserDiscovery" }}
+{{- $_ := set $cc "per_user_discovery" $client.perUserDiscovery }}
+{{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
 {{- end }}
 {{- if hasKey $client "isCodeModeClient" }}
 {{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
+{{- end }}
+{{- if $client.serverTypeOnSlug }}
+{{- $_ := set $cc "server_type_on_slug" $client.serverTypeOnSlug }}
 {{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
@@ -2923,6 +2946,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- else if $client.openapiConfig }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
+{{- end }}
+{{- $ccAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- $perUserAuthTypes := list "per_user_oauth" "per_user_headers" "token_exchange" }}
+{{- /* websocket renders as sse, so it takes the same restriction. */ -}}
+{{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if $client.perUserDiscovery }}
+{{- if eq $client.connectionType "openapi" }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery does not apply to connectionType 'openapi' (client '%s'): its tools come from the OpenAPI document." $idx $client.name) }}
+{{- end }}
+{{- if not (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery requires authType per_user_oauth, per_user_headers or token_exchange (client '%s' has '%s')." $idx $client.name $ccAuth) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

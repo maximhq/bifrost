@@ -1,3 +1,4 @@
+import type { ParseKeys } from "i18next";
 import type {
 	CustomProviderConfig,
 	ModelProvider,
@@ -45,19 +46,20 @@ export function defaultPassthroughMode(isCustom: boolean): PassthroughMode {
 	return isCustom ? "off" : "all";
 }
 
-// passthroughModeOptions lists the modes with the provider kind's default first.
-export function passthroughModeOptions(isCustom: boolean): Array<{ value: PassthroughMode; label: string }> {
+// passthroughModeOptions lists the modes with the provider kind's default first. labelKey is
+// translated where the option is rendered.
+export function passthroughModeOptions(isCustom: boolean): Array<{ value: PassthroughMode; labelKey: ParseKeys<"models"> }> {
 	if (isCustom) {
 		return [
-			{ value: "off", label: "Off (default)" },
-			{ value: "all", label: "All routes" },
-			{ value: "custom", label: "Custom" },
+			{ value: "off", labelKey: "providers.passthrough.modeOffDefault" },
+			{ value: "all", labelKey: "providers.passthrough.modeAll" },
+			{ value: "custom", labelKey: "providers.passthrough.modeCustom" },
 		];
 	}
 	return [
-		{ value: "all", label: "All routes (default)" },
-		{ value: "custom", label: "Custom" },
-		{ value: "off", label: "Off" },
+		{ value: "all", labelKey: "providers.passthrough.modeAllDefault" },
+		{ value: "custom", labelKey: "providers.passthrough.modeCustom" },
+		{ value: "off", labelKey: "providers.passthrough.modeOff" },
 	];
 }
 

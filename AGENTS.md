@@ -544,6 +544,29 @@ Note that `qdrant` and `pinecone` report `(unhealthy)` in `docker compose ps` un
 
 Only `framework/vectorstore` needs any of this. Every other framework package passes with nothing running.
 
+### 20. Every URL Bifrost Emits About Itself Carries `server.base_path`
+
+Bifrost can be mounted under a URL prefix (`server.base_path`, e.g. `/bifrost` for `https://host/bifrost`). Routing, the UI shell, assets, API calls and WebSockets already handle it; the recurring regression is a **self-referencing URL or path built by hand** that assumes the domain root. Any place that prints, returns, redirects to, copies, or navigates to a Bifrost URL must go through the helpers, never string-concatenate from `/`:
+
+| Layer | Use | Never |
+|---|---|---|
+| Go, absolute URL | `lib.BuildBaseURL(ctx, override)` (scheme + host + prefix; a valid explicit override is used instead, trimmed of surrounding whitespace and a trailing `/`, and never gets `BasePath()` appended; an invalid one falls back to the inferred URL) | `"https://" + host + "/..."` |
+| Go, root-relative path in a response body, `Location`, or `Link` header | `lib.WithBasePath("/api/...")` | `fmt.Sprintf("/api/...")` |
+| Go, scheme decisions (HSTS, cookie `Secure`, trace attributes) | `lib.RequestIsHTTPS(ctx)` | reading `X-Forwarded-Proto` yourself |
+| UI, copyable or displayed URL | `getExampleBaseUrl()` / `getEndpointUrl()` (`ui/lib/utils/port.ts`), `getExternalBaseUrl()` for MCP and A2A surfaces | `window.location.origin + "/mcp"` |
+| UI, path label, `window.open`, `router.history.push` | `withBasePath()` (`ui/lib/utils/basePath.ts`), or `router.navigate({ href })` which applies the router basepath | a literal `/workspace/...` outside the router |
+| Docs, Helm `NOTES.txt`, Terraform, Makefile | state the prefix form next to every self URL a client or browser reaches through the proxy (`https://host/<prefix>/login`); probes and health checks that hit the service directly, bypassing the ingress, may stay on `/health` because requests are accepted without the prefix | a root-only example for a proxied URL |
+
+Rules that follow from the implementation:
+
+- **Requests are accepted with or without the prefix.** `basePathMiddleware` strips it, so route handlers and the `whitelisted_routes` allowlist always see root-relative paths. A base path whose first segment matches a route (`api`, `v1`, ...) or a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`, compared case-insensitively because the TanStack basepath rewrite is) is rejected at startup by `lib.CheckBasePathCollision`.
+- **Admin-supplied public URLs are used verbatim.** `mcp_external_client_url`, `a2a_external_client_url` and the OAuth `issuer_url` must already include the prefix; the code never appends it. Say so in any help text or doc that introduces such a setting.
+- **`.well-known` discovery lives at the origin root** (RFC 8414, RFC 9728 §3.1): an issuer of `https://host/bifrost` advertises `https://host/.well-known/oauth-protected-resource/bifrost/mcp`, built by `oauth2ResourceMetadataURL`, and the proxy must forward `/.well-known/`.
+- **Session cookies stay `Path=/`** on purpose: a `/bifrost/`-scoped cookie would not ride the unprefixed `/api` calls the contract allows, and fasthttp's `SetCookie` keys by name so logout could not expire both paths.
+- **A redirect to a third party is marked external** with `markLocationExternal(ctx)` so `prefixLocation` leaves it alone. Otherwise, on a prefixed request, `prefixLocation` re-prefixes a root-relative `Location` and an absolute one whose authority is the request host; protocol-relative (`//host/...`) and other-host URLs are left as they are.
+
+Tests to extend, never duplicate: Go sets the prefix with `lib.SetBasePath("/bifrost")` plus `t.Cleanup(func() { lib.SetBasePath("") })` (`lib/basepath_test.go`, `handlers/middlewares_test.go`, `handlers/mcp_test.go`); UI vitest stubs `window.__BIFROST_BASE_PATH__` (`ui/lib/utils/basePath.test.ts`, `port.test.ts`); E2E has its own worker started with `--base-path` under `tests/e2e/features/base-path/`, where every self URL the dashboard shows is asserted against `basePathOf(testInfo)`. A new self URL ships with a case in each layer it touches.
+
 ---
 
 ## Adding a New Provider — Full Checklist
@@ -777,8 +800,9 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 1. Find workspace page: `ui/app/workspace/<feature>/`
 2. Check existing `data-testid` attributes — E2E tests depend on them
 3. Add `data-testid` to new interactive elements
-4. Run `make run-e2e FLOW=<feature>` to verify
-5. If E2E tests break, use `/e2e-test sync` to update them
+4. Put every user-visible string through i18n (see [UI i18n](#ui-i18n)) and run `cd ui && npm run i18n:check`
+5. Run `make run-e2e FLOW=<feature>` to verify
+6. If E2E tests break, use `/e2e-test sync` to update them
 
 ---
 
@@ -1086,6 +1110,36 @@ We use:
 
 ---
 
+## UI i18n
+
+Every user-visible string in `ui/` goes through i18next. That covers JSX text, text props (`label`, `placeholder`, `title`, `description`, `tooltip`, `aria-label`, `alt`), toasts, zod validation messages, and `label`/`title`/`description` fields in option, tab and column arrays.
+
+- In components: `const { t } = useTranslation("<ns>")`. Outside React: `i18n.t("key", { ns: "<ns>" })` from `@/lib/i18n`. Never write `"ns:key"`; `nsSeparator` is off.
+- Keys are typed against `ui/locales/en`, so an unknown key fails `npm run typecheck`. Do not cast `t` to get around it.
+- Namespaces: `common` (shared verbs, entity names, `validation.*`, `apiErrors.*`), `shell` (nav and layout), `login`, `observability` (logs, metrics, traces), `models` (providers, routing, pricing), `mcp`, `governance` (virtual keys, budgets, teams), `config` (settings). Reuse an existing `common` key before adding a new one.
+- Adding a key: add it to `locales/en/<ns>.json` and to every other locale directory (de, es, fr, it, ja, ko, pt, ru, zh-CN, zh-TW) with a real translation, not the English text. Keep the same `{{placeholders}}`, the same `<Trans>` tags (`<b0>`, `<code1>`) and the same array lengths. Edit catalogs surgically; never re-serialize a whole file by hand.
+- One whole sentence per key. Interpolate values (`t("deleted", { name })`); never concatenate translated fragments or build sentences with `+`.
+- Plurals: `key` plus `key_other` in English, and pass `count`. Russian also needs `_few` and `_many`.
+- Inline markup goes through `<Trans>` with indexed components rather than splitting a sentence into several keys.
+- Static config arrays store a `labelKey` and translate at render time. Template keys (`` t(`x.${v}`) ``) are fine only when `v` is a typed union.
+- Zod messages must stay lazy so they follow a language switch: `.min(1, msg("validation.nameIsRequired"))` with `msg` from `@/lib/i18n/validationMessage`, and `message: i18n.t("validation.…")` inside `superRefine`/`addIssue`. A string literal is resolved once, in English.
+- Dates and numbers follow the UI language: pass `getLocale()` to `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString` and `Intl.*`, and `dateFnsLocale(getLocale())` to date-fns calls that print words or AM/PM. Never hardcode `"en-US"`.
+- Do not translate provider or model names, API field names, code samples, log payloads, or the dev-only pages (`app/pprof`, `components/devProfiler.tsx`). Mark an intentional literal with `// i18n-ignore` (or `{/* i18n-ignore */}`) on the same line or the line above, with a short reason.
+- New namespace: create the JSON file in every locale directory, then import the English file and add the name to `NAMESPACES` in `ui/lib/i18n/resources.ts`. Other languages load lazily through `import.meta.glob`, so they need no registration.
+- New language: add the folder under `ui/locales/` (and `enterprise-ui/app/locales/` in the enterprise repo), an entry in `SUPPORTED_LOCALES` in `ui/lib/i18n/index.ts`, and a date-fns locale in `ui/lib/i18n/dateLocale.ts`.
+
+Before finishing UI work, run from `ui/`:
+
+```bash
+npm run i18n:check                 # hardcoded strings, validation messages, catalog parity; CI runs this
+npm run i18n:check -- app/workspace/logs   # limit the literal scan to the paths you touched
+npm run i18n:check -- --unused     # optional: English keys nothing references
+```
+
+It must exit 0. The `ui-i18n` workflow fails a pull request otherwise.
+
+---
+
 ## TypeScript Guidelines
 
 - Avoid using `any` unless absolutely unavoidable
@@ -1096,19 +1150,23 @@ We use:
 
 ## Code Quality & Formatting
 
-After writing code:
+After writing code, format only the files you changed:
 
 ```bash
-cd ui && npm run format
-````
+cd ui && npm run format:changed          # oxfmt on files changed against HEAD, plus untracked ones
+cd ui && npm run format:changed:check    # same set, check only
+```
 
-Then verify build:
+Do not run `npm run format` or `npm run format:check` across the tree. The committed files were not all formatted with the same oxfmt version, so a repo-wide run rewrites unrelated files that then have to be reverted. If a formatter run touched files outside your change, restore them with `git checkout -- <file>` before committing.
+
+Then verify the build and the i18n check:
 
 ```bash
 cd ui && npm run build
+cd ui && npm run i18n:check
 ```
 
-* Code must pass formatting and build checks
+* Code must pass formatting, build and i18n checks
 * Follow consistent naming and structure conventions
 
 ---

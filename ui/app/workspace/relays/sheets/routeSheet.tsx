@@ -13,6 +13,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, Waypoints } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Control, type FieldValues } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { HeaderPairsTable } from "../fragments/headerPairsTable";
 import { UsageFields } from "../fragments/usageFields";
 import type { RouteForm } from "../routes.utils";
@@ -34,6 +35,8 @@ interface RouteSheetProps {
 
 /** Adds or edits one route, in the same sheet shape as adding a provider key. */
 export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCost, saving, disabled, onCancel, onSave }: RouteSheetProps) {
+	const { t } = useTranslation("config");
+
 	const form = useForm<RouteForm>({
 		resolver: zodResolver(relayRouteFormSchema),
 		defaultValues: route ?? { method: "POST", path: "/", headers: [] },
@@ -77,7 +80,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<Waypoints className="h-5 w-5" />
-							{isNew ? "Add route" : "Edit route"}
+							{isNew ? t("relays.routeSheet.titleAdd") : t("relays.routeSheet.titleEdit")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>
@@ -93,7 +96,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									name="method"
 									render={({ field }) => (
 										<FormItem className="w-32">
-											<FormLabel>Method</FormLabel>
+											<FormLabel>{t("relays.fields.method")}</FormLabel>
 											<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
 												<FormControl>
 													<SelectTrigger className="w-full" data-testid="relay-route-method">
@@ -117,7 +120,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									name="path"
 									render={({ field }) => (
 										<FormItem className="flex-1">
-											<InfoLabel label="Path (Required)" info="* matches within one segment; a trailing /** matches everything below." />
+											<InfoLabel label={t("relays.routeSheet.pathLabel")} info={t("relays.routeSheet.pathInfo")} />
 											<FormControl>
 												<Input placeholder="/v1/search" disabled={disabled} data-testid="relay-route-path" {...field} />
 											</FormControl>
@@ -133,8 +136,8 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 								render={({ field }) => (
 									<FormItem>
 										<InfoLabel
-											label="Header Matchers (Optional)"
-											info="Request headers that must also match, such as X-Amz-Target for AWS JSON APIs. Values are globs."
+											label={t("relays.routeSheet.headersLabel")}
+											info={t("relays.routeSheet.headersInfo")}
 										/>
 										<HeaderPairsTable
 											value={field.value}
@@ -154,7 +157,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 								name="stream"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel label="Streaming" info={<>Auto follows the relay&apos;s streaming settings.</>} />
+										<InfoLabel label={t("relays.routeSheet.streamingLabel")} info={t("relays.routeSheet.streamingInfo")} />
 										<Select
 											value={field.value === undefined ? STREAM_AUTO : field.value ? "on" : "off"}
 											onValueChange={(v) => field.onChange(v === STREAM_AUTO ? undefined : v === "on")}
@@ -166,9 +169,9 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												<SelectItem value={STREAM_AUTO}>Auto</SelectItem>
-												<SelectItem value="on">Always stream</SelectItem>
-												<SelectItem value="off">Never stream</SelectItem>
+												<SelectItem value={STREAM_AUTO}>{t("relays.routeSheet.streamAuto")}</SelectItem>
+												<SelectItem value="on">{t("relays.routeSheet.streamOn")}</SelectItem>
+												<SelectItem value="off">{t("relays.routeSheet.streamOff")}</SelectItem>
 											</SelectContent>
 										</Select>
 										<FormMessage />
@@ -182,13 +185,8 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									<FormItem className="flex flex-row items-center justify-between">
 										<div className="space-y-0.5">
 											<InfoLabel
-												label="Billable"
-												info={
-													<>
-														Counted against rate limits and charged to budgets. Default for {method}:{" "}
-														{routeBillableByDefault(method) ? "yes" : "no"}.
-													</>
-												}
+												label={t("relays.routeSheet.billableLabel")}
+												info={t("relays.routeSheet.billableInfo", { method, default: routeBillableByDefault(method) ? t("yes", { ns: "common" }) : t("no", { ns: "common" }) })}
 											/>
 										</div>
 										<FormControl>
@@ -211,9 +209,9 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 											data-testid="relay-route-pricing-toggle"
 										>
 											<div className="space-y-0.5">
-												<div className="text-sm font-medium">Pricing Override</div>
+												<div className="text-sm font-medium">{t("relays.routeSheet.pricingOverride")}</div>
 												<p className="text-muted-foreground text-sm">
-													{hasOverride ? "This route overrides the relay pricing." : "Uses the relay pricing."}
+													{hasOverride ? t("relays.routeSheet.overridesRelay") : t("relays.routeSheet.usesRelay")}
 												</p>
 											</div>
 											<ChevronDown className={cn("h-4 w-4 transition-transform", pricingOpen && "rotate-180")} />
@@ -221,7 +219,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 									</CollapsibleTrigger>
 									<CollapsibleContent className="space-y-4 border-t px-4 py-4">
 										<p className="text-muted-foreground text-sm">
-											Empty fields inherit the relay&apos;s pricing; set a field to 0 to waive it on this route.
+											{t("relays.routeSheet.pricingHint")}
 										</p>
 										<UsageFields
 											control={form.control as unknown as Control<FieldValues>}
@@ -239,10 +237,11 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={onCancel}>
-								Cancel
+									{t("cancel", { ns: "common" })}
+
 							</Button>
 							<Button type="submit" disabled={disabled} isLoading={saving} data-testid="relay-route-save">
-								{isNew ? "Add Route" : "Save Route"}
+								{isNew ? t("relays.routes.addRoute") : t("relays.routeSheet.saveRoute")}
 							</Button>
 						</div>
 					</form>

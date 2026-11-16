@@ -15,30 +15,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import type { RelayLog, RelayLogFilters, RelayLogPagination } from "@/lib/types/relays";
-import {
-	formatLogSearchInput,
-	isLogIdSearch,
-	LOG_SEARCH_MODE_LABELS,
-	type LogSearchMode,
-	parseLogSearchInput,
-} from "@/lib/utils/logSearch";
+import { formatLogSearchInput, isLogIdSearch, type LogSearchMode, parseLogSearchInput } from "@/lib/utils/logSearch";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { ChevronDown, Download, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { RelayLogsExportDialog } from "./relayLogsExportDialog";
 
 /**
- * The relay search box has two modes: `auto` (a UUID looks up request_id, anything else
- * runs the metadata search) and `request_id` (the input verbatim as an id). The LLM page's
- * third mode, content, has no relay equivalent: the relay `search` filter is the only text
- * search there is, so it is what `auto` falls through to.
+ * The relay search box has the LLM page's three modes: `auto` (a UUID looks up request_id,
+ * anything else runs the metadata search over path, route, model and request id),
+ * `request_id` (the input verbatim as an id) and `content` (the request and response bodies).
  */
-export type RelayLogSearchMode = Extract<LogSearchMode, "auto" | "request_id">;
-
-const SEARCH_PLACEHOLDERS: Record<RelayLogSearchMode, string> = {
-	auto: "Search path, route, model or paste a request ID",
-	request_id: "Search by request ID",
-};
+export type RelayLogSearchMode = LogSearchMode;
 
 interface RelayHeaderViewProps {
 	filters: RelayLogFilters;
@@ -79,15 +68,29 @@ export function RelayHeaderView({
 	sortBy = "timestamp",
 	order = "desc",
 }: RelayHeaderViewProps) {
+	const { t } = useTranslation("observability");
+	const searchPlaceholders: Record<RelayLogSearchMode, string> = {
+		auto: t("relayLogs.header.searchAuto"),
+		request_id: t("logs.searchPlaceholders.request_id"),
+		content: t("logs.searchPlaceholders.content"),
+	};
+	const searchModeLabels: Record<RelayLogSearchMode, string> = {
+		auto: t("logs.searchModes.auto"),
+		request_id: t("logs.searchModes.request_id"),
+		content: t("logs.searchModes.content"),
+	};
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [exportDialogOpen, setExportDialogOpen] = useState(false);
-	const [searchMode, setSearchMode] = useState<RelayLogSearchMode>("auto");
+	// A shared link carrying a content search opens in content mode, so the box shows that search.
+	const [searchMode, setSearchMode] = useState<RelayLogSearchMode>(filters.content_search ? "content" : "auto");
 	const searchModeRef = useRef<RelayLogSearchMode>(searchMode);
 	useEffect(() => {
 		searchModeRef.current = searchMode;
 	}, [searchMode]);
 	const [localSearch, setLocalSearch] = useState(() =>
-		formatLogSearchInput({ request_id: filters.request_id, content_search: filters.search }),
+		filters.content_search
+			? formatLogSearchInput({ content_search: filters.content_search }, "content")
+			: formatLogSearchInput({ request_id: filters.request_id, content_search: filters.search }),
 	);
 	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
@@ -98,12 +101,14 @@ export function RelayHeaderView({
 	useEffect(() => {
 		filtersRef.current = filters;
 	}, [filters]);
-	const { search: searchFilter, request_id: requestIDFilter } = filters;
+	const { search: searchFilter, request_id: requestIDFilter, content_search: contentSearchFilter } = filters;
 	useEffect(() => {
 		// Not keyed on the mode: switching it re-runs the search with what is already typed,
 		// and re-syncing here would blank the box against the pre-switch filters first.
-		setLocalSearch(formatLogSearchInput({ request_id: requestIDFilter, content_search: searchFilter }, searchModeRef.current));
-	}, [searchFilter, requestIDFilter]);
+		const mode = searchModeRef.current;
+		const text = mode === "content" ? contentSearchFilter : searchFilter;
+		setLocalSearch(formatLogSearchInput({ request_id: requestIDFilter, content_search: text }, mode));
+	}, [searchFilter, requestIDFilter, contentSearchFilter]);
 	useEffect(() => {
 		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
@@ -119,10 +124,18 @@ export function RelayHeaderView({
 			setLocalSearch(value);
 			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			// A request id is an exact lookup with nothing to debounce; free text waits for the typist.
+			// Text goes to the body search in content mode and to the metadata search otherwise; only
+			// one of the two is ever set, as the LLM page sets one search term at a time.
 			const { request_id = "", content_search = "" } = parseLogSearchInput(value, mode);
+			const text = content_search || undefined;
 			searchTimeoutRef.current = setTimeout(
 				() => {
-					onFiltersChange({ ...filtersRef.current, request_id: request_id || undefined, search: content_search || undefined });
+					onFiltersChange({
+						...filtersRef.current,
+						request_id: request_id || undefined,
+						search: mode === "content" ? undefined : text,
+						content_search: mode === "content" ? text : undefined,
+					});
 				},
 				request_id ? 0 : 500,
 			);
@@ -150,23 +163,23 @@ export function RelayHeaderView({
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/relay-logs-header:flex-none"
 				onClick={onRefresh}
 				disabled={loading}
 				data-testid="relay-logs-header-refresh-btn"
 			>
 				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
+				{t("labels.refresh")}
 			</Button>
 			<Button
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/relay-logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 				data-testid="relay-logs-header-live-btn"
 			>
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
-				Live
+				{t("labels.live")}
 			</Button>
 			{/* Full width while the row wraps, so the search field owns its own line instead of
 			    squeezing to its 12rem minimum beside the date picker. */}
@@ -176,7 +189,7 @@ export function RelayHeaderView({
 					type="text"
 					data-testid="relay-logs-search-input"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
-					placeholder={SEARCH_PLACEHOLDERS[searchMode]}
+					placeholder={searchPlaceholders[searchMode]}
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value, searchMode)}
 				/>
@@ -188,7 +201,7 @@ export function RelayHeaderView({
 							</Badge>
 						</TooltipTrigger>
 						<TooltipContent sideOffset={6} className="max-w-64">
-							Looking up this request ID exactly.
+							{t("relayLogs.header.idLookupHint")}
 						</TooltipContent>
 					</Tooltip>
 				)}
@@ -198,27 +211,31 @@ export function RelayHeaderView({
 							variant="ghost"
 							size="sm"
 							className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
-							title="Choose whether the box searches relay logs or looks up a request ID"
+							title={t("relayLogs.header.searchModeHint")}
 							data-testid="relay-logs-search-mode-trigger"
 						>
-							{LOG_SEARCH_MODE_LABELS[searchMode]}
+							{searchModeLabels[searchMode]}
 							<ChevronDown className="size-3" />
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end" className="w-44">
 						<DropdownMenuRadioGroup value={searchMode} onValueChange={(value) => handleSearchModeChange(value as RelayLogSearchMode)}>
 							<DropdownMenuRadioItem value="auto" className="text-xs" data-testid="relay-logs-search-mode-auto">
-								Auto detect
+								{t("logs.searchModeOptions.auto")}
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="relay-logs-search-mode-request-id">
-								Request ID search
+								{t("logs.searchModeOptions.request_id")}
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="relay-logs-search-mode-content">
+								{t("logs.searchModeOptions.content")}
 							</DropdownMenuRadioItem>
 						</DropdownMenuRadioGroup>
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>
 			<DateTimePickerWithRange
-				buttonClassName="w-auto"
+				className="flex-1 @4xl/relay-logs-header:flex-none"
+				buttonClassName="w-full @4xl/relay-logs-header:w-auto"
 				triggerTestId="relay-logs-filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}
@@ -247,18 +264,18 @@ export function RelayHeaderView({
 						size="sm"
 						className="h-7.5"
 						onClick={() => setExportDialogOpen(true)}
-						aria-label="Export CSV"
+						aria-label={t("logs.export.exportCsv")}
 					>
 						<Download className="h-4 w-4" />
-						<span className="hidden @5xl/relay-logs-header:inline">Export CSV</span>
+						<span className="hidden @5xl/relay-logs-header:inline">{t("logs.export.exportCsv")}</span>
 					</Button>
 				</TooltipTrigger>
-				<TooltipContent sideOffset={6}>Export CSV</TooltipContent>
+				<TooltipContent sideOffset={6}>{t("logs.export.exportCsv")}</TooltipContent>
 			</Tooltip>
 
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label="More actions" data-testid="relay-logs-more-menu">
+					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label={t("logs.moreActions")} data-testid="relay-logs-more-menu">
 						<MoreVertical className="h-4 w-4" aria-hidden="true" />
 					</Button>
 				</PopoverTrigger>
@@ -275,8 +292,8 @@ export function RelayHeaderView({
 							>
 								<Download className="text-muted-foreground size-4" />
 								<div className="flex flex-col">
-									<span className="text-sm">Export CSV</span>
-									<span className="text-muted-foreground text-xs">Download matching relay logs as CSV</span>
+									<span className="text-sm">{t("logs.export.exportCsv")}</span>
+									<span className="text-muted-foreground text-xs">{t("relayLogs.header.exportDescription")}</span>
 								</div>
 							</CommandItem>
 						</CommandList>

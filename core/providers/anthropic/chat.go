@@ -349,7 +349,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
 
-	messages := bifrostReq.Input
+	messages := providerUtils.ChatBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
 	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		trimmed := len(messages)
 		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
@@ -365,7 +365,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
@@ -903,6 +905,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
 	// same way. The <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := true
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	i := 0
 	for i < len(messages) {
@@ -977,6 +980,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					inlined = inlineMidConversationSystem(&newContent)
 				}
 				if inlined != nil {
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					anthropicMessages = append(anthropicMessages, *inlined)
 					i++
 					continue
@@ -1020,12 +1026,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							for _, block := range content.ContentBlocks {
 								// Anthropic rejects cache_control nested inside tool_result.content
 								// ("cache_control may not be specified within `tool_result.content`.
-								// Instead, place it directly on `tool_result`"), so hoist the first
-								// one found onto the tool_result block itself rather than copying it
-								// onto the nested block -- mirrors the same hoist-to-outer-level
-								// pattern already used for Bedrock's nested cachePoint
-								// (core/providers/bedrock/responses.go).
-								if block.CacheControl != nil && toolResult.CacheControl == nil {
+								// Instead, place it directly on `tool_result`"), so hoist it onto the
+								// tool_result block itself rather than copying it onto the nested
+								// block -- mirrors the same hoist-to-outer-level pattern already used
+								// for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
+								// The hoisted marker ends where the last nested block ends, so the
+								// last marker found is the one kept, with its ttl; an earlier
+								// nested marker (and its ttl) is dropped, since a tool_result
+								// takes only one breakpoint.
+								if block.CacheControl != nil {
 									toolResult.CacheControl = block.CacheControl
 								}
 								if block.Text != nil && *block.Text != "" {
@@ -1134,8 +1143,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					} else if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
 						toolUse.Input = json.RawMessage(compacted)
 					} else {
-						// Preserve original payload instead of silently dropping args.
-						toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
+						// OpenAI-shaped history can carry arguments that are not valid JSON
+						// (truncated at max_tokens, concatenated objects). Anthropic needs an
+						// object here, and raw bytes fail the request marshal with a 500.
+						// Replay {} like the Gemini and Bedrock Converse converters do:
+						// Anthropic does not check history tool_use inputs against the schema.
+						toolUse.Input = json.RawMessage("{}")
 					}
 
 					content = append(content, toolUse)

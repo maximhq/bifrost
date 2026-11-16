@@ -9,11 +9,11 @@ This guide walks you through setting up the Bifrost repository for local develop
 ## Prerequisites
 
 Before setting up the repository, ensure you have the following tools installed:
-- [Go](https://go.dev/doc/install) (1.25.5)
-- [Node.js](https://nodejs.org/en/download) (>= 18.0.0) and npm
+- [Go](https://go.dev/doc/install) (1.27.3, the version `go.work` requires)
+- [Node.js](https://nodejs.org/en/download) (26, pinned in the repository's `.nvmrc`; with [nvm](https://github.com/nvm-sh/nvm) installed, run `nvm use` from the repository root to select it) and npm
 - [Make](/deployment-guides/how-to/install-make)
 - [Docker](https://www.docker.com) (optional, for containerized development)
-- [Air](https://github.com/air-verse/air?tab=readme-ov-file#installation) (for hot reloading, auto-installed by Makefile when needed)
+- [Air](https://github.com/air-verse/air?tab=readme-ov-file#installation) (for hot reloading, auto-installed by the Makefile when needed)
 - [golangci-lint](https://golangci-lint.run/usage/install/) (optional, for linting)
 - [goimports](https://pkg.go.dev/golang.org/x/tools/cmd/goimports) (optional, for code formatting)
 
@@ -178,6 +178,7 @@ make test         # Run bifrost-http tests
 make test-core    # Run all core tests
 make test-core PROVIDER=openai  # Run specific provider tests
 make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo  # Run specific test case
+make test-core PROVIDER=openai PATTERN=Stream  # Run tests matching a pattern
 make test-plugins # Run plugin tests
 make test-governance  # Run governance tests
 make test-governance TESTCASE=TestVKBudgetExceeded  # Run specific governance test
@@ -188,8 +189,9 @@ make generate-html-reports  # Convert XML to HTML reports
 ```
 
 <Note>
-- **TESTCASE must use forward-slash separated nested path format** (e.g., `ParentTest/SubTest/SpecificTest`)
-- See the Makefile comment at line 311 for the expected format and additional examples
+- **For `test-core`, TESTCASE must use forward-slash separated nested path format** (e.g., `ParentTest/SubTest/SpecificTest`)
+- `PATTERN` and `TESTCASE` are mutually exclusive
+- Run `make help` for every supported variable and additional examples
 - HTML test reports are automatically generated when `junit-viewer` is available
 - Reports are saved to `test-reports/` directory
 - View with: `open test-reports/index.html`
@@ -214,7 +216,7 @@ make build-ui     # Build UI for production
 ### Docker Commands
 
 ```bash
-make build-docker-image  # Build Docker image
+make docker-image        # Build Docker image (LOCAL=1 uses Dockerfile.local)
 make docker-run         # Run Docker container
 ```
 
@@ -344,7 +346,7 @@ make lint
 make build
 
 # Or build Docker image
-make build-docker-image
+make docker-image
 ```
 
 ## Troubleshooting
@@ -371,7 +373,7 @@ make install-ui
 PORT=9090 make dev
 ```
 
-If an process is running on a port you need to use, you may need to terminate or kill it first:
+If a process is running on a port you need to use, you may need to terminate or kill it first:
 ```bash
 # Kill the process on port 8080
 kill -9 $(lsof -t -i:8080)

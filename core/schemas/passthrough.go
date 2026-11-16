@@ -135,15 +135,16 @@ func matchPassthroughSegment(pattern, segment string) bool {
 }
 
 type BifrostPassthroughRequest struct {
-	Provider    ModelProvider // provider extracted from path or body, used for key selection when non-empty
-	Model       string        // model extracted from path or body, used for key selection when non-empty
-	Method      string
-	Path        string // stripped path, e.g. "/v1/fine-tuning/jobs"
-	APIVersion  string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
-	RawQuery    string // raw query string, no "?"
-	UpstreamURL string // optional base URL override for host-backed passthrough routes
-	Body        []byte
-	SafeHeaders map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+	Provider     ModelProvider // provider extracted from path or body, used for key selection when non-empty
+	BaseProvider ModelProvider // built-in provider whose API the route speaks, set before plugins run; differs from Provider for a custom provider, empty means Provider
+	Model        string        // model extracted from path or body, used for key selection when non-empty
+	Method       string
+	Path         string // stripped path, e.g. "/v1/fine-tuning/jobs"
+	APIVersion   string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
+	RawQuery     string // raw query string, no "?"
+	UpstreamURL  string // optional base URL override for host-backed passthrough routes
+	Body         []byte
+	SafeHeaders  map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
@@ -191,6 +192,21 @@ type BifrostPassthroughResponse struct {
 	ExtraFields      BifrostResponseExtraFields
 	Path             string                   // stripped provider path, e.g. "/v1/chat/completions"
 	PassthroughUsage *BifrostPassthroughUsage // usage extracted by the provider for billing — set on the unary response (non-streaming) or the final streaming chunk; nil when no billable usage could be extracted
+	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
+	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
+}
+
+// BifrostPassthroughJob is a run the provider keeps and reports on every read, such as a Gemini
+// Interaction. Every read of a finished run repeats its full usage, so the usage rides here instead
+// of on PassthroughUsage: the request that read it is not charged, and the run is settled once.
+type BifrostPassthroughJob struct {
+	ID         string                   // provider-side run id
+	Status     string                   // provider status as reported
+	Terminal   bool                     // the provider will not advance the run further
+	Created    bool                     // this request started the run
+	PollPath   string                   // stripped provider path that reads the run by id
+	APIVersion string                   // version segment PollPath is served under
+	Usage      *BifrostPassthroughUsage // the run's usage as of this read
 }
 
 type PassthroughLogParams struct {

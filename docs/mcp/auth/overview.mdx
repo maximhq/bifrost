@@ -12,7 +12,7 @@ Authentication on MCP servers comes in two flavors:
 - **Server-level auth** — a single shared credential the admin configures once. Every caller hits the upstream MCP server under the same identity.
 - **Per-user auth** — each end-user supplies their own credential. Bifrost stores the credential against the caller's identity (Virtual Key, signed-in user, or asserted session ID) and reuses it on every later call.
 
-Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connections inherit their environment from the spawned subprocess and don't have a per-call auth model.
+Per-user auth applies to the **HTTP** connection type, because each call opens its own connection with the caller's credential. SSE and STDIO clients keep one connection for every caller (an SSE stream, a spawned subprocess), so they have no per-call auth model, and a per-user auth type on them is refused: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 ---
 
@@ -189,6 +189,10 @@ The auth URL surfaces in two places:
 
 The `mcp_auth_required` payload carries a `kind` discriminator (`"oauth"` or `"headers"`) so SDKs can branch. Plain-text clients can just open the URL.
 
+### Which tools callers see
+
+By default, every caller of a per-user server sees the same tool list: the one discovered with the admin's credential when the server was verified. With [Per-Caller Discovery](../per-caller-discovery) on, each user or virtual key sees the tools, prompts and resources their own credential discovers instead, and is offered a `<server>-connect` tool until they have connected. It applies to `per_user_oauth`, `per_user_headers` and `token_exchange` servers.
+
 ---
 
 ## Sessions and lifecycle
@@ -212,4 +216,5 @@ Bifrost also keeps credentials in sync with the VK ↔ MCP allowlist automatical
 - [OAuth 2.0](./oauth) — admin OAuth
 - [Per-User OAuth](./per-user-oauth)
 - [Token Exchange](./token-exchange) — each caller's identity token exchanged automatically (enterprise)
+- [Per-Caller Discovery](../per-caller-discovery) — each caller sees the tools their own credential discovers
 - [MCP Sessions](../sessions) — per-user credential lifecycle

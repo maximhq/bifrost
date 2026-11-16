@@ -32,6 +32,7 @@ import { ArrowLeft, ArrowRight, ExternalLink, LoaderCircle, RotateCcw, Save, Set
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
+import { useTranslation, Trans } from "react-i18next";
 import {
 	AnalyzerFormValues,
 	analyzerConfigSchema,
@@ -43,13 +44,15 @@ import {
 	decisionCriteriaFromDefaults,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
-	toAnalyzerPayload,
+	toComplexityConfigPayload,
 	toFormValues,
 	shouldSeedLLMPrompt,
 } from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
-import DecisionSettingsSheet from "./views/decisionSettingsSheet";
+import ClassifierSettingsSheet from "./views/classifierSettingsSheet";
+import { LLMClassifierFields } from "./views/llmClassifierFields";
+import { RoutersNotice } from "./views/routersNotice";
 import { SectionHeading } from "./views/formPrimitives";
 import {
 	ClassifierChoice,
@@ -97,7 +100,10 @@ const supportsChat = (provider: ModelProvider): boolean => {
 };
 
 export default function ComplexityRouterPage() {
-	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery(undefined, {
 		refetchOnMountOrArgChange: true,
 	});
@@ -109,6 +115,7 @@ export default function ComplexityRouterPage() {
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	const [embeddingSheetOpen, setEmbeddingSheetOpen] = useState(false);
 	const [decisionSheetOpen, setDecisionSheetOpen] = useState(false);
+	const [llmSheetOpen, setLLMSheetOpen] = useState(false);
 	// The open step. Null follows the saved config: a router with nothing set
 	// up opens on the classifier choice, an existing one straight on its setup.
 	const [openStep, setOpenStep] = useState<"classifier" | "setup" | null>(null);
@@ -189,6 +196,8 @@ export default function ComplexityRouterPage() {
 
 	const isClassifierConfigured = Boolean(liveSemantic?.provider && liveSemantic?.embedding_model);
 	const isLLMFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "llm";
+	const isLLMPrimary = liveClassifier === "llm";
+	const isLLMInUse = isLLMPrimary || isLLMFallbackEnabled;
 	const isDecisionFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "decision";
 	const isDecisionInUse = liveClassifier === "decision" || isDecisionFallbackEnabled;
 	// The embedding and llm fallback fields both live behind the same sheet, so a
@@ -199,10 +208,14 @@ export default function ComplexityRouterPage() {
 		dirtyFields.decision?.provider ||
 		dirtyFields.decision?.model ||
 		dirtyFields.decision?.previous_message_count ||
-		dirtyFields.decision?.timeout,
+		dirtyFields.decision?.timeout ||
+		dirtyFields.decision?.min_confidence,
 	);
 	const hasUnsavedEmbeddingConfigChanges =
 		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
+	// The llm classifier's sheet holds everything in the llm block but the prompt,
+	// which is edited on the page.
+	const hasUnsavedLLMSettingsChanges = Object.entries(dirtyFields.llm ?? {}).some(([field, dirty]) => field !== "prompt" && Boolean(dirty));
 	const hasClassifier = isRouterConfigured(data) || picked;
 	// Read-only operators cannot choose, so they always land on the setup step.
 	const step = openStep ?? (canUpdate && !hasClassifier ? "classifier" : "setup");
@@ -229,7 +242,7 @@ export default function ComplexityRouterPage() {
 		isError: statusIsError,
 		refetch: refetchStatus,
 	} = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled && !isDecisionInUse,
+		skip: !data?.semantic && !data?.llm && !isLLMInUse && !isDecisionInUse,
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
@@ -350,9 +363,9 @@ export default function ComplexityRouterPage() {
 	// Run after saved-data hydration and read the current form value, not the
 	// previous render's value, when config and status arrive together.
 	useEffect(() => {
-		if (!data || !shouldSeedLLMPrompt(isLLMFallbackEnabled, defaultLLMPrompt, getValues("llm.prompt") ?? "", promptEdited.current)) return;
+		if (!data || !shouldSeedLLMPrompt(isLLMInUse, defaultLLMPrompt, getValues("llm.prompt") ?? "", promptEdited.current)) return;
 		setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: false });
-	}, [data, isLLMFallbackEnabled, defaultLLMPrompt, livePrompt, getValues, setValue]);
+	}, [data, isLLMInUse, defaultLLMPrompt, livePrompt, getValues, setValue]);
 
 	const handleDiscard = () => {
 		promptEdited.current = false;
@@ -368,10 +381,10 @@ export default function ComplexityRouterPage() {
 			.then((defaults) => {
 				promptEdited.current = false;
 				reset(toFormValues(defaults, decisionDefaults));
-				toast.success("Reset to defaults", { position: "top-right" });
+				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t restore the default phrases. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("restoreFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
@@ -380,11 +393,11 @@ export default function ComplexityRouterPage() {
 		retrySemanticWarmup()
 			.unwrap()
 			.then(() => {
-				toast.success("Semantic warmup restarted", { position: "top-right" });
+				toast.success(tcpx("warmupRestarted"), { position: "top-right" });
 				void refetchStatus();
 			})
 			.catch((err) => {
-				toast.error(`Couldn’t retry semantic warmup. ${getErrorMessage(err)}`, { position: "top-right" });
+				toast.error(tcpx("warmupRetryFailed", { error: getErrorMessage(err) }), { position: "top-right" });
 			});
 	};
 
@@ -405,7 +418,7 @@ export default function ComplexityRouterPage() {
 		// The helper preserves saved sheet-only settings and omits session when
 		// disabled. Nil is already the wire-level disabled state; avoiding the
 		// additive field keeps unrelated edits compatible with older gateways.
-		const payload = toAnalyzerPayload(values, data);
+		const payload = toComplexityConfigPayload(values, data);
 		updateConfig(payload)
 			.unwrap()
 			.then((res) => {
@@ -413,17 +426,19 @@ export default function ComplexityRouterPage() {
 				reset(toFormValues(res, decisionDefaults));
 				setEmbeddingSheetOpen(false);
 				setDecisionSheetOpen(false);
-				toast.success("Configuration saved", { position: "top-right" });
+				setLLMSheetOpen(false);
+				toast.success(t("routing.configSaved"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t save the Complexity Router configuration. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("saveFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
 	// Saving from inside the sheet still submits the whole configuration, so a
 	// phrase error would report behind it. Close the sheet in that case,
-	// otherwise the message is hidden under the overlay. An llm or decision-model fallback
-	// error opens the sheet instead: those fields live in it, and the operator
+	// otherwise the message is hidden under the overlay. An llm or decision-model
+	// error opens the sheet that holds the field instead: the embedding sheet for
+	// a fallback, the classifier's own sheet when it is the primary. The operator
 	// may never have opened it.
 	const submit = handleSubmit(onValid, (formErrors) => {
 		// Decision-model guidance errors sit on the page, so only the sheet's decision-model fields open it.
@@ -431,10 +446,14 @@ export default function ComplexityRouterPage() {
 			formErrors.decision?.provider ||
 			formErrors.decision?.model ||
 			formErrors.decision?.previous_message_count ||
-			formErrors.decision?.timeout,
+			formErrors.decision?.timeout ||
+			formErrors.decision?.min_confidence,
 		);
-		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (decisionSheetError && liveClassifier === "semantic")));
+		// The llm prompt sits on the page too, so only the sheet's llm fields open a sheet.
+		const llmSheetError = Boolean(formErrors.llm && Object.keys(formErrors.llm).some((field) => field !== "prompt"));
+		setEmbeddingSheetOpen(Boolean(formErrors.semantic || (liveClassifier === "semantic" && (llmSheetError || decisionSheetError))));
 		setDecisionSheetOpen(decisionSheetError && liveClassifier === "decision");
+		setLLMSheetOpen(llmSheetError && liveClassifier === "llm");
 	});
 
 	if (isLoading && !data) {
@@ -444,10 +463,10 @@ export default function ComplexityRouterPage() {
 	if (error && !data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-sm font-medium">Couldn’t load the Complexity Router configuration.</p>
+				<p className="text-sm font-medium">{t("routing.complexityLoadFailed")}</p>
 				<p className="text-muted-foreground text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
@@ -456,9 +475,9 @@ export default function ComplexityRouterPage() {
 	if (!data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
+				<p className="text-muted-foreground font-mono text-sm">{t("routing.complexityUnavailable")}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
@@ -482,10 +501,7 @@ export default function ComplexityRouterPage() {
 		isSemantic && willReembedAll ? (
 			<Alert variant="warning" data-testid="complexity-router-reembed-warning">
 				<TriangleAlert className="h-4 w-4" />
-				<AlertDescription>
-					Saving will embed all {totalPhrases} reference phrases through the selected provider. Changing the provider or model invalidates
-					every stored vector, so the whole list is embedded again. This uses embedding tokens and may take a short time.
-				</AlertDescription>
+				<AlertDescription>{tcpx("reembedAll", { count: totalPhrases })}</AlertDescription>
 			</Alert>
 		) : null;
 
@@ -495,11 +511,7 @@ export default function ComplexityRouterPage() {
 		isSemantic && !willReembedAll && newPhraseCount > 0 ? (
 			<Alert variant="warning" data-testid="complexity-router-new-phrase-warning">
 				<TriangleAlert className="h-4 w-4" />
-				<AlertDescription>
-					Saving will embed {newPhraseCount} new reference phrase
-					{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other {reusedPhraseCount} reuse the embeddings this gateway
-					already holds.
-				</AlertDescription>
+				<AlertDescription>{tcpx("newPhraseWarning", { count: newPhraseCount, reused: reusedPhraseCount })}</AlertDescription>
 			</Alert>
 		) : null;
 
@@ -515,6 +527,27 @@ export default function ComplexityRouterPage() {
 			canUpdate={canUpdate}
 			defaults={decisionDefaults}
 			defaultsLoading={statusLoading || statusFetching}
+			variant={variant}
+		/>
+	);
+
+	// Rendered wherever the llm runs: on the page as the primary classifier's
+	// prompt, or below the phrase lists while it is the semantic fallback. Prompt
+	// text needs width and iteration, so it is never in a sheet.
+	const llmPrompt = (variant: "primary" | "fallback") => (
+		<LLMPromptSection
+			control={control}
+			error={errors.llm?.prompt}
+			canUpdate={canUpdate}
+			defaultPrompt={defaultLLMPrompt}
+			livePrompt={livePrompt}
+			onEdit={() => {
+				promptEdited.current = true;
+			}}
+			onReset={() => {
+				promptEdited.current = true;
+				setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: true });
+			}}
 			variant={variant}
 		/>
 	);
@@ -547,14 +580,15 @@ export default function ComplexityRouterPage() {
 	const canContinue = hasClassifier;
 	const goToConfiguration = () => {
 		setOpenStep("setup");
-		// Semantic cannot classify without an embedding model, so go straight to
-		// the one place that sets it.
+		// Semantic cannot classify without an embedding model, nor the llm
+		// classifier without its model, so go straight to the one place that sets it.
 		if (isSemantic && !isClassifierConfigured) setEmbeddingSheetOpen(true);
+		if (isLLMPrimary && !(liveLLM?.provider && liveLLM?.model)) setLLMSheetOpen(true);
 	};
 
 	const steps = [
-		{ key: "classifier", title: "Classifier", enabled: canUpdate },
-		{ key: "setup", title: "Configuration", enabled: hasClassifier },
+		{ key: "classifier", title: tcpx("stepClassifier"), enabled: canUpdate },
+		{ key: "setup", title: tcpx("stepSetup"), enabled: hasClassifier },
 	];
 	const stepIndex = step === "classifier" ? 0 : 1;
 
@@ -566,17 +600,24 @@ export default function ComplexityRouterPage() {
 			<form className="no-padding-parent flex h-full min-h-0 w-full flex-col p-4" onSubmit={submit} noValidate>
 				{/* PageTitle renders nothing inline; its badge and description are
 				    portalled into the topbar. */}
-				<PageTitle title="Complexity Router" beta>
-					{liveClassifier === "decision"
-						? "The decision model classifies each new human request, filling the"
-						: "Each request takes the tier of its nearest semantic reference phrase, filling the"}{" "}
-					<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules target.
-					{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
-					{isSemantic && liveSemantic?.fallback === "decision"
-						? " Requests matching no phrase confidently fall back to the decision model."
-						: ""}
-					{liveSession.enabled ? " Session-aware routing keeps the highest tier reached during the active session." : ""}
+				<PageTitle title={t("routing.complexityTitle")} beta>
+					<Trans
+						t={t}
+						i18nKey={
+							liveClassifier === "decision"
+								? "routing.complexityUi.descriptionDecision"
+								: isLLMPrimary
+									? "routing.complexityUi.descriptionLlmPrimary"
+									: "routing.complexityUi.description"
+						}
+						components={{ code: <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs" /> }}
+					/>
+					{isLLMFallbackEnabled ? ` ${tcpx("descriptionLlm")}` : ""}
+					{isSemantic && liveSemantic?.fallback === "decision" ? ` ${tcpx("descriptionDecisionFallback")}` : ""}
+					{liveSession.enabled ? ` ${tcpx("descriptionSession")}` : ""}
 				</PageTitle>
+
+				<RoutersNotice />
 
 				{/* Same shape as the Edge inventory page: a slim step nav on the
 				    left, the open step on the right. It spans the full content width
@@ -602,10 +643,12 @@ export default function ComplexityRouterPage() {
 										<h2 className="text-lg font-semibold">{steps[stepIndex].title}</h2>
 										<p className="text-muted-foreground text-sm">
 											{step === "classifier"
-												? "Choose how each request is assigned a complexity tier. Switching later keeps the other classifier's settings, including your reference phrases."
+												? tcpx("stepClassifierDesc")
 												: isSemantic
-													? "Each request takes the tier of its nearest reference phrase."
-													: "A decision model scores each new request into a tier."}
+													? tcpx("stepSemanticDesc")
+													: isLLMPrimary
+														? tcpx("stepLlmDesc")
+														: tcpx("stepDecisionDesc")}
 										</p>
 									</div>
 									<div className="flex shrink-0 flex-wrap items-center gap-2 md:flex-nowrap">
@@ -636,18 +679,14 @@ export default function ComplexityRouterPage() {
 													data-testid="complexity-router-embedding-config-button"
 												>
 													<Settings2 className="size-3.5" />
-													{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
+													{isClassifierConfigured ? tcpx("editEmbedding") : tcpx("configureEmbedding")}
 													{hasUnsavedEmbeddingConfigChanges && (
-														<span
-															className="size-1.5 rounded-full bg-amber-500"
-															role="status"
-															aria-label="Unsaved embedding configuration changes"
-														/>
+														<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedEmbeddingAria")} />
 													)}
 												</Button>
 											</>
 										)}
-										{step === "setup" && !isSemantic && (
+										{step === "setup" && liveClassifier === "decision" && (
 											<Button
 												type="button"
 												variant="outline"
@@ -656,20 +695,31 @@ export default function ComplexityRouterPage() {
 												data-testid="complexity-router-decision-settings-button"
 											>
 												<Settings2 className="size-3.5" />
-												Edit model configuration
+												{tcpx("editModelConfiguration")}
 												{hasUnsavedDecisionSettingsChanges && (
-													<span
-														className="size-1.5 rounded-full bg-amber-500"
-														role="status"
-														aria-label="Unsaved model configuration changes"
-													/>
+													<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedModelAria")} />
+												)}
+											</Button>
+										)}
+										{step === "setup" && isLLMPrimary && (
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												onClick={() => setLLMSheetOpen(true)}
+												data-testid="complexity-router-llm-settings-button"
+											>
+												<Settings2 className="size-3.5" />
+												{tcpx("editModelConfiguration")}
+												{hasUnsavedLLMSettingsChanges && (
+													<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedModelAria")} />
 												)}
 											</Button>
 										)}
 										<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 											<a href={"https://docs.getbifrost.ai/features/complexity-router"} target="_blank" rel="noopener noreferrer">
 												<ExternalLink className="size-3.5" />
-												Docs
+												{t("routing.complexityDocs")}
 											</a>
 										</Button>
 									</div>
@@ -677,20 +727,22 @@ export default function ComplexityRouterPage() {
 
 								{/* ── Step 1: classifier ── */}
 								{step === "classifier" && (
-									<ClassifierChoice value={hasClassifier ? liveClassifier : undefined} onChange={selectClassifier} />
+									<ClassifierChoice value={hasClassifier ? liveClassifier : undefined} onChange={selectClassifier} includeLlm />
 								)}
 
 								{/* ── Step 2: semantic ── */}
 								{step === "setup" && isSemantic && (
 									<div className="space-y-3">
 										<SectionHeading
-											title="Phrase to Tier Mapping"
+											title={tcpx("phraseMappingTitle")}
 											aside={
 												<span
 													className="text-muted-foreground font-mono text-[11px] tabular-nums"
 													data-testid="complexity-router-phrase-total"
 												>
-													{isClassifierConfigured ? `${totalPhrases} / ${MAX_SEMANTIC_PHRASES} phrases` : `${totalPhrases} phrases`}
+													{isClassifierConfigured
+														? tcpx("phrasesCap", { count: totalPhrases, max: MAX_SEMANTIC_PHRASES })
+														: tcpx("phraseCount", { count: totalPhrases })}
 												</span>
 											}
 										/>
@@ -702,7 +754,12 @@ export default function ComplexityRouterPage() {
 								{/* The page holds the tier guidance; set-once settings, and any problem
 								    with the decision provider, live in the model configuration sheet, as
 								    the embedding configuration does for semantic. */}
-								{step === "setup" && !isSemantic && decisionGuidance("primary")}
+								{step === "setup" && liveClassifier === "decision" && decisionGuidance("primary")}
+
+								{/* ── Step 2: llm classifier ── */}
+								{/* The page holds its prompt; the model and its limits live in the
+								    model configuration sheet, as for the decision model. */}
+								{step === "setup" && isLLMPrimary && llmPrompt("primary")}
 
 								{step === "setup" && <SessionRoutingCard control={control} errors={errors.session} canUpdate={canUpdate} />}
 
@@ -711,22 +768,7 @@ export default function ComplexityRouterPage() {
 								    needs width and iteration, and the sheet holds set-once
 								    plumbing. Visible only while the fallback is on, because that
 								    is the only time it runs. */}
-								{step === "setup" && isLLMFallbackEnabled && (
-									<LLMPromptSection
-										control={control}
-										error={errors.llm?.prompt}
-										canUpdate={canUpdate}
-										defaultPrompt={defaultLLMPrompt}
-										livePrompt={livePrompt}
-										onEdit={() => {
-											promptEdited.current = true;
-										}}
-										onReset={() => {
-											promptEdited.current = true;
-											setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: true });
-										}}
-									/>
-								)}
+								{step === "setup" && isLLMFallbackEnabled && llmPrompt("fallback")}
 
 								{/* Same slot as the llm prompt: only one fallback can be on. */}
 								{step === "setup" && isDecisionFallbackEnabled && decisionGuidance("fallback")}
@@ -754,7 +796,7 @@ export default function ComplexityRouterPage() {
 									disabled={!canContinue}
 									data-testid="complexity-router-next-button"
 								>
-									Next
+									{tc("next")}
 									<ArrowRight className="h-3.5 w-3.5" />
 								</Button>
 							) : (
@@ -768,7 +810,7 @@ export default function ComplexityRouterPage() {
 											data-testid="complexity-router-back-button"
 										>
 											<ArrowLeft className="h-3.5 w-3.5" />
-											Back
+											{tc("back")}
 										</Button>
 									)}
 									{/* The provider warning sits inside the model configuration sheet, so the
@@ -781,15 +823,22 @@ export default function ComplexityRouterPage() {
 									>
 										{blockedOnDecisionProvider
 											? isSemantic
-												? "The decision model is the fallback, and it needs a working provider before this can be saved."
-												: "The decision model needs a working provider before this can be saved. See Edit model configuration."
+												? tcpx("footerDecisionIsFallback")
+												: tcpx("footerDecisionNeedsProvider")
 											: liveClassifier !== toFormValues(data).classifier
-												? `Classifier changed to ${isSemantic ? "Semantic" : "Decision model"}. Not saved yet.`
+												? tcpx("footerClassifierChanged", {
+														classifier: isSemantic
+															? tcpx("classifierNameSemantic")
+															: isLLMPrimary
+																? tcpx("classifierNameLlm")
+																: tcpx("classifierNameDecision"),
+													})
 												: ""}
 									</p>
 									{/* Each classifier restores only its own defaults: the semantic
-									    phrase lists, or the decision model's tier guidance. */}
-									{!isSemantic && (
+									    phrase lists, or the decision model's tier guidance. The llm
+									    prompt resets from its own editor. */}
+									{liveClassifier === "decision" && (
 										<Button
 											data-testid="complexity-router-decision-restore-defaults-button"
 											type="button"
@@ -799,7 +848,7 @@ export default function ComplexityRouterPage() {
 											disabled={!canUpdate || isSaving || isDecisionGuidanceAtDefaults}
 										>
 											<RotateCcw className="h-3.5 w-3.5" />
-											Restore defaults
+											{t("routing.restoreDefaults")}
 										</Button>
 									)}
 									{isSemantic && (
@@ -812,7 +861,7 @@ export default function ComplexityRouterPage() {
 											disabled={!canUpdate || isSaving || isResetting}
 										>
 											{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-											Restore defaults
+											{t("routing.restoreDefaults")}
 										</Button>
 									)}
 									<Button
@@ -823,11 +872,11 @@ export default function ComplexityRouterPage() {
 										onClick={handleDiscard}
 										disabled={!isDirty || isSaving || isResetting || isFetching}
 									>
-										Discard changes
+										{tcpx("discardChanges")}
 									</Button>
 									<Button data-testid="complexity-router-save-changes-button" type="submit" size="sm" disabled={!canSave || isSaving}>
 										{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-										{isSaving ? "Saving…" : "Save changes"}
+										{isSaving ? t("routing.saving") : tcpx("saveChanges")}
 									</Button>
 								</>
 							)}
@@ -861,25 +910,50 @@ export default function ComplexityRouterPage() {
 				decisionSettings={decisionSettings}
 			/>
 
-			<DecisionSettingsSheet
-				open={decisionSheetOpen && !isSemantic}
+			<ClassifierSettingsSheet
+				open={decisionSheetOpen && liveClassifier === "decision"}
 				onOpenChange={setDecisionSheetOpen}
-				decisionSettings={decisionSettings}
+				title={tcpx("decisionSheetTitle")}
+				description={tcpx("decisionSheetDescription")}
+				testIdPrefix="complexity-router-decision"
 				canSave={canSave}
 				isSaving={isSaving}
 				onSave={() => void submit()}
 				submitError={submitError}
-			/>
+			>
+				{decisionSettings}
+			</ClassifierSettingsSheet>
+
+			<ClassifierSettingsSheet
+				open={llmSheetOpen && isLLMPrimary}
+				onOpenChange={setLLMSheetOpen}
+				title={tcpx("decisionSheetTitle")}
+				description={tcpx("llmSheetDescription")}
+				testIdPrefix="complexity-router-llm"
+				canSave={canSave}
+				isSaving={isSaving}
+				onSave={() => void submit()}
+				submitError={submitError}
+			>
+				<LLMClassifierFields
+					variant="primary"
+					control={control}
+					register={register}
+					setValue={setValue}
+					errors={errors.llm}
+					llm={liveLLM}
+					canUpdate={canUpdate}
+					providers={chatProviders}
+					providerKeyIds={enabledKeyIdsForLLMProvider}
+					providersLoading={isProviderListLoading}
+				/>
+			</ClassifierSettingsSheet>
 
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will replace the phrase to tier mapping with the default reference phrases. Your current phrases will be lost and this
-							action cannot be undone. Your embedding configuration is kept, so classification keeps running and the restored phrases are
-							embedded through the configured provider straight away.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("routing.restoreDefaults")}</AlertDialogTitle>
+						<AlertDialogDescription>{tcpx("restoreDefaultsDesc")}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel
@@ -887,7 +961,7 @@ export default function ComplexityRouterPage() {
 							onClick={() => setRestoreDialogOpen(false)}
 							disabled={isResetting}
 						>
-							Cancel
+							{tc("cancel")}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="complexity-router-restore-confirm-button"
@@ -897,7 +971,7 @@ export default function ComplexityRouterPage() {
 							}}
 							disabled={!canUpdate || isResetting}
 						>
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -955,6 +956,8 @@ func (r *endedAttemptRecorder) errorHookRecords() []schemas.KeyAttemptRecord {
 func stallingStreamUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http notices a client hang-up only once the request body is consumed.
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}]}`+"\n\n")
@@ -1075,4 +1078,57 @@ func TestStampEndedStreamAttempt(t *testing.T) {
 			t.Fatalf("the post-hook labelled an attempt the retry loop still owns: %+v", record)
 		}
 	})
+}
+
+// cancelledUsageRecorder hands over the billed usage of each cancelled stream its post-hook sees.
+type cancelledUsageRecorder struct {
+	endedAttemptRecorder
+	usage chan *schemas.BifrostLLMUsage
+}
+
+func (r *cancelledUsageRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil && err.Error != nil && err.Error.Type != nil && *err.Error.Type == schemas.RequestCancelled {
+		r.usage <- err.ExtraFields.BilledUsage.DeepCopy()
+	}
+	return resp, err, nil
+}
+
+// Without a stream accumulator (NoOpTracer) a cancelled stream has no received
+// output to count, so nothing is invented. The estimate from the real accumulator
+// is covered in plugins/logging (TestCancelledStreamEstimatedFromRealAccumulator),
+// which can import the framework tracer that this package cannot.
+func TestCancelledStreamWithoutAccumulatorIsNotEstimated(t *testing.T) {
+	const provider schemas.ModelProvider = "cancel-estimate"
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(provider, 1, 16, stallingStreamUpstream(t).URL)
+	account.configs[provider].NetworkConfig.MaxRetries = 0
+	account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+	account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	recorder := &cancelledUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 2)}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{recorder}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: provider, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}},
+	})
+	if streamErr != nil {
+		t.Fatal(streamErr.GetErrorString())
+	}
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	select {
+	case usage := <-recorder.usage:
+		if usage != nil && usage.Estimation != nil {
+			t.Fatalf("estimated without an accumulator: %+v", usage)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancellation never reached accounting")
+	}
 }

@@ -76,8 +76,8 @@ func (r *perUserHeadersResolver) ForceRefresh(_ *schemas.BifrostContext, _ *sche
 	return nil
 }
 
-// AdminConnectionHeaders resolves the retained admin header credential (see
-// verifyMCPClientHeaders' persistence call in transports/bifrost-http/handlers/mcp.go)
+// AdminConnectionHeaders resolves the retained admin header credential (kept by
+// addMCPClient and verifyMCPClientHeaders in transports/bifrost-http/handlers/mcp.go)
 // for periodic tool-discovery refresh. Reuses missingRequiredHeaderKeys and
 // buildPerUserHeaderValues below — same schema-drift and value-filtering
 // logic ConnectionHeaders applies for a real caller's credential.

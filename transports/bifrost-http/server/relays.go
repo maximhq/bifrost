@@ -41,12 +41,14 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 			},
 		)
 	}
-	manager.SetGlobalProxy(func() *schemas.ProxyConfig { return lib.InheritedGlobalProxy(s.Config.GetGlobalProxyConfig()) })
+	manager.SetGlobalProxy(func() (*schemas.ProxyConfig, error) { return lib.InheritedGlobalProxy(s.Config.GetGlobalProxyConfig()) })
 	if err := manager.Reload(ctx); err != nil {
 		logger.Warn("failed to load relays: %v", err)
 	}
 	s.relays = manager
 	s.RelaysHandler = handlers.NewRelaysHandler(manager, relayManager, s.Config, vkReloader)
+	// The server resolves redacted keys for the LLM logs filter data; Relay Logs use the same.
+	s.RelaysHandler.SetRedactedKeysManager(s)
 	if names := manager.Names(); len(names) > 0 {
 		logger.Info("relays initialized: %d endpoint(s)", len(names))
 	}

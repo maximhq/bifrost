@@ -14,7 +14,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 - **Tool restructuring** - Function definitions converted to Bedrock's ToolConfig format
 - **Message conversion** - System message extraction, tool message grouping, image format adaptation (base64 only)
 - **AWS authentication** - Automatic SigV4 request signing with credential chain support
-- **Structured output** - `response_format` converted to specialized tool definitions
+- **Structured output** - `response_format` sent natively as Converse `outputConfig.textFormat` on supported models, otherwise as a synthetic tool
 - **Service tier & guardrails** - Support for Bedrock-specific performance and safety configurations
 
 ### Model Family Support
@@ -499,7 +499,7 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 | `max_completion_tokens` | → `inferenceConfig.maxTokens`                                                     | Required field in Bedrock  |
 | `temperature`, `top_p`  | Direct pass-through to `inferenceConfig`                                          |                            |
 | `stop`                  | → `inferenceConfig.stopSequences`                                                 | Array of strings           |
-| `response_format`       | → Structured output tool (see [Structured Output](#structured-output))            | Creates `bf_so_*` tool     |
+| `response_format`       | → `outputConfig.textFormat`, or a structured output tool (see [Structured Output](#structured-output)) | Native, or `bf_so_*` tool |
 | `tools`                 | Schema restructured (see [Tool Conversion](#tool-conversion))                     |                            |
 | `tool_choice`           | Type mapped (see [Tool Conversion](#tool-conversion))                             |                            |
 | `parallel_tool_calls`   | `false` → `additionalModelRequestFields.tool_choice.disable_parallel_tool_use`    | Anthropic models only      |
@@ -933,42 +933,77 @@ Tool calls are converted between formats:
 
 ## Structured Output
 
-Structured output uses a special tool-based approach:
+A `json_schema` `response_format` (Chat Completions), `text.format` (Responses API) or `output_config.format` (`/anthropic/v1/messages`) is sent to Converse as native structured output whenever the model supports it:
 
 ```json
-// Request with structured output
+// Request
 {
   "response_format": {
     "type": "json_schema",
     "json_schema": {
-      "name": "response",
+      "name": "person",
       "schema": {
         "type": "object",
         "properties": {
           "name": {"type": "string"},
           "age": {"type": "number"}
-        }
+        },
+        "required": ["name", "age"]
       }
     }
   }
 }
 
+// Bedrock Converse request (internal)
+{
+  "outputConfig": {
+    "textFormat": {
+      "type": "json_schema",
+      "structure": {
+        "jsonSchema": {
+          "name": "person",
+          "schema": "{\"type\":\"object\",\"properties\":{...},\"required\":[\"name\",\"age\"],\"additionalProperties\":false}"
+        }
+      }
+    }
+  }
+}
+```
+
+Bedrock constrains decoding to the schema, the reply is a plain text block holding the JSON, and your own `tools` and `tool_choice` are left untouched.
+
+**Which models use native structured output.** The model's `supports_native_structured_output` entry in the Bifrost model catalog decides. Without an entry, Claude Haiku, Sonnet and Opus 4.5 and later and OpenAI GPT models (not `gpt-oss`) use it. Every other model keeps the synthetic tool described below. For models other than Claude, the schema must also have `"type": "object"` at the top level; any other schema, such as a top-level array, uses the synthetic tool, so your `tools` and `tool_choice` are handled as described under [Synthetic tool fallback](#synthetic-tool-fallback).
+
+**GPT models.** Bifrost also sends `additionalModelRequestFields.text.format.strict: true`. Without it, GPT on Bedrock treats the schema as a hint rather than a constraint.
+
+**Claude schema rules.** Claude requires every object in the schema to set `additionalProperties: false`, so Bifrost adds it to any object that leaves it unset. A schema that Claude's structured output cannot accept falls back to the synthetic tool instead of failing. That includes:
+- `minimum`, `maximum`, `multipleOf`, `maxItems`, `uniqueItems`, `minItems` above 1
+- `oneOf`, `not`, `patternProperties`
+- an object with `additionalProperties` set to `true` or a schema, or with no `properties`
+- `allOf` next to the same object's own `properties`, an `allOf` with several branches where one contains a `$ref`, and `if`, `then` or `else` on an object
+- a `$ref` that does not name a `$defs` or `definitions` entry directly (for example `#/properties/node`), and recursive `$ref`s
+- unsupported string formats
+- more than 10 optional or 16 union-typed properties, counted across the response schema and any tools you mark `strict`
+
+<Note>
+The first request with a new schema can take up to about 90 seconds while Bedrock compiles it. Later requests with the same schema reuse the compiled grammar for 24 hours.
+</Note>
+
+### Synthetic tool fallback
+
+Models without native structured output receive the schema as a `bf_so_*` tool, forced with `toolChoice` where the model allows it:
+
+```json
 // Bedrock conversion (internal)
 {
-  "tools": [{
-    "name": "bf_so_response",
-    "description": "Structured output tool",
-    "inputSchema": {
-      "type": "object",
-      "properties": {...}
-    }
-  }],
-  "toolChoice": {"type": "tool", "name": "bf_so_response"}
+  "toolConfig": {
+    "tools": [{"toolSpec": {"name": "bf_so_person", "inputSchema": {"json": {...}}}}],
+    "toolChoice": {"tool": {"name": "bf_so_person"}}
+  }
 }
-
-// Response extraction
-// Tool use input is extracted and returned as contentStr
 ```
+
+The tool call's input is returned as the message content, and the `tool_calls` finish reason is reported as `stop`.
 
 ## Response Conversion
 
@@ -985,7 +1020,7 @@ Structured output uses a special tool-based approach:
 
 ### Structured Output Response
 
-When structured output is detected:
+Native structured output comes back as an ordinary text block. On the synthetic tool fallback:
 
 - Tool call with name `bf_so_*` is treated as structured output
 - `input` object is extracted and returned as `contentStr`
@@ -2078,9 +2113,10 @@ type BifrostError struct {
 </Accordion>
 
 <Accordion title="Structured Output via Tool">
-  **Severity**: Low **Behavior**: `response_format` converted to special
-  `bf_so_*` tool **Impact**: Tool call count and structure changes internally
-  **Code**: `chat.go:structured output handling`
+  **Severity**: Low **Behavior**: on models without native structured output,
+  or with a schema Claude cannot enforce natively, `response_format` is
+  converted to a special `bf_so_*` tool **Impact**: Tool call count and
+  structure changes internally **Code**: `utils.go:structured output handling`
 </Accordion>
 
 <Accordion title="Deployment Region Prefix Handling">

@@ -67,7 +67,7 @@ func (g *liveGateway) refuseAnonymous(preReqCtx *schemas.BifrostContext) *schema
 // session, that session and its provider.
 type liveRequest struct {
 	path             string
-	auth             *authHeaders
+	setupHeaders     *sessionHeaders
 	preReqCtx        *schemas.BifrostContext
 	cancel           context.CancelFunc
 	middlewareValues map[any]any
@@ -81,8 +81,8 @@ type liveRequest struct {
 // before anything is opened on the operator's key. A refusal has been written to ctx.
 func (g *liveGateway) prepareRequest(ctx *fasthttp.RequestCtx) (*liveRequest, bool) {
 	path := string(ctx.Path())
-	auth := captureAuthHeaders(ctx)
-	preReqCtx, cancel := createBifrostContextFromAuth(g.handlerStore, auth)
+	setupHeaders := captureSessionHeaders(ctx)
+	preReqCtx, cancel := createBifrostContextFromHeaders(g.handlerStore, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
@@ -96,7 +96,7 @@ func (g *liveGateway) prepareRequest(ctx *fasthttp.RequestCtx) (*liveRequest, bo
 		return nil, false
 	}
 	populateRealtimeRequestContext(ctx, preReqCtx)
-	return &liveRequest{path: path, auth: auth, preReqCtx: preReqCtx, cancel: cancel, middlewareValues: snapshotRealtimeMiddlewareValues(ctx)}, true
+	return &liveRequest{path: path, setupHeaders: setupHeaders, preReqCtx: preReqCtx, cancel: cancel, middlewareValues: snapshotRealtimeMiddlewareValues(ctx)}, true
 }
 
 // resolveSession settles a route on an existing session: the session id from the path, its
@@ -289,7 +289,7 @@ func (g *liveGateway) resolveTarget(preReqCtx *schemas.BifrostContext, path stri
 // A virtual-key session on a deployment without a config store is refused here, before billing
 // opens or the provider is called, since nothing could bind it to its key. The caller owns the
 // returned cancel.
-func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string, target liveTarget, sessionID string) (*liveAdmission, *schemas.BifrostError) {
+func (g *liveGateway) admit(setupHeaders *sessionHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string, target liveTarget, sessionID string) (*liveAdmission, *schemas.BifrostError) {
 	// The opener is the key the pre-request pipeline resolved for the caller, the same context the
 	// owner check on a later route reads; the session context rebuilds the identity from the
 	// presented credential and does not carry that resolution.
@@ -297,7 +297,7 @@ func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext
 	if opener != "" && (g.config == nil || g.config.ConfigStore == nil) {
 		return nil, liveSessionBindError(errLiveSessionNoConfigStore)
 	}
-	ctx, cancel := g.sessionContext(auth, preReqCtx, middlewareValues, path)
+	ctx, cancel := g.sessionContext(setupHeaders, preReqCtx, middlewareValues, path)
 	meter := newLiveMeter(g.client, ctx, target.providerKey, schemas.Key{}, sessionID)
 	meter.bind = func(providerSessionID string) error {
 		return g.bindLiveSession(ctx, opener, target.providerKey, providerSessionID)
@@ -320,8 +320,8 @@ func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext
 
 // sessionContext builds the context a session (or a sideband on it) runs under: the caller's
 // identity as the pre-request pipeline settled it. The caller owns the returned cancel.
-func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string) (*schemas.BifrostContext, context.CancelFunc) {
-	ctx, cancel := createBifrostContextFromAuth(g.handlerStore, auth)
+func (g *liveGateway) sessionContext(setupHeaders *sessionHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string) (*schemas.BifrostContext, context.CancelFunc) {
+	ctx, cancel := createBifrostContextFromHeaders(g.handlerStore, setupHeaders)
 	applyRealtimeMiddlewareValues(ctx, liveMiddlewareValues(middlewareValues, preReqCtx))
 	lib.SettleIdentity(ctx)
 	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)

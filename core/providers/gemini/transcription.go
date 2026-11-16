@@ -214,6 +214,9 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest(ctx *schem
 
 	for _, content := range request.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Extract text prompt
 			if part.Text != "" {
 				if promptText != "" {
@@ -378,6 +381,9 @@ func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schem
 
 			// Extract text content from all parts
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				if part.Text != "" {
 					textContent += part.Text
 				}

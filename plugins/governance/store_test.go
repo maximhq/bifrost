@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2372,9 +2373,150 @@ func TestResolveAccessStampsVirtualKeyMetadata(t *testing.T) {
 	}
 }
 
+// dimensionRecorder records the trace dimensions governance writes and backs the root span with a
+// real span, starting from the attributes the transport would have set.
+type dimensionRecorder struct {
+	schemas.NoOpTracer
+	traceID   string
+	traceDims map[string]string
+	root      *schemas.Span
+}
+
+type rootHandle struct{}
+
+func newDimensionRecorder(rootAttrs map[string]any) *dimensionRecorder {
+	return &dimensionRecorder{root: &schemas.Span{SpanID: "root", Attributes: maps.Clone(rootAttrs)}}
+}
+
+func (r *dimensionRecorder) MergeTraceDimensions(traceID string, dims map[string]string) {
+	r.traceID = traceID
+	r.traceDims = dims
+}
+
+func (r *dimensionRecorder) GetSpanHandleByID(_ string, spanID *string) schemas.SpanHandle {
+	if spanID != nil {
+		return nil
+	}
+	return rootHandle{}
+}
+
+func (r *dimensionRecorder) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
+	if _, ok := handle.(rootHandle); ok {
+		return r.root
+	}
+	return nil
+}
+
+func (r *dimensionRecorder) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	r.SpanFromHandle(handle).SetAttribute(key, value)
+}
+
+// TestResolveAccessStampsVirtualKeyMetadataIntoDimensions checks that the key's metadata reaches
+// the dimensions on the context, the trace and the root span, overriding a header dimension of the
+// same name, without touching the header map. "path" and "method" stay out, as for headers. On the
+// root span a key never replaces an attribute Bifrost set: metadata named after the content-logging
+// flag must not turn content back on for connectors.
+func TestResolveAccessStampsVirtualKeyMetadataIntoDimensions(t *testing.T) {
+	headerRoot := map[string]any{"team": "header", "region": "eu", "http.request.method": "POST"}
+	for _, tc := range []struct {
+		name           string
+		metadata       map[string]string
+		disableContent bool
+		wantCtx        map[string]string
+		wantAdded      map[string]string
+		wantRoot       map[string]any
+	}{
+		{
+			name:     "no metadata leaves the dimensions alone",
+			metadata: nil,
+			wantCtx:  map[string]string{"team": "header", "region": "eu"},
+			wantRoot: headerRoot,
+		},
+		{
+			name:      "metadata is added and wins over a header",
+			metadata:  map[string]string{"team": "vk", "cost_center": "cc-42", "path": "/vk", "method": "PUT"},
+			wantCtx:   map[string]string{"team": "vk", "region": "eu", "cost_center": "cc-42"},
+			wantAdded: map[string]string{"team": "vk", "cost_center": "cc-42"},
+			wantRoot:  map[string]any{"team": "vk", "region": "eu", "http.request.method": "POST", "cost_center": "cc-42"},
+		},
+		{
+			name:           "metadata never replaces an attribute bifrost set on the root span",
+			metadata:       map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			disableContent: true,
+			wantCtx:        map[string]string{"team": "header", "region": "eu", schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantAdded:      map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantRoot:       map[string]any{"team": "header", "region": "eu", "http.request.method": "POST", schemas.AttrBifrostContentLoggingDisabled: true, "cost_center": "cc-42"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.Metadata = tc.metadata
+			if tc.disableContent {
+				vk.DisableContentLogging = boolPtr(true)
+			}
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			recorder := newDimensionRecorder(headerRoot)
+			headerDims := map[string]string{"team": "header", "region": "eu"}
+			ctx := emptyCtx()
+			ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+			ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantCtx, ctx.Value(schemas.BifrostContextKeyDimensions))
+			assert.Equal(t, map[string]string{"team": "header", "region": "eu"}, headerDims, "the header map must not be changed in place")
+			assert.Equal(t, tc.wantRoot, recorder.root.Attributes)
+			assert.Equal(t, tc.disableContent, schemas.ContentLoggingDisabledForTrace(&schemas.Trace{RootSpan: recorder.root}), "content logging decision connectors read")
+			if tc.wantAdded == nil {
+				assert.Nil(t, recorder.traceDims, "nothing merged into the trace")
+				return
+			}
+			assert.Equal(t, "trace-1", recorder.traceID)
+			assert.Equal(t, tc.wantAdded, recorder.traceDims)
+		})
+	}
+}
+
 // TestVirtualKeyMetadataContextKeyValue pins the context key's wire string. The logging plugin and
 // the HTTP transport declare their own copy of it, so changing it here alone would silently stop
 // virtual key metadata from reaching the logs.
 func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
 	assert.Equal(t, schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata"), VirtualKeyMetadataContextKey)
+}
+
+// BenchmarkStampVirtualKeyMetadata measures stamping a key's metadata on a traced request, with
+// and without metadata (the common case, which must stay free).
+func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{name: "no_metadata", metadata: nil},
+		{name: "two_entries", metadata: map[string]string{"cost_center": "cc-42", "owner": "platform"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			vk := &configstoreTables.TableVirtualKey{Metadata: bc.metadata}
+			recorder := newDimensionRecorder(nil)
+			headerDims := map[string]string{"team": "header"}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+				ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+				stampVirtualKeyMetadata(ctx, vk)
+			}
+		})
+	}
 }

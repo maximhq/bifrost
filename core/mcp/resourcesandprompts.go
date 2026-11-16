@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -193,42 +194,85 @@ func rebindPromptsToClientName(prompts []mcp.Prompt, clientName string) []mcp.Pr
 	return rebound
 }
 
-// reachableClients returns copies of the enabled clients ctx may reach, by name, each holding only the
-// prompts, resources and templates its allow-lists expose. A tool filter reaches a client through its
+// reachableClient is a client a request may reach, with the prompts, resources and templates of the
+// caller's discovery that its allow-lists expose.
+type reachableClient struct {
+	state             *schemas.MCPClientState
+	prompts           []mcp.Prompt
+	resources         []mcp.Resource
+	resourceTemplates []mcp.ResourceTemplate
+}
+
+// reachableClients returns the enabled clients ctx may reach, by name, each holding only the prompts,
+// resources and templates its allow-lists expose. A tool filter reaches a client through its
 // "<client>-*" entry or one of its tools, so a server without tools is reached by the wildcard.
-func (m *MCPManager) reachableClients(ctx context.Context) []*schemas.MCPClientState {
+//
+// The clients are copied under m.mu and each caller's discovery is read outside it: a per-user store
+// may read through to a database.
+// An aggregate gateway request sees ui:// resources as ui://<client>/..., so two servers' apps never collide.
+func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
+	aggregate := GatewayAggregate(ctx)
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	clients := make([]*schemas.MCPClientState, 0, len(m.clientMap))
+	states := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, state := range m.clientMap {
-		if !m.reachable(ctx, state) {
+		states = append(states, *state)
+	}
+	m.mu.RUnlock()
+
+	clients := make([]*reachableClient, 0, len(states))
+	for i := range states {
+		state := &states[i]
+		if !m.included(ctx, state) {
 			continue
 		}
 		config := state.ExecutionConfig
-		stateCopy := *state
-		stateCopy.Prompts = exposed(state.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return stripClientPrefix(p.Name, config.Name) })
-		stateCopy.Resources = exposed(state.Resources, config.ResourcesToExpose, resourceURI)
-		stateCopy.ResourceTemplates = exposed(state.ResourceTemplates, config.ResourcesToExpose, ResourceTemplateURI)
-		clients = append(clients, &stateCopy)
+		discovery := m.discoveryStore.GetDiscovery(ctx, config)
+		if discovery == nil {
+			discovery = &schemas.MCPDiscovery{}
+		}
+		if !toolsReach(ctx, config, discovery.Tools) {
+			continue
+		}
+		clients = append(clients, &reachableClient{
+			state:             state,
+			prompts:           exposed(discovery.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return StripClientPrefix(p.Name, config.Name) }),
+			resources:         exposed(discovery.Resources, config.ResourcesToExpose, resourceURI),
+			resourceTemplates: exposed(discovery.ResourceTemplates, config.ResourcesToExpose, ResourceTemplateURI),
+		})
+		if aggregate {
+			last := clients[len(clients)-1]
+			last.resources = namespaceUIResources(last.resources, config.Name)
+			last.resourceTemplates = namespaceUITemplates(last.resourceTemplates, config.Name)
+		}
 	}
 	sortByName(clients)
 	return clients
 }
 
 // reachable reports whether ctx's include lists let a request reach state: the client is included,
-// and, when the tools are narrowed, one of its tools or its wildcard is listed. Callers hold m.mu.
+// and, when the tools are narrowed, one of the caller's tools for it or its wildcard is listed. It
+// reads the caller's discovery, so the caller must not hold m.mu.
 func (m *MCPManager) reachable(ctx context.Context, state *schemas.MCPClientState) bool {
+	return m.included(ctx, state) && toolsReach(ctx, state.ExecutionConfig, m.discoveryStore.GetDiscovery(ctx, state.ExecutionConfig).GetTools())
+}
+
+// included reports whether state is open to callers (see withheldFromCallers) and ctx's client
+// include list admits it.
+func (m *MCPManager) included(ctx context.Context, state *schemas.MCPClientState) bool {
 	config := state.ExecutionConfig
-	if config == nil || state.State == schemas.MCPConnectionStateDisabled {
+	if config == nil || withheldFromCallers(state.State, config) {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
-	if !shouldIncludeClient(config.Name, includeClients, m.logger) {
-		return false
-	}
+	return shouldIncludeClient(config.Name, includeClients, m.logger)
+}
+
+// toolsReach reports whether ctx's tool include list, when it narrows the request, names one of tools
+// or config's "<client>-*" wildcard.
+func toolsReach(ctx context.Context, config *schemas.MCPClientConfig, tools map[string]schemas.ChatTool) bool {
 	includeTools, narrowed := ctx.Value(schemas.MCPContextKeyIncludeTools).([]string)
 	return !narrowed || slices.ContainsFunc(includeTools, func(entry string) bool {
-		_, isTool := state.ToolMap[entry]
+		_, isTool := tools[entry]
 		return isTool || entry == config.Name+"-*"
 	})
 }
@@ -249,17 +293,69 @@ func exposed[T any](items []T, allow schemas.WhiteList, key func(T) string) []T 
 
 func resourceURI(r mcp.Resource) string { return r.URI }
 
-func sortByName(clients []*schemas.MCPClientState) {
-	slices.SortFunc(clients, func(a, b *schemas.MCPClientState) int {
-		return strings.Compare(a.ExecutionConfig.Name, b.ExecutionConfig.Name)
+// namespaceUIResources returns resources with ui:// URIs under clientName, copying only when one is.
+func namespaceUIResources(resources []mcp.Resource, clientName string) []mcp.Resource {
+	i := slices.IndexFunc(resources, func(r mcp.Resource) bool { return strings.HasPrefix(r.URI, "ui://") })
+	if i < 0 {
+		return resources
+	}
+	namespaced := slices.Clone(resources)
+	for j := i; j < len(namespaced); j++ {
+		namespaced[j].URI = GatewayUIResourceURI(clientName, namespaced[j].URI)
+	}
+	return namespaced
+}
+
+// namespaceUITemplates is namespaceUIResources for resource templates.
+func namespaceUITemplates(templates []mcp.ResourceTemplate, clientName string) []mcp.ResourceTemplate {
+	i := slices.IndexFunc(templates, func(t mcp.ResourceTemplate) bool { return strings.HasPrefix(ResourceTemplateURI(t), "ui://") })
+	if i < 0 {
+		return templates
+	}
+	namespaced := slices.Clone(templates)
+	for j := i; j < len(namespaced); j++ {
+		raw := ResourceTemplateURI(namespaced[j])
+		if !strings.HasPrefix(raw, "ui://") {
+			continue
+		}
+		quoted, _ := json.Marshal(GatewayUIResourceURI(clientName, raw))
+		parsed := &mcp.URITemplate{}
+		if json.Unmarshal(quoted, parsed) == nil {
+			namespaced[j].URITemplate = parsed
+		}
+	}
+	return namespaced
+}
+
+// withGatewayUIResourceURI renames the contents of a ui:// read back to the URI the caller asked for.
+func withGatewayUIResourceURI(result *mcp.ReadResourceResult, upstreamURI, gatewayURI string) {
+	for i, content := range result.Contents {
+		switch c := content.(type) {
+		case mcp.TextResourceContents:
+			if c.URI == upstreamURI {
+				c.URI = gatewayURI
+				result.Contents[i] = c
+			}
+		case mcp.BlobResourceContents:
+			if c.URI == upstreamURI {
+				c.URI = gatewayURI
+				result.Contents[i] = c
+			}
+		}
+	}
+}
+
+func sortByName(clients []*reachableClient) {
+	slices.SortFunc(clients, func(a, b *reachableClient) int {
+		return strings.Compare(a.state.ExecutionConfig.Name, b.state.ExecutionConfig.Name)
 	})
 }
 
 // GetAvailablePrompts lists the prompts of every client ctx may reach.
 func (m *MCPManager) GetAvailablePrompts(ctx context.Context) []mcp.Prompt {
 	var prompts []mcp.Prompt
-	for _, state := range m.reachableClients(ctx) {
-		prompts = append(prompts, state.Prompts...)
+	for _, client := range m.reachableClients(ctx) {
+		prompts = append(prompts, client.prompts...)
 	}
 	return prompts
 }
@@ -268,8 +364,8 @@ func (m *MCPManager) GetAvailablePrompts(ctx context.Context) []mcp.Prompt {
 func (m *MCPManager) GetAvailableResources(ctx context.Context) []mcp.Resource {
 	var resources []mcp.Resource
 	seen := map[string]bool{}
-	for _, state := range m.reachableClients(ctx) {
-		for _, resource := range state.Resources {
+	for _, client := range m.reachableClients(ctx) {
+		for _, resource := range client.resources {
 			if !seen[resource.URI] {
 				seen[resource.URI] = true
 				resources = append(resources, resource)
@@ -283,8 +379,8 @@ func (m *MCPManager) GetAvailableResources(ctx context.Context) []mcp.Resource {
 func (m *MCPManager) GetAvailableResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
 	var templates []mcp.ResourceTemplate
 	seen := map[string]bool{}
-	for _, state := range m.reachableClients(ctx) {
-		for _, template := range state.ResourceTemplates {
+	for _, client := range m.reachableClients(ctx) {
+		for _, template := range client.resourceTemplates {
 			if raw := ResourceTemplateURI(template); raw != "" && !seen[raw] {
 				seen[raw] = true
 				templates = append(templates, template)
@@ -306,12 +402,16 @@ func (m *MCPManager) GetPrompt(ctx *schemas.BifrostContext, name string, argumen
 		BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: name, Arguments: arguments},
 	}
 	return runOnClient(m, ctx, req, state,
-		func(clients []*schemas.MCPClientState) *schemas.MCPClientState { return promptOwner(clients, name) },
+		func(clients []*reachableClient) *schemas.MCPClientState { return promptOwner(clients, name) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.GetPromptResult, error) {
 			get := mcp.GetPromptRequest{}
-			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
+			get.Params.Name = StripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
 			get.Params.Arguments = req.BifrostMCPGetPromptRequest.Arguments
-			return conn.GetPrompt(ctx, get)
+			result, err := conn.GetPrompt(ctx, get)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			return result, err
 		},
 		func(r *mcp.GetPromptResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{Prompt: r}}
@@ -336,11 +436,22 @@ func (m *MCPManager) ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp
 		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: uri},
 	}
 	return runOnClient(m, ctx, req, state,
-		func(clients []*schemas.MCPClientState) *schemas.MCPClientState { return resourceOwner(clients, uri) },
+		func(clients []*reachableClient) *schemas.MCPClientState { return resourceOwner(clients, uri) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.ReadResourceResult, error) {
 			read := mcp.ReadResourceRequest{}
 			read.Params.URI = req.BifrostMCPReadResourceRequest.URI
-			return conn.ReadResource(ctx, read)
+			namespaced := false
+			if GatewayAggregate(ctx) {
+				read.Params.URI, namespaced = upstreamUIResourceURI(req.ClientName, read.Params.URI)
+			}
+			result, err := conn.ReadResource(ctx, read)
+			if err == nil && result.NeedsInput() {
+				return nil, &UnservableInputError{Requests: result.InputRequests, ServerName: req.ClientName}
+			}
+			if err == nil && namespaced {
+				withGatewayUIResourceURI(result, read.Params.URI, req.BifrostMCPReadResourceRequest.URI)
+			}
+			return result, err
 		},
 		func(r *mcp.ReadResourceResult) *schemas.BifrostMCPResponse {
 			return &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{Resource: r}}
@@ -366,7 +477,7 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 		BifrostMCPCompleteRequest: &schemas.BifrostMCPCompleteRequest{Params: params},
 	}
 	return runOnClient(m, ctx, req, state,
-		func(clients []*schemas.MCPClientState) *schemas.MCPClientState {
+		func(clients []*reachableClient) *schemas.MCPClientState {
 			return completionOwner(clients, params.Ref)
 		},
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.CompleteResult, error) {
@@ -375,9 +486,15 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 				return emptyCompletion(), nil
 			}
 			complete := mcp.CompleteRequest{Params: req.BifrostMCPCompleteRequest.Params}
-			if ref, ok := complete.Params.Ref.(mcp.PromptReference); ok {
-				ref.Name = stripClientPrefix(ref.Name, req.ClientName)
+			switch ref := complete.Params.Ref.(type) {
+			case mcp.PromptReference:
+				ref.Name = StripClientPrefix(ref.Name, req.ClientName)
 				complete.Params.Ref = ref
+			case mcp.ResourceReference:
+				if GatewayAggregate(ctx) {
+					ref.URI, _ = upstreamUIResourceURI(req.ClientName, ref.URI)
+					complete.Params.Ref = ref
+				}
 			}
 			return conn.Complete(ctx, complete)
 		},
@@ -395,16 +512,13 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 // runOnClient runs call through the plugin gate on state's connection, acquired after the PreHooks
 // pass as for a tool call, within the tool execution timeout. An auth failure or dead session is
 // recovered like a tool call's; these reads are safe to retry.
-func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, state *schemas.MCPClientState, owner func([]*schemas.MCPClientState) *schemas.MCPClientState, call func(context.Context, *client.Client, *schemas.BifrostMCPRequest) (T, error), wrap func(T) *schemas.BifrostMCPResponse, unwrap func(*schemas.BifrostMCPResponse) (T, bool)) (T, *schemas.BifrostError) {
+func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, state *schemas.MCPClientState, owner func([]*reachableClient) *schemas.MCPClientState, call func(context.Context, *client.Client, *schemas.BifrostMCPRequest) (T, error), wrap func(T) *schemas.BifrostMCPResponse, unwrap func(*schemas.BifrostMCPResponse) (T, bool)) (T, *schemas.BifrostError) {
 	result, ok, bErr := runGated(m, ctx, req, func(gateCtx *schemas.BifrostContext, preReq *schemas.BifrostMCPRequest) (T, error) {
 		var zero T
 		// The owner was picked before the pre-hooks ran; one (governance) may have narrowed access since.
 		// Pick again among what the request can still reach, so a URI two servers expose goes to the
 		// one it is allowed.
-		m.mu.RLock()
-		stillReachable := m.reachable(gateCtx, state)
-		m.mu.RUnlock()
-		if !stillReachable {
+		if !m.reachable(gateCtx, state) {
 			next := owner(m.reachableClients(gateCtx))
 			if next == nil {
 				return zero, fmt.Errorf("%w: no server this request can reach owns it", ErrNotFound)
@@ -422,7 +536,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if err != nil {
 			return zero, err
 		}
-		result, err := call(callCtx, conn, preReq)
+		upstreamCtx, _, _ := upstreamContext(callCtx, conn, readRelayedCapabilities)
+		result, err := call(upstreamCtx, conn, preReq)
 		recoverable := err != nil && (isAuthFailure(err) || (isDeadSessionError(err) && hasProtocolSession(conn)))
 		release()
 		if !recoverable {
@@ -432,7 +547,8 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		if recovered, _ := m.toolsManager.recoverCall(recoveryCtx, req.RequestType.OTelMethodName(), state, state.ExecutionConfig, timeout, false, nil,
 			func(retryCtx context.Context, conn *client.Client) error {
 				var retryErr error
-				result, retryErr = call(retryCtx, conn, preReq)
+				retryUpstreamCtx, _, _ := upstreamContext(retryCtx, conn, readRelayedCapabilities)
+				result, retryErr = call(retryUpstreamCtx, conn, preReq)
 				return retryErr
 			}); recovered {
 			return result, nil
@@ -446,7 +562,7 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 }
 
 // completionOwner returns the client owning the prompt or resource ref names, or nil.
-func completionOwner(clients []*schemas.MCPClientState, ref any) *schemas.MCPClientState {
+func completionOwner(clients []*reachableClient, ref any) *schemas.MCPClientState {
 	switch ref := ref.(type) {
 	case mcp.PromptReference:
 		return promptOwner(clients, ref.Name)
@@ -457,26 +573,26 @@ func completionOwner(clients []*schemas.MCPClientState, ref any) *schemas.MCPCli
 }
 
 // promptOwner returns the client listing the prefixed prompt name, or nil.
-func promptOwner(clients []*schemas.MCPClientState, name string) *schemas.MCPClientState {
-	for _, state := range clients {
-		if slices.ContainsFunc(state.Prompts, func(p mcp.Prompt) bool { return p.Name == name }) {
-			return state
+func promptOwner(clients []*reachableClient, name string) *schemas.MCPClientState {
+	for _, client := range clients {
+		if slices.ContainsFunc(client.prompts, func(p mcp.Prompt) bool { return p.Name == name }) {
+			return client.state
 		}
 	}
 	return nil
 }
 
 // resourceOwner returns the first client listing uri, else the first with a template matching it.
-func resourceOwner(clients []*schemas.MCPClientState, uri string) *schemas.MCPClientState {
-	for _, state := range clients {
-		if slices.ContainsFunc(state.Resources, func(r mcp.Resource) bool { return r.URI == uri }) {
-			return state
+func resourceOwner(clients []*reachableClient, uri string) *schemas.MCPClientState {
+	for _, client := range clients {
+		if slices.ContainsFunc(client.resources, func(r mcp.Resource) bool { return r.URI == uri }) {
+			return client.state
 		}
 	}
-	for _, state := range clients {
-		for _, template := range state.ResourceTemplates {
+	for _, client := range clients {
+		for _, template := range client.resourceTemplates {
 			if raw := ResourceTemplateURI(template); raw != "" && (raw == uri || template.URITemplate.Regexp().MatchString(uri)) {
-				return state
+				return client.state
 			}
 		}
 	}

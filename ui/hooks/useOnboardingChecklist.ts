@@ -105,17 +105,18 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 		// Order: 1) Security, 2) Provider Setup, 3) Everything Else.
 		// Security comes first so admins lock down access before exposing keys.
 		const allowedOrigins = clientConfig?.allowed_origins ?? [];
+		// Titles are English fallbacks: the widget translates through shell:onboarding.steps.<id>.
 		const common: OnboardingStep[] = [
 			{
 				id: "cors",
-				title: "Restrict CORS origins",
+				title: "Restrict CORS origins", // i18n-ignore
 				route: "/workspace/config/security",
 				section: "Security",
 				complete: allowedOrigins.some((origin) => origin.trim().length > 0) && allowedOrigins.every((origin) => origin.trim() !== "*"),
 			},
 			{
 				id: "dashboard-auth",
-				title: "Set up dashboard auth",
+				title: "Set up dashboard auth", // i18n-ignore
 				route: "/workspace/config/security",
 				section: "Security",
 				complete:
@@ -124,14 +125,14 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 			},
 			{
 				id: "enforce-inference-auth",
-				title: "Enforce auth on inference",
+				title: "Enforce auth on inference", // i18n-ignore
 				route: "/workspace/config/security",
 				section: "Security",
 				complete: !!clientConfig?.enforce_auth_on_inference,
 			},
 			{
 				id: "provider-key",
-				title: "Add a provider key",
+				title: "Add a provider key", // i18n-ignore
 				route: "/workspace/providers",
 				section: "Provider Setup",
 				complete: (allKeys?.length ?? 0) > 0,
@@ -141,21 +142,21 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 			? [
 					{
 						id: "scim",
-						title: "Configure SCIM provisioning",
+						title: "Configure SCIM provisioning", // i18n-ignore
 						route: "/workspace/scim",
 						section: "Everything Else",
 						complete: (scimProviders?.length ?? 0) > 0,
 					},
 					{
 						id: "models",
-						title: "Configure governance model catalog",
+						title: "Configure governance model catalog", // i18n-ignore
 						route: "/workspace/model-catalog",
 						section: "Everything Else",
 						complete: (modelConfigsResponse?.total_count ?? 0) > 0,
 					},
 					{
 						id: "virtual-keys",
-						title: "Set up virtual keys / access profiles",
+						title: "Set up virtual keys / access profiles", // i18n-ignore
 						route: "/workspace/virtual-keys",
 						section: "Everything Else",
 						complete: (vksResponse?.total_count ?? 0) > 0,

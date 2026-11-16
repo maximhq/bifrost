@@ -111,6 +111,39 @@ func TestVKProviderConfigTagsBuildVirtualKeyIDIndex(t *testing.T) {
 	require.True(t, db.Migrator().HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_vk_provider_configs_virtual_key_id"))
 }
 
+// TestMigrationAddBudgetBusinessUnitIDIndex pins that upgraded databases, which get the
+// business_unit_id column from addColumnIfNotExists and so never the tag index, get the index,
+// that the migration is safe to re-run, and that its rollback drops the index (concurrently on
+// Postgres) and is safe to re-run.
+func TestMigrationAddBudgetBusinessUnitIDIndex(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			require.NoError(t, ndb.db.Exec(`CREATE TABLE governance_budgets (
+				id VARCHAR(255) PRIMARY KEY, max_limit DOUBLE PRECISION, reset_duration VARCHAR(50), business_unit_id VARCHAR(255))`).Error)
+			runIndexMigrationTwice(t, ndb.db, "add_budget_business_unit_id_index",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddBudgetBusinessUnitIDIndex(ctx, db, testMigrationLogger)
+				},
+				"governance_budgets", "idx_governance_budgets_business_unit_id")
+
+			rollback := budgetBusinessUnitIDIndexMigration(context.Background(), "add_budget_business_unit_id_index").Rollback
+			require.NoError(t, rollback(ndb.db))
+			require.False(t, indexExists(t, ndb.db, "governance_budgets", "idx_governance_budgets_business_unit_id"),
+				"index must not exist after the rollback")
+			require.NoError(t, rollback(ndb.db))
+		})
+	}
+}
+
+// TestBudgetTagsBuildBusinessUnitIDIndex pins that a fresh install, which creates the table from
+// struct tags, gets the same index the upgrade migration adds, under the same name.
+func TestBudgetTagsBuildBusinessUnitIDIndex(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableBudget{}))
+	require.True(t, db.Migrator().HasIndex(&tables.TableBudget{}, "idx_governance_budgets_business_unit_id"))
+}
+
 // TestIndexHelpersNeverDropAnotherTablesIndex pins that the concurrent index
 // helpers only ever drop the index on their own table. With the search path set
 // to the test schema and then another schema, and only the other schema holding

@@ -268,18 +268,22 @@ func TestAuditChange_VirtualKeyDeleteSnapshotIncludesBudgets(t *testing.T) {
 }
 
 // auditVKUpdateStore serves the MCP update handler's VK assignment read with no rows.
+// auditVKUpdateStore fails the VK assignment step's read, which runs after the
+// client write has committed.
 type auditVKUpdateStore struct {
 	mockUpdateConfigStore
 }
 
+// GetVirtualKeyMCPConfigsByMCPClientID fails, as a store outage would.
 func (s *auditVKUpdateStore) GetVirtualKeyMCPConfigsByMCPClientID(context.Context, uint) ([]configstoreTables.TableVirtualKeyMCPConfig, error) {
-	return nil, nil
+	return nil, errors.New("store unavailable")
 }
 
 // TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails pins that an
 // update whose client write committed is audited even when the VK assignment
-// step after it rejects the request, and that the after snapshot keeps the
-// fields the handler does not rebuild.
+// step after it fails, and that the after snapshot keeps the fields the handler
+// does not rebuild. Invalid vk_configs are refused before the client write, so
+// the failure here is the store's.
 func TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails(t *testing.T) {
 	SetLogger(&mockLogger{})
 	existing := &schemas.MCPClientConfig{
@@ -300,7 +304,7 @@ func TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails(t *testing.T) 
 	disabled := true
 	body, err := json.Marshal(MCPClientUpdateRequest{
 		Disabled:  &disabled,
-		VKConfigs: &[]MCPVKConfigRequest{{VirtualKeyID: ""}},
+		VKConfigs: &[]MCPVKConfigRequest{{VirtualKeyID: "vk-1", ToolsToExecute: schemas.WhiteList{"*"}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -310,8 +314,8 @@ func TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails(t *testing.T) 
 	ctx.Request.SetBody(body)
 	h.updateMCPClient(ctx)
 
-	if code := ctx.Response.StatusCode(); code != fasthttp.StatusBadRequest {
-		t.Fatalf("expected 400 from the VK assignment step, got %d: %s", code, ctx.Response.Body())
+	if code := ctx.Response.StatusCode(); code != fasthttp.StatusInternalServerError {
+		t.Fatalf("expected 500 from the VK assignment step, got %d: %s", code, ctx.Response.Body())
 	}
 	if cfgStore.updates != 1 {
 		t.Fatalf("expected the client write to commit before the VK step, got %d writes", cfgStore.updates)
@@ -496,5 +500,33 @@ func TestAuditMCPClientMasksStdioCommandLine(t *testing.T) {
 	}
 	if cfg.StdioConfig.Args[1] != "--token=arg-secret" || cfg.StdioConfig.Envs[0] != "API_TOKEN=env-secret" {
 		t.Fatalf("masking mutated the live config: %+v", cfg.StdioConfig)
+	}
+}
+
+// TestAuditChange_ProxyURLPasswordMaskedWhenURLDoesNotParse pins that the audit snapshot
+// masks a proxy URL's password even when the URL does not parse. A disabled update is not
+// validated, so the restored password can be saved inside a malformed URL.
+func TestAuditChange_ProxyURLPasswordMaskedWhenURLDoesNotParse(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	if err := store.UpdateProxyConfig(context.Background(), &configstoreTables.GlobalProxyConfig{
+		Enabled: true, Type: "http", URL: "http://alice:secret@proxy.example:8080",
+	}); err != nil {
+		t.Fatalf("seed proxy config: %v", err)
+	}
+	h := &ConfigHandler{store: &lib.Config{ConfigStore: store}, configManager: &proxyReloadRecorder{}}
+
+	ctx := newTestRequestCtx(`{"enabled":false,"type":"http","url":"http://alice:<redacted>@proxy.example:bad"}`)
+	h.updateProxyConfig(ctx)
+
+	if code := ctx.Response.StatusCode(); code != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", code, ctx.Response.Body())
+	}
+	change := requireSingleAuditChange(t, ctx, "proxy_config.updated")
+	if strings.Contains(string(change.Before), "secret") || strings.Contains(string(change.After), "secret") {
+		t.Fatalf("audit snapshot carries the proxy password: before %s, after %s", change.Before, change.After)
+	}
+	if !strings.Contains(string(change.After), "proxy.example:bad") {
+		t.Fatalf("after snapshot missing the saved URL: %s", change.After)
 	}
 }

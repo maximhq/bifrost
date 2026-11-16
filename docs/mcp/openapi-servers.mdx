@@ -64,7 +64,7 @@ With **Auth Scope: Per-user**, each security scheme sent in a header takes a hea
 | `http` `bearer` | `Authorization` | `Bearer <token>` |
 | `http` `basic` | `Authorization` | `Basic <base64 of user:password>` |
 
-The header is forwarded to the API under that name, unchanged, and is added to the server's `per_user_header_keys` (**Required Headers**) for you. Rename it only if the API also accepts the credential under another header; clear it to keep a stored value for that scheme instead. `apiKey` schemes sent in the query or a cookie cannot come from a header, so they keep a stored value. When an operation requires a header scheme and a query or cookie scheme together, the caller's header counts for its scheme and the stored value of the other is still sent. Over the API, list the header in `per_user_header_keys` and leave that scheme out of `security_credentials`.
+The header is forwarded to the API under that name, unchanged, and is added to the server's `per_user_header_keys` (**Required Headers**) for you. Rename it only if the API also accepts the credential under another header; clear it to keep a stored value for that scheme instead. `apiKey` schemes sent in the query or a cookie cannot come from a header, so they keep a stored value. When an operation requires a header scheme and a query or cookie scheme together, the caller's header counts for its scheme and the stored value of the other is still sent. Over the API, list the header in `per_user_header_keys` and leave that scheme out of `security_credentials`: a stored credential for a scheme whose header is in `per_user_header_keys` would replace every caller's own value, so create and update refuse it with `400`.
 
 ## Configuration
 
@@ -87,7 +87,7 @@ The header is forwarded to the API under that name, unchanged, and is added to t
 
 5. Set the server's name, auth type, static headers and the other options as for any server, then click **Create**.
 
-To swap the document later, open the server, and on the **General** tab click **Replace spec**. Each operation is matched by method and path, so a selected operation stays selected, and its auto-execute setting and tool price follow it, even if its tool name changes. Settings of operations the new document drops are removed. The server is rebuilt from the new document when you save.
+To swap the document later, open the server's actions menu and click **Edit**, then on the **General** tab click **Replace spec**. Each operation is matched by method and path, so a selected operation stays selected, and its auto-execute setting and tool price follow it, even if its tool name changes. Settings of operations the new document drops are removed. The server is rebuilt from the new document when you save.
 
 <Frame>
   <img src="/media/mcp/mcp-openapi-replace-spec.png" alt="Stored document summary and Replace spec on the edit sheet" />

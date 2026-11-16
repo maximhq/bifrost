@@ -1377,6 +1377,15 @@ func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsa
 		usage.OutputTokensDetails = outputDetails
 	}
 
+	// thoughtsTokenCount sits outside candidatesTokenCount; fold it into output like the chat and responses converters
+	if metadata.ThoughtsTokenCount > 0 {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
+		}
+		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+		usage.OutputTokens += int(metadata.ThoughtsTokenCount)
+	}
+
 	return usage
 }
 
@@ -1390,6 +1399,10 @@ func convertBifrostImageUsageToGeminiUsageMetadata(usage *schemas.ImageUsage) *G
 		PromptTokenCount:     int32(usage.InputTokens),
 		CandidatesTokenCount: int32(usage.OutputTokens),
 		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ReasoningTokens > 0 {
+		metadata.ThoughtsTokenCount = int32(usage.OutputTokensDetails.ReasoningTokens)
+		metadata.CandidatesTokenCount -= metadata.ThoughtsTokenCount
 	}
 
 	// Process input token details to PromptTokensDetails
@@ -3349,16 +3362,17 @@ func geminiFunctionOutputValue(output string) any {
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
-// It first tries to extract the "output" field if present, otherwise marshals the entire response.
-// Returns an empty string if the response is nil or extraction fails.
+// It unwraps only the documented {"output": X} envelope, where "output" is the sole key.
+// Any sibling field (stderr, ok, error, ...) means the whole object is the tool result,
+// so the raw response is returned intact rather than dropping the siblings.
+// Returns an empty string if the response is nil.
 func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	if funcResp == nil || funcResp.Response == nil {
 		return ""
 	}
 
-	// Try to extract "output" field first
 	var respMap map[string]json.RawMessage
-	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil {
+	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil && len(respMap) == 1 {
 		if outputVal, ok := respMap["output"]; ok {
 			var outputStr string
 			if err := sonic.Unmarshal(outputVal, &outputStr); err == nil {
@@ -3368,7 +3382,7 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 		}
 	}
 
-	// If no "output" key or unmarshal failed, return raw JSON
+	// No sole "output" key, or not a JSON object: return the raw JSON
 	return string(funcResp.Response)
 }
 

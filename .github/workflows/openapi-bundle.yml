@@ -9,12 +9,14 @@ on:
       - "!docs/openapi/openapi.json"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle-openapi:
     name: Bundle OpenAPI Spec
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
+    permissions:
+      contents: write # commits and pushes the bundled spec
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1

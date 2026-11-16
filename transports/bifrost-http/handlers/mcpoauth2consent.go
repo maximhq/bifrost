@@ -15,7 +15,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -135,7 +134,7 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		AvailableModes: h.availableModes(ctx),
 		ExpiresAt:      req.ExpiresAt.UTC().Format(time.RFC3339),
 	}
-	if oauth2.IsClientMetadataURL(client.ClientID) {
+	if isClientMetadataDocumentID(client.ClientID) {
 		resp.ClientHost = urlHost(client.ClientID)
 	}
 
@@ -440,6 +439,10 @@ func (h *OAuth2ConsentHandler) resolveVKIdentity(ctx *fasthttp.RequestCtx, vkVal
 	}
 	if !vk.IsActiveValue() {
 		return "", "", clientConsentError("virtual key is inactive")
+	}
+	// An expired key is refused everywhere else; a grant minted from it would outlive the expiry.
+	if vk.IsExpiredAt(time.Now()) {
+		return "", "", clientConsentError("virtual key has expired")
 	}
 	// During a rotation cooldown the lookup also resolves the key's previous value, so
 	// direct calls keep working while clients switch over. Consent mints a new grant

@@ -5,8 +5,9 @@
 // the same way for billing and for logging.
 //
 // Everything here is a pure transformation of the bytes it is handed: no network, no logging,
-// no shared state. It is meant to run off the request path (the logging plugin calls it from its
-// batch writer).
+// no shared state. Classify and InferRequestType only read the route and suit the request path.
+// Parse and RedactStreamBody read whole bodies: the logging plugin parses from its batch writer,
+// and request-path callers use them on a complete body (a response, or a held stream's final chunk).
 package passthroughparse
 
 import (
@@ -56,6 +57,54 @@ const (
 	wireAnthropic
 	wireGemini
 )
+
+// provider names the built-in provider whose API a wire format is, or "" for an unknown format.
+func (format wireFormat) provider() schemas.ModelProvider {
+	switch format {
+	case wireOpenAI:
+		return schemas.OpenAI
+	case wireAnthropic:
+		return schemas.Anthropic
+	case wireGemini:
+		return schemas.Gemini
+	}
+	return ""
+}
+
+// Route is the API shape and inner request kind a passthrough call addresses.
+type Route struct {
+	Wire        schemas.ModelProvider // API the bodies are written in: OpenAI, Anthropic, or Gemini
+	RequestType schemas.RequestType   // inner request kind, e.g. ChatCompletionRequest; never a streaming variant
+}
+
+// Classify returns the API shape and request kind a passthrough call addresses from its route alone (base
+// provider, model, method, path), without reading either body. The zero Route means the route has no typed
+// equivalent. Like InferRequestType it is a few string checks, cheap enough for the request path.
+func Classify(provider schemas.ModelProvider, model, method, path string) Route {
+	format, requestType := classify(Input{Provider: provider, Model: model, Method: method, Path: path})
+	if format == wireUnknown || requestType == "" {
+		return Route{}
+	}
+	return Route{Wire: format.provider(), RequestType: requestType}
+}
+
+// StreamFormat names the declared format of the route's stream events, as RedactStreamBody and
+// schemas.RedactRawResponseText read it, or "" when Parse cannot assemble the route's stream.
+func (route Route) StreamFormat() schemas.RawResponseFormat {
+	switch route {
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}:
+		return schemas.RawResponseFormatOpenAIChatCompletionChunk
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.TextCompletionRequest}:
+		return schemas.RawResponseFormatOpenAITextCompletionChunk
+	case Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatOpenAIResponsesStreamEvent
+	case Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatAnthropicMessagesStreamEvent
+	case Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}:
+		return schemas.RawResponseFormatGeminiStreamChunk
+	}
+	return ""
+}
 
 // Parse decodes a passthrough call on a best-effort basis. It returns (nil, nil) for routes with no
 // typed equivalent (unsupported providers, list/retrieve calls, Bedrock agent routes), so the caller

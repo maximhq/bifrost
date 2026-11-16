@@ -22,6 +22,7 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
 	schemas.Databricks: true,
+	schemas.Elevenlabs: true, // Include catalog-known STT models absent from live discovery.
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list
@@ -96,7 +97,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			continue
 		}
 		for alias := range e.Aliases {
-			if blacklisted.IsBlocked(alias) {
+			if schemas.IsRegexEntry(alias) || blacklisted.IsBlocked(alias) {
 				continue
 			}
 			if allowed == nil || !allowed.IsAllowed(alias) {

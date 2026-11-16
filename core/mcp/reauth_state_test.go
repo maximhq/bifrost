@@ -74,7 +74,7 @@ func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
 
 	err := m.connectToMCPClient(context.Background(), config)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect MCP client")
+	assert.Contains(t, err.Error(), schemas.ErrOAuth2TokenExpired.Error(), "the error carries the dead credential as its reason")
 
 	m.mu.RLock()
 	state, exists := m.clientMap[config.ID]

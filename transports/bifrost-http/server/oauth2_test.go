@@ -84,9 +84,9 @@ func TestOAuth2SweepWorkerGateReevaluatedPerPass(t *testing.T) {
 // staleOAuthRecorder records what dropStaleMCPOAuthState asks the server to drop; release, when set,
 // holds the token-cache drop until it is closed.
 type staleOAuthRecorder struct {
-	evicted, closed []string
-	closeErr        error
-	release         chan struct{}
+	evicted, closed, discoveriesEvicted []string
+	closeErr                            error
+	release                             chan struct{}
 }
 
 func (r *staleOAuthRecorder) EvictOauthTokenCacheByMCPClient(_ context.Context, mcpClientID string) {
@@ -94,6 +94,10 @@ func (r *staleOAuthRecorder) EvictOauthTokenCacheByMCPClient(_ context.Context, 
 		<-r.release
 	}
 	r.evicted = append(r.evicted, mcpClientID)
+}
+
+func (r *staleOAuthRecorder) EvictMCPPerUserDiscoveryCacheByMCPClient(_ context.Context, mcpClientID string) {
+	r.discoveriesEvicted = append(r.discoveriesEvicted, mcpClientID)
 }
 
 func (r *staleOAuthRecorder) CloseAndMarkNeedsReauth(_ context.Context, id string) error {
@@ -126,6 +130,9 @@ func TestDropStaleMCPOAuthState(t *testing.T) {
 	}
 	assert.Equal(t, []string{"linear"}, recorder.evicted)
 	assert.Equal(t, []string{"linear"}, recorder.closed)
+	// The rotation deleted every caller's discovery of the client with their tokens; the cached
+	// copies go too, so no caller is served the deleted tools until the store next reloads.
+	assert.Equal(t, []string{"linear"}, recorder.discoveriesEvicted)
 
 	// A per-user client has no shared connection to close.
 	perUser := &staleOAuthRecorder{closeErr: schemas.ErrMCPReconnectNotApplicable}

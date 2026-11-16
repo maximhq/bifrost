@@ -13,9 +13,8 @@ import (
 
 // toolsChangeCall records one invocation of a registered SetDiscoveryChangeCallback.
 type toolsChangeCall struct {
-	clientID, name  string
-	tools           map[string]schemas.ChatTool
-	toolNameMapping map[string]string
+	clientID, name string
+	tools          map[string]schemas.ChatTool
 }
 
 // TestSetClientDiscovery_FiresToolsChangeCallback pins the funnel's simplest
@@ -27,24 +26,21 @@ func TestSetClientDiscovery_FiresToolsChangeCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-1", Name: "client-one"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
 	m.mu.Unlock()
 
 	var calls []toolsChangeCall
 	m.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo-server"}
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools})
 
 	require.Len(t, calls, 1)
 	assert.Equal(t, config.ID, calls[0].clientID)
 	assert.Equal(t, config.Name, calls[0].name)
 	assert.Equal(t, tools, calls[0].tools)
-	assert.Equal(t, mapping, calls[0].toolNameMapping)
 }
 
 // TestSetClientDiscovery_UnknownClient_DoesNotFireCallback confirms the callback
@@ -59,13 +55,13 @@ func TestDiscoveryChanged_LateCallbackDeliversTheCurrentDiscovery(t *testing.T) 
 	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
 		delivered = append(delivered, discovery.Instructions)
 	})
-	state := &schemas.MCPClientState{Name: "docs", ToolMap: map[string]schemas.ChatTool{}}
+	state := &schemas.MCPClientState{Name: "docs", ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"}}
 	m.clientMap["docs-id"] = state
 
 	m.mu.Lock()
-	state.ServerInstructions = "first"
+	m.discoveryStore.SetDiscovery(m.ctx, state.ExecutionConfig, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "first"})
 	older := m.discoveryChanged(state, "docs-id")
-	state.ServerInstructions = "second"
+	m.discoveryStore.SetDiscovery(m.ctx, state.ExecutionConfig, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "second"})
 	newer := m.discoveryChanged(state, "docs-id")
 	m.mu.Unlock()
 	require.NotNil(t, older)
@@ -84,7 +80,7 @@ func TestSetClientDiscovery_UnknownClient_DoesNotFireCallback(t *testing.T) {
 		fired = true
 	})
 
-	m.SetClientDiscovery("does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}})
+	m.SetClientDiscovery("does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}})
 
 	assert.False(t, fired)
 }
@@ -104,8 +100,7 @@ func TestConnectToMCPClient_SuccessfulDial_FiresToolsChangeCallback(t *testing.T
 
 	var calls []toolsChangeCall
 	m.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -125,20 +120,20 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 	manager := &MCPManager{
-		credStore: cred,
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
+		credStore:      cred,
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
 
-	state, config := newSyncTestClientState("client-checker-percall", "checker-client", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
+	state, config := newSyncTestClientState("client-checker-percall", "checker-client", schemas.MCPAuthTypeHeaders)
 	config.ConnectionType = schemas.MCPConnectionTypeHTTP
 	config.ConnectionString = schemas.NewSecretVar(ts.URL)
 	manager.clientMap[config.ID] = state
 
 	var calls []toolsChangeCall
 	manager.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})

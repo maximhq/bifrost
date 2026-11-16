@@ -92,7 +92,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cms := ToChatMessages([]ResponsesMessage{tt.msg})
+			cms := ToChatMessages([]ResponsesMessage{tt.msg}, nil)
 			if len(cms) != 1 {
 				t.Fatalf("expected 1 chat message, got %d", len(cms))
 			}
@@ -114,7 +114,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 			Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("")},
 			Output: &ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: Ptr("15 degrees")},
 		},
-	}})
+	}}, nil)
 	if len(okCMs) != 1 {
 		t.Fatalf("expected 1 chat message, got %d", len(okCMs))
 	}
@@ -139,7 +139,7 @@ func TestToolErrorSurvivesSurfaceRoundTrip(t *testing.T) {
 		},
 	}
 
-	roundTripped := ToChatMessages(original.ToResponsesMessages())
+	roundTripped := ToChatMessages(original.ToResponsesMessages(), nil)
 	if len(roundTripped) != 1 {
 		t.Fatalf("expected 1 chat message after round trip, got %d", len(roundTripped))
 	}

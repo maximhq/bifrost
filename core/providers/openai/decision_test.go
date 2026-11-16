@@ -132,6 +132,15 @@ func TestToOpenAIDecisionRequestRejections(t *testing.T) {
 			},
 			wantSub: `not "input_audio"`,
 		},
+		"file part": {
+			request: &schemas.BifrostDecisionRequest{
+				Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+					{Type: schemas.DecisionInputPartTypeFile, MimeType: schemas.Ptr("application/pdf"), Data: schemas.DecisionData{File: []byte("%PDF")}},
+				}}}}},
+				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate}},
+			},
+			wantSub: `not "input_file"`,
+		},
 		"unsupported type": {
 			request: &schemas.BifrostDecisionRequest{Input: text, Questions: []schemas.DecisionQuestion{{Type: "ranking"}}},
 			wantSub: "unsupported type",
@@ -408,6 +417,7 @@ func TestOpenAIDecisionRequestRejectsWhatOpenAIDoesNotDefine(t *testing.T) {
 		"state only":   {`{"model":"m","state":"s","questions":[` + predicate + `]}`, "input is required"},
 		"null input":   {`{"model":"m","input":null,"questions":[` + predicate + `]}`, "input is required"},
 		"object input": {`{"model":"m","input":{"ticket":"refund"},"questions":[` + predicate + `]}`, "string or a list of messages"},
+		"file part":    {`{"model":"gemini/gemini-decision-1","input":[{"role":"user","content":[{"type":"input_file","url":"https://example.com/a.pdf","mime_type":"application/pdf"}]}],"questions":[` + predicate + `]}`, "input_file parts are not part of OpenAI's Decisions request"},
 		"no questions": {`{"model":"m","input":"s"}`, "questions are required"},
 		"instructions": {`{"model":"m","input":"s","questions":[{"type":"predicate","instructions":{"goal":"tone"}}]}`, "question 0 instructions must be text or a list of"},
 	} {

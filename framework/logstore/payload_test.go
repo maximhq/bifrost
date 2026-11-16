@@ -113,6 +113,21 @@ func TestExtractPayload_NilOrEmptyMetadataOmittedFromSnapshot(t *testing.T) {
 	assert.NotContains(t, payload, "metadata", "empty Metadata must not appear in snapshot")
 }
 
+// TestExtractPayload_CarriesCallerIdentity pins that the object-store snapshot carries user_email and client_ip.
+func TestExtractPayload_CarriesCallerIdentity(t *testing.T) {
+	email, ip := "ada@example.com", "10.0.0.5"
+	payload := ExtractPayload(&Log{ID: "who", UserEmail: &email, ClientIP: &ip})
+	assert.Equal(t, email, payload["user_email"])
+	assert.Equal(t, ip, payload["client_ip"])
+	assert.NotContains(t, payload, "forwarded_for")
+
+	bare := ExtractPayload(&Log{ID: "anon"})
+	for _, key := range []string{"user_email", "client_ip"} {
+		assert.NotContains(t, bare, key, "absent values stay out of the snapshot")
+	}
+	assert.True(t, isPayloadEmpty(ExtractPayload(&Log{ID: "identity-only", UserEmail: &email, ClientIP: &ip})), "identity alone does not trigger an upload")
+}
+
 func TestClearPayload_DoesNotTouchIndexFields(t *testing.T) {
 	log := &Log{
 		ID:           "test-1",
@@ -143,6 +158,62 @@ func TestBuildInputContentSummary(t *testing.T) {
 	summary := log.BuildInputContentSummary()
 	assert.Contains(t, summary, "What is the weather?")
 	assert.NotContains(t, summary, "It's sunny", "BuildInputContentSummary should not include output")
+}
+
+func TestBuildInputContentSummary_ToolLoopFallback(t *testing.T) {
+	system := "You are an agent."
+	toolResult := "25\nexit=0"
+	toolName := "AskUserQuestion"
+	callID := "call_1"
+	fcType := schemas.ResponsesMessageTypeFunctionCall
+	fcoType := schemas.ResponsesMessageTypeFunctionCallOutput
+	args := `{"q":"amend?"}`
+	output := "done"
+
+	cases := []struct {
+		name string
+		log  *Log
+		want string
+	}{
+		{
+			name: "chat tool result",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &toolResult}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID}},
+			}},
+			want: toolResult,
+		},
+		{
+			name: "chat assistant tool call",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: args}},
+				}}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call output",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+				{Type: &fcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
+			}},
+			want: output,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.log.BuildInputContentSummary())
+		})
+	}
 }
 
 func TestBuildTags(t *testing.T) {
