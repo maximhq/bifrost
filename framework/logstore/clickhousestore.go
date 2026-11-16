@@ -2036,13 +2036,13 @@ func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context
 	return inserted, nil
 }
 
-// DeleteRelayLogs deletes the identified rows with a lightweight delete.
 // DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
 // request logs, so the retention cleaner prunes relay rows on ClickHouse too.
 func (s *ClickHouseLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
 	return s.chRetentionDelete(ctx, "relay_logs", "timestamp", cutoff)
 }
 
+// DeleteRelayLogs deletes the identified rows with a lightweight delete.
 func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
