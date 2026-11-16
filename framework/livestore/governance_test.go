@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -239,4 +240,71 @@ func TestLimitOwnersFlagUnheldLimits(t *testing.T) {
 	require.NoError(t, db.Exec("DROP TABLE build_limit_owners").Error)
 	require.Error(t, s.Refresh(ctx, []Ref{{Kind: KindBudget, ID: "b-build-owned"}}))
 	require.False(t, budgetAligned("b-build-owned"), "a failed read leaves the record as it was")
+}
+
+// TestKeysShareTheirGrantSet checks that keys granted the same things hold one grant set, that a
+// key whose grants change moves to a set of its own, and that a set no key holds any more is
+// dropped once the grace period has passed.
+func TestKeysShareTheirGrantSet(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	s := loadedGovernance(t, db)
+	cols := s.Collections
+	grantsOf := func(id string) registry.GrantSetID {
+		t.Helper()
+		k, ok := cols.VirtualKeys.Get(id)
+		require.True(t, ok, id)
+		_, held := cols.GrantSet(k.Grants)
+		require.True(t, held, "%s's grant set is held", id)
+		return k.Grants
+	}
+	require.NotEqual(t, grantsOf("vk-1"), grantsOf("vk-2"), "vk-1 holds a provider config vk-2 does not")
+
+	require.NoError(t, db.Omit(clause.Associations).Create(&tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-2", Provider: "openai", AllowedModels: schemas.WhiteList{"*"},
+	}).Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-2"}}))
+	shared := grantsOf("vk-1")
+	require.Equal(t, shared, grantsOf("vk-2"), "keys granted the same things share a set")
+	one, _ := cols.GrantSet(grantsOf("vk-1"))
+	two, _ := cols.GrantSet(grantsOf("vk-2"))
+	require.Same(t, one, two, "the set is stored once")
+	k1, _ := cols.VirtualKeys.Get("vk-1")
+	k2, _ := cols.VirtualKeys.Get("vk-2")
+	require.NotEqual(t, k1.ProviderLimits[0].ConfigID, k2.ProviderLimits[0].ConfigID, "what funds each config stays with its key")
+
+	require.NoError(t, db.Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", "vk-2").
+		UpdateColumn("allowed_models", `["gpt-4o"]`).Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-2"}}))
+	require.NotEqual(t, shared, grantsOf("vk-2"), "a key whose grants change moves to its own set")
+	require.Equal(t, shared, grantsOf("vk-1"))
+
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-1", Remove: true}}))
+	*clock = clock.Add(internedGrace + time.Second)
+	s.sweep()
+	_, held := cols.GrantSet(shared)
+	require.False(t, held, "a set no key holds is dropped after the grace period")
+	grantsOf("vk-2")
+}
+
+// TestFileRecordsHoldEachKeysGrantSet checks that the records a gateway without a config store
+// loads come with their keys' grant sets, so a key built from config.json grants what it declares.
+func TestFileRecordsHoldEachKeysGrantSet(t *testing.T) {
+	s, err := New()
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
+	fc := registry.FromConfig(registry.FileInput{Governance: &configstore.GovernanceConfig{
+		VirtualKeys: []tables.TableVirtualKey{{
+			ID: "vk-1", Name: "file", Value: *schemas.NewSecretVar("sk-file"),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}}},
+		}},
+	}})
+	require.NoError(t, s.LoadRecords(context.Background(), s.Collections.FileRecords(fc)))
+	k, ok := s.Collections.VirtualKeys.Get("vk-1")
+	require.True(t, ok)
+	set, ok := s.Collections.GrantSet(k.Grants)
+	require.True(t, ok, "the key's grant set is held")
+	require.Len(t, set.Providers, 1)
+	require.Equal(t, "openai", set.Providers[0].Provider)
 }

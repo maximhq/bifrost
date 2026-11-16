@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -35,14 +34,6 @@ func (f *readFailures) install(t *testing.T, db *gorm.DB) {
 	}))
 }
 
-// keyVirtualMCPs is the Virtual MCPs the key with this ID is assigned, as governance holds it.
-func keyVirtualMCPs(t *testing.T, gs *governance.LocalGovernanceStore, id string) []uint {
-	t.Helper()
-	vk, ok := gs.GetVirtualKeyByID(context.Background(), id)
-	require.True(t, ok)
-	return vk.VirtualMCPIDs
-}
-
 // TestVirtualMCPDetachRetriesTheKeyRead checks that the key refresh after a Virtual MCP detach
 // retries a failed read, so a read failing once still drops the detached Virtual MCP from the
 // key, and that when every retry fails the refresh returns the error, which the route answers
@@ -67,7 +58,7 @@ func TestVirtualMCPDetachRetriesTheKeyRead(t *testing.T) {
 			require.NoError(t, store.AttachVirtualMCPToVirtualKey(ctx, def.ID, "vk-1"))
 			_, err = server.ReloadVirtualKey(ctx, "vk-1")
 			require.NoError(t, err)
-			require.Equal(t, []uint{def.ID}, keyVirtualMCPs(t, gs, "vk-1"))
+			require.Equal(t, []uint{def.ID}, assignedVirtualMCPs(t, server, gs, "vk-1"))
 
 			require.NoError(t, store.DetachVirtualMCPFromVirtualKey(ctx, def.ID, "vk-1"))
 			reads := &readFailures{}
@@ -77,11 +68,11 @@ func TestVirtualMCPDetachRetriesTheKeyRead(t *testing.T) {
 			reads.left.Store(0)
 			if tc.failures > 0 {
 				require.NoError(t, err, "the retry reads the key")
-				require.Empty(t, keyVirtualMCPs(t, gs, "vk-1"), "the detached Virtual MCP is no longer granted")
+				require.Empty(t, assignedVirtualMCPs(t, server, gs, "vk-1"), "the detached Virtual MCP is no longer granted")
 				return
 			}
 			require.Error(t, err, "the failed refresh is returned for the route to answer")
-			require.Equal(t, []uint{def.ID}, keyVirtualMCPs(t, gs, "vk-1"), "the key keeps its previous record")
+			require.Equal(t, []uint{def.ID}, assignedVirtualMCPs(t, server, gs, "vk-1"), "the key keeps its previous record")
 		})
 	}
 }

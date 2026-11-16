@@ -12,8 +12,8 @@ import (
 
 // VirtualKey is one virtual key as request handling reads it. What other records own is named by
 // ID: the team, customer and business unit it sits under, and its budgets and rate limit, whose
-// settings and usage live with those records. The grants (provider, MCP, agent and relay configs,
-// and the virtual MCPs assigned to it) are the key's own child rows.
+// settings and usage live with those records. What it may use is its grant set, named by ID and
+// shared with every owner granted the same; what funds each provider it may use stays here.
 type VirtualKey struct {
 	ID, Name string
 	// Value is the key's resolved value; "" when an env or vault reference could not be
@@ -26,7 +26,6 @@ type VirtualKey struct {
 	Active                 bool
 	ExpiresAt              int64 // Unix nanoseconds; 0 never expires
 	CalendarAligned        bool
-	AllowAllProviders      bool
 	DisableContentLogging  *bool
 	Metadata               map[string]string
 	TeamID                 string
@@ -35,14 +34,11 @@ type VirtualKey struct {
 	CreatedByUserID        string
 	RateLimitID            string
 	BudgetIDs              []string
-	// ProviderConfigs carry their keys (id, name, key_id, models_json, provider) and their
-	// budgets by ID only; a config's rate limit is named by RateLimitID.
-	ProviderConfigs []tables.TableVirtualKeyProviderConfig
-	// MCPConfigs carry the client's id, client_id and name.
-	MCPConfigs    []tables.TableVirtualKeyMCPConfig
-	AgentGrants   []tables.TableVirtualKeyAgentGrant
-	RelayGrants   []tables.TableVirtualKeyRelayGrant
-	VirtualMCPIDs []uint // ascending
+	// Grants names the key's grant set.
+	Grants GrantSetID
+	// ProviderLimits fund the key's provider configs, one per config in the order of its grant
+	// set's Providers.
+	ProviderLimits []ProviderLimit
 }
 
 // Index names of the virtual key collection, for GetBy.
@@ -84,10 +80,16 @@ func VirtualKeyTeamID(k *VirtualKey) string { return k.TeamID }
 // VirtualKeyCustomerID is the customer a key sits under directly, "" for none.
 func VirtualKeyCustomerID(k *VirtualKey) string { return k.CustomerID }
 
-// VirtualKeysPage reads up to limit virtual keys with IDs after the cursor, in ID order, and
-// returns the next cursor, "" after the last page.
-func VirtualKeysPage(ctx context.Context, db *gorm.DB, after string, limit int) ([]*VirtualKey, string, error) {
-	rows, err := readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB {
+// KeyReads reads virtual keys. Grants stores each key's grant set as the key is built and returns
+// the ID the key records.
+type KeyReads struct {
+	Grants func(*GrantSet) GrantSetID
+}
+
+// Page reads up to limit virtual keys with IDs after the cursor, in ID order, and returns the
+// next cursor, "" after the last page.
+func (r KeyReads) Page(ctx context.Context, db *gorm.DB, after string, limit int) ([]*VirtualKey, string, error) {
+	rows, err := r.read(ctx, db, func(q *gorm.DB) *gorm.DB {
 		return q.Where("id > ?", after).Order("id").Limit(limit)
 	})
 	if err != nil || len(rows) < limit {
@@ -96,33 +98,32 @@ func VirtualKeysPage(ctx context.Context, db *gorm.DB, after string, limit int) 
 	return rows, rows[len(rows)-1].ID, nil
 }
 
-// VirtualKeysByID reads the virtual keys with these IDs; an ID with no row is left out.
-func VirtualKeysByID(ctx context.Context, db *gorm.DB, ids []string) ([]*VirtualKey, error) {
-	return readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("id IN ?", ids) })
+// ByID reads the virtual keys with these IDs; an ID with no row is left out.
+func (r KeyReads) ByID(ctx context.Context, db *gorm.DB, ids []string) ([]*VirtualKey, error) {
+	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("id IN ?", ids) })
 }
 
-// VirtualKeysByTeams reads the virtual keys under these teams.
-func VirtualKeysByTeams(ctx context.Context, db *gorm.DB, teamIDs []string) ([]*VirtualKey, error) {
-	return readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("team_id IN ?", teamIDs) })
+// ByTeams reads the virtual keys under these teams.
+func (r KeyReads) ByTeams(ctx context.Context, db *gorm.DB, teamIDs []string) ([]*VirtualKey, error) {
+	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("team_id IN ?", teamIDs) })
 }
 
-// VirtualKeysByCustomers reads the virtual keys directly under these customers.
-func VirtualKeysByCustomers(ctx context.Context, db *gorm.DB, customerIDs []string) ([]*VirtualKey, error) {
-	return readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("customer_id IN ?", customerIDs) })
+// ByCustomers reads the virtual keys directly under these customers.
+func (r KeyReads) ByCustomers(ctx context.Context, db *gorm.DB, customerIDs []string) ([]*VirtualKey, error) {
+	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where("customer_id IN ?", customerIDs) })
 }
 
 // VirtualKeyFromTable builds a key's record from its table struct, which must carry its grants;
 // budgetIDs and virtualMCPIDs are the IDs of the budgets it holds directly and the virtual MCPs
-// assigned to it. The loader calls it on the rows it read; a gateway without a config store
-// calls it on the keys config.json declares.
-func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualMCPIDs []uint) *VirtualKey {
+// assigned to it, and grants stores the key's grant set. The loader calls it on the rows it read; a
+// gateway without a config store calls it on the keys config.json declares.
+func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualMCPIDs []uint, grants func(*GrantSet) GrantSetID) *VirtualKey {
 	k := &VirtualKey{
 		ID:                    t.ID,
 		Name:                  t.Name,
 		Value:                 t.Value.GetValue(),
 		Active:                t.IsActiveValue(),
 		CalendarAligned:       t.CalendarAligned,
-		AllowAllProviders:     t.AllowAllProviders,
 		DisableContentLogging: t.DisableContentLogging,
 		Metadata:              t.Metadata,
 		TeamID:                deref(t.TeamID),
@@ -131,11 +132,6 @@ func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualM
 		CreatedByUserID:       deref(t.CreatedByUserID),
 		RateLimitID:           deref(t.RateLimitID),
 		BudgetIDs:             budgetIDs,
-		ProviderConfigs:       t.ProviderConfigs,
-		MCPConfigs:            t.MCPConfigs,
-		AgentGrants:           t.AgentGrants,
-		RelayGrants:           t.RelayGrants,
-		VirtualMCPIDs:         virtualMCPIDs,
 	}
 	if t.ExpiresAt != nil {
 		k.ExpiresAt = t.ExpiresAt.UnixNano()
@@ -144,15 +140,51 @@ func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualM
 		k.PreviousValue = t.PreviousValue.GetValue()
 		k.PreviousValueExpiresAt = t.PreviousValueExpiresAt.UnixNano()
 	}
-	for i := range k.ProviderConfigs {
-		k.ProviderConfigs[i].RateLimit = nil
+	set := &GrantSet{AllowAllProviders: t.AllowAllProviders, VirtualMCPIDs: virtualMCPIDs}
+	if t.ProviderConfigs != nil {
+		set.Providers = make([]ProviderGrant, 0, len(t.ProviderConfigs))
+		k.ProviderLimits = make([]ProviderLimit, 0, len(t.ProviderConfigs))
 	}
+	for i := range t.ProviderConfigs {
+		pc := &t.ProviderConfigs[i]
+		set.Providers = append(set.Providers, ProviderGrant{
+			Provider: pc.Provider, Weight: pc.Weight, AllowedModels: pc.AllowedModels,
+			BlacklistedModels: pc.BlacklistedModels, KeyIDs: pc.KeyIDs(),
+		})
+		limit := ProviderLimit{ConfigID: pc.ID, Provider: pc.Provider, RateLimitID: deref(pc.RateLimitID)}
+		for _, b := range pc.Budgets {
+			limit.BudgetIDs = append(limit.BudgetIDs, b.ID)
+		}
+		k.ProviderLimits = append(k.ProviderLimits, limit)
+	}
+	if t.MCPConfigs != nil {
+		set.MCP = make([]MCPGrant, 0, len(t.MCPConfigs))
+	}
+	for i := range t.MCPConfigs {
+		mc := &t.MCPConfigs[i]
+		set.MCP = append(set.MCP, MCPGrant{
+			ClientRowID: mc.MCPClientID, ClientID: mc.MCPClient.ClientID, ClientName: mc.MCPClient.Name, Tools: mc.ToolsToExecute,
+		})
+	}
+	if t.AgentGrants != nil {
+		set.Agents = make([]string, 0, len(t.AgentGrants))
+	}
+	for _, a := range t.AgentGrants {
+		set.Agents = append(set.Agents, a.AgentName)
+	}
+	if t.RelayGrants != nil {
+		set.Relays = make([]string, 0, len(t.RelayGrants))
+	}
+	for _, r := range t.RelayGrants {
+		set.Relays = append(set.Relays, r.RelayName)
+	}
+	k.Grants = grants(SealGrantSet(set))
 	return k
 }
 
-// readVirtualKeys loads the key rows where selects, with their grants, the IDs of the budgets
-// they hold directly and the virtual MCPs assigned to them.
-func readVirtualKeys(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) ([]*VirtualKey, error) {
+// read loads the key rows where selects, with their grants, the IDs of the budgets they hold
+// directly and the virtual MCPs assigned to them.
+func (r KeyReads) read(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) ([]*VirtualKey, error) {
 	var rows []tables.TableVirtualKey
 	q := db.WithContext(ctx).
 		Preload("ProviderConfigs").
@@ -160,7 +192,7 @@ func readVirtualKeys(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gor
 			return b.Select("id, provider_config_id").Order("created_at, id")
 		}).
 		Preload("ProviderConfigs.Keys", func(k *gorm.DB) *gorm.DB {
-			return k.Select("id, name, key_id, models_json, provider")
+			return k.Select("id, key_id")
 		}).
 		Preload("MCPConfigs").
 		Preload("MCPConfigs.MCPClient", func(c *gorm.DB) *gorm.DB { return c.Select("id, client_id, name") }).
@@ -192,7 +224,7 @@ func readVirtualKeys(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gor
 	for i := range rows {
 		assigned := virtualMCPs[rows[i].ID]
 		sort.Slice(assigned, func(a, b int) bool { return assigned[a] < assigned[b] })
-		out = append(out, VirtualKeyFromTable(&rows[i], budgets[rows[i].ID], assigned))
+		out = append(out, VirtualKeyFromTable(&rows[i], budgets[rows[i].ID], assigned, r.Grants))
 	}
 	return out, nil
 }

@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,8 +11,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestGovernanceDataFromRowsServesFullRowsWithLiveUsage checks the snapshot admin reads serve: rows
@@ -222,4 +225,57 @@ func TestLimitHooksWrapLimitChanges(t *testing.T) {
 	require.Equal(t, []string{"mc-budget"}, removedBudgets)
 	require.Equal(t, []string{"mc-rate-limit"}, removedRateLimits)
 	require.False(t, lock.held)
+}
+
+// TestVirtualKeyViewNamesGrantedKeysAsTheProviderHoldsThem checks the keys a key's view lists for
+// a provider config: each key the grant names, with the row ID, name, key_id, models and provider
+// the provider's record holds now, as the config's own read of them showed. A key renamed after
+// the virtual key was read shows its new name, a key the provider no longer holds is left out, and
+// a grant of every key lists none.
+func TestVirtualKeyViewNamesGrantedKeysAsTheProviderHoldsThem(t *testing.T) {
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"gpt-4o"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}})
+	h.putVirtualKey(buildVirtualKeyWithProviders("vk-1", "sk-bf-1", "named", []configstoreTables.TableVirtualKeyProviderConfig{{
+		Provider: string(schemas.OpenAI), AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "k1"}},
+	}}))
+	h.putVirtualKey(buildVirtualKeyWithProviders("vk-2", "sk-bf-2", "every", openAIConfig()))
+	gs := h.mustGovernanceStore(NewMockLogger(), nil)
+	config := func(value string) configstoreTables.TableVirtualKeyProviderConfig {
+		t.Helper()
+		vk := gs.GetGovernanceData(context.Background()).VirtualKeys[value]
+		require.NotNil(t, vk)
+		require.Len(t, vk.ProviderConfigs, 1)
+		return vk.ProviderConfigs[0]
+	}
+
+	var read configstoreTables.TableVirtualKeyProviderConfig
+	require.NoError(t, h.db.Preload("Keys", func(k *gorm.DB) *gorm.DB { return k.Select("id, name, key_id, models_json, provider") }).
+		Where("virtual_key_id = ?", "vk-1").First(&read).Error)
+	require.Len(t, read.Keys, 1)
+	row := read.Keys[0]
+	want, err := json.Marshal(read.Keys)
+	require.NoError(t, err)
+	got, err := json.Marshal(config("sk-bf-1").Keys)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), string(got), "the key as the config's read of it shows it")
+	require.False(t, config("sk-bf-1").AllowAllKeys)
+
+	every := config("sk-bf-2")
+	require.True(t, every.AllowAllKeys)
+	require.NotNil(t, every.Keys)
+	require.Empty(t, every.Keys, "a grant of every key lists none")
+
+	require.NoError(t, h.db.Model(&configstoreTables.TableKey{}).Where("key_id = ?", "k1").UpdateColumn("name", "renamed").Error)
+	h.refresh(livestore.Ref{Kind: livestore.KindProvider, ID: string(schemas.OpenAI)})
+	keys := config("sk-bf-1").Keys
+	require.Len(t, keys, 1)
+	require.Equal(t, "renamed", keys[0].Name, "the key as the provider holds it now")
+	require.Equal(t, row.ID, keys[0].ID)
+
+	require.NoError(t, h.db.Where("key_id = ?", "k1").Delete(&configstoreTables.TableKey{}).Error)
+	h.refresh(livestore.Ref{Kind: livestore.KindProvider, ID: string(schemas.OpenAI)})
+	require.Empty(t, config("sk-bf-1").Keys, "a key the provider no longer holds is left out")
 }

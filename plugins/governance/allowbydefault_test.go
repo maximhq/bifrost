@@ -119,7 +119,7 @@ func TestIsMCPToolAllowedByVK_UsesInMemoryStore(t *testing.T) {
 	store := fixtureStore(t, &liveFixture{
 		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	})
-	permit := store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(buildVKNoMCPConfigs()))
+	permit := store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, buildVKNoMCPConfigs()))
 	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	assert.True(t, access.IsMCPToolAllowed("youtube-search"),
@@ -128,7 +128,8 @@ func TestIsMCPToolAllowedByVK_UsesInMemoryStore(t *testing.T) {
 
 // A store with no view of open clients → nothing is granted, so the tool is blocked
 func TestToolChecks_StoreWithoutOpenClients_Blocked(t *testing.T) {
-	permit := fixtureStore(t, nil).permitForVirtualKey(emptyCtx(), virtualKeyRecord(buildVKNoMCPConfigs()))
+	store := fixtureStore(t, nil)
+	permit := store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, buildVKNoMCPConfigs()))
 	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	assert.False(t, access.IsMCPToolAllowed("youtube-search"),
@@ -236,7 +237,7 @@ func TestPermitForVirtualKeyGrantsEveryConfiguredProvider(t *testing.T) {
 			Provider: string(schemas.Bedrock), AllowedModels: schemas.WhiteList{"anthropic.claude-haiku-4-5"}, AllowAllKeys: true,
 		}},
 	}
-	access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(vk))}, "", nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, vk))}, "", nil, "", nil)
 
 	assert.ElementsMatch(t, []string{"openai", "anthropic", "bedrock"}, access.GrantedProvidersForModel(""),
 		"a provider the key names no config for is still granted")
@@ -248,7 +249,7 @@ func TestPermitForVirtualKeyGrantsEveryConfiguredProvider(t *testing.T) {
 
 	t.Run("without the flag only the named providers are granted", func(t *testing.T) {
 		vk.AllowAllProviders = false
-		access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(vk))}, "", nil, "", nil)
+		access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, vk))}, "", nil, "", nil)
 
 		assert.Equal(t, []string{"bedrock"}, access.GrantedProvidersForModel(""))
 		assert.False(t, access.IsModelAllowed("anthropic", "claude-haiku-4-5"))

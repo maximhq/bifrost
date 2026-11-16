@@ -39,6 +39,9 @@ const (
 // KindAgent names the agent-gateway registration collection.
 const KindAgent Kind = "agent"
 
+// KindGrantSet names the interned grant sets: what keys may use, stored once per content.
+const KindGrantSet Kind = "grant_set"
+
 // Collections holds the typed collection of each config store table the live store loads. New
 // registers every one of them, so a reader takes them from Store.Collections. The record types and
 // the reads that load them are in the registry package.
@@ -54,6 +57,50 @@ type Collections struct {
 	ModelConfigs *Collection[registry.ModelConfig]
 	VirtualMCPs  *Collection[registry.VirtualMCP]
 	Agents       *Collection[registry.Agent]
+	// GrantSets holds the grant set of every key, once per content. A key names its own by
+	// VirtualKey.Grants; GrantSet looks one up.
+	GrantSets *Interned[registry.GrantSet]
+}
+
+// GrantSet returns the grant set id names, and false when the store holds none under it.
+func (c *Collections) GrantSet(id registry.GrantSetID) (*registry.GrantSet, bool) {
+	return c.GrantSets.Get(Hash(id))
+}
+
+// FileRecords interns the grant sets of the keys fc holds and returns every record in fc, for
+// LoadRecords: what a gateway without a config store loads from config.json. The sets are interned
+// first, so each is there when its key is.
+func (c *Collections) FileRecords(fc *registry.FileRecords) []Record {
+	for _, set := range fc.GrantSets {
+		c.GrantSets.Intern(set)
+	}
+	recs := make([]Record, 0, len(fc.Providers)+len(fc.ProviderKeys)+len(fc.VirtualKeys)+len(fc.Teams)+
+		len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs))
+	for _, p := range fc.Providers {
+		recs = append(recs, Rec(c.Providers, p))
+	}
+	for _, k := range fc.ProviderKeys {
+		recs = append(recs, Rec(c.ProviderKeys, k))
+	}
+	for _, k := range fc.VirtualKeys {
+		recs = append(recs, Rec(c.VirtualKeys, k))
+	}
+	for _, t := range fc.Teams {
+		recs = append(recs, Rec(c.Teams, t))
+	}
+	for _, cu := range fc.Customers {
+		recs = append(recs, Rec(c.Customers, cu))
+	}
+	for _, b := range fc.Budgets {
+		recs = append(recs, Rec(c.Budgets, b))
+	}
+	for _, r := range fc.RateLimits {
+		recs = append(recs, Rec(c.RateLimits, r))
+	}
+	for _, m := range fc.ModelConfigs {
+		recs = append(recs, Rec(c.ModelConfigs, m))
+	}
+	return recs
 }
 
 // Views holds the global derived tables: tables derived only from collections and read by more
@@ -103,6 +150,13 @@ type storeOptions struct {
 	limits registry.LimitReads
 }
 
+// keyReads is how the store reads virtual keys, interning each key's grant set in grants.
+func (o *storeOptions) keyReads(grants *Interned[registry.GrantSet]) registry.KeyReads {
+	return registry.KeyReads{Grants: func(g *registry.GrantSet) registry.GrantSetID {
+		return registry.GrantSetID(grants.Intern(g))
+	}}
+}
+
 // LimitOwners adds a build's own owners of budgets and rate limits to the ones the registry knows,
 // for a build whose own entities hold limits. Every read of budgets and rate limits reads them in
 // the same query as the registry's own, and a limit no holder the registry knows holds is calendar
@@ -124,6 +178,9 @@ func LimitOwners(budgets, rateLimits []registry.LimitOwner) StoreOption {
 func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 	c := &Collections{}
 	var err error
+	if c.GrantSets, err = s.RegisterInterned[registry.GrantSet](KindGrantSet, func(g *registry.GrantSet) Hash { return Hash(g.ID) }); err != nil {
+		return nil, err
+	}
 	if c.Providers, err = s.Register(KindProvider, []Kind{KindBudget, KindRateLimit}, Loader[registry.Provider]{
 		ID:   registry.ProviderName,
 		Page: registry.ProvidersPage,
@@ -198,8 +255,8 @@ func (s *Store) rebuildProviderKeyLists(_ context.Context, changes []Change[regi
 // refresh of a key, team, customer, model config or provider re-reads the budgets and rate limits
 // it holds, and removing the holder removes them. Keys and teams keep their records when the
 // team or customer above them is removed, re-read with the reference cleared, and key-scoped
-// model configs go with their key. Every read of limits reads o's limit owners with the
-// registry's own.
+// model configs go with their key. Every read of keys goes through o's keyReads, interning the
+// keys' grant sets, and every read of limits reads o's limit owners with the registry's own.
 func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	var err error
 	if c.Customers, err = s.Register(KindCustomer, []Kind{KindBudget, KindRateLimit}, Loader[registry.Customer]{
@@ -218,15 +275,17 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	); err != nil {
 		return err
 	}
+	reads := o.keyReads(c.GrantSets)
 	if c.VirtualKeys, err = s.Register(KindVirtualKey, []Kind{KindBudget, KindRateLimit, KindTeam, KindCustomer, KindVirtualMCP}, Loader[registry.VirtualKey]{
 		ID:   registry.VirtualKeyID,
-		Page: registry.VirtualKeysPage,
-		ByID: registry.VirtualKeysByID,
+		Page: reads.Page,
+		ByID: reads.ByID,
 	},
 		UniqueIndex(registry.VirtualKeyByValue, registry.VirtualKeyValue),
 		MultiIndex(registry.VirtualKeyByPreviousValue, registry.VirtualKeyPreviousValue),
-		ChildOf(KindTeam, registry.VirtualKeyTeamID, registry.VirtualKeysByTeams, SetNull),
-		ChildOf(KindCustomer, registry.VirtualKeyCustomerID, registry.VirtualKeysByCustomers, SetNull),
+		ChildOf(KindTeam, registry.VirtualKeyTeamID, reads.ByTeams, SetNull),
+		ChildOf(KindCustomer, registry.VirtualKeyCustomerID, reads.ByCustomers, SetNull),
+		Uses(c.GrantSets, func(k *registry.VirtualKey) Hash { return Hash(k.Grants) }),
 	); err != nil {
 		return err
 	}

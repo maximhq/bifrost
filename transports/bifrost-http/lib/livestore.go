@@ -178,35 +178,7 @@ func (b *bootConfig) records(live *livestore.Store) []livestore.Record {
 // provider key ordered by its position in config.json, and the governance records. Tests outside
 // lib load them the same way through libtest.
 func FileOnlyRecords(live *livestore.Store, providers map[schemas.ModelProvider]configstore.ProviderConfig, declared *configstore.GovernanceConfig) []livestore.Record {
-	fc := registry.FromConfig(registry.FileInput{Providers: providers, Governance: declared})
-	cols := live.Collections
-	records := make([]livestore.Record, 0, len(fc.Providers)+len(fc.ProviderKeys)+len(fc.VirtualKeys)+
-		len(fc.Teams)+len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs))
-	for _, p := range fc.Providers {
-		records = append(records, livestore.Rec(cols.Providers, p))
-	}
-	for _, k := range fc.ProviderKeys {
-		records = append(records, livestore.Rec(cols.ProviderKeys, k))
-	}
-	for _, k := range fc.VirtualKeys {
-		records = append(records, livestore.Rec(cols.VirtualKeys, k))
-	}
-	for _, t := range fc.Teams {
-		records = append(records, livestore.Rec(cols.Teams, t))
-	}
-	for _, c := range fc.Customers {
-		records = append(records, livestore.Rec(cols.Customers, c))
-	}
-	for _, budget := range fc.Budgets {
-		records = append(records, livestore.Rec(cols.Budgets, budget))
-	}
-	for _, rateLimit := range fc.RateLimits {
-		records = append(records, livestore.Rec(cols.RateLimits, rateLimit))
-	}
-	for _, mc := range fc.ModelConfigs {
-		records = append(records, livestore.Rec(cols.ModelConfigs, mc))
-	}
-	return records
+	return live.Collections.FileRecords(registry.FromConfig(registry.FileInput{Providers: providers, Governance: declared}))
 }
 
 // uniqueKeyIDs fails when two keys of b's providers share a key ID, naming the ID and both

@@ -860,10 +860,9 @@ func TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer(t *
 
 	// Per-provider entries must stay decoupled too — this is the ProviderConfigs slice
 	// aliasing greptile flagged (in-place element mutation through the shared backing array).
-	require.Len(t, tracked.ProviderConfigs, 1)
-	assert.Nil(t, tracked.ProviderConfigs[0].RateLimit, "tracked provider-config rate limit must stay decoupled")
-	assert.Nil(t, tracked.ProviderConfigs[0].RateLimitID, "tracked provider-config rate limit ID must stay decoupled")
-	assert.Empty(t, tracked.ProviderConfigs[0].Budgets, "tracked provider-config budgets must stay decoupled")
+	require.Len(t, tracked.ProviderLimits, 1)
+	assert.Empty(t, tracked.ProviderLimits[0].RateLimitID, "tracked provider-config rate limit ID must stay decoupled")
+	assert.Empty(t, tracked.ProviderLimits[0].BudgetIDs, "tracked provider-config budgets must stay decoupled")
 }
 
 // TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup checks that rewriting a key with a new value retires the old one and keeps the budget's usage.

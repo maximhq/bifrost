@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testKeyReads reads keys as the live store does, keeping their grant sets by ID in the map it
+// returns.
+func testKeyReads() (KeyReads, map[GrantSetID]*GrantSet) {
+	sets := map[GrantSetID]*GrantSet{}
+	return KeyReads{Grants: func(g *GrantSet) GrantSetID {
+		sets[g.ID] = g
+		return g.ID
+	}}, sets
+}
+
 // virtualKeyIDsOf lists the IDs of key records in the order given.
 func virtualKeyIDsOf(rows []*VirtualKey) []string {
 	ids := make([]string, 0, len(rows))
@@ -21,9 +31,10 @@ func virtualKeyIDsOf(rows []*VirtualKey) []string {
 }
 
 // TestVirtualKeysPageAndRecord checks that pages walk every key in ID order, and that a key's
-// record carries what it holds by ID (budgets in creation order, rate limit), its provider
-// configs with their key IDs and budget IDs only, its MCP configs with the client's name, its
-// virtual MCPs in ascending order, its organization, and its rotation and expiry fields.
+// record carries what it holds by ID (budgets in creation order, rate limit, each provider
+// config's budgets and rate limit), its organization, and its rotation and expiry fields, and
+// that its grant set carries the provider configs with their key IDs, the MCP configs with the
+// client's name, and the virtual MCPs in ascending order.
 func TestVirtualKeysPageAndRecord(t *testing.T) {
 	ctx := context.Background()
 	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
@@ -77,10 +88,11 @@ func TestVirtualKeysPageAndRecord(t *testing.T) {
 		&tables.TableVirtualKeyVirtualMCP{VirtualKeyID: "vk-a", VirtualMCPID: 1},
 	)
 
+	reads, sets := testKeyReads()
 	var walked []*VirtualKey
 	after := ""
 	for {
-		rows, next, err := VirtualKeysPage(ctx, db, after, 2)
+		rows, next, err := reads.Page(ctx, db, after, 2)
 		require.NoError(t, err)
 		walked = append(walked, rows...)
 		if next == "" {
@@ -95,7 +107,9 @@ func TestVirtualKeysPageAndRecord(t *testing.T) {
 	require.Equal(t, "sk-a", full.Value)
 	require.True(t, full.Active, "a key with no is_active value is active")
 	require.True(t, full.CalendarAligned)
-	require.True(t, full.AllowAllProviders)
+	grants := sets[full.Grants]
+	require.NotNil(t, grants, "the key's grant set was stored")
+	require.True(t, grants.AllowAllProviders)
 	require.Equal(t, ptr(true), full.DisableContentLogging)
 	require.Equal(t, map[string]string{"env": "prod"}, full.Metadata)
 	require.Equal(t, "team-1", VirtualKeyTeamID(full))
@@ -103,29 +117,24 @@ func TestVirtualKeysPageAndRecord(t *testing.T) {
 	require.Equal(t, "user-1", full.CreatedByUserID)
 	require.Equal(t, "rl-a", full.RateLimitID)
 	require.Equal(t, []string{"b-2", "b-1"}, full.BudgetIDs, "budgets in the order they were created")
-	require.Equal(t, []uint{1, 3}, full.VirtualMCPIDs, "virtual MCPs in ascending order")
+	require.Equal(t, []uint{1, 3}, grants.VirtualMCPIDs, "virtual MCPs in ascending order")
 
-	require.Len(t, full.ProviderConfigs, 1)
-	config := full.ProviderConfigs[0]
-	require.Equal(t, pc.ID, config.ID)
+	require.Len(t, grants.Providers, 1)
+	config := grants.Providers[0]
 	require.Equal(t, "openai", config.Provider)
 	require.Equal(t, schemas.WhiteList{"gpt-4o"}, config.AllowedModels)
-	require.ElementsMatch(t, []string{"k1", "k3"}, config.KeyIDs())
-	require.Equal(t, ptr("rl-pc"), config.RateLimitID)
-	require.Nil(t, config.RateLimit, "a config's rate limit is named by ID only")
-	require.Len(t, config.Budgets, 1)
-	require.Equal(t, "b-pc", config.Budgets[0].ID)
-	require.Zero(t, config.Budgets[0].MaxLimit, "a config's budgets carry their ID only")
+	require.ElementsMatch(t, []string{"k1", "k3"}, config.KeyIDs)
+	require.Equal(t, []ProviderLimit{{ConfigID: pc.ID, Provider: "openai", BudgetIDs: []string{"b-pc"}, RateLimitID: "rl-pc"}}, full.ProviderLimits,
+		"a config's budgets and rate limit are named by ID")
 
-	require.Len(t, full.MCPConfigs, 1)
-	require.Equal(t, "c1", full.MCPConfigs[0].MCPClient.ClientID)
-	require.Equal(t, "c1", full.MCPConfigs[0].MCPClient.Name)
-	require.Equal(t, schemas.WhiteList{"search"}, full.MCPConfigs[0].ToolsToExecute)
+	require.Len(t, grants.MCP, 1)
+	require.Equal(t, MCPGrant{ClientRowID: client.ID, ClientID: "c1", ClientName: "c1", Tools: schemas.WhiteList{"search"}}, grants.MCP[0])
 
 	require.False(t, rotating.Active)
 	require.Equal(t, "cust-1", VirtualKeyCustomerID(rotating))
 	require.Empty(t, rotating.BudgetIDs)
-	require.Empty(t, rotating.VirtualMCPIDs)
+	require.Empty(t, sets[rotating.Grants].VirtualMCPIDs)
+	require.Equal(t, sets[rotating.Grants], sets[plain.Grants], "keys granted the same things share one grant set")
 	require.Equal(t, "sk-b-old", rotating.PreviousValue)
 	require.Equal(t, graceUntil.UnixNano(), rotating.PreviousValueExpiresAt)
 	require.Equal(t, []string{"sk-b-old"}, VirtualKeyPreviousValue(rotating))
@@ -142,13 +151,13 @@ func TestVirtualKeysPageAndRecord(t *testing.T) {
 	require.Zero(t, plain.ExpiresAt)
 	require.False(t, plain.IsExpiredAt(now), "a key with no expiry never expires")
 
-	rows, err := VirtualKeysByID(ctx, db, []string{"vk-c", "missing"})
+	rows, err := reads.ByID(ctx, db, []string{"vk-c", "missing"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"vk-c"}, virtualKeyIDsOf(rows), "an ID with no row is left out")
-	rows, err = VirtualKeysByTeams(ctx, db, []string{"team-1"})
+	rows, err = reads.ByTeams(ctx, db, []string{"team-1"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"vk-a"}, virtualKeyIDsOf(rows))
-	rows, err = VirtualKeysByCustomers(ctx, db, []string{"cust-1"})
+	rows, err = reads.ByCustomers(ctx, db, []string{"cust-1"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"vk-b"}, virtualKeyIDsOf(rows))
 }
@@ -165,7 +174,8 @@ func TestVirtualKeyUnresolvedValueIsNotIndexed(t *testing.T) {
 	require.NoError(t, db.Model(&tables.TableVirtualKey{}).Where("id = ?", "vk-env").
 		UpdateColumn("value", "env.BIFROST_REGISTRY_TEST_UNSET_VARIABLE").Error)
 
-	rows, err := VirtualKeysByID(ctx, db, []string{"vk-env"})
+	reads, _ := testKeyReads()
+	rows, err := reads.ByID(ctx, db, []string{"vk-env"})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	require.Empty(t, rows[0].Value)
@@ -179,22 +189,72 @@ func TestVirtualKeyUnresolvedValueIsNotIndexed(t *testing.T) {
 	require.Equal(t, []string{"sk-retired"}, VirtualKeyPreviousValue(rotating))
 }
 
-// TestVirtualKeyFromTableClearsConfigRateLimits checks the builder a gateway without a config store
-// uses: the record takes the given budget and virtual MCP IDs, and provider configs keep their rate
-// limit by ID only.
-func TestVirtualKeyFromTableClearsConfigRateLimits(t *testing.T) {
+// TestVirtualKeyFromTableNamesConfigRateLimits checks the builder a gateway without a config store
+// uses: the record takes the given budget IDs, its grant set the given virtual MCP IDs, and a
+// provider config's rate limit is named by ID only.
+func TestVirtualKeyFromTableNamesConfigRateLimits(t *testing.T) {
 	expires := time.Unix(1_700_000_000, 0)
+	var stored *GrantSet
 	rec := VirtualKeyFromTable(&tables.TableVirtualKey{
 		ID: "vk-1", Name: "file", Value: *schemas.NewSecretVar("sk-file"), ExpiresAt: &expires,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{
 			Provider: "openai", RateLimitID: ptr("rl-1"), RateLimit: &tables.TableRateLimit{ID: "rl-1"},
 		}},
-	}, []string{"b-1"}, []uint{4})
+	}, []string{"b-1"}, []uint{4}, func(g *GrantSet) GrantSetID {
+		stored = g
+		return g.ID
+	})
 	require.Equal(t, "sk-file", rec.Value)
 	require.True(t, rec.Active)
 	require.Equal(t, expires.UnixNano(), rec.ExpiresAt)
 	require.Equal(t, []string{"b-1"}, rec.BudgetIDs)
-	require.Equal(t, []uint{4}, rec.VirtualMCPIDs)
-	require.Nil(t, rec.ProviderConfigs[0].RateLimit)
-	require.Equal(t, ptr("rl-1"), rec.ProviderConfigs[0].RateLimitID)
+	require.NotNil(t, stored)
+	require.Equal(t, stored.ID, rec.Grants)
+	require.Equal(t, []uint{4}, stored.VirtualMCPIDs)
+	require.Equal(t, []ProviderLimit{{Provider: "openai", RateLimitID: "rl-1"}}, rec.ProviderLimits)
+}
+
+// TestGrantSetIDFollowsContent checks that two grant sets with the same content get the same ID and
+// that any difference, nil against empty included, gives a different one.
+func TestGrantSetIDFollowsContent(t *testing.T) {
+	weight := 0.5
+	base := func() *GrantSet {
+		w := weight
+		return &GrantSet{
+			Providers: []ProviderGrant{{Provider: "openai", Weight: &w, AllowedModels: schemas.WhiteList{"gpt-4o"},
+				KeyIDs: schemas.WhiteList{"key-1"}}},
+			MCP:           []MCPGrant{{ClientRowID: 3, ClientID: "c1", ClientName: "search", Tools: schemas.WhiteList{"find"}}},
+			VirtualMCPIDs: []uint{2},
+			Agents:        []string{"agent"},
+			Relays:        []string{"relay"},
+		}
+	}
+	id := SealGrantSet(base()).ID
+	require.Equal(t, id, SealGrantSet(base()).ID, "equal content, equal ID")
+	for name, change := range map[string]func(*GrantSet){
+		"allow all providers": func(g *GrantSet) { g.AllowAllProviders = true },
+		"provider":            func(g *GrantSet) { g.Providers[0].Provider = "anthropic" },
+		"weight":              func(g *GrantSet) { *g.Providers[0].Weight = 0.25 },
+		"no weight":           func(g *GrantSet) { g.Providers[0].Weight = nil },
+		"allowed models":      func(g *GrantSet) { g.Providers[0].AllowedModels = schemas.WhiteList{"gpt-4o-mini"} },
+		"empty allowed":       func(g *GrantSet) { g.Providers[0].AllowedModels = schemas.WhiteList{} },
+		"nil allowed":         func(g *GrantSet) { g.Providers[0].AllowedModels = nil },
+		"blocked models":      func(g *GrantSet) { g.Providers[0].BlacklistedModels = schemas.BlackList{"gpt-4o"} },
+		"all keys":            func(g *GrantSet) { g.Providers[0].KeyIDs = schemas.WhiteList{"*"} },
+		"key":                 func(g *GrantSet) { g.Providers[0].KeyIDs[0] = "key-2" },
+		"no keys":             func(g *GrantSet) { g.Providers[0].KeyIDs = schemas.WhiteList{} },
+		"mcp client":          func(g *GrantSet) { g.MCP[0].ClientID = "c2" },
+		"mcp client name":     func(g *GrantSet) { g.MCP[0].ClientName = "other" },
+		"mcp tools":           func(g *GrantSet) { g.MCP[0].Tools = schemas.WhiteList{"*"} },
+		"virtual mcp":         func(g *GrantSet) { g.VirtualMCPIDs = []uint{3} },
+		"agents":              func(g *GrantSet) { g.Agents = nil },
+		"relays":              func(g *GrantSet) { g.Relays = []string{"relay", "other"} },
+		"string boundary":     func(g *GrantSet) { g.Agents, g.Relays = []string{"agentrel"}, []string{"ay"} },
+	} {
+		g := base()
+		change(g)
+		require.NotEqual(t, id, SealGrantSet(g).ID, name)
+	}
+	empty, nilSet := &GrantSet{Agents: []string{}}, &GrantSet{}
+	require.NotEqual(t, SealGrantSet(empty).ID, SealGrantSet(nilSet).ID, "an empty list differs from none")
 }

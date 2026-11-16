@@ -39,13 +39,14 @@ func spec(clientID string, tools ...string) configstoreTables.MCPToolSpec {
 func permitFor(t testing.TB, vk *configstoreTables.TableVirtualKey, assigned []configstoreTables.TableVirtualMCP, names, allowedByDefault map[string]string) *grant.Permit {
 	t.Helper()
 	h := newLiveHarness(t, &configstore.GovernanceConfig{}, &liveFixture{clientNames: names, allowedByDefaultClients: allowedByDefault})
-	rec := virtualKeyRecord(vk)
+	var ids []uint
 	for i := range assigned {
 		def := assigned[i]
 		def.Name = fmt.Sprintf("%s-%d", def.Name, i)
 		def.EndpointSlug = ""
-		rec.VirtualMCPIDs = append(rec.VirtualMCPIDs, h.putVirtualMCP(&def))
+		ids = append(ids, h.putVirtualMCP(&def))
 	}
+	rec := virtualKeyRecord(h.live, vk, ids...)
 	gs := h.mustGovernanceStore(NewMockLogger(), nil)
 	return gs.permitForVirtualKey(emptyCtx(), rec)
 }
@@ -151,7 +152,7 @@ func TestLoadVirtualMCPs_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	gs := h.mustGovernanceStore(logger, nil)
 
-	ids := storedVirtualKey(t, gs, "vk-1").VirtualMCPIDs
+	ids := storedGrantSet(t, gs, "vk-1").VirtualMCPIDs
 	require.Len(t, ids, 2, "both assignments load; enabled is filtered at resolution, not at load")
 
 	// Resolution reads each assigned definition and skips the disabled one.
@@ -182,7 +183,7 @@ func TestVirtualMCPInMemoryCRUD(t *testing.T) {
 		},
 	}, nil)
 	gs := h.mustGovernanceStore(NewMockLogger(), nil)
-	assigned := func(vkID string) []uint { return storedVirtualKey(t, gs, vkID).VirtualMCPIDs }
+	assigned := func(vkID string) []uint { return storedGrantSet(t, gs, vkID).VirtualMCPIDs }
 
 	// Create stores a copy: mutating the caller's struct (including its tool slices) afterwards does
 	// not change the record.
@@ -251,7 +252,7 @@ func TestSetVirtualMCPAssignmentsInMemory(t *testing.T) {
 		},
 	}, nil)
 	gs := h.mustGovernanceStore(NewMockLogger(), nil)
-	assigned := func(vkID string) []uint { return storedVirtualKey(t, gs, vkID).VirtualMCPIDs }
+	assigned := func(vkID string) []uint { return storedGrantSet(t, gs, vkID).VirtualMCPIDs }
 	for _, id := range []uint{1, 2, 3, 9} {
 		h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: id, Name: fmt.Sprintf("vmcp-%d", id), Enabled: true})
 	}

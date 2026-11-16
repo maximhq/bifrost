@@ -984,9 +984,10 @@ func clearBudgetHolders(b *configstoreTables.TableBudget) {
 }
 
 // virtualKeyRecord builds the record the live store would hold for vk from its table struct alone,
-// for tests that hand a key straight to a function rather than resolving it from the store. Budget
-// and virtual MCP IDs are taken from vk's nested budgets.
-func virtualKeyRecord(vk *configstoreTables.TableVirtualKey) *registry.VirtualKey {
+// for tests that hand a key straight to a function rather than resolving it from the store, with
+// the given virtual MCPs assigned. Its grant set is interned in live, as a read of the key would.
+// Budget IDs are taken from vk's nested budgets.
+func virtualKeyRecord(live *livestore.Store, vk *configstoreTables.TableVirtualKey, virtualMCPIDs ...uint) *registry.VirtualKey {
 	if vk == nil {
 		return nil
 	}
@@ -996,7 +997,9 @@ func virtualKeyRecord(vk *configstoreTables.TableVirtualKey) *registry.VirtualKe
 	for _, b := range vk.Budgets {
 		budgetIDs = append(budgetIDs, b.ID)
 	}
-	rec := registry.VirtualKeyFromTable(&clone, budgetIDs, nil)
+	rec := registry.VirtualKeyFromTable(&clone, budgetIDs, virtualMCPIDs, func(g *registry.GrantSet) registry.GrantSetID {
+		return registry.GrantSetID(live.Collections.GrantSets.Intern(g))
+	})
 	if rec.RateLimitID == "" && vk.RateLimit != nil {
 		rec.RateLimitID = vk.RateLimit.ID
 	}
@@ -1019,4 +1022,15 @@ func storedVirtualKey(t testing.TB, store *LocalGovernanceStore, id string) *reg
 		t.Fatalf("virtual key %s is not in the live store", id)
 	}
 	return rec
+}
+
+// storedGrantSet returns the grant set of the key store holds with this ID, failing the test when
+// there is no such key or its set is missing.
+func storedGrantSet(t testing.TB, store *LocalGovernanceStore, id string) *registry.GrantSet {
+	t.Helper()
+	set, ok := store.live.Collections.GrantSet(storedVirtualKey(t, store, id).Grants)
+	if !ok {
+		t.Fatalf("virtual key %s names a grant set the live store does not hold", id)
+	}
+	return set
 }
