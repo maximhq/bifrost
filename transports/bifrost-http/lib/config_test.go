@@ -21343,12 +21343,13 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	})
 }
 
-func TestIsBcryptHash(t *testing.T) {
+func TestIsPasswordHash(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected bool
 	}{
+		{"pbkdf2-sha256 prefix", "$pbkdf2-sha256$i=600000$c2FsdHNhbHRzYWx0c2FsdA$ZGlnZXN0", true},
 		{"bcrypt $2a$ prefix", "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2b$ prefix", "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2y$ prefix", "$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
@@ -21360,9 +21361,9 @@ func TestIsBcryptHash(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isBcryptHash(tt.input)
+			result := isPasswordHash(tt.input)
 			if result != tt.expected {
-				t.Errorf("isBcryptHash(%q) = %v, want %v", tt.input, result, tt.expected)
+				t.Errorf("isPasswordHash(%q) = %v, want %v", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -21397,7 +21398,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotEqual(t, plainPassword, storedAuth.AdminPassword, "password should be hashed, not plain text")
 
 		// Verify the stored hash is a valid bcrypt hash
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
 
 		// Verify the hash can be used to verify the original password
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), plainPassword)
@@ -21489,7 +21490,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
 		require.Equal(t, "newadmin", storedAuth.AdminUserName.GetValue(), "username should be overwritten by file config")
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new file password")
@@ -21570,7 +21571,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.GetRawRef(), "env var reference should be preserved")
 
 		// Verify password was hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
 	})
 
 	t.Run("password from env variable gets resolved and hashed", func(t *testing.T) {
@@ -21594,7 +21595,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotNil(t, storedAuth)
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpassword123")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21630,7 +21631,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpass456")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21702,7 +21703,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new password")
@@ -21756,7 +21757,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, storedAuth)
 	require.Equal(t, "nested-admin", storedAuth.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()))
 	require.True(t, storedAuth.IsEnabled)
 	config1.Close(ctx)
 
@@ -21769,7 +21770,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NotNil(t, config2.GovernanceConfig)
 	require.NotNil(t, config2.GovernanceConfig.AuthConfig)
 	require.Equal(t, "nested-admin", config2.GovernanceConfig.AuthConfig.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
 	require.True(t, config2.GovernanceConfig.AuthConfig.IsEnabled)
 }
 
