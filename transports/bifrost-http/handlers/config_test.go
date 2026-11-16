@@ -937,6 +937,45 @@ func TestUpdateConfig_ClientGatewayTelemetryDestinations(t *testing.T) {
 	assert.Equal(t, "https://otel2.example.com", endpoint())
 }
 
+// TestUpdateConfig_ClientGatewayNeedsAdminWhileBypassed pins that a caller without an admin
+// session cannot switch the client gateway on, change its managed settings or its dropped
+// telemetry attributes, while switching it off stays allowed.
+func TestUpdateConfig_ClientGatewayNeedsAdminWhileBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	body := func(enabled bool, managed, drop string) string {
+		return `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":` +
+			strconv.FormatBool(enabled) + `,"managed_settings":` + managed + `,"telemetry":{"enabled":false,"drop_attributes":` + drop + `}}}}}}`
+	}
+	put := func(name, b string, bypassed bool, want int) {
+		t.Helper()
+		c := putConfigCtx(b)
+		if bypassed {
+			c.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		h.updateConfig(c)
+		require.Equal(t, want, c.Response.StatusCode(), name+": "+string(c.Response.Body()))
+	}
+	gateway := func() *configtables.ClaudeCodeGatewayConfig {
+		return cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway()
+	}
+	stored := body(true, `{"model":"opus"}`, `["prompt"]`)
+	put("admin stores the gateway", stored, false, fasthttp.StatusOK)
+
+	put("resent unchanged", stored, true, fasthttp.StatusOK)
+	put("managed settings changed", body(true, `{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://attacker.example.com"}}`, `["prompt"]`), true, fasthttp.StatusForbidden)
+	put("dropped attribute removed", body(true, `{"model":"opus"}`, `[]`), true, fasthttp.StatusForbidden)
+	assert.Equal(t, map[string]any{"model": "opus"}, gateway().ManagedSettings)
+	assert.Equal(t, []string{"prompt"}, gateway().Telemetry.DropAttributes)
+
+	put("switched off", body(false, `{"model":"opus"}`, `["prompt"]`), true, fasthttp.StatusOK)
+	put("switched back on", stored, true, fasthttp.StatusForbidden)
+	assert.False(t, gateway().Enabled)
+}
+
 // entity_access_profile_mode is copied only when sent, so a partial save keeps the stored mode,
 // and anything other than union/intersect is refused before any live mutation.
 func TestUpdateConfig_EntityAccessProfileMode(t *testing.T) {
