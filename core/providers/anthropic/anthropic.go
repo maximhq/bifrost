@@ -808,75 +808,59 @@ const anthropicPromptCountersAll = anthropicPromptCounterInputTokens |
 // Both reduce to "overwrite what the frame reports", but an omitted key and a
 // reported zero decode to the same int, so presence is read from the raw event.
 // Nested message.usage (message_start) is the stream's first snapshot, so every
-// counter counts as reported there. On a frame carrying iterations, a counter
-// also counts as reported when a compaction pass contributes to it, because
-// billableAnthropicUsage folds those passes into the top-level counters; other
-// iterations (advisor, server-side fallback) add nothing, so presence alone
-// decides.
+// counter counts as reported there.
+//
+// Compaction iterations are the one source of prompt tokens outside the
+// top-level keys: billableAnthropicUsage folds them into the top-level counters
+// before the merge. For a counter the frame omitted, the folded value is then
+// exactly the compaction contribution, and the merge adds it to the retained
+// count instead of replacing that count (see mergeAnthropicPromptCounter).
 func reportedAnthropicStreamPromptCounters(topLevel bool, usage *AnthropicUsage, event []byte) anthropicPromptCounterBit {
 	if !topLevel || usage == nil {
 		return anthropicPromptCountersAll
 	}
-	return anthropicPromptCountersAll&^absentAnthropicPromptCounters(event) | compactionAnthropicPromptCounters(usage)
+	return anthropicPromptCountersAll &^ absentAnthropicPromptCounters(event)
 }
 
-// compactionAnthropicPromptCounters returns the prompt-side counters that the
-// usage's compaction iterations contribute a non-zero count to.
-func compactionAnthropicPromptCounters(usage *AnthropicUsage) anthropicPromptCounterBit {
-	var bits anthropicPromptCounterBit
-	for i := range usage.Iterations {
-		it := &usage.Iterations[i]
-		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction {
-			continue
-		}
-		if it.InputTokens != 0 {
-			bits |= anthropicPromptCounterInputTokens
-		}
-		if it.CacheReadInputTokens != 0 {
-			bits |= anthropicPromptCounterCacheReadInputTokens
-		}
-		if it.CacheCreationInputTokens != 0 {
-			bits |= anthropicPromptCounterCacheCreationInputTokens
-		}
-		if it.CacheCreation.Ephemeral5mInputTokens != 0 || it.CacheCreation.Ephemeral1hInputTokens != 0 {
-			bits |= anthropicPromptCounterCacheCreation
-		}
-	}
-	return bits
-}
-
-// anthropicReportsCacheTokens reports whether any cache counter the event
-// carried is non-zero, which is when a missing details object has to be created
-// to hold it. A cache-free stream keeps a nil details object, as before.
-func anthropicReportsCacheTokens(usage *AnthropicUsage, reported anthropicPromptCounterBit) bool {
-	return (reported&anthropicPromptCounterCacheReadInputTokens != 0 && usage.CacheReadInputTokens != 0) ||
-		(reported&anthropicPromptCounterCacheCreationInputTokens != 0 && usage.CacheCreationInputTokens != 0) ||
-		(reported&anthropicPromptCounterCacheCreation != 0 &&
-			(usage.CacheCreation.Ephemeral5mInputTokens != 0 || usage.CacheCreation.Ephemeral1hInputTokens != 0))
-}
-
-// overwriteAnthropicCacheCounters copies the cache counters the event reported
-// onto an accumulator's details. The 5m/1h write split is taken from the same
-// event as the write total, so the split can never exceed it.
-func overwriteAnthropicCacheCounters(read, write *int, split **schemas.ChatCachedWriteTokenDetails, usage *AnthropicUsage, reported anthropicPromptCounterBit) {
-	if reported&anthropicPromptCounterCacheReadInputTokens != 0 {
-		*read = usage.CacheReadInputTokens
-	}
-	if reported&anthropicPromptCounterCacheCreationInputTokens != 0 {
-		*write = usage.CacheCreationInputTokens
-	}
-	if reported&anthropicPromptCounterCacheCreation == 0 {
+// mergeAnthropicPromptCounter merges one billable prompt-side counter into an
+// accumulator field: a counter the frame reported replaces the retained value,
+// and an omitted one adds its folded compaction contribution, which is zero
+// when the frame has no compaction pass.
+func mergeAnthropicPromptCounter(dst *int, value int, reported bool) {
+	if reported {
+		*dst = value
 		return
 	}
+	*dst += value
+}
+
+// anthropicReportsCacheTokens reports whether the billable usage carries a
+// non-zero cache counter, which is when a missing details object has to be
+// created to hold it. A cache-free stream keeps a nil details object, as before.
+// Omitted counters decode as zero, so only reported values and compaction
+// contributions can make this true.
+func anthropicReportsCacheTokens(usage *AnthropicUsage) bool {
+	return usage.CacheReadInputTokens != 0 || usage.CacheCreationInputTokens != 0 ||
+		usage.CacheCreation.Ephemeral5mInputTokens != 0 || usage.CacheCreation.Ephemeral1hInputTokens != 0
+}
+
+// mergeAnthropicCacheCounters merges the cache counters of one event onto an
+// accumulator's details (see mergeAnthropicPromptCounter). The 5m/1h write split
+// follows the same rule as the write total, so a reported split is taken from
+// the same event as a reported total.
+func mergeAnthropicCacheCounters(read, write *int, split **schemas.ChatCachedWriteTokenDetails, usage *AnthropicUsage, reported anthropicPromptCounterBit) {
+	mergeAnthropicPromptCounter(read, usage.CacheReadInputTokens, reported&anthropicPromptCounterCacheReadInputTokens != 0)
+	mergeAnthropicPromptCounter(write, usage.CacheCreationInputTokens, reported&anthropicPromptCounterCacheCreationInputTokens != 0)
 	m5, h1 := usage.CacheCreation.Ephemeral5mInputTokens, usage.CacheCreation.Ephemeral1hInputTokens
+	splitReported := reported&anthropicPromptCounterCacheCreation != 0
 	if *split == nil {
 		if m5 == 0 && h1 == 0 {
 			return
 		}
 		*split = &schemas.ChatCachedWriteTokenDetails{}
 	}
-	(*split).CachedWriteTokens5m = m5
-	(*split).CachedWriteTokens1h = h1
+	mergeAnthropicPromptCounter(&(*split).CachedWriteTokens5m, m5, splitReported)
+	mergeAnthropicPromptCounter(&(*split).CachedWriteTokens1h, h1, splitReported)
 	if **split == (schemas.ChatCachedWriteTokenDetails{}) {
 		*split = nil
 	}
@@ -884,34 +868,34 @@ func overwriteAnthropicCacheCounters(read, write *int, split **schemas.ChatCache
 
 // accumulateAnthropicStreamUsage merges one stream event's token counters into
 // a chat-shaped accumulator. Prompt-side counters are overwritten only when the
-// event reported them (see reportedAnthropicStreamPromptCounters); the output
+// event reported them (see reportedAnthropicStreamPromptCounters and
+// mergeAnthropicPromptCounter); the output
 // count is cumulative, so it is max-merged. PromptTokens holds the uncached
 // input until normalizeCachedUsage folds the cache counters in at stream end.
 func accumulateAnthropicStreamUsage(usage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage, reported anthropicPromptCounterBit) {
 	if usage == nil || usageToProcess == nil {
 		return
 	}
-	if reported&anthropicPromptCounterInputTokens != 0 {
-		usage.PromptTokens = usageToProcess.InputTokens
-	}
+	mergeAnthropicPromptCounter(&usage.PromptTokens, usageToProcess.InputTokens, reported&anthropicPromptCounterInputTokens != 0)
 	if usageToProcess.OutputTokens > usage.CompletionTokens {
 		usage.CompletionTokens = usageToProcess.OutputTokens
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	if usage.PromptTokensDetails == nil {
-		if !anthropicReportsCacheTokens(usageToProcess, reported) {
+		if !anthropicReportsCacheTokens(usageToProcess) {
 			return
 		}
 		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 	}
 	details := usage.PromptTokensDetails
-	overwriteAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, usageToProcess, reported)
+	mergeAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, usageToProcess, reported)
 }
 
 // accumulateAnthropicResponsesUsage merges one stream event's usage into the
 // Responses accumulator and mirrors it onto billedUsage. reported names the
 // prompt-side counters the event actually carried (see
-// reportedAnthropicStreamPromptCounters); only those are overwritten.
+// reportedAnthropicStreamPromptCounters); only those are overwritten, and an
+// omitted one only gains its compaction contribution.
 func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage, reported anthropicPromptCounterBit) {
 	if usage == nil || usageToProcess == nil {
 		return
@@ -987,18 +971,16 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 	// Prompt-side counters are snapshots: overwrite only what this event
 	// reported. The output count is cumulative, so it is max-merged. InputTokens
 	// holds the uncached input until the terminal chunk folds the cache counters in.
-	if reported&anthropicPromptCounterInputTokens != 0 {
-		usage.InputTokens = usageToProcess.InputTokens
-	}
+	mergeAnthropicPromptCounter(&usage.InputTokens, usageToProcess.InputTokens, reported&anthropicPromptCounterInputTokens != 0)
 	if usageToProcess.OutputTokens > usage.OutputTokens {
 		usage.OutputTokens = usageToProcess.OutputTokens
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	if usage.InputTokensDetails == nil && anthropicReportsCacheTokens(usageToProcess, reported) {
+	if usage.InputTokensDetails == nil && anthropicReportsCacheTokens(usageToProcess) {
 		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 	}
 	if details := usage.InputTokensDetails; details != nil {
-		overwriteAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, usageToProcess, reported)
+		mergeAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, usageToProcess, reported)
 	}
 	accumulateAnthropicStreamUsage(billedUsage, usageToProcess, reported)
 }
