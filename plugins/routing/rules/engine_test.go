@@ -2459,3 +2459,122 @@ func TestSelectWeightedTargetSplitFollowsTheWeights(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildScopeChain_MultiTeam pins how a request attributed to several teams matches at each of
+// them: the primary team (TeamID) first, then the rest of TeamIDs in order, with empty and repeated
+// ids dropped, so a rule for any of the request's teams is eligible and the winner is deterministic.
+func TestBuildScopeChain_MultiTeam(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		scope GovernanceScope
+		want  []string
+	}{
+		{"primary team first, then the others in order", GovernanceScope{TeamID: "team-b", TeamIDs: []string{"team-a", "team-b", "team-c"}}, []string{"team-b", "team-a", "team-c"}},
+		{"no primary team: the set alone", GovernanceScope{TeamIDs: []string{"team-a", "team-b"}}, []string{"team-a", "team-b"}},
+		{"repeated and empty ids are dropped", GovernanceScope{TeamID: "team-a", TeamIDs: []string{"", "team-a", "team-b", "team-b"}}, []string{"team-a", "team-b"}},
+		{"set naming only the primary team is unchanged", GovernanceScope{TeamID: "team-a", TeamIDs: []string{"team-a"}}, []string{"team-a"}},
+		{"no set is unchanged", GovernanceScope{TeamID: "team-a"}, []string{"team-a"}},
+		{"no teams", GovernanceScope{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, level := range buildScopeChain(tc.scope) {
+				if level.ScopeName == "team" {
+					got = append(got, level.ScopeID)
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestBuildScopeChain_MultiTeamKeepsScopeOrder pins that the extra teams sit at the team level:
+// below the user, above the customer.
+func TestBuildScopeChain_MultiTeamKeepsScopeOrder(t *testing.T) {
+	chain := buildScopeChain(GovernanceScope{
+		UserID: "user-1", TeamID: "team-a", TeamIDs: []string{"team-a", "team-b"}, CustomerID: "cust-1",
+	})
+
+	var got []string
+	for _, level := range chain {
+		got = append(got, level.ScopeName+":"+level.ScopeID)
+	}
+	assert.Equal(t, []string{"user:user-1", "team:team-a", "team:team-b", "customer:cust-1", "global:"}, got)
+}
+
+// TestEvaluateRoutingRules_MultiTeam pins that a rule scoped to any team the request is attributed
+// to is evaluated, not only the one named by TeamID: a user in teams A and B whose primary team is B
+// (or who has none) still gets team A's rule, and the primary team's rule wins over another team's
+// whatever their priorities.
+func TestEvaluateRoutingRules_MultiTeam(t *testing.T) {
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	for _, r := range []struct {
+		id, provider string
+		scopeID      string
+		priority     int
+	}{
+		{"team-a-rule", "azure", "team-a", 5},
+		{"team-b-rule", "anthropic", "team-b", 99},
+	} {
+		require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+			ID: r.id, Name: r.id, Scope: "team", ScopeID: bifrost.Ptr(r.scopeID), Priority: r.priority, Enabled: bifrost.Ptr(true),
+			CelExpression: "model == 'gpt-4o'",
+			Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr(r.provider), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+		}))
+	}
+
+	for _, tc := range []struct {
+		name  string
+		scope GovernanceScope
+		want  string // "" means no rule matches
+	}{
+		{"a rule for a team other than the primary one fires", GovernanceScope{TeamID: "team-c", TeamIDs: []string{"team-c", "team-a"}}, "azure"},
+		{"the primary team's rule wins over another team's", GovernanceScope{TeamID: "team-a", TeamIDs: []string{"team-a", "team-b"}}, "azure"},
+		{"the primary team is the second member", GovernanceScope{TeamID: "team-b", TeamIDs: []string{"team-a", "team-b"}}, "anthropic"},
+		{"no primary team: the first of the set wins", GovernanceScope{TeamIDs: []string{"team-a", "team-b"}}, "azure"},
+		{"a team set naming neither team matches nothing", GovernanceScope{TeamID: "team-c", TeamIDs: []string{"team-c", "team-d"}}, ""},
+		{"a single team is unchanged", GovernanceScope{TeamID: "team-b"}, "anthropic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
+				Scope:       tc.scope,
+				Provider:    schemas.OpenAI,
+				Model:       "gpt-4o",
+				Headers:     map[string]string{},
+				QueryParams: map[string]string{},
+			})
+			require.NoError(t, err)
+			if tc.want == "" {
+				assert.Nil(t, decision)
+				return
+			}
+			require.NotNil(t, decision)
+			assert.Equal(t, tc.want, string(decision.Provider))
+		})
+	}
+}
+
+// BenchmarkBuildScopeChain records what the team scopes cost on the request path: a request with one
+// team (the common case, which must not allocate more than the chain itself) beside one attributed
+// to several.
+func BenchmarkBuildScopeChain(b *testing.B) {
+	for _, bc := range []struct {
+		name  string
+		scope GovernanceScope
+	}{
+		{"single team", GovernanceScope{VirtualKeyID: "vk-1", TeamID: "team-a", TeamIDs: []string{"team-a"}, CustomerID: "cust-1"}},
+		{"three teams", GovernanceScope{UserID: "user-1", TeamID: "team-a", TeamIDs: []string{"team-a", "team-b", "team-c"}, CustomerID: "cust-1"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = buildScopeChain(bc.scope)
+			}
+		})
+	}
+}

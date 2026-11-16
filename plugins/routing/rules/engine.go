@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,7 @@ type GovernanceScope struct {
 	UserID         string
 	TeamID         string
 	TeamName       string
+	TeamIDs        []string // every team the request is attributed to; TeamID is the primary one
 	CustomerID     string
 	CustomerName   string
 }
@@ -408,6 +410,10 @@ func pickWeighted[T any](targets []T, weight func(T) float64) (T, bool) {
 // buildScopeChain orders the scopes a request matches rules at, most specific first:
 // VirtualKey > User > Team > Customer > Global. First match within an iteration wins.
 //
+// A request attributed to several teams matches at each of them: the primary team (TeamID) first, then
+// the rest of TeamIDs in order, so a rule for any of the request's teams is eligible and the winner
+// is deterministic.
+//
 // A scope is present when the request has an identifier for it, and every identifier arrives the same
 // way: the user level is independent of the others, so a session-authenticated request carrying no
 // credential still matches user-scoped rules.
@@ -423,6 +429,12 @@ func buildScopeChain(scope GovernanceScope) []ScopeLevel {
 	appendScope("virtual_key", scope.VirtualKeyID)
 	appendScope("user", scope.UserID)
 	appendScope("team", scope.TeamID)
+	for i, id := range scope.TeamIDs {
+		if id == scope.TeamID || slices.Contains(scope.TeamIDs[:i], id) {
+			continue
+		}
+		appendScope("team", id)
+	}
 	appendScope("customer", scope.CustomerID)
 
 	// Global level (lowest precedence), and the only one every request matches at.
