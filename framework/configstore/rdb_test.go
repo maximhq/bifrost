@@ -3393,6 +3393,72 @@ func TestCreateCustomer(t *testing.T) {
 	assert.Equal(t, "Test Customer", result.Name)
 }
 
+// TestUpdateCustomerLeavesChildRowsAlone checks that saving a customer read earlier does not pull a
+// team that has since moved to another customer back onto it.
+func TestUpdateCustomerLeavesChildRowsAlone(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	customer, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	require.Len(t, customer.Teams, 1)
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	customer.Name = "cust-a renamed"
+	require.NoError(t, store.UpdateCustomer(ctx, customer))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	renamed, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-a renamed", renamed.Name)
+}
+
+// TestUpdateTeamChangesAndClearsCustomer checks that a team read with its customer preloaded can be
+// moved to another customer and detached, as the team update handler does.
+func TestUpdateTeamChangesAndClearsCustomer(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.Customer, "GetTeam preloads the customer")
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	team.CustomerID = nil
+	require.NoError(t, store.UpdateTeam(ctx, team))
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.CustomerID)
+}
+
 func TestCreateTeam(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
