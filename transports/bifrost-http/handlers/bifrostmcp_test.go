@@ -5,18 +5,24 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/openapimcp"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // repoOpenAPISpec is the spec this source tree publishes. A gateway fetches it
@@ -41,7 +47,7 @@ func repoSpecOperations(t *testing.T) []openapimcp.Operation {
 	return doc.Operations
 }
 
-// testBifrostMCPBaseURL stands in for the gateway's public base URL setting.
+// testBifrostMCPBaseURL stands in for the gateway's bifrost_url setting.
 const testBifrostMCPBaseURL = "http://gateway.test:8080"
 
 func bifrostMCPTestOptions(allowWrites bool) BifrostMCPOptions {
@@ -591,7 +597,8 @@ func TestBifrostMCPLoadFromFile(t *testing.T) {
 	}
 }
 
-// With no spec URL set the gateway reads the OSS default; a setting replaces it.
+// With no spec URL set the gateway reads DefaultOpenAPIURL, dev's OSS spec; a
+// setting replaces it.
 func TestBifrostMCPDefaultSpecURL(t *testing.T) {
 	var fetched []string
 	opts := bifrostMCPTestOptions(true)
@@ -599,20 +606,72 @@ func TestBifrostMCPDefaultSpecURL(t *testing.T) {
 	if _, err := NewBifrostMCP(opts).Server(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	opts.SpecURL = BifrostMCPSpecURLEnterprise
+	const custom = "https://example.com/specs/openapi.json"
+	opts.SpecURL = custom
 	if _, err := NewBifrostMCP(opts).Server(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{BifrostMCPSpecURLOSS, BifrostMCPSpecURLEnterprise}
+	want := []string{DefaultOpenAPIURL, custom}
 	if strings.Join(fetched, " ") != strings.Join(want, " ") {
 		t.Errorf("fetched %v, want %v", fetched, want)
 	}
-	if !strings.HasSuffix(BifrostMCPSpecURLOSS, "/docs/openapi/openapi-oss.json") || !strings.HasSuffix(BifrostMCPSpecURLEnterprise, "/docs/openapi/openapi.json") {
-		t.Errorf("defaults point at %s and %s", BifrostMCPSpecURLOSS, BifrostMCPSpecURLEnterprise)
+	if DefaultOpenAPIURL != "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi-oss.json" {
+		t.Errorf("default points at %s, want dev's openapi-oss.json", DefaultOpenAPIURL)
 	}
 }
 
 // Reload applies new settings; a reload that fails keeps the server it had.
+// A rebuild that fails cannot leave a server serving what the saved settings no
+// longer allow: a save that turns /api writes off, or clears bifrost_url, with
+// a spec that does not load unloads the previous server (/v1/mcp answers
+// unavailable) instead of keeping its write tools. A failed save that restricts
+// nothing still keeps the previous server.
+func TestBifrostMCPFailedRestrictiveReloadUnloads(t *testing.T) {
+	var fetched []string
+	opts := bifrostMCPTestOptions(true)
+	opts.SpecClient = specServingClient(t, &fetched)
+	missing := filepath.Join(t.TempDir(), "missing.json")
+
+	m := NewBifrostMCP(opts)
+	before, err := m.Server(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := opts
+	broken.SpecURL = missing
+	if err := m.Reload(context.Background(), broken); err == nil {
+		t.Fatal("reload with a missing spec succeeded")
+	}
+	if kept, _ := m.Server(context.Background()); kept != before {
+		t.Fatal("a failed save that restricts nothing must keep the previous server")
+	}
+
+	writesOff := broken
+	writesOff.AllowWrites = false
+	if err := m.Reload(context.Background(), writesOff); err == nil {
+		t.Fatal("reload with a missing spec succeeded")
+	}
+	if srv, err := m.Server(context.Background()); srv != nil || err == nil {
+		t.Fatalf("writes turned off with a spec that does not load left %v serving (err %v); want none", srv, err)
+	}
+	if m.Options().AllowWrites {
+		t.Error("the saved writes switch was not taken")
+	}
+
+	m = NewBifrostMCP(opts)
+	if _, err := m.Server(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cleared := broken
+	cleared.BaseURL = ""
+	if err := m.Reload(context.Background(), cleared); err == nil {
+		t.Fatal("reload without bifrost_url succeeded")
+	}
+	if srv, err := m.Server(context.Background()); srv != nil || err == nil {
+		t.Fatalf("bifrost_url cleared left %v serving (err %v); want none", srv, err)
+	}
+}
+
 func TestBifrostMCPReload(t *testing.T) {
 	var fetched []string
 	opts := bifrostMCPTestOptions(false)
@@ -668,5 +727,800 @@ func TestBifrostMCPBaseURL(t *testing.T) {
 	opts.BaseURL = ""
 	if _, _, err := buildBifrostMCPServer(readRepoSpec(t), "", opts); err == nil {
 		t.Error("built a server with no base URL")
+	}
+}
+
+// newBifrostMCPTestEndpoint loads the repo spec into a Bifrost MCP whose tool
+// calls are served in process by root, and returns its /v1/mcp handler.
+func newBifrostMCPTestEndpoint(t *testing.T, root fasthttp.RequestHandler) *BifrostMCPHandler {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewBifrostMCPExecutor(root, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = exec.Close() })
+	m := NewBifrostMCP(BifrostMCPOptions{SpecURL: spec, BaseURL: testBifrostMCPBaseURL, AllowWrites: true, ExecClient: exec.Client})
+	if _, err := m.Server(context.Background()); err != nil {
+		t.Fatalf("loading spec: %v", err)
+	}
+	return NewBifrostMCPHandler(m)
+}
+
+// postBifrostMCP sends one JSON-RPC message to /v1/mcp and returns the
+// status and the decoded response (nil for an empty body).
+func postBifrostMCP(t *testing.T, h *BifrostMCPHandler, body string, prepare func(*fasthttp.RequestCtx)) (int, map[string]any) {
+	t.Helper()
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetRequestURI("/v1/mcp")
+	req.SetBodyString(body)
+	ctx := initCtx(&req)
+	if prepare != nil {
+		prepare(ctx)
+	}
+	h.handlePost(ctx)
+	var out map[string]any
+	if len(ctx.Response.Body()) > 0 {
+		if err := json.Unmarshal(ctx.Response.Body(), &out); err != nil {
+			t.Fatalf("decoding %s: %v", ctx.Response.Body(), err)
+		}
+	}
+	return ctx.Response.StatusCode(), out
+}
+
+func callBifrostMCPTool(name string) string {
+	return `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`
+}
+
+// toolCallResult returns a tools/call result's text and whether it is an error.
+func toolCallResult(t *testing.T, resp map[string]any) (string, bool) {
+	t.Helper()
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result in %v", resp)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("empty content in %v", resp)
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	isError, _ := result["isError"].(bool)
+	return text, isError
+}
+
+// /v1/mcp is stateless, so mcp-go keys every in-flight request by its JSON-RPC
+// id alone. A notifications/cancelled from one caller would cancel another
+// caller's request that happens to use the same id, so the endpoint drops
+// cancellations instead of dispatching them.
+func TestBifrostMCPEndpoint_CancellationIsNotSharedAcrossCallers(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h := newBifrostMCPTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {
+		entered <- struct{}{}
+		<-release
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-test"`)
+	})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	asCaller := func(credential string) func(*fasthttp.RequestCtx) {
+		return func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("Authorization", "Bearer "+credential) }
+	}
+
+	// Caller A's call, id 7, blocks in its route.
+	done := make(chan []byte, 1)
+	go func() {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.SetContentType("application/json")
+		req.SetRequestURI("/v1/mcp")
+		req.SetBodyString(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"getVersion","arguments":{}}}`)
+		ctx := initCtx(&req)
+		asCaller("caller-a")(ctx)
+		h.handlePost(ctx)
+		done <- append([]byte(nil), ctx.Response.Body()...)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("caller A's call never reached its route")
+	}
+
+	// Caller B cancels "its" request 7.
+	status, _ := postBifrostMCP(t, h, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"stop"}}`, asCaller("caller-b"))
+	if status != fasthttp.StatusAccepted {
+		t.Errorf("notifications/cancelled answered %d, want 202", status)
+	}
+	select {
+	case body := <-done:
+		t.Fatalf("caller B's cancellation ended caller A's call: %s", body)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case body := <-done:
+		var resp map[string]any
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("decoding %s: %v", body, err)
+		}
+		if text, isError := toolCallResult(t, resp); isError || !strings.Contains(text, "v-test") {
+			t.Errorf("caller A's call: got %q (error %v), want its route's result", text, isError)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("caller A's call did not finish")
+	}
+}
+
+func TestBifrostMCPEndpoint_Protocol(t *testing.T) {
+	h := newBifrostMCPTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {})
+
+	status, resp := postBifrostMCP(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`, nil)
+	if status != fasthttp.StatusOK || resp["result"] == nil {
+		t.Fatalf("initialize: status %d, %v", status, resp)
+	}
+
+	status, resp = postBifrostMCP(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, nil)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("tools/list: status %d, %v", status, resp)
+	}
+	names := map[string]bool{}
+	for _, tool := range resp["result"].(map[string]any)["tools"].([]any) {
+		names[tool.(map[string]any)["name"].(string)] = true
+	}
+	if !names["listProviders"] || names["login"] {
+		t.Errorf("tools/list: listProviders=%v login=%v, want true/false", names["listProviders"], names["login"])
+	}
+
+	status, resp = postBifrostMCP(t, h, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, nil)
+	if status != fasthttp.StatusAccepted || resp != nil {
+		t.Errorf("notification: status %d, %v; want 202 with no body", status, resp)
+	}
+}
+
+// /v1/mcp answers POST only, and GET is answered by /v1/mcp itself rather than
+// the dashboard's catch-all. /v1/mcp/tool/execute keeps its own route.
+func TestBifrostMCPEndpoint_Routes(t *testing.T) {
+	h := newBifrostMCPTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {})
+	r := router.New()
+	h.RegisterRoutes(r)
+	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusTeapot) })
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString("dashboard") })
+	serve := func(method, path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(method)
+		req.SetRequestURI(path)
+		req.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	get := serve(fasthttp.MethodGet, "/v1/mcp")
+	if get.Response.StatusCode() != fasthttp.StatusMethodNotAllowed || string(get.Response.Header.Peek("Allow")) != fasthttp.MethodPost {
+		t.Errorf("GET /v1/mcp: status %d, Allow %q; want 405, POST", get.Response.StatusCode(), get.Response.Header.Peek("Allow"))
+	}
+	if post := serve(fasthttp.MethodPost, "/v1/mcp"); post.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("POST /v1/mcp: status %d", post.Response.StatusCode())
+	}
+	if exec := serve(fasthttp.MethodPost, "/v1/mcp/tool/execute"); exec.Response.StatusCode() != fasthttp.StatusTeapot {
+		t.Errorf("POST /v1/mcp/tool/execute reached another handler: status %d", exec.Response.StatusCode())
+	}
+}
+
+func TestBifrostMCPEndpoint_UnavailableUntilLoaded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := NewBifrostMCPHandler(NewBifrostMCP(BifrostMCPOptions{}))
+	status, resp := postBifrostMCP(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+	if status != fasthttp.StatusServiceUnavailable {
+		t.Errorf("status %d, %v; want 503", status, resp)
+	}
+}
+
+// A tool call carries every header the caller sent and its peer address into
+// /api, as a direct call would, but never its Host, which the caller controls:
+// the call carries the configured base URL's host. And never a Cookie: a browser
+// session cannot be ridden through /v1/mcp.
+func TestBifrostMCPEndpoint_ForwardsCallerButNotCookies(t *testing.T) {
+	var seen fasthttp.Request
+	var seenRemote string
+	h := newBifrostMCPTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.CopyTo(&seen)
+		seenRemote = ctx.RemoteIP().String()
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-test"`)
+	})
+	status, resp := postBifrostMCP(t, h, callBifrostMCPTool("getVersion"), func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set("Authorization", "Bearer bfst-test")
+		ctx.Request.Header.Set(SetupTokenHeader, "s3cret")
+		ctx.Request.Header.Set("X-Forwarded-For", "203.0.113.9")
+		ctx.Request.Header.Set("x-bf-eh-x-tenant", "acme")
+		ctx.Request.Header.Set("X-Custom-Trace", "trace-1")
+		ctx.Request.Header.SetHost("gw.example.com")
+		ctx.Request.Header.SetCookie("token", "dashboard-session")
+		ctx.Request.Header.SetCookie(SetupSessionCookie, "setup-session")
+		ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 5555})
+	})
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status %d, %v", status, resp)
+	}
+	if text, isError := toolCallResult(t, resp); isError || !strings.Contains(text, "v-test") {
+		t.Fatalf("tool result %q (error %v)", text, isError)
+	}
+	for header, want := range map[string]string{
+		"Authorization":    "Bearer bfst-test",
+		SetupTokenHeader:   "s3cret",
+		"X-Forwarded-For":  "203.0.113.9",
+		"x-bf-eh-x-tenant": "acme",
+		"X-Custom-Trace":   "trace-1",
+	} {
+		if got := string(seen.Header.Peek(header)); got != want {
+			t.Errorf("/api saw %s %q, want %q", header, got, want)
+		}
+	}
+	if got := string(seen.Header.Host()); got != strings.TrimPrefix(testBifrostMCPBaseURL, "http://") {
+		t.Errorf("/api saw Host %q, want the configured base URL's, never the caller's", got)
+	}
+	if got := string(seen.URI().Path()); got != "/api/version" {
+		t.Errorf("/api saw path %q", got)
+	}
+	if cookie := seen.Header.Peek("Cookie"); len(cookie) > 0 {
+		t.Errorf("/api saw Cookie %q, want none", cookie)
+	}
+	if seenRemote != "198.51.100.7" {
+		t.Errorf("/api saw peer %s, want the caller's", seenRemote)
+	}
+}
+
+// Without bifrost_url the Bifrost MCP does not load: there is no fallback to
+// the caller's Host header. The load is refused before the spec is fetched, and
+// /v1/mcp answers 503 naming the setting.
+func TestBifrostMCPRequiresBifrostURL(t *testing.T) {
+	var fetched []string
+	opts := bifrostMCPTestOptions(true)
+	opts.BaseURL = ""
+	opts.SpecClient = specServingClient(t, &fetched)
+	m := NewBifrostMCP(opts)
+	if _, err := m.Server(context.Background()); !errors.Is(err, ErrBifrostMCPNoBifrostURL) {
+		t.Fatalf("Server with no base URL = %v, want ErrBifrostMCPNoBifrostURL", err)
+	}
+	if len(fetched) != 0 {
+		t.Errorf("the spec was fetched with no base URL to serve it: %v", fetched)
+	}
+	r := router.New()
+	NewBifrostMCPHandler(m).RegisterRoutes(r)
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/v1/mcp")
+	req.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	ctx := initCtx(&req)
+	r.Handler(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable || !strings.Contains(string(ctx.Response.Body()), "bifrost_url") {
+		t.Errorf("/v1/mcp answered %d %s, want 503 naming bifrost_url", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// With a Bifrost URL configured, a tool call arrives as if through it: the route
+// sees that URL's host and scheme, whatever Host and forwarded proto the caller sent,
+// so the self URLs it builds come from configuration.
+func TestBifrostMCPEndpoint_BifrostURLSetsHostAndScheme(t *testing.T) {
+	SetLogger(&mockLogger{})
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seenHost, seenBase, seenProto string
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		seenHost = string(ctx.Host())
+		seenProto = string(ctx.Request.Header.Peek("x-bf-forwarded-proto"))
+		seenBase = lib.BuildBaseURL(ctx, "")
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-test"`)
+	}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = exec.Close() })
+	m := NewBifrostMCP(BifrostMCPOptions{SpecURL: spec, BaseURL: "https://gw.example.com", BaseIsEdge: true, AllowWrites: true, ExecClient: exec.Client})
+	if _, err := m.Server(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, resp := postBifrostMCP(t, NewBifrostMCPHandler(m), callBifrostMCPTool("getVersion"), func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set("Authorization", "Bearer bfst-test")
+		ctx.Request.Header.SetHost("spoofed.example")
+		ctx.Request.Header.Set("X-Forwarded-Proto", "http")
+	})
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status %d, %v", status, resp)
+	}
+	if seenHost != "gw.example.com" || seenProto != "https" {
+		t.Errorf("/api saw Host %q and x-bf-forwarded-proto %q, want gw.example.com and https", seenHost, seenProto)
+	}
+	if seenBase != "https://gw.example.com" {
+		t.Errorf("a self URL built by the route is %q, want https://gw.example.com", seenBase)
+	}
+}
+
+// The in-process server reads headers with the main server's buffer, so a call
+// whose headers fit the configured read_buffer_size but not fasthttp's 4 KiB
+// default reaches /api instead of failing with 431.
+func TestBifrostMCPExecutor_UsesConfiguredReadBufferSize(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var seenAuth string
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		seenAuth = string(ctx.Request.Header.Peek("Authorization"))
+		ctx.SetBodyString("ok")
+	}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = exec.Close() })
+	auth := "Bearer " + strings.Repeat("a", 8<<10)
+	req, err := http.NewRequest(http.MethodGet, testBifrostMCPBaseURL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", auth)
+	resp, err := exec.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200 for headers within the configured read buffer", resp.StatusCode)
+	}
+	if seenAuth != auth {
+		t.Errorf("/api saw an Authorization of %d bytes, want %d", len(seenAuth), len(auth))
+	}
+}
+
+// Close reports the server's shutdown, not the listener close that follows it:
+// a clean shutdown has already closed the listener, which is not an error.
+func TestBifrostMCPExecutor_CloseAfterServing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString("ok") }, 4<<20, 64<<10)
+	resp, err := exec.Client.Get(testBifrostMCPBaseURL + "/api/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if err := exec.Close(); err != nil {
+		t.Errorf("Close after a clean shutdown = %v, want nil", err)
+	}
+}
+
+// Shutdown is bounded by its context: a handler that never returns cannot hold
+// the gateway's shutdown open.
+func TestBifrostMCPExecutor_ShutdownBoundedByContext(t *testing.T) {
+	SetLogger(&mockLogger{})
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		close(entered)
+		<-release
+	}, 4<<20, 64<<10)
+	go func() {
+		if resp, err := exec.Client.Get(testBifrostMCPBaseURL + "/api/version"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- exec.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if err != context.DeadlineExceeded {
+			t.Errorf("Shutdown with a blocked handler = %v, want %v", err, context.DeadlineExceeded)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after its context expired")
+	}
+}
+
+// Tool calls are authenticated by the real OSS /api chain (setup lock, then
+// APIMiddleware), with the caller's credential and nothing else.
+func TestBifrostMCPEndpoint_RealAPIChain(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	r := router.New()
+	r.GET("/api/providers", am.SetupLockMiddleware()(am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`{"providers":[],"total":0}`)
+	})))
+	h := newBifrostMCPTestEndpoint(t, r.Handler)
+	session, _, err := am.IssueSetupSession(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		prepare   func(*fasthttp.RequestCtx)
+		wantError string // "" = the call succeeds
+	}{
+		{name: "no credential", wantError: "HTTP 401"},
+		{name: "wrong setup token", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set(SetupTokenHeader, "nope") }, wantError: "HTTP 403"},
+		{name: "setup token", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set(SetupTokenHeader, "s3cret") }},
+		// The same cookie authenticates a direct /api call; through /v1/mcp it is dropped.
+		{name: "setup session cookie", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.SetCookie(SetupSessionCookie, session) }, wantError: "HTTP 401"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, resp := postBifrostMCP(t, h, callBifrostMCPTool("listProviders"), tc.prepare)
+			if status != fasthttp.StatusOK {
+				t.Fatalf("status %d, %v", status, resp)
+			}
+			text, isError := toolCallResult(t, resp)
+			if tc.wantError == "" && (isError || !strings.Contains(text, `"providers"`)) {
+				t.Errorf("want success, got %q (error %v)", text, isError)
+			}
+			if tc.wantError != "" && (!isError || !strings.HasPrefix(text, tc.wantError)) {
+				t.Errorf("want %s, got %q (error %v)", tc.wantError, text, isError)
+			}
+		})
+	}
+
+	direct := &fasthttp.RequestCtx{}
+	direct.Request.SetRequestURI("/api/providers")
+	direct.Request.Header.SetCookie(SetupSessionCookie, session)
+	if !runOSSAPIChain(am, direct) {
+		t.Fatalf("the setup session cookie should authenticate a direct /api call (status %d)", direct.Response.StatusCode())
+	}
+}
+
+// A virtual key reaches the route a tool calls, in each place a client can send
+// one, and that route decides: inference takes it, /api refuses it.
+func TestBifrostMCPEndpoint_ForwardsVirtualKeys(t *testing.T) {
+	for _, header := range []string{"Authorization", string(schemas.BifrostContextKeyVirtualKey), "x-api-key", "x-goog-api-key", "api-key"} {
+		t.Run(header, func(t *testing.T) {
+			var seen, seenPath, seenBody string
+			h := newBifrostMCPTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {
+				seen, seenPath, seenBody = string(ctx.Request.Header.Peek(header)), string(ctx.Path()), string(ctx.PostBody())
+				ctx.SetContentType("application/json")
+				ctx.SetBodyString(`{"id":"chatcmpl-1"}`)
+			})
+			call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"createChatCompletion","arguments":{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}}}`
+			status, resp := postBifrostMCP(t, h, call, func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set(header, "sk-bf-abc") })
+			if status != fasthttp.StatusOK {
+				t.Fatalf("status %d, %v", status, resp)
+			}
+			if text, isError := toolCallResult(t, resp); isError || !strings.Contains(text, "chatcmpl-1") {
+				t.Fatalf("tool result %q (error %v)", text, isError)
+			}
+			if !strings.Contains(seen, "sk-bf-abc") {
+				t.Errorf("the route saw %s %q, want the virtual key", header, seen)
+			}
+			if seenPath != "/v1/chat/completions" || !strings.Contains(seenBody, "gpt-4o-mini") {
+				t.Errorf("the route saw %s with body %q", seenPath, seenBody)
+			}
+		})
+	}
+}
+
+// Routes beyond /api are open-world: they reach providers and agents, not only
+// this gateway. WebSocket, SSE-only and MCP server routes are never tools.
+func TestBifrostMCPInferenceTools(t *testing.T) {
+	tools := listBifrostMCPTools(t, bifrostMCPTestOptions(true))
+	for name, want := range map[string]bool{"createChatCompletion": true, "listModels": true, "listProviders": false} {
+		tool, ok := tools[name]
+		if !ok {
+			t.Errorf("%s is not a tool", name)
+			continue
+		}
+		if hint := tool.Annotations.OpenWorldHint; hint == nil || *hint != want {
+			t.Errorf("%s openWorldHint = %v, want %v", name, hint, want)
+		}
+	}
+	for _, name := range []string{"websocketConnect", "connectRealtime", "mcpServerSSE", "mcpServerMessage", "geminiStreamGenerateContent"} {
+		if _, ok := tools[name]; ok {
+			t.Errorf("%s is a tool", name)
+		}
+	}
+	// Writes off gates /api mutations only: inference is served, createVirtualKey is not.
+	readOnly := listBifrostMCPTools(t, bifrostMCPTestOptions(false))
+	if _, ok := readOnly["createChatCompletion"]; !ok {
+		t.Error("writes off: createChatCompletion is missing")
+	}
+	if _, ok := readOnly["createVirtualKey"]; ok {
+		t.Error("writes off: createVirtualKey is served")
+	}
+	if _, ok := readOnly["listModels"]; !ok {
+		t.Error("writes off: listModels is missing")
+	}
+}
+
+// BenchmarkBifrostMCPToolCall measures one tools/call through /v1/mcp: the
+// JSON-RPC handling, request building and the in-process hop into /api, against
+// a root handler that answers at once.
+func BenchmarkBifrostMCPToolCall(b *testing.B) {
+	SetLogger(&mockLogger{})
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		b.Fatal(err)
+	}
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-bench"`)
+	}, 4<<20, 64<<10)
+	defer exec.Close()
+	m := NewBifrostMCP(BifrostMCPOptions{SpecURL: spec, BaseURL: testBifrostMCPBaseURL, ExecClient: exec.Client})
+	if _, err := m.Server(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	h := NewBifrostMCPHandler(m)
+	body := []byte(callBifrostMCPTool("getVersion"))
+	b.ReportAllocs()
+	for b.Loop() {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.Set(SetupTokenHeader, "s3cret")
+		req.SetBody(body)
+		ctx := initCtx(&req)
+		h.handlePost(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			b.Fatalf("status %d", ctx.Response.StatusCode())
+		}
+	}
+}
+
+// BifrostMCPServedRoutes matches spec paths to a router's route templates by
+// shape, not by parameter name, per method, and a catch-all route does not make
+// every path count as served.
+func TestBifrostMCPServedRoutes(t *testing.T) {
+	r := router.New()
+	noop := func(*fasthttp.RequestCtx) {}
+	r.GET("/api/providers", noop)
+	r.GET("/api/providers/{provider}", noop)
+	r.DELETE("/api/governance/virtual-keys/{id}", noop)
+	r.GET("/api/skills/serve/{skill-name}/files/{filepath:*}", noop)
+	r.POST("/genai/v1beta/models/{model:*}", noop)
+	r.GET("/{filepath:*}", noop) // the dashboard
+	served := BifrostMCPServedRoutes(r.List())
+	r.GET("/api/registered-later", noop) // the snapshot does not change
+
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodGet, "/api/providers", true},
+		{http.MethodGet, "/api/providers/{provider_name}", true},
+		{http.MethodDelete, "/api/governance/virtual-keys/{vk_id}", true},
+		{http.MethodGet, "/api/governance/virtual-keys/{vk_id}", false},
+		{http.MethodGet, "/api/skills/serve/{skill-name}/files/{filepath}", true},
+		{http.MethodGet, "/api/governance/users", false},
+		{http.MethodGet, "/api/registered-later", false},
+		{http.MethodPost, "/genai/v1beta/models/{model}:generateContent", true}, // under a catch-all
+		{http.MethodGet, "/genai/v1beta/models/{model}:generateContent", false}, // per method
+		{http.MethodPost, "/genai/v1beta/files", false},
+	}
+	for _, tc := range cases {
+		if got := served(tc.method, tc.path); got != tc.want {
+			t.Errorf("served(%s %s) = %v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+// With a Served filter from the gateway's router, only operations the gateway
+// routes become tools.
+func TestBifrostMCPServesOnlyRoutedOperations(t *testing.T) {
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {})
+	opts := bifrostMCPTestOptions(true)
+	opts.Served = BifrostMCPServedRoutes(r.List())
+	srv, report, err := buildBifrostMCPServer(readRepoSpec(t), "", opts)
+	if err != nil {
+		t.Fatalf("building server: %v", err)
+	}
+	tools := srv.ListTools()
+	if len(tools) != 1 || tools["listProviders"] == nil {
+		names := make([]string, 0, len(tools))
+		for name := range tools {
+			names = append(names, name)
+		}
+		t.Fatalf("served %v, want only listProviders", names)
+	}
+	if report.unrouted == 0 {
+		t.Error("unrouted operations were not counted")
+	}
+}
+
+// toolsListNames runs tools/list through h and returns the tool names it lists.
+func toolsListNames(t *testing.T, h *BifrostMCPHandler, prepare func(*fasthttp.RequestCtx)) map[string]bool {
+	t.Helper()
+	return toolsListNamesFor(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, prepare)
+}
+
+// toolsListNamesFor is toolsListNames for a tools/list request written as body.
+func toolsListNamesFor(t *testing.T, h *BifrostMCPHandler, body string, prepare func(*fasthttp.RequestCtx)) map[string]bool {
+	t.Helper()
+	status, resp := postBifrostMCP(t, h, body, prepare)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("tools/list status %d: %v", status, resp)
+	}
+	result, _ := resp["result"].(map[string]any)
+	tools, _ := result["tools"].([]any)
+	names := map[string]bool{}
+	for _, tool := range tools {
+		if name, ok := tool.(map[string]any)["name"].(string); ok {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// /v1/mcp takes a management credential, like /api. A request whose only
+// credential is a virtual key is refused before the auth chain, with a message
+// saying why; a virtual key sent alongside a management credential (so inference
+// tools can use it) passes, and a request with no credential is left to the
+// chain to refuse.
+func TestBifrostMCPVirtualKeyGuard(t *testing.T) {
+	reached := false
+	guard := bifrostMCPVirtualKeyGuard(func(*fasthttp.RequestCtx) { reached = true })
+	run := func(set func(*fasthttp.Request)) (*fasthttp.RequestCtx, bool) {
+		reached = false
+		ctx := &fasthttp.RequestCtx{}
+		if set != nil {
+			set(&ctx.Request)
+		}
+		guard(ctx)
+		return ctx, reached
+	}
+	for name, set := range map[string]func(*fasthttp.Request){
+		"x-bf-vk":        func(r *fasthttp.Request) { r.Header.Set("x-bf-vk", "sk-bf-abc") },
+		"bearer":         func(r *fasthttp.Request) { r.Header.Set("Authorization", "Bearer sk-bf-abc") },
+		"x-api-key":      func(r *fasthttp.Request) { r.Header.Set("x-api-key", "sk-bf-abc") },
+		"x-goog-api-key": func(r *fasthttp.Request) { r.Header.Set("x-goog-api-key", "sk-bf-abc") },
+	} {
+		ctx, passed := run(set)
+		if passed || ctx.Response.StatusCode() != fasthttp.StatusUnauthorized || !strings.Contains(string(ctx.Response.Body()), "virtual key") {
+			t.Errorf("%s alone: passed=%v status %d body %s; want a 401 naming the virtual key", name, passed, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	for name, set := range map[string]func(*fasthttp.Request){
+		"no credential": nil,
+		"vk with setup token": func(r *fasthttp.Request) {
+			r.Header.Set("x-bf-vk", "sk-bf-abc")
+			r.Header.Set(SetupTokenHeader, "s3cret")
+		},
+		"vk with bearer": func(r *fasthttp.Request) {
+			r.Header.Set("x-bf-vk", "sk-bf-abc")
+			r.Header.Set("Authorization", "Bearer bfst-abc")
+		},
+		"vk with basic": func(r *fasthttp.Request) {
+			r.Header.Set("x-bf-vk", "sk-bf-abc")
+			r.Header.Set("Authorization", "Basic YWRtaW46eA==")
+		},
+		"vk with a cookie": func(r *fasthttp.Request) {
+			r.Header.Set("x-bf-vk", "sk-bf-abc")
+			r.Header.SetCookie("token", "session")
+		},
+	} {
+		if _, passed := run(set); !passed {
+			t.Errorf("%s: refused, want it left to the auth chain", name)
+		}
+	}
+}
+
+// Both /v1/mcp routes run the chain they are registered with (the /api auth
+// chain in a gateway), after the virtual-key refusal.
+func TestBifrostMCPEndpoint_RoutesTakeTheAPIChain(t *testing.T) {
+	h := newBifrostMCPTestEndpoint(t, func(*fasthttp.RequestCtx) {})
+	authChain := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if len(ctx.Request.Header.Peek(SetupTokenHeader)) == 0 {
+				SendError(ctx, fasthttp.StatusUnauthorized, "auth chain refused")
+				return
+			}
+			next(ctx)
+		}
+	}
+	r := router.New()
+	h.RegisterRoutes(r, authChain)
+	serve := func(method string, set func(*fasthttp.Request)) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(method)
+		req.SetRequestURI("/v1/mcp")
+		req.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		if set != nil {
+			set(&req)
+		}
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+	for _, method := range []string{fasthttp.MethodPost, fasthttp.MethodGet} {
+		if ctx := serve(method, nil); ctx.Response.StatusCode() != fasthttp.StatusUnauthorized || !strings.Contains(string(ctx.Response.Body()), "auth chain refused") {
+			t.Errorf("%s without a credential: status %d %s, want the chain's 401", method, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	if ctx := serve(fasthttp.MethodPost, func(r *fasthttp.Request) { r.Header.Set("x-bf-vk", "sk-bf-abc") }); !strings.Contains(string(ctx.Response.Body()), "virtual key") {
+		t.Errorf("a virtual key alone got %s, want the refusal that names it", ctx.Response.Body())
+	}
+	if ctx := serve(fasthttp.MethodPost, func(r *fasthttp.Request) { r.Header.Set(SetupTokenHeader, "s3cret") }); ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("with a credential: status %d %s, want 200", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// ToolAccess decides which /api tools a tools/list caller sees, from the
+// authenticated request; tools outside /api are always listed, and calls are
+// never filtered (each one is authorized by the route it reaches).
+func TestBifrostMCPToolsListAsksToolAccess(t *testing.T) {
+	SetLogger(&mockLogger{})
+	exec := NewBifrostMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-test"`)
+	}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = exec.Close() })
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked, resolved := 0, 0
+	var outside []string
+	m := NewBifrostMCP(BifrostMCPOptions{SpecURL: spec, BaseURL: testBifrostMCPBaseURL, AllowWrites: true, ExecClient: exec.Client,
+		ToolAccess: func(caller *fasthttp.RequestCtx) func(method, path string) bool {
+			resolved++
+			role, _ := caller.UserValue("test-role").(string)
+			if role == "" {
+				return nil // undecided: list everything
+			}
+			return func(method, path string) bool {
+				asked++
+				if !strings.HasPrefix(path, "/api/") {
+					outside = append(outside, method+" "+path)
+				}
+				return role == "viewer" && method == http.MethodGet && path == "/api/providers"
+			}
+		}})
+	if _, err := m.Server(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := NewBifrostMCPHandler(m)
+	viewer := func(ctx *fasthttp.RequestCtx) { ctx.SetUserValue("test-role", "viewer") }
+
+	names := toolsListNames(t, h, viewer)
+	if !names["listProviders"] || names["getVersion"] || names["createVirtualKey"] {
+		t.Errorf("want only the /api tools ToolAccess allows, got listProviders=%v getVersion=%v createVirtualKey=%v", names["listProviders"], names["getVersion"], names["createVirtualKey"])
+	}
+	if !names["createChatCompletion"] || !names["listModels"] {
+		t.Error("tools outside /api are listed whatever ToolAccess says")
+	}
+	if len(outside) > 0 {
+		t.Errorf("ToolAccess was asked about routes outside /api: %v", outside[:min(3, len(outside))])
+	}
+	if resolved != 1 {
+		t.Errorf("the caller was resolved %d times for one tools/list, want once", resolved)
+	}
+
+	// mcp-go decodes "method" with encoding/json, which matches keys
+	// case-insensitively and keeps the last duplicate, so these all dispatch as a
+	// tools/list. Each must be filtered like the canonical spelling.
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"Method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":1,"METHOD":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","Method":"tools/list"}`,
+	} {
+		listed := toolsListNamesFor(t, h, body, viewer)
+		if !listed["listProviders"] || listed["getVersion"] || listed["createVirtualKey"] {
+			t.Errorf("%s: want the filtered list, got listProviders=%v getVersion=%v createVirtualKey=%v", body, listed["listProviders"], listed["getVersion"], listed["createVirtualKey"])
+		}
+	}
+
+	before, resolvedBefore := asked, resolved
+	status, resp := postBifrostMCP(t, h, callBifrostMCPTool("getVersion"), viewer)
+	if status != fasthttp.StatusOK || asked != before || resolved != resolvedBefore {
+		t.Errorf("a tools/call consulted ToolAccess (asked %d, resolved %d) or failed with %d", asked-before, resolved-resolvedBefore, status)
+	}
+	if text, isError := toolCallResult(t, resp); isError || !strings.Contains(text, "v-test") {
+		t.Errorf("a call to a tool the list hides still reaches its route: got %q (error %v)", text, isError)
+	}
+
+	// An undecided caller (nil from ToolAccess) is shown every tool.
+	if all := toolsListNames(t, h, nil); !all["getVersion"] || !all["createVirtualKey"] {
+		t.Error("an undecided ToolAccess should list every tool")
+	}
+
+	// Without ToolAccess every tool is listed.
+	if all := toolsListNames(t, newBifrostMCPTestEndpoint(t, func(*fasthttp.RequestCtx) {}), nil); !all["getVersion"] || !all["createVirtualKey"] {
+		t.Error("without ToolAccess, /api tools are missing from the list")
 	}
 }
