@@ -308,6 +308,14 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+#### Disk space on SQLite
+
+After each cleanup pass, Bifrost gives the space of the deleted logs back to the filesystem, so `logs.db` shrinks instead of staying at its largest size. This needs the database in SQLite's incremental auto-vacuum mode, which a new `logs.db` gets when Bifrost creates it. A `logs.db` created by an earlier version is not in that mode and keeps its size. To convert it once, stop Bifrost and run this on the file at your `logs_store` `config.path` (`/app/data/logs.db` in the Docker image). It rewrites the database, so it needs up to twice the file's size in free disk space.
+
+```bash
+sqlite3 /app/data/logs.db "PRAGMA auto_vacuum = INCREMENTAL; VACUUM;"
+```
+
 ### Client IP capture
 
 Set `capture_client_ip` to `true` to record the caller's IP on LLM, MCP and relay logs in the `client_ip` field. Bifrost takes the leftmost `X-Forwarded-For` value, then `X-Real-IP`, and falls back to the TCP peer address when neither header is present. This is the same order enterprise audit logs use. The caller sends these headers and Bifrost does not verify them. For an address you can trust, put Bifrost behind a proxy that overwrites both headers, and block direct access to Bifrost so no request can skip the proxy.

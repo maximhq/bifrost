@@ -73,6 +73,11 @@ type RetentionScheduler interface {
 	RetentionInterval() time.Duration
 }
 
+// FreeSpaceReclaimer is how the cleaner gives the disk a pass freed back to the filesystem; every LogStore implements it.
+type FreeSpaceReclaimer interface {
+	ReclaimFreeSpace(ctx context.Context) (reclaimedBytes int64, err error)
+}
+
 // CleanerConfig holds configuration for the log cleaner
 type CleanerConfig struct {
 	RetentionDays int
@@ -184,7 +189,8 @@ func (c *LogsCleaner) runCleanupPass(stopCh <-chan struct{}) {
 
 // cleanupOldLogs deletes logs, and MCP tool logs and Warp topic rows when the
 // manager supports them, older than the retention period. Each table is drained
-// in batches until no expired rows remain or ctx ends.
+// in batches until no expired rows remain or ctx ends; then the store gives the
+// freed disk back when it supports that.
 func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	c.mu.Lock()
 	retentionDays := c.config.RetentionDays
@@ -243,6 +249,25 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 		}
 		c.drainExpired(tableCtx, table.label, cutoff, table.deleteBatch)
 		cancelTable()
+	}
+	c.reclaimFreeSpace(ctx)
+}
+
+// reclaimFreeSpace asks the store to give back the disk the pass freed, once
+// every table is drained. SQLite otherwise keeps the freed pages inside the file
+// (#9738). It runs after every pass, not only one that deleted rows, so a
+// reclaim that shutdown cut short resumes on the next pass.
+func (c *LogsCleaner) reclaimFreeSpace(ctx context.Context) {
+	reclaimer, ok := c.manager.(FreeSpaceReclaimer)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	reclaimed, err := reclaimer.ReclaimFreeSpace(ctx)
+	if err != nil {
+		c.logger.Warn("failed to reclaim free space after log cleanup: %v", err)
+	}
+	if reclaimed > 0 {
+		c.logger.Info("log cleanup returned %d bytes of free space to the filesystem", reclaimed)
 	}
 }
 

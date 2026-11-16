@@ -3,6 +3,10 @@ package logstore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -340,6 +344,51 @@ func TestLogStoreWrapperForwardsRetentionInterval(t *testing.T) {
 	assert.True(t, ok, "a wrapper embedding LogStore must satisfy RetentionScheduler")
 }
 
+// The same wrapper must reach the store's ReclaimFreeSpace, or a wrapped SQLite logs.db never shrinks.
+func TestLogStoreWrapperForwardsReclaimFreeSpace(t *testing.T) {
+	type wrapper struct{ LogStore }
+	_, ok := any(wrapper{}).(FreeSpaceReclaimer)
+	assert.True(t, ok, "a wrapper embedding LogStore must satisfy FreeSpaceReclaimer")
+}
+
+// reclaimingRetention is a fullRetention store that can give freed disk back. It
+// counts the requests and records the expired rows still left at the last one.
+type reclaimingRetention struct {
+	fullRetention
+	reclaims      int
+	leftAtReclaim int64
+}
+
+func (m *reclaimingRetention) ReclaimFreeSpace(context.Context) (int64, error) {
+	m.reclaims++
+	m.leftAtReclaim = m.logs.expired + m.mcp.expired + m.assignments.expired + m.unmatched.expired
+	return 1 << 20, nil
+}
+
+// The disk a pass frees is given back once, after every table is drained, so the
+// reclaim covers all of them. A pass that deletes nothing still asks, which
+// resumes a reclaim that shutdown cut short; a stopped pass leaves it to the next.
+func TestLogsCleanerReclaimsFreeSpaceAfterDraining(t *testing.T) {
+	manager := &reclaimingRetention{}
+	manager.logs.expired = batchSize + 10
+	manager.mcp.expired = 3
+	manager.assignments.expired = 2
+	manager.unmatched.expired = 7
+	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 30}, testLogger{})
+
+	cleaner.cleanupOldLogs(context.Background())
+	assert.Equal(t, 1, manager.reclaims)
+	assert.Zero(t, manager.leftAtReclaim, "the reclaim must follow the drain of every table")
+
+	cleaner.cleanupOldLogs(context.Background())
+	assert.Equal(t, 2, manager.reclaims, "a pass with nothing to delete still reclaims")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleaner.cleanupOldLogs(ctx)
+	assert.Equal(t, 2, manager.reclaims, "a stopped pass must not start a reclaim")
+}
+
 // setupRetentionPostgres migrates a fresh logs table holding expired old rows and fresh new ones.
 func setupRetentionPostgres(t *testing.T, expired, fresh int) (*RDBLogStore, *gorm.DB) {
 	t.Helper()
@@ -459,6 +508,49 @@ func TestPostgresRetentionBatchSkipsLockedRows(t *testing.T) {
 	deleted, err = store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
 	require.NoError(t, err)
 	assert.Equal(t, int64(10), deleted, "the skipped rows go on a later batch")
+}
+
+// A retention pass on SQLite must give the pages it frees back to the
+// filesystem. Before #9738 they stayed on the database's freelist, so logs.db
+// never shrank below the largest size it had reached.
+func TestSQLiteRetentionPassShrinksDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "logs.db")
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: path}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	payload := strings.Repeat("x", 4096)
+	seed := func(prefix string, createdAt time.Time, n int) {
+		entries := make([]*Log, n)
+		for i := range entries {
+			entries[i] = &Log{
+				ID: fmt.Sprintf("%s-%04d", prefix, i), Timestamp: createdAt, CreatedAt: createdAt,
+				Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "success",
+				RawResponse: payload,
+			}
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, entries))
+	}
+	seed("old", time.Now().UTC().AddDate(0, 0, -40), 2000)
+	seed("new", time.Now().UTC(), 50)
+	fileSize := func() int64 {
+		t.Helper()
+		// In WAL mode the database file shrinks when a checkpoint writes the truncation back.
+		require.NoError(t, store.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error)
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		return info.Size()
+	}
+	before := fileSize()
+
+	NewLogsCleaner(store, CleanerConfig{RetentionDays: 30}, testLogger{}).cleanupOldLogs(ctx)
+
+	var kept int64
+	require.NoError(t, store.db.Model(&Log{}).Count(&kept).Error)
+	require.Equal(t, int64(50), kept, "only the logs inside retention survive")
+	assert.Zero(t, sqlitePragma(t, store, "freelist_count"), "the freed pages must leave the file, not wait on its freelist")
+	assert.Less(t, fileSize(), before/4, "logs.db must shrink back toward its live size")
 }
 
 // Postgres runs retention hourly because only the lock holder does work; every other dialect stays daily.
