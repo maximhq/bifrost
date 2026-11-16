@@ -183,6 +183,8 @@ type LogStore interface {
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	// RetentionInterval is how often the retention cleaner runs; it lives here so wrappers that embed LogStore forward it.
 	RetentionInterval() time.Duration
+	// ReclaimFreeSpace gives disk freed by deletes back to the filesystem where the backend keeps it (SQLite); it lives here for the same reason.
+	ReclaimFreeSpace(ctx context.Context) (reclaimedBytes int64, err error)
 
 	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
 	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
