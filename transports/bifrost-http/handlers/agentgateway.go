@@ -1003,7 +1003,7 @@ func (h *AgentGatewayHandler) setCardCachingHeaders(ctx *fasthttp.RequestCtx, na
 		return
 	}
 	ctx.Response.Header.Set(fasthttp.HeaderCacheControl, "private, no-cache")
-	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key")
+	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key, xi-api-key")
 	sum := sha256.Sum256(ctx.Response.Body())
 	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 	ctx.Response.Header.Set(fasthttp.HeaderETag, etag)

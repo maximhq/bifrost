@@ -34,6 +34,10 @@ test.describe('Proxy Config', () => {
     if (masked) original = null
     test.skip(masked, 'the stored proxy URL carries a password GET masks, so afterEach could not restore it')
     await configSettingsPage.goto('proxy')
+    // The proxy page is enterprise-only; OSS builds redirect it to client settings.
+    const clientSettings = configSettingsPage.page.getByTestId('client-settings-async-job-result-ttl-input')
+    await expect(configSettingsPage.proxyEnabledSwitch.or(clientSettings)).toBeVisible()
+    test.skip(await clientSettings.isVisible(), 'the proxy page is enterprise-only')
   })
 
   test.afterEach(async ({ configSettingsPage }) => {

@@ -353,6 +353,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -389,6 +391,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -410,6 +413,7 @@ jobs:
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
 
@@ -477,6 +481,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -514,6 +519,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
@@ -640,6 +646,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -663,6 +670,7 @@ jobs:
             www.getbifrost.ai:443
             api.runware.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.typesafe.ai:443
             ai.google.dev:443
             code.claude.com:443
@@ -795,6 +803,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/test-proxy-e2e.sh
 
@@ -828,6 +837,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -959,6 +970,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -982,6 +994,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
@@ -1316,6 +1329,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -1416,6 +1431,7 @@ jobs:
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -1432,6 +1448,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1557,6 +1574,8 @@ jobs:
             _grpc_config.localhost:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -1638,6 +1657,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -1662,6 +1682,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
@@ -1685,6 +1706,8 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -1776,6 +1799,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -1800,6 +1824,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
@@ -1817,6 +1842,8 @@ jobs:
           allowed-endpoints: >
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -1967,6 +1994,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2148,6 +2177,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2276,6 +2307,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -2303,6 +2335,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -2442,6 +2475,8 @@ jobs:
             172.38.0.11:5432
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2543,6 +2578,8 @@ jobs:
             127.0.0.1:8080
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2649,6 +2686,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2742,6 +2781,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -2769,6 +2809,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -2807,6 +2848,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -2910,6 +2953,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -2937,6 +2981,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64
@@ -3045,6 +3090,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -3067,6 +3113,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
@@ -3175,6 +3222,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -3195,6 +3243,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
@@ -3322,6 +3371,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -3342,6 +3392,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 

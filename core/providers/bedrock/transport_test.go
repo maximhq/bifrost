@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1394,5 +1395,227 @@ func BenchmarkHeldStreamRawStreamEnd(b *testing.B) {
 			var extra schemas.BifrostResponseExtraFields
 			held.attach(&extra, i == 3)
 		}
+	}
+}
+
+// TestConverseSyntheticStructuredOutput_FinishReason pins the bf_so_* path's finish_reason: only a
+// reply whose sole tool call is the synthetic tool becomes "stop"; a caller tool call keeps
+// "tool_calls" so an agent loop runs the tool instead of stopping.
+func TestConverseSyntheticStructuredOutput_FinishReason(t *testing.T) {
+	soRequest := func() *schemas.BifrostChatRequest {
+		req := testChatRequest()
+		req.Model = testConverseStreamModel // ungated: keeps the synthetic tool
+		responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{
+			"name": "capital", "schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}},
+		}})
+		req.Params = &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "lookup_capital",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"}))},
+			}}},
+		}
+		return req
+	}
+	for name, tc := range map[string]struct{ tool, want string }{
+		"caller tool keeps tool_calls": {"lookup_capital", "tool_calls"},
+		"synthetic tool becomes stop":  {"bf_so_capital", "stop"},
+	} {
+		t.Run(name+"/chat", func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"t1","name":"` + tc.tool + `","input":{"country":"Australia","city":"Canberra"}}}]}},"stopReason":"tool_use","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`))
+			}))
+			defer ts.Close()
+			resp, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletion(testBedrockCtx(), testBedrockKey(), soRequest())
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, resp.Choices[0].FinishReason)
+			assert.Equal(t, tc.want, *resp.Choices[0].FinishReason)
+		})
+		t.Run(name+"/chat stream", func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+				writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"`+tc.tool+`"}},"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+				writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+			}))
+			defer ts.Close()
+			stream, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), soRequest())
+			require.Nil(t, bifrostErr)
+			var finish string
+			for chunk := range stream {
+				require.Nil(t, chunk.BifrostError)
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.FinishReason != nil {
+							finish = *c.FinishReason
+						}
+					}
+				}
+			}
+			assert.Equal(t, tc.want, finish)
+		})
+	}
+}
+
+// TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool pins a reply that streams the
+// bf_so_* block first and a caller tool block after it: the caller's argument deltas must stay a tool
+// call, not be appended to the structured-output text.
+func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}}
+	callerTool := schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"}))}
+	server := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_capital"}},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\"}"}},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"lookup_capital"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+		}))
+	}
+
+	t.Run("chat stream", func(t *testing.T) {
+		ts := server()
+		defer ts.Close()
+		req := testChatRequest()
+		req.Model = testConverseStreamModel // ungated: keeps the synthetic tool
+		responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "capital", "schema": schema}})
+		req.Params = &schemas.ChatParameters{ResponseFormat: &responseFormat, Tools: []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup_capital", Parameters: &callerTool},
+		}}}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		var content, args strings.Builder
+		var toolNames []string
+		var finish string
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			for _, c := range chunk.BifrostChatResponse.Choices {
+				if c.FinishReason != nil {
+					finish = *c.FinishReason
+				}
+				if c.ChatStreamResponseChoice == nil || c.Delta == nil {
+					continue
+				}
+				if c.Delta.Content != nil {
+					content.WriteString(*c.Delta.Content)
+				}
+				for _, tc := range c.Delta.ToolCalls {
+					if tc.Function.Name != nil {
+						toolNames = append(toolNames, *tc.Function.Name)
+					}
+					args.WriteString(tc.Function.Arguments)
+				}
+			}
+		}
+		assert.Equal(t, `{"city":"Canberra"}`, content.String(), "caller tool arguments leaked into content")
+		assert.Equal(t, []string{"lookup_capital"}, toolNames)
+		assert.Contains(t, args.String(), "Australia")
+		assert.Equal(t, "tool_calls", finish)
+	})
+
+	t.Run("responses stream", func(t *testing.T) {
+		ts := server()
+		defer ts.Close()
+		req := testResponsesRequest()
+		req.Model = testConverseStreamModel
+		req.Params = &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_schema", Name: schemas.Ptr("capital"), JSONSchema: schemas.JSONSchemaFromMap(schema),
+			}},
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup_capital"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &callerTool}}},
+		}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		var text, args strings.Builder
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			resp := chunk.BifrostResponsesStreamResponse
+			if resp == nil {
+				continue
+			}
+			switch resp.Type {
+			case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+				if resp.Delta != nil {
+					text.WriteString(*resp.Delta)
+				}
+			case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+				if resp.Delta != nil {
+					args.WriteString(*resp.Delta)
+				}
+			}
+		}
+		assert.Equal(t, `{"city":"Canberra"}`, text.String(), "caller tool arguments leaked into output_text")
+		assert.Contains(t, args.String(), "Australia")
+	})
+}
+
+// TestGrammarLimitRejectionMarksContext pins the trigger for the one tool-path retry: a 400 naming a
+// grammar limit on a request sent with outputConfig marks the context, and nothing else does.
+func TestGrammarLimitRejectionMarksContext(t *testing.T) {
+	const native = `{"messages":[],"outputConfig":{"textFormat":{"type":"json_schema"}}}`
+	cases := []struct {
+		name, body, message string
+		status              int
+		marked              bool
+	}{
+		{"grammar too large", native, "The model returned the following errors: The compiled grammar is too large, which would cause performance issues.", 400, true},
+		{"compilation timed out", native, "Grammar compilation timed out.", 400, true},
+		{"schema too complex", native, "compilation exceeded limits: Schema is too complex", 400, true},
+		{"tool path body", `{"messages":[],"toolConfig":{"tools":[]}}`, "The compiled grammar is too large", 400, false},
+		{"schema shape rejection", native, "The model returned the following errors: output_config.format.schema: For 'object' type, property 'x-order' is not supported", 400, true},
+		{"prefill rejection", native, "When using output format, pre-filling the `assistant` response is not supported.", 400, false},
+		{"other status", native, "The compiled grammar is too large", 500, false},
+	}
+	for _, tc := range cases {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Amzn-Errortype", "ValidationException:http://internal.amazon.com/coral/com.amazon.bedrock/")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"message":` + strconv.Quote(tc.message) + `}`))
+		}))
+		provider := newTestProviderWithServer(t, ts)
+		for _, route := range []string{"unary", "stream"} {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				ctx := testBedrockCtx()
+				var bifrostErr *schemas.BifrostError
+				if route == "unary" {
+					_, _, _, bifrostErr = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, bifrostErr = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				require.NotNil(t, bifrostErr)
+				state := ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				if tc.marked {
+					assert.Equal(t, schemas.StructuredOutputGrammarRejected, state)
+				} else {
+					assert.Nil(t, state)
+				}
+			})
+			// The forced attempt is never marked again, whatever its body carries.
+			t.Run(tc.name+"/"+route+"/already forced", func(t *testing.T) {
+				ctx := testBedrockCtx()
+				ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+				if route == "unary" {
+					_, _, _, _ = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, _ = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				assert.Equal(t, schemas.StructuredOutputForceTool, ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry))
+			})
+		}
+		ts.Close()
 	}
 }

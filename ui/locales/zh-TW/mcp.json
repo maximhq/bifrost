@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "檔案超過 OpenAPI 文件 {{size}} 的大小限制。",
+			"fileTooLargeBodyCap": "檔案過大，無法傳送：請求大小受 client.max_request_body_size_mb 限制為 {{size}}。如需上傳更大的文件，請調高該值並重新啟動 Bifrost。",
 			"fileReadFailed": "無法讀取檔案：{{message}}",
 			"fileEmpty": "檔案為空。",
 			"fetch": "擷取",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "Bifrost 會擷取一次文件並隨伺服器一併儲存；該 URL 會保留為其來源。",
 			"chooseFile": "選擇檔案",
 			"uploadHelp": "JSON 或 YAML，最大 {{size}}。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
+			"uploadHelpBodyCap": "JSON 或 YAML，最大約 {{size}}：請求大小受 client.max_request_body_size_mb 限制，低於 OpenAPI 文件的大小限制。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
+			"uploadHelpNoLimit": "JSON 或 YAML。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
 			"parsing": "正在解析文件…",
 			"staleNotice": "自擷取文件後，URL 或伺服器名稱已變更。請重新擷取以更新下方的操作。"
 		},

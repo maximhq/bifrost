@@ -20,12 +20,13 @@ import { toast } from "sonner";
 import { ConfigurationTab } from "./configurationTab";
 import { DeleteConfirmDialog } from "./formParts";
 import { ModelsTab } from "./modelsTab";
-import { OverviewTab, tiersWithModels } from "./overviewTab";
+import { modelCount, OverviewTab } from "./overviewTab";
 import { RouterConfigurationSheets } from "./routerConfigurationEditor";
 import { RouterSheet } from "./routerSheet";
 import { RoutingTab } from "./routingTab";
 import { useRouterConfigForm } from "./useRouterConfigForm";
-import type { RouterTrafficRead, TrafficWindow } from "./useRouterTraffic";
+import { TrafficPeriodPicker } from "./trafficPeriodPicker";
+import { type RouterTrafficRead, type TrafficFilter, trafficLogsSearch } from "./useRouterTraffic";
 
 export const ROUTER_TABS = ["overview", "configuration", "models", "routing", "suggestions"] as const;
 export type RouterTab = (typeof ROUTER_TABS)[number];
@@ -37,10 +38,10 @@ function TabCount({ children }: { children: React.ReactNode }) {
 
 interface RouterDetailViewProps {
 	routerId: string;
-	// Every router's last seven days, read once by the page, with the state of that read.
+	// What every router took over the chosen period, read once by the page, with the state of that read.
 	traffic: RouterTrafficRead;
-	// The window those figures cover, so the overview's tier split reads the same one.
-	trafficWindow: TrafficWindow;
+	// That period, so the overview's tier split reads the same one, and what the picker needs to change it.
+	trafficFilter: TrafficFilter;
 	onBack: () => void;
 }
 
@@ -49,12 +50,12 @@ interface RouterDetailViewProps {
 // requests it took, editing it, deleting it). Editing opens the router sheet,
 // which also turns the router on; a save that turns it on lands on the
 // overview, whose status line then says it is taking requests.
-export default function RouterDetailView({ routerId, traffic, trafficWindow, onBack }: RouterDetailViewProps) {
+export default function RouterDetailView({ routerId, traffic, trafficFilter, onBack }: RouterDetailViewProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const { t: tmr } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
-	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const canUpdate = useRbac(RbacResource.Routers, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.Routers, RbacOperation.Delete);
 	const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(ROUTER_TABS).withDefault("overview").withOptions({ history: "push" }));
 	const [suggestionsView, setSuggestionsView] = useQueryState("view", suggestionsViewParser);
 	// The suggestions dashboard ships behind a flag; their APIs work either way.
@@ -154,7 +155,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 							</TabsTrigger>
 							<TabsTrigger value="models" data-testid="model-router-tab-models">
 								{tmr("tabs.models")}
-								<TabCount>{tiersWithModels(data)}/3</TabCount>
+								<TabCount>{modelCount(data)}</TabCount>
 							</TabsTrigger>
 							<TabsTrigger value="routing" data-testid="model-router-tab-routing">
 								{tmr("tabs.routing")}
@@ -172,6 +173,8 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 						</TabsList>
 					</div>
 					<div className="ml-auto flex items-center gap-3">
+						{/* The period only changes the overview's figures, so it shows there alone. */}
+						{currentTab === "overview" && <TrafficPeriodPicker filter={trafficFilter} testId="model-router-filter-daterange" />}
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<Button
@@ -186,7 +189,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end" className="shadow-none">
 								<DropdownMenuItem asChild data-testid="model-router-view-logs-btn" className="cursor-pointer">
-									<Link to="/workspace/logs" search={{ model_router_ids: [routerId] }}>
+									<Link to="/workspace/logs" search={{ model_router_ids: [routerId], ...trafficLogsSearch(trafficFilter.selection) }}>
 										<ScrollText className="h-4 w-4" />
 										{tmr("viewLogs")}
 									</Link>
@@ -222,7 +225,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 						router={data}
 						traffic={traffic.byRouter ? (traffic.byRouter.get(routerId) ?? { requests: 0, cost: 0, costTrend: null }) : undefined}
 						trafficState={traffic.state}
-						trafficWindow={trafficWindow}
+						trafficFilter={trafficFilter}
 						onNavigate={(next) => void setTab(next)}
 						canUpdate={canUpdate}
 						onTurnOn={() => setSheet({ turnOn: true })}

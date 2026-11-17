@@ -63,11 +63,15 @@ type ModelCapabilities struct {
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsNativeStructuredOutput  *bool `json:"supports_native_structured_output,omitempty"` // Bedrock Converse accepts outputConfig.textFormat; false ⇒ synthetic bf_so_* tool
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
 	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
+
+	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
+	StripsUserTurnTrailingWhitespace *bool `json:"strips_user_turn_trailing_whitespace,omitempty"`
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are

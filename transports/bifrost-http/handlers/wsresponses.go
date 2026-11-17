@@ -130,6 +130,7 @@ type sessionHeaders struct {
 	virtualKey    string
 	apiKey        string
 	googAPIKey    string
+	xiAPIKey      string
 	baggage       string
 	headers       map[string][]string
 }
@@ -141,6 +142,7 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
 		googAPIKey:    string(ctx.Request.Header.Peek("x-goog-api-key")),
+		xiAPIKey:      string(ctx.Request.Header.Peek("xi-api-key")),
 		baggage:       string(ctx.Request.Header.Peek("baggage")),
 		headers:       make(map[string][]string),
 	}
@@ -884,6 +886,11 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.googAPIKey)
 		}
 	}
+	if setupHeaders.xiAPIKey != "" {
+		if strings.HasPrefix(setupHeaders.xiAPIKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.xiAPIKey)
+		}
+	}
 	// The caller's own provider key, under the same gate as on HTTP, set before the identity
 	// settles so governance sees a resolved credential.
 	var directKey string
@@ -945,7 +952,7 @@ func isSecurityDeniedExtraHeader(name string) bool {
 	}
 	switch name {
 	case "authorization", "proxy-authorization", "cookie", "host", "content-length", "connection", "transfer-encoding",
-		"upgrade", "origin", "x-api-key", "x-goog-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
+		"upgrade", "origin", "x-api-key", "x-goog-api-key", "xi-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
 		return true
 	default:
 		return false
@@ -1039,23 +1046,33 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 // writeWSError sends a JSON error event to a WebSocket write target.
 // Accepts either a raw *ws.Conn (pre-session) or a *bfws.Session (mutex-protected).
 func writeWSError(w wsWriter, status int, code, message string) {
-	event := schemas.WebSocketErrorEvent{
-		Type:   schemas.WSEventError,
-		Status: status,
-		Error: &schemas.WebSocketErrorBody{
-			Code:    code,
-			Message: message,
-		},
-	}
-	data, err := sonic.Marshal(event)
+	data, err := wsErrorEvent(status, code, message)
 	if err != nil {
 		return
 	}
 	w.WriteMessage(ws.TextMessage, data)
 }
 
+// wsErrorEvent encodes the JSON error event writeWSError sends.
+func wsErrorEvent(status int, code, message string) ([]byte, error) {
+	return sonic.Marshal(schemas.WebSocketErrorEvent{
+		Type:   schemas.WSEventError,
+		Status: status,
+		Error: &schemas.WebSocketErrorBody{
+			Code:    code,
+			Message: message,
+		},
+	})
+}
+
 // writeWSBifrostError converts a BifrostError to a WS error event.
 func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
+	status, code, msg := wsBifrostErrorFields(bifrostErr)
+	writeWSError(w, status, code, msg)
+}
+
+// wsBifrostErrorFields is the status, code and message a BifrostError is sent as on a WS error event.
+func wsBifrostErrorFields(bifrostErr *schemas.BifrostError) (int, string, string) {
 	status := 500
 	if bifrostErr.StatusCode != nil && *bifrostErr.StatusCode > 0 {
 		status = *bifrostErr.StatusCode
@@ -1072,7 +1089,7 @@ func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
 			msg = bifrostErr.Error.Message
 		}
 	}
-	writeWSError(w, status, code, msg)
+	return status, code, msg
 }
 
 // wsResponsesKnownFields lists the fields explicitly handled by WebSocketResponsesEvent.
