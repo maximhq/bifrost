@@ -121,7 +121,8 @@ Export configured models in the format your client expects:
 
 Use your inference credential, not a dashboard/admin credential. Virtual keys
 can be sent as `Authorization: Bearer …` or `x-bf-vk`; their permissions restrict
-the exported providers and models. Failed access resolution returns `401`.
+the exported providers and models. Missing credentials when authentication is
+enforced, or failed access resolution, return `401`.
 
 All exports preserve full `provider/model` IDs and return every match without
 pagination. Optional filters are `provider`, `query` (model-name search), and
@@ -132,7 +133,8 @@ Catalog availability does not guarantee a model supports your agent's tools.
 Pi and OpenCode exports are configuration fragments, not automatic subscriptions.
 They reference `BIFROST_VIRTUAL_KEY` without including its value. Behind a reverse
 proxy, pass `base_url` as the public inference URL, including `/openai/v1`:
-the default uses the request scheme and Host, not forwarded headers.
+the default uses the request scheme, Host, and configured `server.base_path`,
+not forwarded headers.
 
 ### Export a Pi model configuration
 

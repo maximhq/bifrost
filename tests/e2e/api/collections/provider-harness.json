@@ -59,9 +59,9 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
+          "// Management API (/api/...), OAuth (/oauth2/...), and catalog (/catalog/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/catalog/') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -337409,8 +337409,8 @@
       ]
     },
     {
-      "name": "Catalog exports",
-      "description": "Downloadable configured-model catalogs. Both GET exports filter to OpenAI, preserve provider/model IDs, and validate client-facing schemas without inference or paid provider calls.",
+      "name": "Catalog exports [SERIAL]",
+      "description": "Downloadable configured-model catalogs: all four exports filter to OpenAI and validate client-facing schemas without inference or paid provider calls. Pi/OpenCode explicit overrides remain unchanged; default URL cases derive the expected inference URL from the actual baseUrl. To pin non-root deployment behavior, boot with BIFROST_BASE_PATH=/gateway and run PROVIDER=openai FEATURE=\"catalog exports\" BASE_URL=http://localhost:8187/gateway (the base path is boot-only, not writable through /api/config). Run the whole folder in order: after the success cases, snapshot client_config, enable and confirm enforce_auth_on_inference, require HTTP 401 from all four routes with every credential header and cookies removed, then restore the snapshot. [SERIAL] prevents parallel requests from observing the temporary enforcement setting. Management setup requires the configured setupToken or managementApiKey. Valid-key and auth-disabled policy combinations are covered by Go tests.",
       "item": [
         {
           "name": "openai/gpt-4o Codex catalog exports",
@@ -337640,6 +337640,391 @@
               ]
             }
           }
+        },
+        {
+          "name": "openai/gpt-4o pi catalog exports default inference URL includes deployment base path - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/pi?provider=openai",
+            "description": "No base_url override: expected URL follows the actual gateway deployment. Exercise a non-root prefix by starting Bifrost with BIFROST_BASE_PATH=/gateway and running this folder with BASE_URL=http://localhost:8187/gateway. The standard root deployment remains valid."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports default pi URL returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('catalog exports default inference URL retains the actual deployment prefix', function () {",
+                  "  var expected = pm.variables.replaceIn('{{baseUrl}}').replace(/\\/+$/, '') + '/openai/v1';",
+                  "  var provider = pm.response.json().providers.bifrost;",
+                  "  pm.expect(provider.baseUrl, 'deployment base path missing: ' + pm.response.text()).to.eql(expected);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o opencode catalog exports default inference URL includes deployment base path - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/opencode?provider=openai",
+            "description": "No base_url override: expected URL follows the actual gateway deployment. Exercise a non-root prefix by starting Bifrost with BIFROST_BASE_PATH=/gateway and running this folder with BASE_URL=http://localhost:8187/gateway. The standard root deployment remains valid."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports default opencode URL returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('catalog exports default inference URL retains the actual deployment prefix', function () {",
+                  "  var expected = pm.variables.replaceIn('{{baseUrl}}').replace(/\\/+$/, '') + '/openai/v1';",
+                  "  var provider = pm.response.json().providers.bifrost;",
+                  "  pm.expect(provider.settings.baseURL, 'deployment base path missing: ' + pm.response.text()).to.eql(expected);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai catalog exports save inference enforcement - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (token) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + token}); }",
+                  "pm.collectionVariables.unset('catalogExportsClientConfig');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports read client configuration', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('catalog exports snapshot includes inference enforcement', function () {",
+                  "  var config = pm.response.json().client_config;",
+                  "  pm.expect(config, 'failed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(config.enforce_auth_on_inference, 'failed: ' + pm.response.text()).to.be.a('boolean');",
+                  "  pm.collectionVariables.set('catalogExportsClientConfig', JSON.stringify(config));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai catalog exports enable inference enforcement - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{{catalogExportsConfigBody}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (token) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + token}); }",
+                  "var snapshot = pm.collectionVariables.get('catalogExportsClientConfig');",
+                  "pm.expect(snapshot, 'run the catalog exports save row first').to.be.a('string').and.not.empty;",
+                  "var config = JSON.parse(snapshot);",
+                  "config.enforce_auth_on_inference = true;",
+                  "pm.variables.set('catalogExportsConfigBody', JSON.stringify({client_config: config}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports enable inference enforcement', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai catalog exports confirm inference enforcement is enabled - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (token) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + token}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports read enforced configuration', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('catalog exports probes run with enforce_auth_on_inference true', function () {",
+                  "  pm.expect(pm.response.json().client_config.enforce_auth_on_inference, 'failed: ' + pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai codex catalog exports refuse no presented credential - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/codex?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports without any credential require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'anonymous catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai claude catalog exports refuse no presented credential - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/claude?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports without any credential require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'anonymous catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai pi catalog exports refuse no presented credential - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/pi?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports without any credential require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'anonymous catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai opencode catalog exports refuse no presented credential - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/opencode?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports without any credential require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'anonymous catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai catalog exports restore inference enforcement - PR #10096",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{{catalogExportsConfigBody}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (token) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + token}); }",
+                  "var snapshot = pm.collectionVariables.get('catalogExportsClientConfig');",
+                  "pm.expect(snapshot, 'run the catalog exports save row first').to.be.a('string').and.not.empty;",
+                  "pm.variables.set('catalogExportsConfigBody', JSON.stringify({client_config: JSON.parse(snapshot)}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports restore original client configuration', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.collectionVariables.unset('catalogExportsClientConfig');"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

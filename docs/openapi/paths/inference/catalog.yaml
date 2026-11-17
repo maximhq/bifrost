@@ -1,0 +1,295 @@
+codex:
+  get:
+    operationId: exportCodexCatalog
+    summary: Export Codex model catalog
+    description: 'Exports all matching models from configured Bifrost providers without pagination. Optional
+      provider/query filters apply; deprecated models are hidden unless include_deprecated=true, including
+      during search. Known modes other than chat and responses are excluded; models without mode metadata
+      remain included. Model IDs retain the exact provider/model form, including custom providers and
+      upstream IDs containing slashes. Uses inference middleware, not dashboard/admin authentication.
+      Bearer inference credentials and virtual keys are accepted; virtual keys restrict both providers
+      and models. Access-resolution errors return 401. Credentials may be omitted only when the deployment
+      permits unauthenticated inference.
+
+
+      Set Codex model_catalog_url to this endpoint URL to fetch the catalog directly. The catalog URL
+      is separate from the inference base URL, which remains /openai/v1. The Bifrost launcher does not
+      configure this setting automatically.
+
+
+      When inference authentication is enforced, missing credentials return 401.'
+    tags:
+    - Models
+    parameters:
+    - name: provider
+      in: query
+      description: Configured provider name to filter, including custom provider names. Omit to include
+        all accessible configured providers.
+      schema:
+        type: string
+    - name: query
+      in: query
+      description: Search model names.
+      schema:
+        type: string
+    - name: include_deprecated
+      in: query
+      description: Set to true to include deprecated models, which are otherwise hidden even during search.
+      schema:
+        type: boolean
+        default: false
+    responses:
+      '200':
+        description: Complete model catalog export
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/catalog.yaml#/CodexCatalogResponse
+      '400':
+        description: Failed to create the inference request context
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '401':
+        description: Missing credentials when inference authentication is enforced, invalid inference
+          credential, or catalog access could not be resolved
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '500':
+        description: Failed to list configured catalog models
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+claude:
+  get:
+    operationId: exportClaudeCatalog
+    summary: Export Claude model catalog
+    description: 'Exports all matching models from configured Bifrost providers without pagination. Optional
+      provider/query filters apply; deprecated models are hidden unless include_deprecated=true, including
+      during search. Known modes other than chat and responses are excluded; models without mode metadata
+      remain included. Model IDs retain the exact provider/model form, including custom providers and
+      upstream IDs containing slashes. Uses inference middleware, not dashboard/admin authentication.
+      Bearer inference credentials and virtual keys are accepted; virtual keys restrict both providers
+      and models. Access-resolution errors return 401. Credentials may be omitted only when the deployment
+      permits unauthenticated inference.
+
+
+      Standalone Anthropic-format models export, not an inference base URL. Claude Code gateway discovery
+      continues to use /anthropic/v1/models and does not automatically read this export.
+
+
+      When inference authentication is enforced, missing credentials return 401.'
+    tags:
+    - Models
+    parameters:
+    - name: provider
+      in: query
+      description: Configured provider name to filter, including custom provider names. Omit to include
+        all accessible configured providers.
+      schema:
+        type: string
+    - name: query
+      in: query
+      description: Search model names.
+      schema:
+        type: string
+    - name: include_deprecated
+      in: query
+      description: Set to true to include deprecated models, which are otherwise hidden even during search.
+      schema:
+        type: boolean
+        default: false
+    responses:
+      '200':
+        description: Complete model catalog export
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/catalog.yaml#/ClaudeCatalogResponse
+      '400':
+        description: Failed to create the inference request context
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '401':
+        description: Missing credentials when inference authentication is enforced, invalid inference
+          credential, or catalog access could not be resolved
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '500':
+        description: Failed to list configured catalog models
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+pi:
+  get:
+    operationId: exportPiCatalog
+    summary: Export Pi provider configuration
+    description: 'Exports all matching configured models without pagination as a native providers.bifrost
+      fragment. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true.
+      Known modes other than chat/responses are excluded; unknown modes remain included. Exact provider/model
+      IDs, including upstream slashes, are preserved. Uses inference middleware and credentials, not dashboard
+      authentication; virtual keys restrict providers and models. Credentials may be omitted only when
+      unauthenticated inference is allowed. Access resolution errors return 401. Unknown capabilities,
+      limits and prices are omitted; prices are USD per million tokens. Credentials are never embedded:
+      the fragment references BIFROST_VIRTUAL_KEY. Merge into existing client configuration after inspection;
+      no automatic catalog fetching or launcher integration. Targets Pi models.json providers.bifrost
+      with openai-completions; only text/image input and metadata-confirmed thinking mappings are exported.
+
+
+      When inference authentication is enforced, missing credentials return 401.'
+    tags:
+    - Models
+    parameters:
+    - name: provider
+      in: query
+      description: Configured provider name to filter, including custom provider names. Omit to include
+        all accessible configured providers.
+      schema:
+        type: string
+    - name: query
+      in: query
+      description: Search model names.
+      schema:
+        type: string
+    - name: include_deprecated
+      in: query
+      description: Set to true to include deprecated models, which are otherwise hidden even during search.
+      schema:
+        type: boolean
+        default: false
+    - name: base_url
+      in: query
+      description: Full inference base URL including /openai/v1. Must be absolute HTTP(S) with hostname
+        and no userinfo, query or fragment; invalid values return 400. Defaults to request scheme and
+        Host plus the configured server base_path and /openai/v1, ignoring forwarded headers. Override
+        behind a reverse proxy or TLS termination. An explicit base_url is used unchanged; the configured
+        server base_path is not prepended.
+      schema:
+        type: string
+        format: uri
+      example: http://localhost:8080/openai/v1
+    responses:
+      '200':
+        description: Native provider configuration fragment
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/catalog.yaml#/PiCatalogResponse
+      '400':
+        description: Invalid base_url or failed to create inference request context
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '401':
+        description: Missing credentials when inference authentication is enforced, invalid inference
+          credential, or catalog access could not be resolved
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '500':
+        description: Failed to list configured catalog models
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+opencode:
+  get:
+    operationId: exportOpenCodeCatalog
+    summary: Export OpenCode provider configuration
+    description: 'Exports all matching configured models without pagination as a native providers.bifrost
+      fragment. Optional provider/query filters apply; deprecated models are hidden unless include_deprecated=true.
+      Known modes other than chat/responses are excluded; unknown modes remain included. Exact provider/model
+      IDs, including upstream slashes, are preserved. Uses inference middleware and credentials, not dashboard
+      authentication; virtual keys restrict providers and models. Credentials may be omitted only when
+      unauthenticated inference is allowed. Access resolution errors return 401. Unknown capabilities,
+      limits and prices are omitted; prices are USD per million tokens. Credentials are never embedded:
+      the fragment references BIFROST_VIRTUAL_KEY. Merge into existing client configuration after inspection;
+      no automatic catalog fetching or launcher integration. Targets current OpenCode providers/package/settings/models/modelID
+      schema, not legacy provider/npm/options. Check installed client version.
+
+
+      When inference authentication is enforced, missing credentials return 401.'
+    tags:
+    - Models
+    parameters:
+    - name: provider
+      in: query
+      description: Configured provider name to filter, including custom provider names. Omit to include
+        all accessible configured providers.
+      schema:
+        type: string
+    - name: query
+      in: query
+      description: Search model names.
+      schema:
+        type: string
+    - name: include_deprecated
+      in: query
+      description: Set to true to include deprecated models, which are otherwise hidden even during search.
+      schema:
+        type: boolean
+        default: false
+    - name: base_url
+      in: query
+      description: Full inference base URL including /openai/v1. Must be absolute HTTP(S) with hostname
+        and no userinfo, query or fragment; invalid values return 400. Defaults to request scheme and
+        Host plus the configured server base_path and /openai/v1, ignoring forwarded headers. Override
+        behind a reverse proxy or TLS termination. An explicit base_url is used unchanged; the configured
+        server base_path is not prepended.
+      schema:
+        type: string
+        format: uri
+      example: http://localhost:8080/openai/v1
+    responses:
+      '200':
+        description: Native provider configuration fragment
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/catalog.yaml#/OpenCodeCatalogResponse
+      '400':
+        description: Invalid base_url or failed to create inference request context
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '401':
+        description: Missing credentials when inference authentication is enforced, invalid inference
+          credential, or catalog access could not be resolved
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+      '500':
+        description: Failed to list configured catalog models
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/inference/common.yaml#/BifrostError
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

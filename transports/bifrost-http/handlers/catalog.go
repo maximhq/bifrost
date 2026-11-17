@@ -8,6 +8,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -76,6 +77,13 @@ func (h *ProviderHandler) catalog(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "failed to convert context")
 		return
 	}
+	h.inMemoryStore.Mu.RLock()
+	enforceAuth := h.inMemoryStore.ClientConfig != nil && h.inMemoryStore.ClientConfig.EnforceAuthOnInference
+	h.inMemoryStore.Mu.RUnlock()
+	if enforceAuth && !governance.PresentedAnyCredential(bifrostCtx) {
+		SendError(ctx, fasthttp.StatusUnauthorized, "authentication required")
+		return
+	}
 	query := modelListQuery{
 		Provider:       schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider"))),
 		Query:          string(ctx.QueryArgs().Peek("query")),
@@ -106,7 +114,7 @@ func (h *ProviderHandler) catalog(ctx *fasthttp.RequestCtx) {
 			if ctx.IsTLS() {
 				scheme = "https"
 			}
-			baseURL = scheme + "://" + string(ctx.Host()) + "/openai/v1"
+			baseURL = scheme + "://" + string(ctx.Host()) + lib.WithBasePath("/openai/v1")
 		}
 		u, err := url.Parse(baseURL)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

@@ -12,7 +12,7 @@
 
 ## Features
 
-- **Coding-Agent Catalogs** - Added model exports for Codex, Claude, Pi, and OpenCode with virtual-key access and model filters. Codex can fetch its catalog directly; Pi and OpenCode exports provide configuration fragments without exposing credentials.
+- **Coding-Agent Catalogs** - Added model exports for Codex, Claude, Pi, and OpenCode with inference authentication, virtual-key access, model filters, and base-path-aware inference URLs. Codex can fetch its catalog directly; Pi and OpenCode exports provide configuration fragments without exposing credentials.
 
 ## 🔧 Maintenance
 

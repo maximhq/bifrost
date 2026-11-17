@@ -437,7 +437,7 @@ uses `/anthropic/v1/models`. Keep `ANTHROPIC_BASE_URL` pointed at
 ```bash
 curl --fail --silent --show-error --get \
   "http://localhost:8080/catalog/claude" \
-  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY" \
+  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
   --data-urlencode "provider=anthropic" \
   --data-urlencode "query=claude" \
   --output claude-models.json

@@ -175,6 +175,14 @@ paths:
   # ==================== Unified Inference API ====================
   /v1/models:
     $ref: "./paths/inference/models.yaml#/models"
+  /catalog/codex:
+    $ref: "./paths/inference/catalog.yaml#/codex"
+  /catalog/claude:
+    $ref: "./paths/inference/catalog.yaml#/claude"
+  /catalog/pi:
+    $ref: "./paths/inference/catalog.yaml#/pi"
+  /catalog/opencode:
+    $ref: "./paths/inference/catalog.yaml#/opencode"
   /v1/chat/completions:
     $ref: "./paths/inference/chat-completions.yaml#/chat-completions"
   /v1/completions:
@@ -1964,6 +1972,15 @@ components:
       $ref: "./schemas/inference/models.yaml#/ListModelsResponse"
     Model:
       $ref: "./schemas/inference/models.yaml#/Model"
+
+    CodexCatalogResponse:
+      $ref: "./schemas/inference/catalog.yaml#/CodexCatalogResponse"
+    ClaudeCatalogResponse:
+      $ref: "./schemas/inference/catalog.yaml#/ClaudeCatalogResponse"
+    PiCatalogResponse:
+      $ref: "./schemas/inference/catalog.yaml#/PiCatalogResponse"
+    OpenCodeCatalogResponse:
+      $ref: "./schemas/inference/catalog.yaml#/OpenCodeCatalogResponse"
 
     # ==================== Chat Completions ====================
     ChatCompletionRequest:

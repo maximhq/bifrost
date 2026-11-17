@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/fasthttp/router"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -138,6 +140,53 @@ func TestCatalogRejectsUnresolvedAccess(t *testing.T) {
 		h.catalog(ctx)
 		if ctx.Response.StatusCode() != 401 {
 			t.Fatalf("expected access error, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+}
+
+func TestCatalogInferenceAuthentication(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, format := range []string{"codex", "claude", "pi", "opencode"} {
+		for _, tc := range []struct {
+			name    string
+			enforce bool
+			header  string
+			value   string
+			want    int
+		}{
+			{name: "anonymous denied", enforce: true, want: fasthttp.StatusUnauthorized},
+			{name: "anonymous allowed", want: fasthttp.StatusOK},
+			{name: "virtual key header", enforce: true, header: "x-bf-vk", value: "sk-bf-catalog-test", want: fasthttp.StatusOK},
+			{name: "bearer virtual key", enforce: true, header: "Authorization", value: "Bearer sk-bf-catalog-test", want: fasthttp.StatusOK},
+		} {
+			t.Run(format+"/"+tc.name, func(t *testing.T) {
+				h := providerHandlerForTest(schemas.OpenAI, nil, []string{"allowed", "secret"}, nil)
+				h.inMemoryStore.ClientConfig.EnforceAuthOnInference = tc.enforce
+				if tc.header != "" {
+					h.modelsManager.(*mockModelsManager).access = accessForProviderPermits(schemas.ProviderPermit{
+						Provider: "openai", AllowedModels: []string{"allowed"},
+					})
+				}
+				r := router.New()
+				h.RegisterCatalogRoutes(r)
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetRequestURI("http://gateway.example/catalog/" + format)
+				ctx.Request.Header.SetMethod("GET")
+				if tc.header != "" {
+					ctx.Request.Header.Set(tc.header, tc.value)
+				}
+				r.Handler(ctx)
+				if ctx.Response.StatusCode() != tc.want {
+					t.Fatalf("expected %d, got %d: %s", tc.want, ctx.Response.StatusCode(), ctx.Response.Body())
+				}
+				body := string(ctx.Response.Body())
+				if tc.want == fasthttp.StatusOK && !strings.Contains(body, "openai/allowed") {
+					t.Fatalf("missing permitted model: %s", body)
+				}
+				if (tc.want != fasthttp.StatusOK || tc.header != "") && strings.Contains(body, "openai/secret") {
+					t.Fatalf("catalog exposed a restricted model: %s", body)
+				}
+			})
 		}
 	}
 }
@@ -275,6 +324,58 @@ func TestNativeCatalogBaseURL(t *testing.T) {
 	}
 }
 
+func TestNativeCatalogBasePath(t *testing.T) {
+	SetLogger(&mockLogger{})
+	previousBasePath := lib.BasePath()
+	lib.SetBasePath("/gateway")
+	t.Cleanup(func() { lib.SetBasePath(previousBasePath) })
+	h := providerHandlerForTest(schemas.OpenAI, nil, []string{"model"}, nil)
+	h.inMemoryStore.ServerConfig = &lib.ServerConfig{BasePath: "/gateway"}
+	for _, format := range []string{"pi", "opencode"} {
+		for _, tc := range []struct {
+			name  string
+			query string
+			want  string
+		}{
+			{name: "default", want: "http://gateway.example/gateway/openai/v1"},
+			{name: "explicit override", query: "?base_url=https%3A%2F%2Fpublic.example%2Fcustom%2Fv1", want: "https://public.example/custom/v1"},
+		} {
+			t.Run(format+"/"+tc.name, func(t *testing.T) {
+				r := router.New()
+				h.RegisterCatalogRoutes(r)
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetRequestURI("http://gateway.example/gateway/catalog/" + format + tc.query)
+				ctx.Request.Header.SetHost("gateway.example")
+				ctx.Request.Header.SetMethod("GET")
+				BasePathRootHandler(h.inMemoryStore, r.Handler)(ctx)
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("catalog returned %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+				}
+				var response struct {
+					Providers struct {
+						Bifrost struct {
+							BaseURL  string `json:"baseUrl"`
+							Settings struct {
+								BaseURL string `json:"baseURL"`
+							} `json:"settings"`
+						} `json:"bifrost"`
+					} `json:"providers"`
+				}
+				if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+					t.Fatal(err)
+				}
+				got := response.Providers.Bifrost.BaseURL
+				if format == "opencode" {
+					got = response.Providers.Bifrost.Settings.BaseURL
+				}
+				if got != tc.want {
+					t.Fatalf("inference URL: got %q, want %q", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestNativeCatalogMetadata(t *testing.T) {
 	entry := &modelcatalog.PricingEntry{
 		ContextLength: new(64000), MaxInputTokens: new(60000), MaxOutputTokens: new(4096),
@@ -292,7 +393,7 @@ func TestNativeCatalogMetadata(t *testing.T) {
 		} else {
 			value = makeOpenCodeCatalogModel("custom/vendor/model", entry, caps)
 		}
-		body, err := json.Marshal(value)
+		body, err := providerUtils.MarshalSorted(value)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -325,7 +426,7 @@ func TestNativeCatalogMetadata(t *testing.T) {
 		} else {
 			value = makeOpenCodeCatalogModel("custom/unknown", nil, nil)
 		}
-		body, err = json.Marshal(value)
+		body, err = providerUtils.MarshalSorted(value)
 		if err != nil {
 			t.Fatal(err)
 		}
