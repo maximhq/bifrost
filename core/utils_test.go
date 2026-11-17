@@ -115,7 +115,7 @@ func TestValidateExternalURL(t *testing.T) {
 			name:    "private 10.x.x.x",
 			url:     "http://10.0.0.1",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "private IP addresses are not allowed: set network_config.allow_private_network to true",
 		},
 		{
 			name:    "private 172.16.x.x",

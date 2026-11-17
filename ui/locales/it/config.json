@@ -393,7 +393,7 @@
 		"authModeHelp": "Controlla come i client MCP in entrata (ad es. Claude Code, Cursor) si autenticano all'endpoint <code0>/mcp</code0>. <b1>headers</b1> (predefinito) - solo header VK / api-key / sessione, discovery OAuth disabilitata. <b2>both</b2> - accetta credenziali negli header e JWT emessi da Bifrost; le integrazioni esistenti non sono interessate. <b3>oauth</b3> - solo JWT; l'accesso tramite VK e header è disabilitato.",
 		"issuerUrlHelp": "URL pubblico stabile pubblicato nei documenti di discovery e incorporato come claim <code0>iss</code0> in ogni JWT. Obbligatorio nelle modalità OAuth ed Entrambe: Bifrost non ricava mai l'emittente dall'header <code1>Host</code1> della richiesta, perché quell'header è controllato dal chiamante. Supporta la sintassi delle variabili di ambiente (ad es. <code2>env.BIFROST_ISSUER_URL</code2>).",
 		"authCodeTtlHelp": "Durata di validità del codice monouso dopo che la pagina di consenso reindirizza al client MCP (predefinito: 300, max 900 = 15 min).",
-		"accessTokenTtlHelp": "Durata dei token JWT Bearer emessi. I client eseguono un refresh silenzioso alla scadenza (predefinito: 600 = 10 min). Limita inoltre per quanto tempo un'autorizzazione revocata continua a funzionare prima di essere interrotta.",
+		"accessTokenTtlHelp": "Durata dei token JWT Bearer emessi. I client eseguono un refresh silenzioso alla scadenza (predefinito: 600 = 10 min). Limita inoltre per quanto tempo un'autorizzazione revocata continua a funzionare prima di essere interrotta. Condiviso con il gateway Claude Code in Impostazioni → Gateways.",
 		"requireIdpLoginHelp": "Se abilitato, il flusso di consenso OAuth offre solo l'accesso tramite identity provider. Le chiavi virtuali non possono più essere utilizzate per ottenere un token MCP e le sessioni OAuth con chiave virtuale esistenti perdono l'accesso immediatamente. L'accesso alle sessioni anonime non subisce modifiche (controllato da Enforce Authentication on Inference).",
 		"vFSStructure": "Struttura VFS:",
 		"allToolsPerServerInASinglePyFile": "Tutti gli strumenti per server in un singolo file .py",
@@ -1735,9 +1735,9 @@
 		"issuerDescription": "L’URL pubblico stabile di Bifrost. Ogni gateway è servito su <code0/>. È lo stesso emittente usato dal server OAuth MCP, quindi modificarlo influisce anche sui client MCP che hanno effettuato l’accesso con OAuth. Supporta la sintassi delle variabili d’ambiente (ad es. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com oppure env.BIFROST_ISSUER_URL",
 		"urlTemplate": "<URL dell’emittente>/gateway/<client>",
-		"accessTokenTtlLabel": "Durata del token di accesso (minuti)",
-		"accessTokenTtlDescription": "Per quanto tempo resta valido il token di accesso di ogni accesso (predefinito 10, minimo 1). Disconnettersi o revocare un accesso ne impedisce il rinnovo, ma il token di accesso già emesso continua a funzionare fino alla scadenza. Per bloccare subito l’accesso, disattiva la chiave virtuale o l’utente. Questa impostazione è condivisa con MCP OAuth.",
-		"accessTokenTtlInvalid": "La durata del token di accesso deve essere di almeno 1 minuto.",
+		"accessTokenTtlLabel": "TTL del token di accesso (secondi)",
+		"accessTokenTtlDescription": "Per quanto tempo resta valido il token di accesso di ogni accesso (predefinito 600, minimo 60). Disconnettersi o revocare un accesso ne impedisce il rinnovo, ma il token di accesso già emesso continua a funzionare fino alla scadenza. Per bloccare subito l’accesso, disattiva la chiave virtuale o l’utente. Questa impostazione è condivisa con MCP OAuth.",
+		"accessTokenTtlInvalid": "Il TTL del token di accesso deve essere di almeno 60 secondi.",
 		"allowTempTokenLabel": "Consenti i link di autenticazione con token temporaneo",
 		"allowTempTokenDescription": "Quando abilitato, i link OAuth MCP per utente e i link di accesso di Claude Code possono includere un token con ambito a breve durata, in modo che chi non ha una sessione attiva della dashboard di Bifrost possa completare il flusso. Mantieni disabilitato per richiedere la normale autenticazione della dashboard."
 	}

@@ -27,33 +27,41 @@ const savedOverride = {
   updated_at: '2026-10-30T00:00:00Z',
 }
 
-function entry(overridden: boolean) {
+function entry(overridden: boolean, override = savedOverride, model = 'e2e-datasheet-model') {
   return {
     provider: 'openai',
-    model: 'e2e-datasheet-model',
+    model,
     mode: 'chat',
     is_custom: false,
-    upstream,
-    effective: overridden ? { ...upstream, context_length: 64000 } : upstream,
-    overrides: overridden ? [savedOverride] : [],
+    upstream: { ...upstream, model },
+    effective: overridden ? { ...upstream, model, context_length: 64000 } : { ...upstream, model },
+    overrides: overridden ? [override] : [],
     drifted_fields: overridden ? ['pricing.context_length'] : [],
   }
 }
 
-async function mockDatasheet(page: Page, overridden: boolean): Promise<{ writes: Request[] }> {
+type MockOptions = {
+  override?: typeof savedOverride
+  upstreamParams?: Record<string, unknown>
+  model?: string
+}
+
+async function mockDatasheet(page: Page, overridden: boolean, opts: MockOptions = {}): Promise<{ writes: Request[] }> {
   const writes: Request[] = []
+  const row = entry(overridden, opts.override, opts.model)
+  const params = opts.upstreamParams ?? { provider: 'openai', supports_mcp: false }
   await page.route('**/api/models/datasheet?*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ entries: [entry(overridden)], count: 1, total_count: 1, limit: 25, offset: 0 }),
+      body: JSON.stringify({ entries: [row], count: 1, total_count: 1, limit: 25, offset: 0 }),
     }),
   )
   await page.route('**/api/models/datasheet/entry*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...entry(overridden), upstream_params: { provider: 'openai', supports_mcp: false }, effective_params: { provider: 'openai', supports_mcp: false } }),
+      body: JSON.stringify({ ...row, upstream_params: params, effective_params: params }),
     }),
   )
   await page.route('**/api/models/datasheet/overrides**', async (route) => {
@@ -175,5 +183,98 @@ test.describe('Datasheet editor', () => {
       pricing_patch: { max_output_tokens: 2048 },
       params_patch: { max_output_tokens: 2048 },
     })
+  })
+
+  test('the limit reset control shows only for a typed value or a saved cleared limit', async ({ page, datasheetPage }) => {
+    const { writes } = await mockDatasheet(page, true, {
+      override: { ...savedOverride, pricing_patch: { context_length: null, max_input_tokens: 1000 } },
+    })
+    await datasheetPage.goto()
+    await datasheetPage.openEntry('openai', 'e2e-datasheet-model', 'chat')
+
+    // Empty and never saved: nothing to reset.
+    await expect(datasheetPage.limitInput('max_output_tokens')).toHaveValue('')
+    await expect(datasheetPage.limitReset('max_output_tokens')).toHaveCount(0)
+    // "0" is a typed value, so it can be reset even though it is falsy as a number.
+    await datasheetPage.limitInput('max_output_tokens').fill('0')
+    await expect(datasheetPage.limitReset('max_output_tokens')).toBeVisible()
+    await datasheetPage.limitReset('max_output_tokens').click()
+    await expect(datasheetPage.limitInput('max_output_tokens')).toHaveValue('')
+    await expect(datasheetPage.limitReset('max_output_tokens')).toHaveCount(0)
+
+    // A saved null shows an empty input, but the override still clears the limit.
+    await expect(datasheetPage.limitInput('context_length')).toHaveValue('')
+    await expect(datasheetPage.limitReset('context_length')).toBeVisible()
+    await datasheetPage.limitInput('context_length').fill('32000')
+    await datasheetPage.limitReset('context_length').click()
+    await expect(datasheetPage.limitInput('context_length')).toHaveValue('')
+    await expect(datasheetPage.limitReset('context_length')).toHaveCount(0)
+
+    await datasheetPage.saveBtn.click()
+    await expect.poll(() => writes.length).toBe(1)
+    // Both the typed value and the saved null are gone; only the untouched limit is sent.
+    expect(writes[0].postDataJSON().pricing_patch).toEqual({ max_input_tokens: 1000 })
+  })
+
+  test('capabilities with no upstream value follow the datasheet without a value', async ({ page, datasheetPage }) => {
+    await mockDatasheet(page, false, {
+      upstreamParams: { provider: 'openai', supports_function_calling: null, supports_tool_choice: false },
+    })
+    await datasheetPage.goto()
+    await datasheetPage.openEntry('openai', 'e2e-datasheet-model', 'chat')
+
+    // undefined (key absent) and null both read as no value.
+    await expect(datasheetPage.flagSelect('supports_reasoning')).toHaveText('Follow datasheet')
+    await expect(datasheetPage.flagSelect('supports_function_calling')).toHaveText('Follow datasheet')
+    // false is a real value and is shown.
+    await expect(datasheetPage.flagSelect('supports_tool_choice')).toHaveText('Follow datasheet (false)')
+  })
+
+  test('a truncated model name shows its full value in a tooltip', async ({ page, datasheetPage }) => {
+    const model = `e2e-datasheet-${'very-long-model-name-'.repeat(8)}end`
+    await mockDatasheet(page, false, { model })
+    await datasheetPage.goto()
+
+    const label = datasheetPage.row('openai', model, 'chat').getByText(model, { exact: true })
+    await expect(label).toBeVisible()
+    await label.hover()
+    await expect(page.getByRole('tooltip')).toHaveText(model)
+  })
+
+  test('the edit action stays pinned while the table scrolls sideways', async ({ page, datasheetPage }) => {
+    await page.setViewportSize({ width: 900, height: 800 })
+    await mockDatasheet(page, false)
+    await datasheetPage.goto()
+
+    const edit = datasheetPage.editBtn('openai', 'e2e-datasheet-model', 'chat')
+    await expect(edit).toBeVisible()
+    const scroller = datasheetPage.table.locator('[data-slot="table-container"]')
+    const canScroll = await scroller.evaluate((el) => el.scrollWidth > el.clientWidth)
+    expect(canScroll).toBe(true)
+
+    const atStart = await edit.boundingBox()
+    await scroller.evaluate((el) => {
+      el.scrollLeft = el.scrollWidth
+    })
+    const atEnd = await edit.boundingBox()
+    expect(atStart).not.toBeNull()
+    expect(atEnd?.x).toBe(atStart?.x)
+    await edit.click()
+    await expect(datasheetPage.sheet).toBeVisible()
+  })
+
+  test('filters and the add button stay reachable on a narrow screen', async ({ page, datasheetPage }) => {
+    await page.setViewportSize({ width: 390, height: 800 })
+    await mockDatasheet(page, false)
+    await datasheetPage.goto()
+
+    for (const testId of ['datasheet-search-input', 'datasheet-provider-filter', 'datasheet-overridden-only-switch', 'datasheet-add-custom-btn']) {
+      const control = page.getByTestId(testId)
+      await expect(control).toBeInViewport()
+      const box = await control.boundingBox()
+      expect(box && box.x >= 0 && box.x + box.width <= 390, `${testId} fits in the viewport`).toBe(true)
+    }
+    await datasheetPage.addCustomBtn.click()
+    await expect(datasheetPage.sheet).toBeVisible()
   })
 })

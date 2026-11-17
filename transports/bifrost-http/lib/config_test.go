@@ -769,14 +769,14 @@ func (m *MockConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID st
 func (m *MockConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
 	return nil, configstore.ErrNotFound
 }
-func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	return nil
 }
-func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
 	return 0, nil
@@ -20244,6 +20244,10 @@ var excludedGoFields = map[string]map[string]bool{
 		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
 		"mcp_max_protocol_version":        true,
 		"mcp_server_max_protocol_version": true,
+		// The Bifrost MCP server (/v1/mcp) is not released yet: config.json still reads
+		// these, but the schema leaves them out so they are not advertised.
+		"bifrost_url":              true,
+		"bifrost_mcp_allow_writes": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// Phrase suggestions are a model router's: the type is shared with
@@ -20350,7 +20354,7 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	"schemas.PluginConfig":            {},
 	"framework.FrameworkConfig":       {},
-	"modelcatalog.Config":             {},
+	"modelcatalog.Config":             {"openapi_url": true}, // the Bifrost MCP's spec; unreleased, so left out of the schema
 	"tables.GlobalHeaderFilterConfig": {},
 	"configstore.AuthConfig":          {},
 	"schemas.MCPStdioConfig":          {},

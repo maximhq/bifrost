@@ -46,7 +46,8 @@ type ConfigView struct {
 	// ManagementToolSizes is what each kind adds to every Warp request, so the
 	// settings page can say what turning one on costs. Empty while the Bifrost MCP is not loaded.
 	ManagementToolSizes []ManagementToolSize `json:"management_tool_sizes,omitempty"`
-	BifrostMCPAvailable bool                 `json:"bifrost_mcp_available"` // Warp answers only while this is true
+	BifrostMCPAvailable bool                 `json:"bifrost_mcp_available"` // Warp answers only while this is true, when BifrostMCPEnabled
+	BifrostMCPEnabled   bool                 `json:"bifrost_mcp_enabled"`   // Warp uses the Bifrost MCP at all; off, the settings page and panel hide its setup
 }
 
 // ConfigInput is a configuration write.
@@ -224,6 +225,7 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 			ManagementWritesAvailable: catalog.hasWrites(),
 			ManagementToolSizes:       catalog.sizes(),
 			BifrostMCPAvailable:       s.bifrostMCPAvailable(),
+			BifrostMCPEnabled:         s.bifrostMCP,
 		}, nil
 	}
 	return s.configViewFromRow(row), nil
@@ -626,6 +628,7 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		VectorStoreConnected:      s.vectorStore != nil,
 		ManagementWrites:          nonNilStrings(config.ManagementWrites),
 		BifrostMCPAvailable:       s.bifrostMCPAvailable(),
+		BifrostMCPEnabled:         s.bifrostMCP,
 	}
 	_, catalog := s.managementTools()
 	view.ManagementWritesAvailable = catalog.hasWrites()
