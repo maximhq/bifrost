@@ -414,8 +414,8 @@ func TestPassthroughStreamUsageCorrectUpstreamsUnchanged(t *testing.T) {
 	}
 }
 
-// A stream that never sends a cache-aware event must still report its input_tokens.
-func TestPassthroughStreamUsageNoCacheCountersFallsBackToLooseInput(t *testing.T) {
+// A stream that never reports a cache counter must still report its input_tokens.
+func TestPassthroughStreamUsageNoCacheCountersKeepsInputTokens(t *testing.T) {
 	p, _ := observePassthroughUsage(t,
 		`{"type":"message_start","message":{"usage":{"input_tokens":500,"output_tokens":0}}}`,
 		`{"type":"message_delta","usage":{"output_tokens":7}}`)
@@ -426,10 +426,9 @@ func TestPassthroughStreamUsageNoCacheCountersFallsBackToLooseInput(t *testing.T
 
 // An upstream may report cache creation only as the ephemeral breakdown, without the top-level
 // cache_creation_input_tokens. Anthropic documents cache_creation as the 5m/1h split OF that
-// total, so such a frame is still cache-aware and must be treated as authoritative for
-// input_tokens. Deciding authority on the two top-level counters alone misread it as cache-less
-// and fell back to the prompt-scale figure.
-func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
+// total, so such a delta carries a non-zero prompt counter and its split replaces message_start's.
+// Reading only the two top-level counters misread it as cache-less and kept the prompt-scale figure.
+func TestPassthroughStreamUsageBreakdownOnlyDeltaReplacesStart(t *testing.T) {
 	const (
 		breakdownOnlyStart = `{"type":"message_start","message":{"id":"msg_b","type":"message",` +
 			`"role":"assistant","model":"claude-opus-5","content":[],` +
@@ -438,7 +437,7 @@ func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
 			`"usage":{"input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":49000},` +
 			`"output_tokens":20}}`
 	)
-	// message_delta is authoritative via its ephemeral breakdown, so input_tokens is 1000, not the
+	// message_delta reports a non-zero split, so its input_tokens of 1000 replaces the
 	// prompt-scale 50000. cache_creation_input_tokens is absent, so the 49000-token breakdown IS
 	// the cache-creation total and must be counted — dropping it silently undercounts the prompt.
 	const wantPrompt = 1000 + 49000
@@ -470,10 +469,10 @@ func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
 
 // A message_start can carry a prompt-scale input_tokens together with a PARTIALLY known cache_read
 // — the shape #5510's hierarchical-cache explanation predicts, where the final split is not settled
-// when message_start is emitted. That frame clears any authority test, so max-merging input_tokens
-// and cache_read independently keeps the prompt-scale figure and adds the final cache_read on top,
-// reproducing the original double-count. Latching input_tokens from the event with the largest
-// cache total instead takes the two numbers from the same frame.
+// when message_start is emitted. Max-merging input_tokens and cache_read independently keeps the
+// prompt-scale figure and adds the final cache_read on top, reproducing the original double-count.
+// Taking every prompt counter message_delta reports from message_delta keeps the two numbers from
+// the same frame.
 func TestPassthroughStreamUsagePartiallyKnownCacheOnMessageStart(t *testing.T) {
 	const (
 		partialStart = `{"type":"message_start","message":{"id":"msg_p","type":"message",` +
@@ -578,6 +577,22 @@ func TestPassthroughStreamUsageDeltaReplacesOnlyReportedCounters(t *testing.T) {
 			`{"type":"message_delta","usage":{"input_tokens":250,"cache_read_input_tokens":null,"output_tokens":16}}`,
 			250+8931)
 	})
+}
+
+// A delta that reports only the 5m/1h split speaks for the cache-write total too: message_start's
+// stale top-level total must not win over it.
+func TestPassthroughStreamUsageSplitOnlyDeltaReplacesStartTotal(t *testing.T) {
+	const (
+		start = `{"type":"message_start","message":{"usage":{"input_tokens":10,` +
+			`"cache_creation_input_tokens":5000,"cache_creation":{"ephemeral_5m_input_tokens":5000},"output_tokens":0}}}`
+		delta = `{"type":"message_delta","usage":{"input_tokens":10,` +
+			`"cache_creation":{"ephemeral_5m_input_tokens":1000,"ephemeral_1h_input_tokens":2000},"output_tokens":5}}`
+	)
+	passthroughBothOrders(t, start, delta, 10+3000)
+	d := promptDetails(t, start, delta)
+	if d == nil || d.CachedWriteTokens != 3000 || d.CachedWriteTokenDetails == nil || d.CachedWriteTokenDetails.CachedWriteTokens1h != 2000 {
+		t.Errorf("prompt details = %+v, want 3000 writes with 2000 at 1h", d)
+	}
 }
 
 // Compaction passes arrive only in message_delta usage.iterations. They are folded into the total

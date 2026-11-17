@@ -2181,13 +2181,6 @@ const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
 // compaction summarization pass when context_management compaction fires.
 const AnthropicUsageIterationTypeCompaction = "compaction"
 
-// billableAnthropicUsage returns the usage Anthropic actually charges for billing.
-// Top-level input/output/cache fields mirror the reply (message) pass only; the
-// compaction pass is listed separately under usage.iterations. When iterations
-// are present, fold compaction iteration token counts into the top-level fields.
-// Server-side fallback iterations are not added — top-level already mirrors the
-// billed serving attempt and declining attempts must not be summed. When
-// iterations are absent, top-level fields are already complete.
 // anthropicCacheCreationTotal returns the cache-write tokens a usage object bills. cache_creation is
 // the 5m/1h split OF cache_creation_input_tokens, a breakdown and not an addend, so it stands in for
 // the total only when the top-level counter is absent. Every Anthropic usage converter goes through
@@ -2202,6 +2195,13 @@ func anthropicCacheCreationTotal(u *AnthropicUsage) int {
 	return u.CacheCreation.Ephemeral5mInputTokens + u.CacheCreation.Ephemeral1hInputTokens
 }
 
+// billableAnthropicUsage returns the usage Anthropic actually charges for billing.
+// Top-level input/output/cache fields mirror the reply (message) pass only; the
+// compaction pass is listed separately under usage.iterations. When iterations
+// are present, fold compaction iteration token counts into the top-level fields.
+// Server-side fallback iterations are not added — top-level already mirrors the
+// billed serving attempt and declining attempts must not be summed. When
+// iterations are absent, top-level fields are already complete.
 func billableAnthropicUsage(u *AnthropicUsage) *AnthropicUsage {
 	if u == nil {
 		return nil

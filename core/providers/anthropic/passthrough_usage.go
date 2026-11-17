@@ -285,6 +285,12 @@ func (a *AnthropicPassthroughStreamUsage) resolvePrompt() anthropicPromptSplit {
 	}
 	if d.reported&anthropicPromptCounterCacheCreation != 0 {
 		p.cacheWrite5m, p.cacheWrite1h = d.cacheWrite5m, d.cacheWrite1h
+		if d.reported&anthropicPromptCounterCacheCreationInputTokens == 0 {
+			// The split is a breakdown of the total, so a delta that reports only the split speaks
+			// for the total too; message_start's total would otherwise win over it in
+			// anthropicCacheCreationTotal.
+			p.cacheWrite = 0
+		}
 	} else if d.reported&anthropicPromptCounterCacheCreationInputTokens != 0 && p.cacheWrite5m+p.cacheWrite1h > p.cacheWrite {
 		// message_start's 5m/1h split no longer fits inside the total the delta replaced it with,
 		// so it described a different figure; keeping it would bill writes that did not happen.
