@@ -10,6 +10,7 @@ const providerName = `otel-e2e-${process.pid}-${Date.now()}`;
 const modelName = "hello-world";
 const requestedModel = `${providerName}/${modelName}`;
 const requestID = `otel-e2e-request-${process.pid}-${Date.now()}`;
+const requestIDValue = Buffer.concat([Buffer.from([0x0a, Buffer.byteLength(requestID)]), Buffer.from(requestID)]);
 const errorRequestID = `otel-e2e-error-${process.pid}-${Date.now()}`;
 const streamErrorRequestID = `otel-e2e-stream-error-${process.pid}-${Date.now()}`;
 const responsesRefusalRequestID = `otel-e2e-responses-refusal-${process.pid}-${Date.now()}`;
@@ -79,7 +80,12 @@ function createOtelReceiver() {
 				body,
 			});
 			res.writeHead(200, { "content-type": "application/x-protobuf" });
-			res.end("");
+			if (body.includes(requestIDValue)) {
+				// ExportTraceServiceResponse.partial_success.rejected_spans = 1.
+				res.end(Buffer.from([0x0a, 0x02, 0x08, 0x01]));
+			} else {
+				res.end("");
+			}
 			return;
 		}
 		if (req.method === "POST" && req.url === "/v1/metrics") {
@@ -886,6 +892,13 @@ async function main() {
 
 		await assertOtelReceived();
 		await assertOtelMetricsReceived();
+		await poll("OTEL trace rejection metrics", 12000, () =>
+			state.otelMetricRequests.some(({ body }) =>
+				body.includes("bifrost_otel_trace_rejected_spans_total") &&
+				body.includes("bifrost_otel_trace_partial_exports_total") &&
+				body.includes("bifrost.otel.profile_index"),
+			),
+		);
 		const metrics = await assertPrometheusScrape();
 		const log = await assertLoggingTrace();
 		assertMetricsMatchLogs(metrics, log);
@@ -916,6 +929,11 @@ async function main() {
 		await assertOtelResponsesFinishReason();
 		// 7, not 6: the abandoned request reaches the upstream before the client aborts.
 		assertMockProviderRequest(7);
+		const acknowledged = state.otelTraceRequests.filter(({ body }) => body.includes(requestIDValue));
+		if (acknowledged.length !== 1) {
+			throw new Error(`expected one partially acknowledged trace export, got ${acknowledged.length}`);
+		}
+		console.log("  Partial trace acknowledgement emitted both OTel rejection counters without a retry.");
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);

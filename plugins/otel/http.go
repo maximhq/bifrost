@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,9 @@ import (
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// Match the default gRPC receive limit for both compressed and decoded HTTP bodies.
+const maxTraceResponseBytes = 4 << 20
 
 // OtelClientHTTP is the implementation of the OpenTelemetry client for HTTP
 type OtelClientHTTP struct {
@@ -28,6 +32,7 @@ func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert str
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// The global proxy when it is enabled for API traffic, else the environment.
 	transport.Proxy = network.DefaultProxyFunc(network.ClientPurposeAPI)
+	transport.DisableCompression = true // Bound gzip input before decoding it.
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 10
 	transport.IdleConnTimeout = 120 * time.Second
@@ -46,17 +51,22 @@ func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert str
 
 // Emit sends a trace to the OpenTelemetry collector
 func (c *OtelClientHTTP) Emit(ctx context.Context, rs []*ResourceSpan) error {
+	_, err := c.emit(ctx, rs)
+	return err
+}
+
+func (c *OtelClientHTTP) emit(ctx context.Context, rs []*ResourceSpan) (traceExportResult, error) {
 	payload, err := proto.Marshal(&collectorpb.ExportTraceServiceRequest{ResourceSpans: rs})
 	if err != nil {
 		logger.Error("[otel] failed to marshal trace: %v", err)
-		return err
+		return traceExportResult{}, err
 	}
 	var body bytes.Buffer
 	body.Write(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)
 	if err != nil {
 		logger.Error("[otel] failed to create request: %v", err)
-		return err
+		return traceExportResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	if c.headers != nil {
@@ -67,20 +77,53 @@ func (c *OtelClientHTTP) Emit(ctx context.Context, rs []*ResourceSpan) error {
 			req.Header.Set(key, value)
 		}
 	}
+	if req.Header.Get("Accept-Encoding") == "" {
+		req.Header.Set("Accept-Encoding", "gzip")
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		logger.Error("[otel] failed to send request to %s: %v", c.endpoint, err)
-		return err
+		return traceExportResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		// Discard the body to avoid leaking memory
 		_, _ = io.Copy(io.Discard, resp.Body)
 		logger.Error("[otel] collector at %s returned status %s", c.endpoint, resp.Status)
-		return fmt.Errorf("collector returned %s", resp.Status)
+		return traceExportResult{}, fmt.Errorf("collector returned %s", resp.Status)
 	}
-	logger.Debug("[otel] successfully sent trace to %s, status: %s", c.endpoint, resp.Status)
-	return nil
+	logger.Debug("[otel] received a trace acknowledgement from %s, status: %s", c.endpoint, resp.Status)
+	if resp.ContentLength == 0 {
+		return traceExportResult{}, nil
+	}
+	if resp.ContentLength > maxTraceResponseBytes {
+		return traceExportResult{}, fmt.Errorf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+	}
+	compressed := &io.LimitedReader{R: resp.Body, N: maxTraceResponseBytes + 1}
+	var responseBody io.Reader = compressed
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		decompressed, err := gzip.NewReader(compressed)
+		if err != nil {
+			return traceExportResult{}, fmt.Errorf("read gzip OTLP trace acknowledgement: %w", err)
+		}
+		defer decompressed.Close()
+		responseBody = decompressed
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(responseBody, maxTraceResponseBytes+1))
+	if compressed.N == 0 {
+		return traceExportResult{}, fmt.Errorf("compressed OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+	}
+	if err != nil {
+		return traceExportResult{}, fmt.Errorf("read OTLP trace acknowledgement: %w", err)
+	}
+	if len(bodyBytes) > maxTraceResponseBytes {
+		return traceExportResult{}, fmt.Errorf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+	}
+	var reply collectorpb.ExportTraceServiceResponse
+	if err := proto.Unmarshal(bodyBytes, &reply); err != nil {
+		return traceExportResult{}, fmt.Errorf("invalid OTLP trace acknowledgement")
+	}
+	return traceExportResult{partialSuccess: reply.GetPartialSuccess(), headers: c.headers}, nil
 }
 
 // Close closes the HTTP client

@@ -48,7 +48,7 @@ func blackholeListener(t *testing.T) (addr string, stop func()) {
 	}
 }
 
-func testTarget(t *testing.T, client OtelClient, timeout time.Duration) *otelTarget {
+func testTarget(t *testing.T, client traceExporter, timeout time.Duration) *otelTarget {
 	t.Helper()
 	return &otelTarget{
 		serviceName:   "test-svc",
@@ -128,9 +128,9 @@ func TestInject_HTTPExportHonoursTimeout(t *testing.T) {
 // failingClient always errors, standing in for a permanently misconfigured collector.
 type failingClient struct{ calls atomic.Int64 }
 
-func (c *failingClient) Emit(_ context.Context, _ []*ResourceSpan) error {
+func (c *failingClient) emit(_ context.Context, _ []*ResourceSpan) (traceExportResult, error) {
 	c.calls.Add(1)
-	return errors.New("collector unreachable")
+	return traceExportResult{}, errors.New("collector unreachable")
 }
 func (c *failingClient) Close() error { return nil }
 
