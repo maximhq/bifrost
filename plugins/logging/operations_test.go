@@ -918,7 +918,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
-	pricingManager := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	pricingManager := catalogWithDatasheetForTest(t, ds)
 
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, pricingManager, nil)
 	if err != nil {
@@ -1301,7 +1301,7 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {

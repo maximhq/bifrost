@@ -7,7 +7,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
@@ -16,7 +15,7 @@ import (
 // newestTestHandler serves two providers whose list-models responses were
 // cached with creation times, plus one model without a time.
 func newestTestHandler(t testing.TB) *ProviderHandler {
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLiveFromResponse(schemas.OpenAI, "key-a", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/synthetic-old", Created: schemas.Ptr(int64(100))},
 		{ID: "openai/synthetic-new", Created: schemas.Ptr(int64(300))},
@@ -114,7 +113,7 @@ func TestListNewestModelsUnfilteredReadsUnfilteredTimes(t *testing.T) {
 // live store, which holds one record per key ID.
 func BenchmarkListNewestModels(b *testing.B) {
 	providers := []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Mistral}
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(b, nil)
 	filtered := make(map[schemas.ModelProvider][]string, len(providers))
 	configs := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
 	for _, provider := range providers {

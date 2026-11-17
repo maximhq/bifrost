@@ -26,7 +26,7 @@ func newInteractionPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	require.NoError(t, os.WriteFile(path, []byte(sheet), 0o600))
 	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 // sendInteractionRead drives one passthrough request through the plugin the way the gateway does,
@@ -224,4 +224,16 @@ func TestPostLLMHookSettlesAStreamedInteractionWhenItEnds(t *testing.T) {
 	assert.True(t, streamRow.Stream)
 	assert.Equal(t, testInteractionAgent, streamRow.Model)
 	assert.True(t, streamRow.Cost == nil || *streamRow.Cost == 0, "the stream's own row is not billed for the run: cost=%v", streamRow.Cost)
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

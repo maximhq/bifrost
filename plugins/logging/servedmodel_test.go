@@ -9,7 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -33,7 +32,7 @@ func newServedModelPlugin(t *testing.T) *LoggerPlugin {
 	}
 	return &LoggerPlugin{
 		store:          newTestStore(t),
-		pricingManager: modelcatalog.NewTestCatalogWithDatasheet(ds),
+		pricingManager: catalogWithDatasheetForTest(t, ds),
 		logger:         testLogger{},
 	}
 }

@@ -40,7 +40,7 @@ func providerScopeTestCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 // providerScopeTestProviderConfig gives one of the key's providers a budget and a rate limit of its own,

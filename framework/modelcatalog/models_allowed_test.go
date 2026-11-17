@@ -9,18 +9,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 // TestIsModelAllowedForProvider_ExplicitList pins the explicit-allowlist branch
 // after the option-1 lazy-defer rewrite: bare-name and provider-prefixed
 // matching must behave exactly as before.
 func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
+	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
 	withTestCaches(t, mc)
@@ -62,10 +61,11 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 // ("us.anthropic.claude-sonnet-4-6") must permit it. Aliases only ever widen a name to the
 // model it stands for, so the allowlist still decides which models can be reached.
 func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
+	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(nil),
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
 	withTestCaches(t, mc)
@@ -136,10 +136,11 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 // the name, and a restriction that allows no key admits no alias (#6620 review: the virtual key's
 // own key_ids were ignored by the every-key rule).
 func TestKeyAliasesResolveToAllowed_KeyIDs(t *testing.T) {
+	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(nil),
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
 	withTestCaches(t, mc)
@@ -285,10 +286,11 @@ func TestMayBeKeyAlias(t *testing.T) {
 // explicit allowlist. "direct" is the common case and must not change; "alias" and "blocked" are
 // the paths the key-alias lookup adds work to, on a provider with 3 keys of 20 aliases each.
 func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
+	liveModels, keyconf := stateStoresForTest(b)
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(nil),
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
 	withTestCaches(b, mc)

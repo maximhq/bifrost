@@ -8,7 +8,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -19,7 +18,7 @@ func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	t.Helper()
 	ds := datasheet.NewTestStore(nil)
 	ds.SetSupportedParamsForTest(supported)
-	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), catalogWithDatasheetForTest(t, ds))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -185,7 +184,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 			"no-reasoning-with-tools": {"reasoning", "tools"},
 			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
 		})
-		mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+		mc := catalogWithDatasheetForTest(t, ds)
 		mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"team-reasoner": {ModelID: "no-reasoning-with-tools"}}}})
 		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc)
 		if err != nil {
@@ -390,7 +389,7 @@ func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases
 	t.Helper()
 	ds := datasheet.NewTestStore(nil)
 	ds.SetSupportedParamsForTest(supported)
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
 	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
 	if err != nil {
@@ -495,7 +494,7 @@ func TestPluginDropParamsAliasOnOtherProvider(t *testing.T) {
 func BenchmarkPreLLMHookDropParams(b *testing.B) {
 	ds := datasheet.NewTestStore(nil)
 	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(b, ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
 	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
 	if err != nil {

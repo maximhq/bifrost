@@ -51,9 +51,6 @@ func (mc *ModelCatalog) GetMaxOutputTokens(model string, provider schemas.ModelP
 		}
 		return 0
 	}
-	if mc.maxOutputTokens == nil {
-		return compute()
-	}
 	// "Nothing known" (0) is kept only for catalogNegativeTTL, so model names nobody serves do not
 	// accumulate.
 	return mc.maxOutputTokens.GetOrCompute(livestore.EncodeKey(string(provider), model), func() (int, time.Duration, bool) {

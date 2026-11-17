@@ -11,22 +11,28 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// initDatasheetOverrideCatalog boots a catalog on a shared sqlite store with
-// local datasheet files and MCP library sync disabled.
+// initDatasheetOverrideCatalog boots a catalog on a shared sqlite store, with a
+// live store of its own loaded from it, local datasheet files and MCP library
+// sync disabled.
 func initDatasheetOverrideCatalog(t *testing.T, cs configstore.ConfigStore, dir string) *ModelCatalog {
 	t.Helper()
 	pricingURL := "file://" + filepath.Join(dir, "pricing.json")
 	paramsURL := "file://" + filepath.Join(dir, "params.json")
 	disabled := int64(0)
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	require.NoError(t, live.LoadAll(context.Background(), cs.DB()))
 	mc, err := Init(context.Background(), &Config{
 		PricingURL:             &pricingURL,
 		ModelParametersURL:     &paramsURL,
 		MCPLibrarySyncInterval: &disabled,
-	}, cs, nil, bifrost.NewNoOpLogger())
+	}, cs, live, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mc.Cleanup() })
 	return mc

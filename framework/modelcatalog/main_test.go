@@ -12,7 +12,10 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
+	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +36,7 @@ func newSyncTestCatalog(t *testing.T, gateOpen bool) (*ModelCatalog, *int) {
 		ModelParametersURL: "file://" + paramsPath,
 		SyncInterval:       time.Hour,
 	})
-	mc := NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.logger = logger
 	mc.distributedLockManager = configstore.NewDistributedLockManager(nil, logger)
 
@@ -98,7 +101,7 @@ func TestRunParamsSyncSerializesSharedDatabaseSnapshot(t *testing.T) {
 		path := filepath.Join(t.TempDir(), model+".json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"custom-anthropic/`+model+`":{"provider":"custom-anthropic","max_output_tokens":32000}}`), 0o600))
 		ds := datasheet.New(cs, logger, datasheet.Config{ModelParametersURL: "file://" + path})
-		mc := NewTestCatalogWithDatasheet(ds)
+		mc := catalogWithDatasheetForTest(t, ds)
 		mc.configStore = cs
 		mc.logger = logger
 		mc.distributedLockManager = configstore.NewDistributedLockManager(cs, logger)
@@ -198,4 +201,58 @@ func TestForceReloadPricingGateOpenFiresHookOnce(t *testing.T) {
 	require.NoError(t, mc.ForceReloadPricing(context.Background()))
 
 	require.Equal(t, 1, *hookCalls)
+}
+
+// stateStoresForTest returns a live-models store and a key config store over a new live store
+// closed when the test ends.
+func stateStoresForTest(t testing.TB) (*live.Store, *keyconfig.Store) {
+	t.Helper()
+	store, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	liveModels, err := live.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyconf, err := keyconfig.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return liveModels, keyconf
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *ModelCatalog {
+	t.Helper()
+	catalog, err := NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *ModelCatalog {
+	t.Helper()
+	catalog, err := NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// TestCleanupIsSafeToCallTwice pins that a second Cleanup is a no-op: test
+// helpers register Cleanup at test end while tests and Config.Close may call it
+// on the same catalog first.
+func TestCleanupIsSafeToCallTwice(t *testing.T) {
+	catalog, err := NewTestCatalog(nil)
+	require.NoError(t, err)
+	require.NoError(t, catalog.Cleanup())
+	require.NotPanics(t, func() { require.NoError(t, catalog.Cleanup()) })
 }

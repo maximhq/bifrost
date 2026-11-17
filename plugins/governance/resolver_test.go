@@ -1482,7 +1482,7 @@ func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
 	h := newLiveHarness(t, &configstore.GovernanceConfig{}, &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
 	}})
-	plugin := &GovernancePlugin{modelCatalog: modelcatalog.NewTestCatalog(nil), live: h.live}
+	plugin := &GovernancePlugin{modelCatalog: catalogForTest(t, nil), live: h.live}
 
 	matcher := plugin.modelMatcher(emptyCtx())
 	require.NotNil(t, matcher)
@@ -1510,7 +1510,7 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, fixture)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1547,7 +1547,7 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1627,7 +1627,7 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 			RateLimits:   []configstoreTables.TableRateLimit{*modelRL},
 		}, nil, store)
 		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin, local
@@ -1710,7 +1710,7 @@ func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
 			RateLimits: []configstoreTables.TableRateLimit{*rlLarge, *rlMini},
 		}, nil, store)
 		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin, local
@@ -1795,7 +1795,7 @@ func TestLiteralAccessKeepsTheLevelsThatCapTheAccess(t *testing.T) {
 	access := grant.NewAccess([]schemas.Permit{caller, team}, grant.Intersect, nil, "", nil)
 	require.False(t, access.IsModelAllowed("openai", "gpt-4o"), "the team level caps gpt-4o")
 
-	literal := literalAccessFor(access, modelcatalog.NewTestCatalog(nil), newLiveHarness(t, &configstore.GovernanceConfig{}, store).live)
+	literal := literalAccessFor(access, catalogForTest(t, nil), newLiveHarness(t, &configstore.GovernanceConfig{}, store).live)
 
 	assert.True(t, literal.IsModelAllowed("openai", "gpt-4o-mini"))
 	assert.False(t, literal.IsModelAllowed("openai", "gpt-4o"), "the literal access must stay capped by the team level")
@@ -1817,7 +1817,7 @@ func BenchmarkLimitsForKeyThatRan(b *testing.B) {
 	logger := NewMockLogger()
 	local, err := newTestGovernanceStore(b, logger, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, nil, store)
 	require.NoError(b, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(b, nil), nil, local.live)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = plugin.Cleanup() })
 	for _, bc := range []struct{ name, model, ran string }{{"no_alias", "gpt-4o", ""}, {"keys_agree", "top-gpt", "gpt-4o"}, {"keys_disagree", "best-gpt", "gpt-4o"}} {
@@ -1879,7 +1879,7 @@ func TestAliasRulesFollowTheKeysThatCanServeTheRequest(t *testing.T) {
 	logger := NewMockLogger()
 	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{VirtualKeys: tables}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1969,7 +1969,7 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 		RateLimits:   []configstoreTables.TableRateLimit{*exhausted},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2019,7 +2019,7 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk, *plain},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2071,7 +2071,7 @@ func TestLiteralRequestsKeepProviderLimitsWhenAnAliasTargetIsBlacklisted(t *test
 	for _, catalog := range []struct {
 		name    string
 		catalog *modelcatalog.ModelCatalog
-	}{{"with catalog", modelcatalog.NewTestCatalog(nil)}, {"without catalog", nil}} {
+	}{{"with catalog", catalogForTest(t, nil)}, {"without catalog", nil}} {
 		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalog.catalog, nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
@@ -2115,7 +2115,7 @@ func BenchmarkLiteralAccessFor(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), local, nil, catalogForTest(b, nil), nil, local.live)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2146,7 +2146,7 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2209,7 +2209,7 @@ func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
 		Budgets:      exhausted.Budgets,
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2255,7 +2255,7 @@ func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2330,7 +2330,7 @@ func BenchmarkPreLLMHookKeyAliases(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, local.live)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(b, nil), nil, local.live)
 	if err != nil {
 		b.Fatal(err)
 	}

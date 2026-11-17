@@ -423,7 +423,7 @@ func embeddingPricedCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	require.NoError(t, os.WriteFile(path, []byte(`{"text-embedding-3-small":{"input_cost_per_token":2e-08,"provider":"openai","mode":"embedding"}}`), 0o600))
 	store := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
 	require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
-	return modelcatalog.NewTestCatalogWithDatasheet(store)
+	return catalogWithDatasheetForTest(t, store)
 }
 
 func runBackfillToEnd(t *testing.T, service *Service, start time.Time) (BackfillJobMeta, error) {
@@ -485,7 +485,7 @@ func TestWarpBackfillLeavesCostUnsetWhenModelUnpriced(t *testing.T) {
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
-		WithModelCatalog(modelcatalog.NewTestCatalogWithDatasheet(store)),
+		WithModelCatalog(catalogWithDatasheetForTest(t, store)),
 	)
 	defer service.Shutdown()
 
@@ -940,4 +940,16 @@ func TestRegisterBackfillRegistersTopicsWithoutAnIndexer(t *testing.T) {
 
 	require.NoError(t, runner.Enqueue(context.Background(), "topics-1", TopicsJobKind, "{}", ""))
 	require.Error(t, runner.Enqueue(context.Background(), "backfill-1", BackfillJobKind, "{}", ""), "the backfill does need the indexer")
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

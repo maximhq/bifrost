@@ -65,9 +65,6 @@ func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider, unf
 //
 // Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
-	if mc.modelsForProvider == nil {
-		return mc.computeModelsForProvider(provider)
-	}
 	// Cloned: callers sort the result in place. An empty answer is not kept.
 	return slices.Clone(mc.modelsForProvider.GetOrCompute(string(provider), func() ([]string, time.Duration, bool) {
 		models := mc.computeModelsForProvider(provider)
@@ -243,8 +240,8 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 	return mc.datasheet.WriteGen() + mc.keyconf.WriteGen() + mc.live.WriteGen()
 }
 
-// initCaches builds the capability cache and the catalog's generation tables in live. A catalog
-// built without them computes every answer: every cached getter is safe on a nil table.
+// initCaches builds the capability cache and the catalog's generation tables in live. Every
+// catalog has them: Init and the test constructors both call it.
 func (mc *ModelCatalog) initCaches(live *livestore.Store) error {
 	ctx := context.Background()
 	var err error
@@ -269,9 +266,6 @@ func (mc *ModelCatalog) initCaches(live *livestore.Store) error {
 // GetProvidersForModel returns every provider that can serve the model.
 // Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
-	if mc.providersForModel == nil {
-		return mc.computeProvidersForModel(model)
-	}
 	// Cloned: the resolver sorts the result in place. An empty answer is not kept.
 	return slices.Clone(mc.providersForModel.GetOrCompute(model, func() ([]schemas.ModelProvider, time.Duration, bool) {
 		providers := mc.computeProvidersForModel(model)

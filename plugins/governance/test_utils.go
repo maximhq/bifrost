@@ -365,14 +365,20 @@ func fetchDatasheetBaseIndex() {
 }
 
 // newTestModelCatalog creates a test ModelCatalog using the fetched datasheet base model index.
-// This provides proper nil-pointer semantics (unlike an interface wrapper).
+// This provides proper nil-pointer semantics (unlike an interface wrapper). The
+// catalog is cleaned up when the test ends.
 func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	datasheetOnce.Do(fetchDatasheetBaseIndex)
 	if datasheetErr != nil {
 		t.Skipf("skipping: failed to fetch datasheet for test model catalog: %v", datasheetErr)
 	}
-	return modelcatalog.NewTestCatalog(datasheetBaseIndex)
+	catalog, err := modelcatalog.NewTestCatalog(datasheetBaseIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }
 
 // evaluateGrantedRequest runs a request through the two steps the plugin's evaluation funnel runs it

@@ -11,6 +11,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +93,7 @@ func TestLoadBalanceProvider_KeyAliasIsNotRefined(t *testing.T) {
 		buildProviderConfig("databricks", []string{"*"}),
 	})
 	p := newLoadBalanceTestPlugin(t, vk)
-	mc := modelcatalog.NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
 		ID:      "dbx-key",
 		Models:  schemas.WhiteList{"*"},
@@ -691,4 +692,28 @@ func TestRequireSplitCatchesASkew(t *testing.T) {
 	require.Greater(t, stat, critical, "a 60/40 split should fail a 70/30 expectation")
 	stat, critical = splitFit(names, map[string]int{"a": 0.7 * weightDraws, "b": 0.3 * weightDraws}, weights)
 	require.Less(t, stat, critical, "an exact 70/30 split should fit 70/30 weights")
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

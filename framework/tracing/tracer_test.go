@@ -1250,7 +1250,7 @@ func TestPopulateLLMResponseAttributes_ErrorPathHonorsIgnoreProviderCost(t *test
 		{name: "provider cost ignored", ignore: true, wantCost: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
 			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, nil)
 
@@ -1333,7 +1333,7 @@ func TestProcessStreamingChunk_HonorsIgnoreProviderCost(t *testing.T) {
 		{name: "provider cost ignored", ignore: true, wantCost: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
 			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
 
@@ -1376,7 +1376,7 @@ func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", true)
 			uid := userID
 			require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
@@ -1405,7 +1405,7 @@ func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
 // stream finishes, so an off-peak request keeps its discount however late its
 // final chunk lands.
 func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.SetIgnoreProviderCost("cortecs", true)
 	providerID := "cortecs"
 	// Peak covers every day except the 6-hour gap from 00:00 to 06:00 UTC, so
@@ -1649,7 +1649,7 @@ func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.
 	require.NoError(t, err)
 	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	tracer := NewTracer(NewTraceStore(time.Hour, nil), modelcatalog.NewTestCatalogWithDatasheet(ds), bifrost.NewNoOpLogger())
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalogWithDatasheetForTest(t, ds), bifrost.NewNoOpLogger())
 	defer tracer.Stop()
 
 	_, ctx := newHandleTestCtx(tracer)
@@ -1671,4 +1671,28 @@ func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.
 	require.True(t, ok, "no cost recorded for the estimated usage")
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
 	require.InDelta(t, float64(120)*2.5e-6+float64(40)*1e-5, got, 1e-12)
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

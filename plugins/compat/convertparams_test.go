@@ -8,7 +8,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -30,7 +29,7 @@ func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
 		{Model: "gemini-nocap-flash", Provider: string(schemas.Gemini), Mode: "chat"},
 		{Model: "gpt-4o", Provider: string(schemas.OpenAI), Mode: "chat", MaxOutputTokens: new(16384)},
 	})
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.SetKeyConfigForProvider(schemas.Anthropic, []schemas.Key{{
 		ID:      "anthropic-key",
 		Aliases: schemas.KeyAliases{"team-claude": {ModelID: "claude-haiku-4-5-20251001"}},

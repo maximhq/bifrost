@@ -10,21 +10,19 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 // TestProviderMemoInvalidatesOnWrite pins the correctness of the generation
 // stamp: a store write must make GetProvidersForModel recompute, never serve a
 // cached membership from before the write.
 func TestProviderMemoInvalidatesOnWrite(t *testing.T) {
-	kc := keyconfig.New(nil)
+	liveModels, kc := stateStoresForTest(t)
 	kc.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:      live.New(nil),
+		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}
@@ -55,13 +53,13 @@ func TestProviderMemoInvalidatesOnWrite(t *testing.T) {
 // model strings are client-controlled, so caching misses would let junk names
 // grow the memo.
 func TestProviderMemoSkipsEmptyResults(t *testing.T) {
-	kc := keyconfig.New(nil)
+	liveModels, kc := stateStoresForTest(t)
 	kc.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:      live.New(nil),
+		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}
@@ -78,14 +76,14 @@ func TestProviderMemoSkipsEmptyResults(t *testing.T) {
 // TestProviderMemoReturnsClone pins that callers can mutate the returned slice
 // (the resolver sorts it in place) without corrupting the cached entry.
 func TestProviderMemoReturnsClone(t *testing.T) {
-	kc := keyconfig.New(nil)
+	liveModels, kc := stateStoresForTest(t)
 	kc.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI:    {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 		schemas.Anthropic: {{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:      live.New(nil),
+		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}
@@ -117,7 +115,7 @@ func TestMaxOutputTokensMemo(t *testing.T) {
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
 	})
-	mc := withTestCaches(t, NewTestCatalogWithDatasheet(ds))
+	mc := withTestCaches(t, catalogWithDatasheetForTest(t, ds))
 
 	if got := mc.GetMaxOutputTokens("gemini-test-flash", schemas.Gemini); got != 65536 {
 		t.Fatalf("GetMaxOutputTokens(hit) = %d, want 65536", got)
@@ -155,7 +153,7 @@ func TestCatalogMemosKeepUnlistedSpellingsBriefly(t *testing.T) {
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gpt-4o", BaseModel: "gpt-4o", Provider: string(schemas.OpenAI), Mode: "chat", MaxOutputTokens: new(16384)},
 	})
-	mc := withTestCaches(t, NewTestCatalogWithDatasheet(ds))
+	mc := withTestCaches(t, catalogWithDatasheetForTest(t, ds))
 	mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}})
 	yes := true
 	mc.loadCapabilities = func(p schemas.ModelProvider, m string) (*schemas.ModelCapabilities, error) {

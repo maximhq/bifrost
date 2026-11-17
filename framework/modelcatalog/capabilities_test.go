@@ -16,7 +16,7 @@ import (
 func capabilityTestCatalog(t testing.TB, load func(schemas.ModelProvider, string) *schemas.ModelCapabilities) (*ModelCatalog, *int) {
 	t.Helper()
 	calls := 0
-	mc := withTestCaches(t, NewTestCatalog(nil))
+	mc := catalogForTest(t, nil)
 	mc.loadCapabilities = func(p schemas.ModelProvider, m string) (*schemas.ModelCapabilities, error) {
 		calls++
 		return load(p, m), nil
@@ -161,7 +161,7 @@ func TestGetModelCapabilities_DoesNotCacheFailedLoads(t *testing.T) {
 	yes := true
 	calls := 0
 	failing := true
-	mc := withTestCaches(t, NewTestCatalog(nil))
+	mc := catalogForTest(t, nil)
 	mc.loadCapabilities = func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error) {
 		calls++
 		if failing {
@@ -193,7 +193,7 @@ func TestGetModelCapabilities_DoesNotCacheFailedLoads(t *testing.T) {
 // loader builds its own context, so cancelling syncCtx alone does not stop it.
 func TestCleanup_ClearsGlobalCapabilityResolver(t *testing.T) {
 	yes := true
-	mc := withTestCaches(t, NewTestCatalog(nil))
+	mc := catalogForTest(t, nil)
 	mc.loadCapabilities = func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error) {
 		return &schemas.ModelCapabilities{SupportsFastMode: &yes}, nil
 	}
