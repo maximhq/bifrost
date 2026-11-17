@@ -1214,9 +1214,14 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			{"format", schemas.Ptr("mp3"), "audio/mp3"},
 			{"no format uses extension", nil, "audio/wav"},
 		} {
-			request := chatRequest("gemini-2.5-flash", gcsURI, tc.format)
-			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+			original := chatRequest("gemini-2.5-flash", gcsURI, tc.format)
+			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, original); err != nil {
 				t.Fatalf("%s: inlineRemoteURLSources: %v", tc.name, err)
+			}
+			request := forwardGCSAudioChat(ctx, original)
+			origBlock := original.Input[0].Content.ContentBlocks[0]
+			if origBlock.Type != schemas.ChatContentBlockTypeInputAudio || origBlock.InputAudio == nil || origBlock.File != nil {
+				t.Fatalf("%s: original block changed: %#v", tc.name, origBlock)
 			}
 			// No download may happen: the resolver must see nothing to fetch.
 			resolved, err := gemini.ResolveChatAudioURLs(ctx, request)
@@ -1248,6 +1253,12 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 		if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, request); err != nil {
 			t.Fatalf("inlineDocumentURLsResponses: %v", err)
 		}
+		original := request
+		request = forwardGCSAudioResponses(ctx, request)
+		origBlock := original.Input[0].Content.ContentBlocks[0]
+		if origBlock.Type != schemas.ResponsesInputMessageContentBlockTypeAudio || origBlock.Audio == nil || origBlock.ResponsesInputMessageContentBlockFile != nil {
+			t.Fatalf("original block changed: %#v", origBlock)
+		}
 		resolved, err := gemini.ResolveResponsesAudioURLs(ctx, request)
 		if err != nil {
 			t.Fatalf("ResolveResponsesAudioURLs: %v", err)
@@ -1271,9 +1282,33 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
 				t.Fatalf("%s %s: %v", tc.model, tc.url, err)
 			}
+			if got := forwardGCSAudioChat(ctx, request); got != request {
+				t.Fatalf("%s %s: got a copy, want the same request", tc.model, tc.url)
+			}
 			block := request.Input[0].Content.ContentBlocks[0]
 			if block.InputAudio == nil || block.File != nil || block.Type != schemas.ChatContentBlockTypeInputAudio {
 				t.Fatalf("%s %s: audio block rewritten: %#v", tc.model, tc.url, block)
+			}
+
+			responses := &schemas.BifrostResponsesRequest{
+				Model: tc.model,
+				Input: []schemas.ResponsesMessage{{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+						Audio: &schemas.ResponsesInputMessageContentBlockAudio{URL: tc.url, Format: "wav"},
+					}}},
+				}},
+			}
+			if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, responses); err != nil {
+				t.Fatalf("responses %s %s: %v", tc.model, tc.url, err)
+			}
+			if got := forwardGCSAudioResponses(ctx, responses); got != responses {
+				t.Fatalf("responses %s %s: got a copy, want the same request", tc.model, tc.url)
+			}
+			rblock := responses.Input[0].Content.ContentBlocks[0]
+			if rblock.Audio == nil || rblock.ResponsesInputMessageContentBlockFile != nil || rblock.Type != schemas.ResponsesInputMessageContentBlockTypeAudio {
+				t.Fatalf("responses %s %s: audio block rewritten: %#v", tc.model, tc.url, rblock)
 			}
 		}
 	})

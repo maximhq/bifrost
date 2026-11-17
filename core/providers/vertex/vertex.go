@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -580,10 +581,129 @@ func audioFileType(format string) *string {
 	return &format
 }
 
+// forwardGCSAudioChat rewrites gs:// input_audio as a file reference on a copy of
+// request, so a fallback still sees the original block. It returns request unchanged
+// when nothing qualifies.
+func forwardGCSAudioChat(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || request.Input == nil {
+		return request
+	}
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		return request
+	}
+	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
+	if !chatInputForwardsGCSAudio(request.Input, isAnthropicFamily) {
+		return request
+	}
+	copied := *request
+	copied.Input = slices.Clone(request.Input)
+	for mi := range copied.Input {
+		msg := &copied.Input[mi]
+		if msg.Content == nil || !chatBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
+			continue
+		}
+		content := *msg.Content
+		content.ContentBlocks = slices.Clone(content.ContentBlocks)
+		msg.Content = &content
+		for bi := range content.ContentBlocks {
+			block := &content.ContentBlocks[bi]
+			audio := block.InputAudio
+			if audio == nil || audio.Data != "" || audio.URL == "" || !forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+				continue
+			}
+			fileURL := audio.URL
+			format := ""
+			if audio.Format != nil {
+				format = *audio.Format
+			}
+			block.Type = schemas.ChatContentBlockTypeFile
+			block.File = &schemas.ChatInputFile{FileURL: &fileURL, FileType: audioFileType(format)}
+			block.InputAudio = nil
+		}
+	}
+	return &copied
+}
+
+func chatInputForwardsGCSAudio(input []schemas.ChatMessage, isAnthropicFamily bool) bool {
+	for i := range input {
+		if input[i].Content != nil && chatBlocksForwardGCSAudio(input[i].Content.ContentBlocks, isAnthropicFamily) {
+			return true
+		}
+	}
+	return false
+}
+
+func chatBlocksForwardGCSAudio(blocks []schemas.ChatContentBlock, isAnthropicFamily bool) bool {
+	for i := range blocks {
+		audio := blocks[i].InputAudio
+		if audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardGCSAudioResponses is the Responses-API analogue of forwardGCSAudioChat.
+func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil || request.Input == nil {
+		return request
+	}
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		return request
+	}
+	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
+	if !responsesInputForwardsGCSAudio(request.Input, isAnthropicFamily) {
+		return request
+	}
+	copied := *request
+	copied.Input = slices.Clone(request.Input)
+	for mi := range copied.Input {
+		msg := &copied.Input[mi]
+		if msg.Content == nil || !responsesBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
+			continue
+		}
+		content := *msg.Content
+		content.ContentBlocks = slices.Clone(content.ContentBlocks)
+		msg.Content = &content
+		for bi := range content.ContentBlocks {
+			block := &content.ContentBlocks[bi]
+			audio := block.Audio
+			if audio == nil || audio.Data != "" || audio.URL == "" || !forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+				continue
+			}
+			fileURL := audio.URL
+			block.Type = schemas.ResponsesInputMessageContentBlockTypeFile
+			block.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL, FileType: audioFileType(audio.Format)}
+			block.Audio = nil
+		}
+	}
+	return &copied
+}
+
+func responsesInputForwardsGCSAudio(input []schemas.ResponsesMessage, isAnthropicFamily bool) bool {
+	for i := range input {
+		if input[i].Content != nil && responsesBlocksForwardGCSAudio(input[i].Content.ContentBlocks, isAnthropicFamily) {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesBlocksForwardGCSAudio(blocks []schemas.ResponsesMessageContentBlock, isAnthropicFamily bool) bool {
+	for i := range blocks {
+		audio := blocks[i].Audio
+		if audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+			return true
+		}
+	}
+	return false
+}
+
 // inlineRemoteURLSources rewrites document AND image content blocks carrying a URL
 // source into whatever the target model family can actually accept, fetching bytes
 // when the reference cannot be forwarded. Mutates the request in place; safe to call
-// when no such blocks are present. The ctx is propagated to each fetch so request
+// when no such blocks are present. gs:// input_audio is rewritten by forwardGCSAudioChat
+// on a copy of the request. The ctx is propagated to each fetch so request
 // cancellation/deadlines abort in-flight downloads.
 //
 // classifyURLSource holds the per-scheme, per-family rules and cites the provider docs
@@ -623,18 +743,6 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 				}
 			}
 
-			// gs:// audio goes to Gemini as a file reference, like a gs:// file.
-			if audio := block.InputAudio; audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
-				fileURL := audio.URL
-				format := ""
-				if audio.Format != nil {
-					format = *audio.Format
-				}
-				block.Type = schemas.ChatContentBlockTypeFile
-				block.File = &schemas.ChatInputFile{FileURL: &fileURL, FileType: audioFileType(format)}
-				block.InputAudio = nil
-			}
-
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
 			// accepts base64 image sources only.
 			if img := block.ImageURLStruct; img != nil && img.URL != "" {
@@ -666,7 +774,8 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 // inlineDocumentURLsResponses is the Responses-API analogue of inlineRemoteURLSources.
 // File blocks live on ResponsesMessageContentBlock.ResponsesInputMessageContentBlockFile
 // rather than the chat ContentBlock.File, so this walks the responses-shape input.
-// Same per-scheme, per-family rules -- see classifyURLSource.
+// Same per-scheme, per-family rules -- see classifyURLSource. gs:// input_audio is
+// rewritten by forwardGCSAudioResponses on a copy of the request.
 func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) error {
 	if request == nil || request.Input == nil {
 		return nil
@@ -696,14 +805,6 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 					}
 					f.FileURL = nil
 				}
-			}
-
-			// gs:// audio goes to Gemini as a file reference, like a gs:// file.
-			if audio := block.Audio; audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
-				fileURL := audio.URL
-				block.Type = schemas.ResponsesInputMessageContentBlockTypeFile
-				block.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL, FileType: audioFileType(audio.Format)}
-				block.Audio = nil
 			}
 
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
@@ -751,6 +852,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
 	}
+	request = forwardGCSAudioChat(ctx, request)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
@@ -1086,6 +1188,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
 	}
+	request = forwardGCSAudioChat(ctx, request)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use Anthropic-style streaming for Claude models.
 		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks; inline first.
@@ -1341,6 +1444,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
+	request = forwardGCSAudioResponses(ctx, request)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
@@ -1652,6 +1756,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
+	request = forwardGCSAudioResponses(ctx, request)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
 		if region == "" {
@@ -4510,6 +4615,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
+	request = forwardGCSAudioResponses(ctx, request)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
