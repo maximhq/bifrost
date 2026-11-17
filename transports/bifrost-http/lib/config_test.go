@@ -382,6 +382,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -28189,4 +28190,37 @@ func storedGovernance(t *testing.T, config *Config) *configstore.GovernanceConfi
 		return &configstore.GovernanceConfig{}
 	}
 	return gov
+}
+
+// BenchmarkGetOAuth2SigningKey measures the signing-key read every OAuth2 token issuance and JWT
+// check makes once the key is cached: one request at a time, and from every core at once.
+func BenchmarkGetOAuth2SigningKey(b *testing.B) {
+	live, err := livestore.New()
+	require.NoError(b, err)
+	b.Cleanup(live.Close)
+	cfg := &Config{ConfigStore: NewMockConfigStore()}
+	require.NoError(b, cfg.AttachLiveStore(live))
+	ctx := context.Background()
+	_, err = cfg.GetOAuth2SigningKey(ctx)
+	require.NoError(b, err)
+
+	b.Run("cached", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := cfg.GetOAuth2SigningKey(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("cached-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := cfg.GetOAuth2SigningKey(ctx); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

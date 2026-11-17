@@ -77,6 +77,9 @@ func TestFileOnlyModeRefusesConfigurationRoutes(t *testing.T) {
 	t.Cleanup(cancel)
 
 	config := &lib.Config{ClientConfig: &configstore.ClientConfig{}}
+	if err := config.AttachLiveStore(liveStoreForTest(t)); err != nil {
+		t.Fatal(err)
+	}
 	plugins := []schemas.BasePlugin{namedPlugin{name: governance.PluginName}}
 	config.BasePlugins.Store(&plugins)
 	s := &BifrostHTTPServer{Ctx: ctx, Config: config, Router: router.New()}

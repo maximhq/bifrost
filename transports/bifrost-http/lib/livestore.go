@@ -9,6 +9,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
@@ -123,16 +124,25 @@ func (c *Config) moveGovernanceContentToBoot() {
 	g.RoutingRules, g.PricingOverrides = nil, nil
 }
 
-// AttachLiveStore makes live the config's live store, creates the shared tables on it, and keeps
-// the views derived from it current: a provider's "name/model" prefix is registered when its record
-// is published and unregistered when it is removed, and the MCP header allowlist is rebuilt
-// whenever a client changes. A refresh calls its subscribers before it returns, so a created
-// provider routes by its prefix once AddProvider returns, before any reload or model discovery, and
-// a provider written elsewhere routes once its refresh returns. Provider keys are served from
-// live.Views.ProviderKeyLists, which the store itself keeps current. Call it once per live store,
-// before live loads, so the configured providers are registered at boot too; a test that builds its
-// own live store calls it the same way. It fails when live is nil or already holds the shared
-// tables.
+// oauth2SigningKeyCache names the cache holding the OAuth2 signing key, and
+// oauth2SigningKeyCacheKey is its one entry's key. The key is one config-store row, which by the
+// live store's rule would be a collection; it is a cache only because the gateway has always read
+// it on first use rather than at boot, and that is kept.
+const (
+	oauth2SigningKeyCache    = "oauth2_signing_key"
+	oauth2SigningKeyCacheKey = "key"
+)
+
+// AttachLiveStore makes live the config's live store, creates the shared tables and the signing
+// key cache on it, and keeps the views derived from it current: a provider's "name/model" prefix is
+// registered when its record is published and unregistered when it is removed, and the MCP header
+// allowlist is rebuilt whenever a client changes. A refresh calls its subscribers before it
+// returns, so a created provider routes by its prefix once AddProvider returns, before any reload
+// or model discovery, and a provider written elsewhere routes once its refresh returns. Provider
+// keys are served from live.Views.ProviderKeyLists, which the store itself keeps current. Call it
+// once per live store, before live loads, so the configured providers are registered at boot too; a
+// test that builds its own live store calls it the same way. It fails when live is nil or already
+// holds these tables.
 func (c *Config) AttachLiveStore(live *livestore.Store) error {
 	if live == nil {
 		return fmt.Errorf("failed to attach live store: %w", livestore.ErrNoLiveStore)
@@ -141,8 +151,16 @@ func (c *Config) AttachLiveStore(live *livestore.Store) error {
 	if err != nil {
 		return err
 	}
+	// The key never changes once created, so a load that started before a caller's miss returns the
+	// same key: callers arriving during the first load share it rather than load again after it.
+	signingKey, err := live.NewCache[*configstoreTables.OAuth2SigningKey](context.Background(), oauth2SigningKeyCache,
+		livestore.WithSharedFills[*configstoreTables.OAuth2SigningKey]())
+	if err != nil {
+		return err
+	}
 	c.LiveStore = live
 	c.Shared = shared
+	c.oauth2SigningKey = signingKey
 	live.Collections.Providers.Subscribe(func(_ context.Context, changes []livestore.Change[registry.Provider]) {
 		for _, change := range changes {
 			if change.New != nil {

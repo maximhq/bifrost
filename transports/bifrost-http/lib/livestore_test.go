@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
@@ -850,4 +852,94 @@ func TestLoadConfigLoadsGovernanceInBothModes(t *testing.T) {
 		require.NotNil(t, rateLimit, name)
 		require.Equal(t, int64(10), *rateLimit.RequestMaxLimit, name)
 	}
+}
+
+// signingKeyStore is a config store whose GetOAuth2SigningKey counts its calls and holds the first
+// one until release is closed, failing it when failFirst is set.
+type signingKeyStore struct {
+	configstore.ConfigStore
+	calls     atomic.Int32
+	started   chan struct{}
+	release   chan struct{}
+	failFirst bool
+}
+
+// GetOAuth2SigningKey counts the call; the first one closes started, waits for release, and fails
+// when failFirst is set.
+func (s *signingKeyStore) GetOAuth2SigningKey(context.Context) (*configstoreTables.OAuth2SigningKey, error) {
+	if s.calls.Add(1) == 1 {
+		close(s.started)
+		<-s.release
+		if s.failFirst {
+			return nil, errors.New("signing key read failed")
+		}
+	}
+	return &configstoreTables.OAuth2SigningKey{KID: "kid-1"}, nil
+}
+
+// signingKeyConfig returns a config reading its signing key from store through a new live store.
+func signingKeyConfig(t *testing.T, store *signingKeyStore) *Config {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	cfg := &Config{ConfigStore: store}
+	require.NoError(t, cfg.AttachLiveStore(live))
+	return cfg
+}
+
+// TestOAuth2SigningKeyFirstLoadIsShared checks that callers arriving while the first signing-key
+// load runs share it, so a burst of first requests costs one config-store read and decrypt rather
+// than a second load after the first.
+func TestOAuth2SigningKeyFirstLoadIsShared(t *testing.T) {
+	store := &signingKeyStore{started: make(chan struct{}), release: make(chan struct{})}
+	releaseLoad := sync.OnceFunc(func() { close(store.release) })
+	t.Cleanup(releaseLoad)
+	cfg := signingKeyConfig(t, store)
+	ctx := t.Context()
+
+	const callers = 8
+	errs := make(chan error, callers)
+	get := func() {
+		key, err := cfg.GetOAuth2SigningKey(ctx)
+		if err == nil && key.KID != "kid-1" {
+			err = fmt.Errorf("got key %q, want kid-1", key.KID)
+		}
+		errs <- err
+	}
+	go get()
+	select {
+	case <-store.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first signing-key load did not start within 10s")
+	}
+	for range callers - 1 {
+		go get()
+	}
+	// Give the other callers time to reach the running load. One that arrives after the key is
+	// installed reads it from the cache, which makes no second read either.
+	time.Sleep(100 * time.Millisecond)
+	releaseLoad()
+	for range callers {
+		require.NoError(t, <-errs)
+	}
+	require.Equal(t, int32(1), store.calls.Load(), "callers that arrived during the first load must share it")
+}
+
+// TestOAuth2SigningKeyFailedLoadIsNotCached checks that a failed signing-key load is not cached: the
+// next call reads the config store again and caches the key it gets.
+func TestOAuth2SigningKeyFailedLoadIsNotCached(t *testing.T) {
+	store := &signingKeyStore{started: make(chan struct{}), release: make(chan struct{}), failFirst: true}
+	close(store.release)
+	cfg := signingKeyConfig(t, store)
+	ctx := t.Context()
+
+	_, err := cfg.GetOAuth2SigningKey(ctx)
+	require.Error(t, err, "the first load fails")
+	key, err := cfg.GetOAuth2SigningKey(ctx)
+	require.NoError(t, err, "the next call loads again")
+	require.Equal(t, "kid-1", key.KID)
+	_, err = cfg.GetOAuth2SigningKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int32(2), store.calls.Load(), "the failed load is retried once and the key is then cached")
 }
