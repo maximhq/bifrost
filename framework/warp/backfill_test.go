@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/stretchr/testify/require"
 )
@@ -421,7 +422,7 @@ func embeddingPricedCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"text-embedding-3-small":{"input_cost_per_token":2e-08,"provider":"openai","mode":"embedding"}}`), 0o600))
-	store := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
+	store := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
 	require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
 	return catalogWithDatasheetForTest(t, store)
 }
@@ -480,7 +481,7 @@ func TestWarpBackfillLeavesCostUnsetWhenModelUnpriced(t *testing.T) {
 	reader := &backfillLogReader{logs: backfillLogsForAbort(start, 2)}
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"some-other-embedding":{"input_cost_per_token":2e-08,"provider":"openai","mode":"embedding"}}`), 0o600))
-	store := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
+	store := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
 	require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
@@ -953,3 +954,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

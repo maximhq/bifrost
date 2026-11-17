@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -45,7 +46,7 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 		"elevenlabs/eleven_turbo_v2_5": {"provider":"elevenlabs","mode":"audio_speech","base_model":"eleven_turbo_v2_5"},
 		"openai/gpt-4o-mini": {"provider":"openai","mode":"chat","base_model":"gpt-4o-mini"}
 	}`), 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(tb, nil, nil, datasheet.Config{URL: "file://" + path})
 	require.NoError(tb, ds.LoadFromURLIntoMemory(tb.Context()))
 	catalog := catalogWithDatasheetForTest(tb, ds)
 	catalog.SetKeyConfigForProvider(schemas.Elevenlabs, keys)
@@ -578,3 +579,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -418,3 +419,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

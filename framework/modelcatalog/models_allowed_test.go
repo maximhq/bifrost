@@ -8,7 +8,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // TestIsModelAllowedForProvider_ExplicitList pins the explicit-allowlist branch
@@ -17,7 +16,7 @@ import (
 func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		datasheet: testDatasheet(t, map[string]string{"gpt-4o": "gpt-4o"}),
 		live:      liveModels,
 		keyconf:   keyconf,
 		done:      make(chan struct{}),
@@ -63,7 +62,7 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(nil),
+		datasheet: testDatasheet(t, nil),
 		live:      liveModels,
 		keyconf:   keyconf,
 		done:      make(chan struct{}),
@@ -138,7 +137,7 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 func TestKeyAliasesResolveToAllowed_KeyIDs(t *testing.T) {
 	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(nil),
+		datasheet: testDatasheet(t, nil),
 		live:      liveModels,
 		keyconf:   keyconf,
 		done:      make(chan struct{}),
@@ -288,7 +287,7 @@ func TestMayBeKeyAlias(t *testing.T) {
 func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
 	liveModels, keyconf := stateStoresForTest(b)
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(nil),
+		datasheet: testDatasheet(b, nil),
 		live:      liveModels,
 		keyconf:   keyconf,
 		done:      make(chan struct{}),

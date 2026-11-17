@@ -8,7 +8,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 func intValue(p *int) any {
@@ -23,7 +22,7 @@ func intValue(p *int) any {
 // sees. Anthropic has one key aliasing team-claude to Haiku.
 func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
 	t.Helper()
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
 		{Model: "gemini-nocap-flash", Provider: string(schemas.Gemini), Mode: "chat"},

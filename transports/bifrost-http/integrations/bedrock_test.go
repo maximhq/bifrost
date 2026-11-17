@@ -145,7 +145,7 @@ func TestGenericRouter_ModelCatalogMarksDeprecatedListModels(t *testing.T) {
 		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
 	}`)
 	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
 	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: catalogWithDatasheetForTest(t, ds)}, nil, nil, nil, nil)
 	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{

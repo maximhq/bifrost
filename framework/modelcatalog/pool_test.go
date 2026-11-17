@@ -25,7 +25,7 @@ func elevenlabsScribeCatalog(tb testing.TB) *ModelCatalog {
 	if err := os.WriteFile(path, pricing, 0o600); err != nil {
 		tb.Fatal(err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(tb, nil, nil, datasheet.Config{URL: "file://" + path})
 	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
 		tb.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
 
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases(t *testing.T)
 		t.Fatalf("write pricing testdata: %v", err)
 	}
 
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t 
 		t.Fatalf("write pricing testdata: %v", err)
 	}
 
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
@@ -346,7 +346,7 @@ func deprecatedDatasheet(t *testing.T) *datasheet.Store {
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}

@@ -224,7 +224,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 		// No rows to reload from: keep the upstream sheet so an override change
 		// can rebuild the indexes (refreshEntryOverrides).
 		s.mu.Lock()
-		s.paramsSheet = paramsData
+		s.paramsSheet.store(paramsData)
 		s.mu.Unlock()
 	}
 	paramsData, overrideOnly := s.withParamsEntryOverrides(paramsData)
@@ -270,7 +270,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 			if provider := gjson.GetBytes(rawData, "provider"); provider.Exists() {
 				key := makeKeyNormalized(model, normalizeProvider(provider.String()), normalizeRequestType(schemas.TextCompletionRequest))
 				s.mu.RLock()
-				_, ok := s.pricingData[key]
+				_, ok := s.pricingData.Get(key)
 				s.mu.RUnlock()
 				if ok {
 					outputs = append(outputs, "text_completion")
@@ -303,10 +303,10 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	}
 
 	s.mu.Lock()
-	s.supportedResponseTypes = newResponseTypes
-	s.supportedParams = newParamsIndex
-	s.paramsOverrideOnly = overrideOnly
-	s.modelParameterKeys = newModelKeys
+	fillTable(s.supportedResponseTypes, newResponseTypes)
+	fillTable(s.supportedParams, newParamsIndex)
+	fillTable(s.paramsOverrideOnly, overrideOnly)
+	s.modelParameterKeys.store(newModelKeys)
 	s.mu.Unlock()
 
 	// Anything cached against the previous sheet — records and "no such model"
@@ -443,7 +443,7 @@ func (s *Store) customParamsRow(model string) *configstoreTables.TableModelParam
 	s.entryOverridesMu.RLock()
 	var match paramsPatch
 	found := false
-	for _, p := range s.paramsPatches {
+	for _, p := range s.paramsPatches.load() {
 		if p.model == model && (!found || p.provider < match.provider) {
 			match, found = p, true
 		}
@@ -491,7 +491,7 @@ func (s *Store) modelParameterCandidates(model string) []string {
 	s.mu.RLock()
 	// A usable capability record can have no accepted request parameters.
 	// Discover it by row identity rather than membership in the allowlist.
-	for _, key := range s.modelParameterKeys {
+	for _, key := range s.modelParameterKeys.load() {
 		if strings.HasSuffix(key, suffix) {
 			qualified = append(qualified, key)
 		}

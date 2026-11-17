@@ -1416,7 +1416,7 @@ func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}

@@ -19,7 +19,7 @@ func newOfflinePricingCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
 	require.NoError(t, err)
-	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	return catalogWithDatasheetForTest(t, ds)
 }

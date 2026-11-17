@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +25,7 @@ func newInteractionPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	sheet := `{"` + testInteractionAgent + `":{"provider":"gemini","mode":"responses","input_cost_per_token":2e-06,"output_cost_per_token":1.2e-05}}`
 	require.NoError(t, os.WriteFile(path, []byte(sheet), 0o600))
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	return catalogWithDatasheetForTest(t, ds)
 }
@@ -237,3 +238,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New
