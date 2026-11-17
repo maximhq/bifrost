@@ -52158,6 +52158,10 @@
                     },
                     "offset": {
                       "type": "integer"
+                    },
+                    "access_token_ttl": {
+                      "type": "integer",
+                      "description": "Configured access token lifetime in seconds, for estimating when a grant's current access token expires."
                     }
                   }
                 }

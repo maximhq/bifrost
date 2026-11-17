@@ -30,10 +30,9 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 
 const isIssuerSet = (issuer?: SecretVar) => !!(issuer?.value?.trim() || issuer?.ref?.trim());
 
-// The access token lifetime is shared with MCP OAuth and validated the same way as on the MCP page.
-// The form edits the lifetime in minutes; access_token_ttl is stored in seconds.
-const minAccessTokenMinutes = 1;
-const accessTokenTTLText = (ttl?: number) => String((ttl || 600) / 60);
+// The access token lifetime is shared with MCP OAuth: edited in seconds and validated the same way as on the MCP page.
+const minAccessTokenTTLSeconds = 60;
+const accessTokenTTLText = (ttl?: number) => String(ttl || 600);
 
 // Claude Code is pointed at {issuer}/gateway/claude-code. Only a plain-text issuer can be
 // shown; env and vault references resolve on the server, so the caller shows the
@@ -127,9 +126,8 @@ export default function GatewaysView() {
 			toast.error(t("claudeCode.issuerRequired"));
 			return;
 		}
-		const minutes = Number(accessTokenTTL);
-		const ttl = Math.round(minutes * 60);
-		if (!Number.isFinite(minutes) || minutes < minAccessTokenMinutes) {
+		const ttl = Number(accessTokenTTL);
+		if (!Number.isInteger(ttl) || ttl < minAccessTokenTTLSeconds) {
 			toast.error(t("gateways.accessTokenTtlInvalid"));
 			return;
 		}
@@ -256,7 +254,8 @@ export default function GatewaysView() {
 						id="gateways-access-token-ttl"
 						data-testid="gateways-access-token-ttl-input"
 						type="number"
-						min={minAccessTokenMinutes}
+						min={minAccessTokenTTLSeconds}
+						step={1}
 						className="max-w-40"
 						value={accessTokenTTL}
 						onChange={(e) => setAccessTokenTTL(e.target.value)}
@@ -363,7 +362,7 @@ export default function GatewaysView() {
 				</div>
 			)}
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button
 					onClick={handleSave}
 					disabled={!hasChanges || isLoading || isConfigFetching || reloadFailed || !hasSettingsUpdateAccess}
