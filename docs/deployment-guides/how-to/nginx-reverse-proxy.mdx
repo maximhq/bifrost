@@ -142,11 +142,13 @@ ingress:
 
 ## Trusting a forwarded public host
 
-If your proxy sends an internal `Host` to Bifrost and the public hostname in `X-Forwarded-Host`, set `server.trusted_forwarded_host` in `config.json` to that public authority, for example `bifrost.example.com:8443`, and restart Bifrost. This is a single hostname with an optional port, not a full URL or wildcard pattern. It defaults to `""`, which disables use of `X-Forwarded-Host`.
+If your proxy sends an internal `Host` to Bifrost and the public hostname in `X-Forwarded-Host`, set `server.trusted_forwarded_host` in `config.json` to that public authority, for example `bifrost.example.com:8443`, and restart Bifrost. This is a single hostname with an optional port, not a full URL or wildcard pattern. It defaults to `""`, which disables public URL inference from request headers.
 
-For public base URLs derived from the request, Bifrost considers only the first comma-delimited `X-Forwarded-Host` value, trims its surrounding whitespace, and compares it case-insensitively with the configured authority. The hostname and port must match exactly. If the header is absent or the first value does not match, Bifrost uses `Host`; it does not search later values for a match.
+For public base URLs derived from the request, Bifrost considers only the first comma-delimited `X-Forwarded-Host` value, trims its surrounding whitespace, and compares it case-insensitively with the configured authority. The hostname and port must match exactly. If the header is absent or the first value does not match, `Host` must match the same configured authority; Bifrost never falls back to an arbitrary request host or searches later forwarded values.
 
 Valid explicit public base URL overrides still win. Otherwise, the existing scheme selection and `server.base_path` are preserved. This setting does not rewrite the incoming `Host` header, change request routing, or bypass other host checks. Configure your proxy to overwrite caller-supplied forwarded headers and prevent clients from reaching Bifrost directly.
+
+MCP OAuth callbacks and client metadata require a trusted base URL. Either configure `server.trusted_forwarded_host` for the request's public authority or set `client.mcp_external_client_url` to the full public base URL, including `server.base_path` when applicable. Without either, client metadata requests return HTTP 400 instead of advertising caller-supplied URLs. Other request-derived self URLs, such as resumable file upload URLs, also require a matching configured authority.
 
 ---
 

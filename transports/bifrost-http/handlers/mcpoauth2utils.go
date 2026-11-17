@@ -41,8 +41,8 @@ func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
 // is caller-controlled and would let one request poison the issuer, token and
 // JWKS URLs that every client trusts. It returns "" if that invariant is ever
 // bypassed, which yields relative URLs rather than attacker-chosen absolute
-// ones. The Host-derived fallback remains only for headers mode, where no
-// OAuth issuer identity is served and the value feeds nothing security-relevant.
+// ones. Header-mode-only deployments may infer a base only from an authority
+// matching server.trusted_forwarded_host.
 // A configured value is returned without trailing slashes, since every endpoint,
 // claim and redirect is built by appending a path that starts with "/".
 func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {

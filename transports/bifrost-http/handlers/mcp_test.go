@@ -200,7 +200,7 @@ func newReregisterFixture(t *testing.T) *reregisterFixture {
 	manager := &recordingMCPManager{}
 	cfg := &lib.Config{
 		ConfigStore:   store,
-		ClientConfig:  &configstore.ClientConfig{},
+		ClientConfig:  &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar("http://bifrost.example.com")},
 		OAuthProvider: provider,
 	}
 	return &reregisterFixture{
@@ -486,7 +486,7 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			server := newLoopbackOAuthMCPServer(t)
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar("http://bifrost.example.com")}, OAuthProvider: provider}
 			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
@@ -511,6 +511,16 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 	}
 }
 
+func TestOAuthBootstrap_RejectsUngovernedHost(t *testing.T) {
+	h := &MCPHandler{store: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetHost("attacker.example.com")
+	ctx.Request.Header.Set("X-Forwarded-Host", "attacker.example.com")
+	flow, err := h.runOAuthBootstrap(ctx, &OAuthConfigRequest{}, "https://mcp.example.com", true)
+	require.ErrorContains(t, err, "trusted public base URL")
+	require.Nil(t, flow)
+}
+
 // Across the shared and per-user auth types, OAuth ones present Bifrost's Client ID Metadata
 // Document as client_id when the upstream supports it (no dynamic registration), and header ones
 // never contact the authorization server.
@@ -529,7 +539,7 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 		authType   string
 		extra      string // extra request fields
 		hosted     string // mcp_client_metadata_url
-		local      bool   // Bifrost on http://localhost:8080 with no external URL, whose own document cannot be fetched
+		local      bool   // Local callback URL whose own metadata document cannot be fetched publicly.
 		wantStatus int    // header types stop at the stub manager's connect
 		wantCIMD   bool
 	}{
@@ -551,9 +561,9 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			if tc.local {
 				base, host = "http://localhost:8080", "localhost:8080"
 			}
-			clientConfig := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar(tc.hosted)}
-			if !tc.local {
-				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(base)
+			clientConfig := &configstore.ClientConfig{
+				MCPClientMetadataURL: schemas.NewSecretVar(tc.hosted),
+				MCPExternalClientURL: schemas.NewSecretVar(base),
 			}
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: clientConfig}
 			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
@@ -1962,7 +1972,7 @@ func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provid
 	server := newLoopbackOAuthMCPServer(t)
 	store := newRealOAuth2Store(t)
 	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar("http://bifrost.example.com")}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
 	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}, provider, server
 }
 
@@ -2609,7 +2619,7 @@ func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler
 	provider.SetTokenExchangeIdPResolver(exchangeIdP{tokenEndpoint: tokens.URL})
 	cfg := &lib.Config{
 		ConfigStore:        store,
-		ClientConfig:       &configstore.ClientConfig{},
+		ClientConfig:       &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar("http://bifrost.example.com")},
 		MCPConfig:          &schemas.MCPConfig{},
 		OAuthProvider:      provider,
 		MCPHeadersProvider: mcp_headers.NewProvider(store, logger),

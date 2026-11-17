@@ -152,6 +152,20 @@ run_harness() {
 }
 
 echo ""
+echo "Running MCP trusted forwarded host discovery..."
+MCP_EXIT=0
+make run-provider-harness-test \
+  CI=1 \
+  USE_INFISICAL=0 \
+  PARALLEL=0 \
+  PROVIDER=mcp \
+  FEATURE="307. MCP trusted forwarded host discovery" \
+  INCLUDE_PREVIEW=0 \
+  BASE_URL="$BASE_URL" \
+  APP_DIR="$APP_DIR_REL" || MCP_EXIT=$?
+archive_attempt mcp
+
+echo ""
 echo "🧪 Running provider harness (full sweep, parallel per provider)..."
 HARNESS_EXIT=0
 run_harness "" || HARNESS_EXIT=$?
@@ -245,6 +259,11 @@ if [ "$FINAL_ATTEMPT" -gt 0 ]; then
   # Loud on purpose. A pass that needed retries is not the same as a clean pass,
   # and burying that turns a slow degradation into an invisible one.
   echo "::warning::Provider harness passed only on retry $FINAL_ATTEMPT of $RERUN_ATTEMPTS - the first attempt had failures. See tmp/harness-attempts/attempt-0/harness-failures.md."
+fi
+
+if [ "$MCP_EXIT" -ne 0 ]; then
+  echo "MCP trusted forwarded host discovery failed (exit $MCP_EXIT). See tmp/harness-attempts/attempt-mcp/."
+  exit "$MCP_EXIT"
 fi
 
 echo "✅ Provider harness completed successfully (attempts: $((FINAL_ATTEMPT + 1)))"

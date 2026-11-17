@@ -33,8 +33,9 @@ func TestClientMetadataDocument(t *testing.T) {
 		wantAppType  string
 	}{
 		{"external URL configured", "https://bifrost.example.com", "", "10.0.0.5:8080", "", "https://bifrost.example.com", "", "web"},
-		{"from the request behind a TLS proxy", "", "", "gateway.example.com", "https", "https://gateway.example.com", "", "web"},
-		{"local deployment", "", "", "localhost:8080", "", "http://localhost:8080", "", "native"},
+		{"TLS proxy without trusted authority", "", "", "attacker.example.com", "https", "", "", ""},
+		{"local deployment without trusted authority", "", "", "localhost:8080", "", "", "", ""},
+		{"invalid external URL cannot fall back to Host", "not-a-url", "", "attacker.example.com", "https", "", "", ""},
 		{"hosted document", "https://bifrost.internal.example", hosted, "10.0.0.5:8080", "", "https://bifrost.internal.example", hosted, "web"},
 	}
 	for _, tc := range cases {
@@ -60,6 +61,13 @@ func TestClientMetadataDocument(t *testing.T) {
 
 			h.handleClientMetadataDocument(ctx)
 
+			if tc.wantBase == "" {
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+				assert.Contains(t, string(ctx.Response.Body()), "trusted public base URL")
+				assert.NotContains(t, string(ctx.Response.Body()), tc.host)
+				assert.Empty(t, ctx.Response.Header.Peek("Cache-Control"))
+				return
+			}
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
 			var vary []string
@@ -83,10 +91,9 @@ func TestClientMetadataDocument(t *testing.T) {
 	}
 }
 
-// BenchmarkClientMetadataDocument measures serving Bifrost's Client ID Metadata Document, with a
-// configured external URL and with the base derived from the request.
+// BenchmarkClientMetadataDocument covers configured metadata and unconfigured rejection.
 func BenchmarkClientMetadataDocument(b *testing.B) {
-	for name, externalURL := range map[string]string{"external URL": "https://bifrost.example.com", "from request": ""} {
+	for name, externalURL := range map[string]string{"external URL": "https://bifrost.example.com", "unconfigured request rejected": ""} {
 		b.Run(name, func(b *testing.B) {
 			clientConfig := &configstore.ClientConfig{}
 			if externalURL != "" {
