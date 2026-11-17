@@ -5,6 +5,7 @@ package schemas
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -240,5 +241,28 @@ func TestMCPClientConfigCodeModeFor(t *testing.T) {
 	}
 	if (&MCPClientConfig{Name: "github", IsCodeModeClient: true}).CodeModeFor(nil) != true {
 		t.Error("a nil context must follow is_code_mode_client")
+	}
+}
+
+func TestMCPProtocolVersionsUpTo(t *testing.T) {
+	for _, tc := range []struct {
+		maxVersion string
+		want       []string
+		cimd       bool
+	}{
+		{"", nil, true},
+		{MCPMaxProtocolVersionAuto, nil, true},
+		{"latest", nil, true},
+		{MCPProtocolVersion20260728, []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}, true},
+		{MCPProtocolVersion20251125, []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}, true},
+		{MCPProtocolVersion20250618, []string{"2025-06-18", "2025-03-26", "2024-11-05"}, false},
+	} {
+		got := MCPProtocolVersionsUpTo(tc.maxVersion)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("MCPProtocolVersionsUpTo(%q) = %v, want %v", tc.maxVersion, got, tc.want)
+		}
+		if MCPAllowsClientMetadataDocuments(tc.maxVersion) != tc.cimd {
+			t.Errorf("MCPAllowsClientMetadataDocuments(%q) = %v, want %v", tc.maxVersion, !tc.cimd, tc.cimd)
+		}
 	}
 }

@@ -55,7 +55,7 @@ func vkPermit(vk *configstoreTables.TableVirtualKey, openClients map[string]stri
 
 // vkAccess is the access a request carrying only vk's permit has.
 func vkAccess(vk *configstoreTables.TableVirtualKey, openClients map[string]string) schemas.Access {
-	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, "", nil, "", nil)
 }
 
 // A key also answers to where it sits in the organization, so its holder limits carry its team's

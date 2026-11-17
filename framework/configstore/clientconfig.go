@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
 	"math"
 	"net/url"
 	"path/filepath"
@@ -131,6 +132,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
+	MCPServerMaxProtocolVersion             string                                `json:"mcp_server_max_protocol_version,omitempty"`     // Cap on the MCP protocol version Bifrost's /mcp serves ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
@@ -143,6 +145,7 @@ type ClientConfig struct {
 	EnforceVKObjectOwnership                bool                                  `json:"enforce_vk_object_ownership"`                   // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
+	EntityAccessProfileMode                 tables.EntityAccessProfileMode        `json:"entity_access_profile_mode,omitempty"`          // Enterprise: "union" (default) or "intersect" combination of team, business unit and customer access profiles with a caller's own access
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
@@ -277,6 +280,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.SkipAccessProfileUserVirtualKeyDeletion {
 		hash.Write([]byte("skipAccessProfileUserVirtualKeyDeletion:true"))
+	}
+	if c.EntityAccessProfileMode != "" && c.EntityAccessProfileMode != tables.EntityAccessProfileModeUnion {
+		hash.Write([]byte("entityAccessProfileMode:" + string(c.EntityAccessProfileMode)))
 	}
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {
@@ -634,6 +640,38 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if oc.DisableVKIdentity {
 			hash.Write([]byte("oauth2DisableVKIdentity:true"))
 		}
+		// Client gateways are only hashed when set, so configs without them keep
+		// their existing hash.
+		if cc := oc.ClaudeCodeGateway(); cc != nil {
+			// The NUL starts the block where no redirect URI can reach: URIs are written
+			// unframed (kept for existing hashes) and cannot hold control characters.
+			hash.Write([]byte("\x00gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
+			if cc.ManagedSettings != nil {
+				// MarshalSorted sorts map keys at every level, so the bytes are stable.
+				settings, err := providerUtils.MarshalSorted(cc.ManagedSettings)
+				if err != nil {
+					return "", fmt.Errorf("failed to marshal gateways.claude_code.managed_settings: %w", err)
+				}
+				hash.Write([]byte("gateways.claude_code.managed_settings:"))
+				hash.Write(settings)
+			}
+			if t := cc.Telemetry; t != nil {
+				hash.Write([]byte("gateways.claude_code.telemetry.enabled:" + strconv.FormatBool(t.Enabled)))
+				// Length-prefixed, so where one value ends is unambiguous: concatenated, a value
+				// containing the next field's text hashed like two shorter values.
+				for _, d := range t.Destinations {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.endpoint:", secretVarHashForm(d.Endpoint))
+					names := slices.Sorted(maps.Keys(d.Headers))
+					for _, name := range names {
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.name:", name)
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.value:", secretVarHashForm(d.Headers[name]))
+					}
+				}
+				for _, key := range t.DropAttributes {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.drop:", key)
+				}
+			}
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -706,6 +744,7 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	if c.BifrostURL != nil && c.BifrostURL.IsFromSecret() {
 		out.BifrostURL = c.BifrostURL.Redacted()
 	}
+	out.OAuth2ServerConfig = c.OAuth2ServerConfig.Redacted()
 	return out
 }
 
@@ -3036,4 +3075,17 @@ func ValidatePublicBaseURL(value string) error {
 // a value can never run on into the field written after it.
 func writeLengthPrefixed(h hash.Hash, prefix, value string) {
 	h.Write([]byte(prefix + strconv.Itoa(len(value)) + ":" + value))
+}
+
+// secretVarHashForm is the form of a SecretVar that goes into the config hash:
+// the reference for an env or vault value (so a changed environment does not
+// look like a changed config), the plain value otherwise.
+func secretVarHashForm(v *schemas.SecretVar) string {
+	if v == nil {
+		return ""
+	}
+	if v.IsFromSecret() {
+		return "ref:" + v.GetRawRef()
+	}
+	return "val:" + v.GetValue()
 }

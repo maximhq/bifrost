@@ -5,6 +5,30 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 const { defaultBrowserType: _, ...pixel7 } = devices['Pixel 7']
 test.use(pixel7)
 
+// The log pages swap their header for onboarding until a log exists. These are layout checks,
+// so report the lists as non-empty whatever the worker's store holds.
+test.beforeEach(async ({ page }) => {
+  await page.route(
+    (url) => ['/api/logs', '/api/mcp-logs', '/api/agents/history'].includes(url.pathname),
+    async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = await response.json()
+      if (new URL(route.request().url()).pathname === '/api/agents/history') {
+        body.pagination = { ...body.pagination, total_count: Math.max(1, body.pagination?.total_count ?? 0) }
+      } else {
+        body.has_logs = true
+      }
+      await route.fulfill({ response, json: body })
+    },
+  )
+})
+
+// A list request can still be in flight when a test ends; drop it instead of failing the test.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
 const mobileRoutes = [
   { name: 'dashboard', path: '/workspace/dashboard' },
   { name: 'logs', path: '/workspace/logs' },

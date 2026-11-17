@@ -31,6 +31,20 @@ const (
 	ExtraFieldsPlacementHeaders ExtraFieldsPlacement = "headers"
 )
 
+// EntityAccessProfileMode controls how the access profiles of the entities a caller belongs to
+// (teams, business units, customers) combine with the caller's own access. The values match a
+// project's access rule, since they are the same choice.
+type EntityAccessProfileMode string
+
+const (
+	// EntityAccessProfileModeUnion lets those profiles add to what the caller may reach
+	// (default when unset). Shown as "Extend".
+	EntityAccessProfileModeUnion EntityAccessProfileMode = "union"
+	// EntityAccessProfileModeIntersect makes each level holding a profile cap what the caller
+	// may reach: the caller keeps only what every such level also allows. Shown as "Restrict".
+	EntityAccessProfileModeIntersect EntityAccessProfileMode = "intersect"
+)
+
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
 	ID                                      uint                           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -52,12 +66,14 @@ type TableClientConfig struct {
 	EnforceSCIMAuth                         bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior          DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
 	ExtraFieldsPlacement                    ExtraFieldsPlacement           `gorm:"column:extra_fields_placement;type:varchar(20);not null;default:'body'" json:"extra_fields_placement"`
+	EntityAccessProfileMode                 EntityAccessProfileMode        `gorm:"column:entity_access_profile_mode;type:varchar(20);not null;default:'union'" json:"entity_access_profile_mode"`
 	MaxRequestBodySizeMB                    int                            `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                           int                            `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout                 int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`                       // Timeout for individual tool execution in seconds (default: 30)
 	MCPCodeModeBindingLevel                 string                         `gorm:"default:server" json:"mcp_code_mode_binding_level"`                  // How tools are exposed in VFS: "server" or "tool"
 	MCPToolSyncInterval                     int                            `gorm:"default:10" json:"mcp_tool_sync_interval"`                           // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPMaxProtocolVersion                   string                         `gorm:"type:varchar(20);default:''" json:"mcp_max_protocol_version"`        // Global cap on the MCP protocol version ("" or "auto" = newest)
+	MCPServerMaxProtocolVersion             string                         `gorm:"type:varchar(20);default:''" json:"mcp_server_max_protocol_version"` // Cap on the MCP protocol version Bifrost's /mcp serves ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                           `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPMaxInstructionsPerClient             int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`                   // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                        // Byte bound on the whole aggregate; 0 is the default
@@ -275,11 +291,11 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if cc.OAuth2ServerConfig != nil {
-		data, err := json.Marshal(cc.OAuth2ServerConfig)
+		data, err := cc.OAuth2ServerConfig.StorageJSON()
 		if err != nil {
 			return err
 		}
-		cc.OAuth2ServerConfigJSON = string(data)
+		cc.OAuth2ServerConfigJSON = data
 	} else {
 		cc.OAuth2ServerConfigJSON = ""
 	}

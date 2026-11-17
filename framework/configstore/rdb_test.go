@@ -3173,6 +3173,85 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	assert.NotEqual(t, baseHash, urlHash)
 }
 
+func TestGenerateClientConfigHash_ClaudeCodeGateway(t *testing.T) {
+	withGateway := func(cc *tables.ClaudeCodeGatewayConfig) *ClientConfig {
+		return &ClientConfig{
+			InitialPoolSize:    100,
+			LogRetentionDays:   30,
+			MCPServerAuthMode:  tables.MCPServerAuthModeBoth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), Gateways: &tables.ClientGatewaysConfig{ClaudeCode: cc}},
+		}
+	}
+	hashOf := func(cc *tables.ClaudeCodeGatewayConfig) string {
+		h, err := withGateway(cc).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+
+	unset := hashOf(nil)
+	enabled := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true})
+	assert.NotEqual(t, unset, enabled, "turning the gateway on is a config change")
+	assert.NotEqual(t, enabled, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: false}))
+
+	policyA := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1", "B": "2"}}})
+	assert.NotEqual(t, enabled, policyA, "managed settings are part of the config")
+	assert.Equal(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"B": "2", "A": "1"}}}),
+		"the hash does not depend on map ordering")
+	assert.NotEqual(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1"}}}))
+
+	withTelemetry := func(endpoint, header string) *tables.ClaudeCodeGatewayConfig {
+		return &tables.ClaudeCodeGatewayConfig{Enabled: true, Telemetry: &tables.ClientGatewayTelemetryConfig{
+			Enabled: true,
+			Destinations: []tables.ClientGatewayTelemetryDestination{{
+				Endpoint: schemas.NewSecretVar(endpoint),
+				Headers:  map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar(header)},
+			}},
+		}}
+	}
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "first")
+	telemetry := hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN"))
+	assert.NotEqual(t, enabled, telemetry, "telemetry is part of the config")
+	assert.NotEqual(t, telemetry, hashOf(withTelemetry("https://other.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")), "a changed endpoint is a config change")
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "rotated")
+	assert.Equal(t, telemetry, hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")),
+		"a header is hashed by its reference, so rotating the secret behind it is not a config change")
+}
+
+func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		MCPServerAuthMode:    tables.MCPServerAuthModeBoth,
+		OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+			IssuerURL: schemas.NewSecretVar("https://bifrost.test"),
+			Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+				Enabled:         true,
+				ManagedSettings: map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}},
+			}},
+		},
+	}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig)
+	assert.True(t, result.OAuth2ServerConfig.IsClaudeCodeGatewayEnabled())
+	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+
+	// An empty policy is a policy: {} must come back as {}, not as "no policy".
+	cfg.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway())
+	assert.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+	assert.Empty(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+}
+
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	var cfg ClientConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": "5m"}`), &cfg))
@@ -3391,6 +3470,72 @@ func TestCreateCustomer(t *testing.T) {
 	result, err := store.GetCustomer(ctx, "customer-test")
 	require.NoError(t, err)
 	assert.Equal(t, "Test Customer", result.Name)
+}
+
+// TestUpdateCustomerLeavesChildRowsAlone checks that saving a customer read earlier does not pull a
+// team that has since moved to another customer back onto it.
+func TestUpdateCustomerLeavesChildRowsAlone(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	customer, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	require.Len(t, customer.Teams, 1)
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	customer.Name = "cust-a renamed"
+	require.NoError(t, store.UpdateCustomer(ctx, customer))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	renamed, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-a renamed", renamed.Name)
+}
+
+// TestUpdateTeamChangesAndClearsCustomer checks that a team read with its customer preloaded can be
+// moved to another customer and detached, as the team update handler does.
+func TestUpdateTeamChangesAndClearsCustomer(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.Customer, "GetTeam preloads the customer")
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	team.CustomerID = nil
+	require.NoError(t, store.UpdateTeam(ctx, team))
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.CustomerID)
 }
 
 func TestCreateTeam(t *testing.T) {
