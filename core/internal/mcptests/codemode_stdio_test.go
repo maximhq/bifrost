@@ -1934,7 +1934,7 @@ func TestCodeMode_STDIO_UnattendedCallEnforcesAutoExecuteList(t *testing.T) {
 			}
 
 			ctx := createTestContext()
-			injectToolsAsGatewayDoes(ctx, manager)
+			injectToolsAsGatewayDoes(t, ctx, manager)
 			result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx, originalReq, initialResponse, mockLLM.MakeChatRequest)
 			require.Nil(t, bifrostErr)
 			require.NotNil(t, result)

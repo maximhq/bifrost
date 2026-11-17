@@ -50,7 +50,7 @@ func TestCodeMode_Agent_AutoExecuteSingleTool(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Create dynamic LLM mocker with validating response
 	mocker := NewDynamicLLMMocker()
@@ -179,7 +179,7 @@ func TestCodeMode_Agent_NonAutoToolInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Create dynamic LLM mocker
 	mocker := NewDynamicLLMMocker()

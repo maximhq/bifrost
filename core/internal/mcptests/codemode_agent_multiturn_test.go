@@ -61,7 +61,7 @@ func TestCodeMode_Agent_MultiTurn_CodeChaining(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient, goTestClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -195,7 +195,7 @@ func TestCodeMode_Agent_MultiTurn_MixedToolsAndCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient, goTestClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -306,7 +306,7 @@ func TestCodeMode_Agent_MultiTurn_FilteredToolInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -415,7 +415,7 @@ func TestCodeMode_Agent_MultiTurn_ContextFilterOverride(t *testing.T) {
 
 	// Context override to allow echo
 	ctx := CreateTestContextWithMCPFilter(nil, []string{"echo", "get_temperature"})
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -518,7 +518,7 @@ func TestCodeMode_Agent_MultiTurn_MaxDepth(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -624,7 +624,7 @@ func TestCodeMode_Agent_MultiTurn_ErrorRecovery(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, errorTestClient, temperatureClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 

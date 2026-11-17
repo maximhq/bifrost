@@ -293,7 +293,7 @@ func TestAgent_MaxDepth_CodeMode(t *testing.T) {
 	}) // Max depth = 3
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Mock LLM that returns executeToolCode calls multiple times
 	mockLLM := &MockLLMCaller{
@@ -377,7 +377,7 @@ func TestAgent_MaxDepth_CodeMode_ChatFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -449,7 +449,7 @@ func TestAgent_MaxDepth_CodeMode_ResponsesFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		responsesResponses: []*schemas.BifrostResponsesResponse{

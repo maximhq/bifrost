@@ -32,7 +32,7 @@ func TestCodeModeAgent_Basic(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Mock LLM with 2 responses:
 	// 1. First response: executeToolCode that calls echo
@@ -101,7 +101,7 @@ func TestCodeModeAgent_NonAutoToolInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -175,7 +175,7 @@ func TestCodeModeAgent_AutoToolInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -240,7 +240,7 @@ func TestCodeModeAgent_MixedToolsInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -319,7 +319,7 @@ func TestCodeModeAgent_NoToolCallsInCode(t *testing.T) {
 	codeModeClient := GetSampleCodeModeAgentClientConfig(t, config.HTTPServerURL)
 	manager := setupMCPManager(t, codeModeClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -385,7 +385,7 @@ func TestCodeModeAgent_FilteringInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -449,7 +449,7 @@ func TestCodeModeAgent_AutoExecuteFiltering(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -525,7 +525,7 @@ func TestCodeModeAgent_MaxDepth(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -596,7 +596,7 @@ func TestCodeModeAgent_MaxDepth_ChatFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -666,7 +666,7 @@ func TestCodeModeAgent_MaxDepth_ResponsesFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		responsesResponses: []*schemas.BifrostResponsesResponse{
@@ -735,7 +735,7 @@ func TestCodeModeAgent_Timeout(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Code that will timeout (infinite loop simulation)
 	mockLLM := &MockLLMCaller{
@@ -797,7 +797,7 @@ func TestCodeModeAgent_Timeout_ChatFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -857,7 +857,7 @@ func TestCodeModeAgent_Timeout_ResponsesFormat(t *testing.T) {
 	})
 
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		responsesResponses: []*schemas.BifrostResponsesResponse{
@@ -918,7 +918,7 @@ func TestCodeModeAgent_ErrorInCode(t *testing.T) {
 	codeModeClient := GetSampleCodeModeAgentClientConfig(t, config.HTTPServerURL)
 	manager := setupMCPManager(t, codeModeClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	mockLLM := &MockLLMCaller{
 		chatResponses: []*schemas.BifrostChatResponse{
@@ -980,7 +980,7 @@ func TestCodeModeAgent_ToolErrorInCode(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// Call calculator with invalid arguments to trigger tool error
 	mockLLM := &MockLLMCaller{
@@ -1041,7 +1041,7 @@ func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
 	codeModeClient := GetSampleCodeModeAgentClientConfig(t, config.HTTPServerURL)
 	manager := setupMCPManager(t, codeModeClient)
 	ctx := createTestContext()
-	injectToolsAsGatewayDoes(ctx, manager)
+	injectToolsAsGatewayDoes(t, ctx, manager)
 
 	// The client's own instructions, not the caller's discovery's: that aggregate excludes code
 	// mode clients, so sourcing from it would make this test skip itself. Skips on a fixture
