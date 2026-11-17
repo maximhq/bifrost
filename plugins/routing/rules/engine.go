@@ -65,6 +65,7 @@ type GovernanceScope struct {
 	TeamIDs        []string // every team the request is attributed to; TeamID is the primary one
 	CustomerID     string
 	CustomerName   string
+	CustomerIDs    []string // every customer the request is attributed to; CustomerID is the primary one
 }
 
 // EvaluationContext holds all data needed for routing rule evaluation
@@ -412,7 +413,7 @@ func pickWeighted[T any](targets []T, weight func(T) float64) (T, bool) {
 //
 // A request attributed to several teams matches at each of them: the primary team (TeamID) first, then
 // the rest of TeamIDs in order, so a rule for any of the request's teams is eligible and the winner
-// is deterministic.
+// is deterministic. Customers are walked the same way: CustomerID first, then the rest of CustomerIDs.
 //
 // A scope is present when the request has an identifier for it, and every identifier arrives the same
 // way: the user level is independent of the others, so a session-authenticated request carrying no
@@ -436,6 +437,12 @@ func buildScopeChain(scope GovernanceScope) []ScopeLevel {
 		appendScope("team", id)
 	}
 	appendScope("customer", scope.CustomerID)
+	for i, id := range scope.CustomerIDs {
+		if id == scope.CustomerID || slices.Contains(scope.CustomerIDs[:i], id) {
+			continue
+		}
+		appendScope("customer", id)
+	}
 
 	// Global level (lowest precedence), and the only one every request matches at.
 	return append(chain, ScopeLevel{ScopeName: "global", ScopeID: ""})
