@@ -38,9 +38,9 @@ func (governanceResolving) ResolveAccess(*schemas.BifrostContext) (schemas.Acces
 	return struct{ schemas.Access }{}, nil
 }
 
-// The scope carries every team the request is attributed to, beside the primary one the singular
-// key names, so a rule scoped to any of them can match.
-func TestResolveGovernanceScopeCarriesEveryTeam(t *testing.T) {
+// The scope carries every team and customer the request is attributed to, beside the primary one the
+// singular key names, so a rule scoped to any of them can match.
+func TestResolveGovernanceScopeCarriesEveryTeamAndCustomer(t *testing.T) {
 	p := &RoutingPlugin{governance: governanceResolving{}}
 
 	t.Run("primary team and the full set", func(t *testing.T) {
@@ -48,6 +48,9 @@ func TestResolveGovernanceScopeCarriesEveryTeam(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-b")
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, "Team B")
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamIDs, []string{"team-a", "team-b"})
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "cust-b")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, "Customer B")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerIDs, []string{"cust-a", "cust-b"})
 
 		scope, ok := p.resolveGovernanceScope(ctx)
 
@@ -55,16 +58,22 @@ func TestResolveGovernanceScopeCarriesEveryTeam(t *testing.T) {
 		assert.Equal(t, "team-b", scope.TeamID)
 		assert.Equal(t, "Team B", scope.TeamName)
 		assert.Equal(t, []string{"team-a", "team-b"}, scope.TeamIDs)
+		assert.Equal(t, "cust-b", scope.CustomerID)
+		assert.Equal(t, "Customer B", scope.CustomerName)
+		assert.Equal(t, []string{"cust-a", "cust-b"}, scope.CustomerIDs)
 	})
 
-	t.Run("no team set leaves the scope as it was", func(t *testing.T) {
+	t.Run("no sets leave the scope as it was", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-a")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "cust-a")
 
 		scope, ok := p.resolveGovernanceScope(ctx)
 
 		require.True(t, ok)
 		assert.Equal(t, "team-a", scope.TeamID)
 		assert.Empty(t, scope.TeamIDs)
+		assert.Equal(t, "cust-a", scope.CustomerID)
+		assert.Empty(t, scope.CustomerIDs)
 	})
 }

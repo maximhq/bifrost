@@ -225,6 +225,9 @@ func TestModelRouterMatcherWalksEveryScope(t *testing.T) {
 	require.NoError(t, matcher.Set("customer", "Customer", routerRouting("customer", "shared-id", 0, "")))
 	assert.Equal(t, "global", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{TeamID: "shared-id"}}))
 	assert.Equal(t, "customer", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{CustomerID: "shared-id"}}))
+
+	// A customer the request is attributed to beside the primary one reaches its router too.
+	assert.Equal(t, "customer", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{CustomerID: "cust-other", CustomerIDs: []string{"cust-other", "shared-id"}}}))
 }
 
 // TestModelRouterMatcherSkipsConditionsThatFail pins what a condition that
