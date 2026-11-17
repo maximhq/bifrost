@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilisation du budget",
 		"override": "remplacement",
-		"baseTooltip": "Base {{base}} + remplacement {{override}}"
+		"baseTooltip": "Base {{base}} + remplacement {{override}}",
+		"sharedTag": "partagé"
 	},
 	"rateLimit": {
 		"tokens": "jetons",
