@@ -90,11 +90,13 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
-	// Warp does not answer without the Bifrost MCP: admins get the setup popup on
-	// every open, everyone else an ask-an-admin message, and no one a composer.
+	// While Warp uses the Bifrost MCP (bifrost_mcp_enabled), it does not answer without
+	// it: admins get the setup popup on every open, everyone else an ask-an-admin
+	// message, and no one a composer. Decoupled (for now), it answers from its own tools.
+	const bifrostMCPEnabled = !!config?.bifrost_mcp_enabled;
 	const bifrostMCPAvailable = !!config?.bifrost_mcp_available;
-	const needsBifrostMCP = isConfigured && !bifrostMCPAvailable;
-	const bifrostMCPNotice = useWarpBifrostMCPNotice({ warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
+	const needsBifrostMCP = isConfigured && bifrostMCPEnabled && !bifrostMCPAvailable;
+	const bifrostMCPNotice = useWarpBifrostMCPNotice({ bifrostMCPEnabled, warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
 
 	const models = useMemo(() => warpModels(config), [config]);
 	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
