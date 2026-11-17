@@ -3352,7 +3352,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					if stripExtraFields {
 						responseJSON = lib.StripExtraFields(responseJSON)
 					}
-					sent = reader.SendEvent(eventType, responseJSON)
+					if config.Type == RouteConfigTypeOpenAI && chunk.BifrostChatResponse != nil {
+						sent, err = reader.SendChatCompletionEvent(chunk.BifrostChatResponse, responseJSON)
+						if err != nil {
+							g.logger.Warn("Failed to frame chat streaming response: %v", err)
+						}
+					} else {
+						sent = reader.SendEvent(eventType, responseJSON)
+					}
 				}
 
 				if !sent {

@@ -2599,7 +2599,15 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			}
 
 			writeStart := time.Now()
-			sent := reader.SendEvent(eventType, chunkJSON)
+			var sent bool
+			if chunk.BifrostChatResponse != nil {
+				sent, err = reader.SendChatCompletionEvent(chunk.BifrostChatResponse, chunkJSON)
+				if err != nil {
+					logger.Warn("Failed to frame chat streaming response: %v", err)
+				}
+			} else {
+				sent = reader.SendEvent(eventType, chunkJSON)
+			}
 			streamClientWriteNs += time.Since(writeStart).Nanoseconds()
 			if !sent {
 				cancel() // Client disconnected, cancel upstream stream
