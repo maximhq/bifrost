@@ -16,7 +16,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -81,7 +80,7 @@ func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
 	return 3600
 }
 
-func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
+func (m *mockHandlerStore) GetSharedTables() *lib.SharedTables {
 	return nil
 }
 

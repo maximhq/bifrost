@@ -1,33 +1,28 @@
 package routing
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newWarmCoordinatorTestStore(t *testing.T) *kvstore.Store {
+// newWarmTestTable returns a warm table on a new live store.
+func newWarmTestTable(t *testing.T) *livestore.Table[string, string] {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{
-		DefaultTTL:      time.Minute,
-		CleanupInterval: time.Minute,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	return store
+	warm := stringTableForTest(t)
+	return warm
 }
 
-// TestKVWarmCoordinatorGrantsOneClaim is the property the whole optimization
+// TestComplexityWarmCoordinatorGrantsOneClaim is the property the whole optimization
 // rests on: of the nodes that reload a configuration together, one warms.
-func TestKVWarmCoordinatorGrantsOneClaim(t *testing.T) {
-	store := newWarmCoordinatorTestStore(t)
-	first := newKVComplexityWarmCoordinator(store, "node-a")
-	second := newKVComplexityWarmCoordinator(store, "node-b")
+func TestComplexityWarmCoordinatorGrantsOneClaim(t *testing.T) {
+	warm := newWarmTestTable(t)
+	first := newComplexityWarmCoordinator(warm, "node-a")
+	second := newComplexityWarmCoordinator(warm, "node-b")
 	require.NotNil(t, first)
 	require.NotNil(t, second)
 
@@ -48,11 +43,11 @@ func TestKVWarmCoordinatorGrantsOneClaim(t *testing.T) {
 	assert.True(t, won)
 }
 
-// TestKVWarmCoordinatorSeparatesGenerations keeps one generation's claim from
+// TestComplexityWarmCoordinatorSeparatesGenerations keeps one generation's claim from
 // suppressing an unrelated one's warm.
-func TestKVWarmCoordinatorSeparatesGenerations(t *testing.T) {
-	store := newWarmCoordinatorTestStore(t)
-	coordinator := newKVComplexityWarmCoordinator(store, "node-a")
+func TestComplexityWarmCoordinatorSeparatesGenerations(t *testing.T) {
+	warm := newWarmTestTable(t)
+	coordinator := newComplexityWarmCoordinator(warm, "node-a")
 
 	won, err := coordinator.Claim("key-one", time.Minute)
 	require.NoError(t, err)
@@ -64,13 +59,11 @@ func TestKVWarmCoordinatorSeparatesGenerations(t *testing.T) {
 	assert.False(t, coordinator.ClaimHeld("key-three"))
 }
 
-// TestKVWarmCoordinatorPublishRoundTrip covers both shapes a published record
-// comes back in: the string a local write stores, and the raw JSON bytes a
-// gossiped write arrives as on a peer, since no decoder is registered for this
-// key prefix.
-func TestKVWarmCoordinatorPublishRoundTrip(t *testing.T) {
-	store := newWarmCoordinatorTestStore(t)
-	coordinator := newKVComplexityWarmCoordinator(store, "node-a")
+// TestComplexityWarmCoordinatorPublishRoundTrip covers a record this coordinator
+// published and one another writer put in the table.
+func TestComplexityWarmCoordinatorPublishRoundTrip(t *testing.T) {
+	warm := newWarmTestTable(t)
+	coordinator := newComplexityWarmCoordinator(warm, "node-a")
 
 	generation := complexity.WarmGeneration{Dimension: 1536, Namespace: "BifrostComplexityRouter_abc123"}
 	require.NoError(t, coordinator.Publish("generation-key", generation, time.Minute))
@@ -79,22 +72,21 @@ func TestKVWarmCoordinatorPublishRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, generation, got)
 
-	// The replicated shape.
-	encoded, err := json.Marshal("1536|BifrostComplexityRouter_abc123")
-	require.NoError(t, err)
-	decoded, ok := decodeStoredWarmGeneration(encoded)
-	require.True(t, ok, "a gossiped record must decode the same as a local one")
+	// Another writer's record.
+	warm.PutWithTTL(complexityWarmResultKeyPrefix+"other-key", "1536|BifrostComplexityRouter_abc123", time.Minute)
+	decoded, ok := coordinator.Lookup("other-key")
+	require.True(t, ok, "another writer's record must decode the same as this one's")
 	assert.Equal(t, generation, decoded)
 
 	_, ok = coordinator.Lookup("never-published")
 	assert.False(t, ok)
 }
 
-// TestKVWarmCoordinatorRejectsUnusableRecords keeps a malformed or truncated
+// TestComplexityWarmCoordinatorRejectsUnusableRecords keeps a malformed or truncated
 // record from being read as a real generation — adopting a wrong dimension
 // would point a node at a namespace that does not exist.
-func TestKVWarmCoordinatorRejectsUnusableRecords(t *testing.T) {
-	for _, value := range []any{
+func TestComplexityWarmCoordinatorRejectsUnusableRecords(t *testing.T) {
+	for _, value := range []string{
 		"",
 		"1536",
 		"|BifrostComplexityRouter_abc",
@@ -102,19 +94,17 @@ func TestKVWarmCoordinatorRejectsUnusableRecords(t *testing.T) {
 		"notanumber|BifrostComplexityRouter_abc",
 		"0|BifrostComplexityRouter_abc",
 		"-1|BifrostComplexityRouter_abc",
-		42,
-		nil,
 	} {
 		_, ok := decodeStoredWarmGeneration(value)
 		assert.False(t, ok, "value %#v must not decode as a generation", value)
 	}
 }
 
-// TestKVWarmCoordinatorRefusesIncompletePublish stops a half-known generation
+// TestComplexityWarmCoordinatorRefusesIncompletePublish stops a half-known generation
 // from being advertised to peers.
-func TestKVWarmCoordinatorRefusesIncompletePublish(t *testing.T) {
-	store := newWarmCoordinatorTestStore(t)
-	coordinator := newKVComplexityWarmCoordinator(store, "node-a")
+func TestComplexityWarmCoordinatorRefusesIncompletePublish(t *testing.T) {
+	warm := newWarmTestTable(t)
+	coordinator := newComplexityWarmCoordinator(warm, "node-a")
 
 	assert.Error(t, coordinator.Publish("k", complexity.WarmGeneration{Dimension: 0, Namespace: "ns"}, time.Minute))
 	assert.Error(t, coordinator.Publish("k", complexity.WarmGeneration{Dimension: 8, Namespace: "  "}, time.Minute))
@@ -125,13 +115,13 @@ func TestKVWarmCoordinatorRefusesIncompletePublish(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestKVWarmCoordinatorNilStoreDisablesCoordination documents the deployment
-// with no KVStore: every node warms for itself, which is what happened before
+// TestComplexityWarmCoordinatorNilStoreDisablesCoordination documents the deployment
+// with no warm table: every process warms for itself, which is what happened before
 // coordination existed.
-func TestKVWarmCoordinatorNilStoreDisablesCoordination(t *testing.T) {
-	assert.Nil(t, newKVComplexityWarmCoordinator(nil, "node-a"))
+func TestComplexityWarmCoordinatorNilStoreDisablesCoordination(t *testing.T) {
+	assert.Nil(t, newComplexityWarmCoordinator(nil, "node-a"))
 
-	var coordinator *kvComplexityWarmCoordinator
+	var coordinator *complexityWarmCoordinator
 	won, err := coordinator.Claim("k", time.Minute)
 	require.NoError(t, err)
 	assert.True(t, won, "a nil coordinator must never withhold a warm")

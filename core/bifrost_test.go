@@ -1473,62 +1473,61 @@ func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
 	})
 }
 
-// mockKVStore implements schemas.KVStore for session stickiness tests.
+// mockKVStore implements SessionAffinityStore for session stickiness tests, keeping each
+// value with the TTL it was written with so tests can check both.
 type mockKVStore struct {
 	mu   sync.RWMutex
 	data map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	}
 }
 
+// newMockKVStore returns an empty store.
 func newMockKVStore() *mockKVStore {
 	return &mockKVStore{data: make(map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	})}
 }
 
-func (m *mockKVStore) Get(key string) (any, error) {
+// Get implements SessionAffinityStore.
+func (m *mockKVStore) Get(key string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.data[key]; ok {
-		return e.value, nil
-	}
-	return nil, fmt.Errorf("key not found")
+	e, ok := m.data[key]
+	return e.value, ok
 }
 
-func (m *mockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+// PutWithTTL implements SessionAffinityStore.
+func (m *mockKVStore) PutWithTTL(key, value string, ttl time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return nil
 }
 
-func (m *mockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+// PutIfAbsent implements SessionAffinityStore.
+func (m *mockKVStore) PutIfAbsent(key, value string, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.data[key]; ok {
-		return false, nil
+		return false
 	}
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return true, nil
+	return true
 }
 
-func (m *mockKVStore) Delete(key string) (bool, error) {
+// Delete implements SessionAffinityStore.
+func (m *mockKVStore) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.data[key]; ok {
-		delete(m.data, key)
-		return true, nil
-	}
-	return false, nil
+	delete(m.data, key)
 }
 
 // Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
@@ -1551,10 +1550,10 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1576,7 +1575,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
 	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
-	if _, err := kvStore.Get(kvKey); err == nil {
+	if _, ok := kvStore.Get(kvKey); ok {
 		t.Error("session bound before anything served it")
 	}
 
@@ -1584,8 +1583,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
 	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
-	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
+	if raw, ok := kvStore.Get(kvKey); !ok || raw != "key-a" {
+		t.Errorf("session store after the request served: expected key-a, got %q (found=%v)", raw, ok)
 	}
 
 	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
@@ -1623,10 +1622,10 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1650,7 +1649,7 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	if keySelectorCalls != 0 {
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
-	// KVStore should not have a sticky entry for an empty session id
+	// The session store should not have a sticky entry for an empty session id
 	kvStore.mu.RLock()
 	entries := len(kvStore.data)
 	kvStore.mu.RUnlock()
@@ -1676,10 +1675,10 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -6625,9 +6624,9 @@ func (r *scenarioRouter) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.
 
 // scenarioClient starts core over the account, with the router when given and session state in kv
 // when given.
-func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv schemas.KVStore) *Bifrost {
+func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv SessionAffinityStore) *Bifrost {
 	t.Helper()
-	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv}
+	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)}
 	if router != nil {
 		config.LLMPlugins = []schemas.LLMPlugin{router}
 	}
@@ -7622,7 +7621,7 @@ func TestScenarioProviderPrefixedRequestUnderThePinnedRule(t *testing.T) {
 	u := newScenarioUpstream(t)
 	kv := newMockKVStore()
 	account := pinnedRuleAccount(u)
-	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv, LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv), LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
 	if initErr != nil {
 		t.Fatalf("Init: %v", initErr)
 	}
@@ -7762,20 +7761,18 @@ func setMaxRetries(account *MockAccount, provider schemas.ModelProvider, n int) 
 
 // sessionState reads one of a session's bindings: its route for model (provider "") or its key on
 // provider for model.
-func sessionState(kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
+func sessionState(kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
 	return SessionStateString(kv, SessionStateKey(sessionCtx(session), kind, string(provider), model))
 }
 
 // bindSession writes one of a session's bindings directly, as earlier turns would have left it.
-func bindSession(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, value string) {
+func bindSession(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, value string) {
 	t.Helper()
-	if err := kv.SetWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour); err != nil {
-		t.Fatalf("binding the session: %v", err)
-	}
+	kv.PutWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour)
 }
 
 // requireSessionState fails the test unless the binding holds want, or is absent when want is "".
-func requireSessionState(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, want string) {
+func requireSessionState(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, want string) {
 	t.Helper()
 	got, found := sessionState(kv, session, kind, provider, model)
 	if want == "" && found {

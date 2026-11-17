@@ -79,10 +79,7 @@ func attachLiveStore(config *Config) error {
 			return fmt.Errorf("failed to create live store: %w", err)
 		}
 	}
-	if err := config.AttachLiveStore(live); err != nil {
-		return err
-	}
-	return nil
+	return config.AttachLiveStore(live)
 }
 
 // loadLiveStore fills config's live store once everything LoadConfig writes to the config store has
@@ -126,20 +123,26 @@ func (c *Config) moveGovernanceContentToBoot() {
 	g.RoutingRules, g.PricingOverrides = nil, nil
 }
 
-// AttachLiveStore makes live the config's live store and keeps the views derived from it current: a
-// provider's "name/model" prefix is registered when its record is published and unregistered when
-// it is removed, and the MCP header allowlist is rebuilt whenever a client changes. A refresh calls
-// its subscribers before it returns, so a created provider routes by its prefix once AddProvider
-// returns, before any reload or model discovery, and a provider written elsewhere routes once its
-// refresh returns. Provider keys are served from live.Views.ProviderKeyLists, which the store itself
-// keeps current. Call it once per live store, before live loads, so the configured providers are
-// registered at boot too; a test that builds its own live store calls it the same way. It fails
-// when live is nil.
+// AttachLiveStore makes live the config's live store, creates the shared tables on it, and keeps
+// the views derived from it current: a provider's "name/model" prefix is registered when its record
+// is published and unregistered when it is removed, and the MCP header allowlist is rebuilt
+// whenever a client changes. A refresh calls its subscribers before it returns, so a created
+// provider routes by its prefix once AddProvider returns, before any reload or model discovery, and
+// a provider written elsewhere routes once its refresh returns. Provider keys are served from
+// live.Views.ProviderKeyLists, which the store itself keeps current. Call it once per live store,
+// before live loads, so the configured providers are registered at boot too; a test that builds its
+// own live store calls it the same way. It fails when live is nil or already holds the shared
+// tables.
 func (c *Config) AttachLiveStore(live *livestore.Store) error {
 	if live == nil {
 		return fmt.Errorf("failed to attach live store: %w", livestore.ErrNoLiveStore)
 	}
+	shared, err := newSharedTables(context.Background(), live)
+	if err != nil {
+		return err
+	}
 	c.LiveStore = live
+	c.Shared = shared
 	live.Collections.Providers.Subscribe(func(_ context.Context, changes []livestore.Change[registry.Provider]) {
 		for _, change := range changes {
 			if change.New != nil {

@@ -256,10 +256,16 @@ func TestLoadConfigRefusesAKeyIDSharedByTwoProvidersWithoutAConfigStore(t *testi
 	require.ErrorContains(t, err, `key ID "shared" is used by providers anthropic and openai`)
 }
 
-// TestAttachLiveStoreRefusesNil checks that AttachLiveStore answers an error, not a panic, when it
-// is given no store.
-func TestAttachLiveStoreRefusesNil(t *testing.T) {
+// TestAttachLiveStoreRefusesNilAndASecondAttach checks that AttachLiveStore answers an error, not a
+// panic, when it is given no store, and when the store already holds the shared tables because a
+// config was attached to it before.
+func TestAttachLiveStoreRefusesNilAndASecondAttach(t *testing.T) {
 	require.ErrorIs(t, (&Config{}).AttachLiveStore(nil), livestore.ErrNoLiveStore)
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	require.NoError(t, (&Config{}).AttachLiveStore(live))
+	require.Error(t, (&Config{}).AttachLiveStore(live))
 }
 
 // TestProviderRefreshReadsAnOutsideWrite checks the refresh path: a provider and key written to the

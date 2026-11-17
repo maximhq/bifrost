@@ -134,7 +134,7 @@ func (p *RoutingPlugin) allClassifiers() []*modelRouterRuntime {
 
 // resolveRouterConfig validates a router's config for serving. An invalid
 // one falls back to the defaults with a warning, as the single router always
-// did, but session routing without a KV store is an error, since no fallback
+// did, but session routing without a session store is an error, since no fallback
 // can serve it.
 func (p *RoutingPlugin) resolveRouterConfig(config *complexity.AnalyzerConfig) (*complexity.AnalyzerConfig, error) {
 	resolved, err := complexity.ValidateAndNormalize(config)
@@ -145,8 +145,8 @@ func (p *RoutingPlugin) resolveRouterConfig(config *complexity.AnalyzerConfig) (
 		defaults := complexity.DefaultAnalyzerConfig()
 		resolved = &defaults
 	}
-	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
-		return nil, fmt.Errorf("complexity session routing requires a KV store")
+	if resolved.SessionRoutingEnabled() && p.sessions == nil {
+		return nil, fmt.Errorf("complexity session routing requires a session store")
 	}
 	return resolved, nil
 }

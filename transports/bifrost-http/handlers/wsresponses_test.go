@@ -22,7 +22,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -53,7 +52,7 @@ func (s testWSHandlerStore) GetAsyncJobResultTTL() int {
 	return 0
 }
 
-func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
+func (s testWSHandlerStore) GetSharedTables() *lib.SharedTables {
 	return nil
 }
 

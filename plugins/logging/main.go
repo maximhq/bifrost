@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -1768,15 +1769,17 @@ func (p *LoggerPlugin) SetSettlementTracer(tracer schemas.Tracer) {
 	p.settlementTracer = tracer
 }
 
-func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+// StartBatchAccountingSweeper starts the sweep that settles finished batch jobs every interval,
+// claiming each job through leases so one process settles it, and returns the function that stops it.
+func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
 	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
 		}
 		return func() {}
 	}
-	if kvStore == nil && p.logger != nil {
-		p.logger.Debug("batch accounting sweeper starting without KV store")
+	if leases == nil && p.logger != nil {
+		p.logger.Debug("batch accounting sweeper starting without poll leases")
 	}
 	ctx, cancel := context.WithCancel(p.ctx)
 	p.mu.Lock()
@@ -1803,7 +1806,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 	sweeper := jobaccounting.NewBatchSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
-		KVStore:   kvStore,
+		Leases:    leases,
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)
@@ -1818,7 +1821,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 // rather than a second kind on the batch one: each kind polls its provider through
 // its own client, and the two run on very different clocks — a batch is checked
 // every few minutes for hours, a video every thirty seconds for a few minutes.
-func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.VideoRetriever, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.VideoRetriever, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
 	if retriever == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("video accounting sweeper not started: missing retriever, store, job store, or pricing manager")
@@ -1846,7 +1849,7 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 	sweeper := jobaccounting.NewVideoSweeper(p.batchStore, p.store, p.pricingManager, retriever, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: p.batchRunnerID("video-sweeper"),
-		KVStore:   kvStore,
+		Leases:    leases,
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)
@@ -1860,7 +1863,7 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 // StartInteractionAccountingSweeper runs the interaction sweeper, which settles stored runs no
 // client read to the end. It is its own sweeper for the same reason video is: it polls through its
 // own client, and a Deep Research run is checked every minute or so for up to an hour.
-func (p *LoggerPlugin) StartInteractionAccountingSweeper(poller jobaccounting.InteractionPoller, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+func (p *LoggerPlugin) StartInteractionAccountingSweeper(poller jobaccounting.InteractionPoller, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
 	if poller == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("interaction accounting sweeper not started: missing poller, store, job store, or pricing manager")
@@ -1888,7 +1891,7 @@ func (p *LoggerPlugin) StartInteractionAccountingSweeper(poller jobaccounting.In
 	sweeper := jobaccounting.NewInteractionSweeper(p.batchStore, p.store, p.pricingManager, poller, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: p.batchRunnerID("interaction-sweeper"),
-		KVStore:   kvStore,
+		Leases:    leases,
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)

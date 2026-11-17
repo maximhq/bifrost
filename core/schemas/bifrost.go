@@ -41,8 +41,7 @@ type BifrostConfig struct {
 	MCPConfig                *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
 	KeySelector              KeySelector     // Custom key selector function
 	KeyPoolFilter            KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore                  KVStore         // shared KV store for clustering/session stickiness; nil = disabled
-	SessionAffinity          SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
+	SessionAffinity          SessionAffinity // Decides which route and key a session stays on; nil = Bifrost's default affinity with no store, which binds nothing
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore
 	MCPPerUserDiscoveryStore MCPDiscoveryStore

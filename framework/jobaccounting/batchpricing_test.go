@@ -44,11 +44,11 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 	emitter := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, emitter, reporter, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
@@ -192,11 +192,11 @@ func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 		},
 	}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
@@ -256,11 +256,11 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 		},
 	}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())

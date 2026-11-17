@@ -13,7 +13,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -289,14 +288,12 @@ func TestPreRequestHook_DecisionBelowMinConfidencePublishesNoTier(t *testing.T) 
 // TestPreRequestHook_DecisionBelowMinConfidenceHoldsSessionTier checks that a
 // rejected answer neither clears nor lowers the tier a session already reached.
 func TestPreRequestHook_DecisionBelowMinConfidenceHoldsSessionTier(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	routingConfig := newTestKVStore(t)
 
 	analyzerConfig := decisionAnalyzerTestConfig()
 	analyzerConfig.Session = &complexity.SessionConfig{Enabled: true}
 	decision := &decisionRecorder{tiers: map[string]string{"a medium request": complexity.TierMedium, "a simple request": complexity.TierSimple}}
-	plugin := decisionTestPlugin(t, &routing.Config{KVStore: store}, analyzerConfig, decision)
+	plugin := decisionTestPlugin(t, routingConfig, analyzerConfig, decision)
 
 	ctx := complexitySessionContext("decision-min-confidence")
 	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a medium request")))
@@ -486,9 +483,7 @@ func TestPreRequestHook_SwitchingClassifierTakesEffect(t *testing.T) {
 // held at the session tier, COMPLEX escalates, and the COMPLEX ceiling skips
 // further decision-model calls entirely.
 func TestPreRequestHook_DecisionSessionOnlyEscalates(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	routingConfig := newTestKVStore(t)
 
 	analyzerConfig := decisionAnalyzerTestConfig()
 	analyzerConfig.Session = &complexity.SessionConfig{Enabled: true}
@@ -497,7 +492,7 @@ func TestPreRequestHook_DecisionSessionOnlyEscalates(t *testing.T) {
 		"a simple request":  complexity.TierSimple,
 		"a complex request": complexity.TierComplex,
 	}}
-	plugin := decisionTestPlugin(t, &routing.Config{KVStore: store}, analyzerConfig, decision)
+	plugin := decisionTestPlugin(t, routingConfig, analyzerConfig, decision)
 
 	steps := []struct {
 		text              string
@@ -561,14 +556,12 @@ func TestValidateComplexityAnalyzerConfig_Decision(t *testing.T) {
 	})
 
 	t.Run("decision session without semantic block", func(t *testing.T) {
-		store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, store.Close()) })
+		routingConfig := newTestKVStore(t)
 		logger := rules.NewMockLogger()
 		ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 		require.NoError(t, err)
 		t.Cleanup(ruleStore.Close)
-		plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore.Store, routing.NewMockGovernance())
+		plugin, err := routing.InitFromStore(context.Background(), routingConfig, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		plugin.SetDecisionRequestExecutor((&decisionRecorder{}).execute)
