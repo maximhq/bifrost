@@ -1181,6 +1181,104 @@ func TestVertexGeminiGCSFileURLSurvivesInlining(t *testing.T) {
 	}
 }
 
+// TestVertexGeminiGCSAudioURLForwardedAsFileURI pins that a gs:// input_audio URL reaches
+// Gemini-on-Vertex as fileData.fileUri, the same way a gs:// file does, instead of going to
+// the audio resolver, which only downloads over http(s). http(s) audio and Claude requests
+// are left for their existing paths.
+func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
+	t.Parallel()
+
+	const gcsURI = "gs://bucket/audio/clip.wav"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &VertexProvider{}
+
+	chatRequest := func(model, audioURL string, format *string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Model: model,
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:       schemas.ChatContentBlockTypeInputAudio,
+					InputAudio: &schemas.ChatInputAudio{URL: audioURL, Format: format},
+				}}},
+			}},
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			format   *string
+			wantMIME string
+		}{
+			{"format", schemas.Ptr("mp3"), "audio/mp3"},
+			{"no format uses extension", nil, "audio/wav"},
+		} {
+			request := chatRequest("gemini-2.5-flash", gcsURI, tc.format)
+			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+				t.Fatalf("%s: inlineRemoteURLSources: %v", tc.name, err)
+			}
+			// No download may happen: the resolver must see nothing to fetch.
+			resolved, err := gemini.ResolveChatAudioURLs(ctx, request)
+			if err != nil {
+				t.Fatalf("%s: ResolveChatAudioURLs: %v", tc.name, err)
+			}
+			result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, resolved, geminiImageURLSchemes...)
+			if err != nil {
+				t.Fatalf("%s: convert: %v", tc.name, err)
+			}
+			part := result.Contents[0].Parts[0]
+			if part.FileData == nil || part.FileData.FileURI != gcsURI || part.FileData.MIMEType != tc.wantMIME {
+				t.Fatalf("%s: part = %#v, want fileData %q %q", tc.name, part.FileData, gcsURI, tc.wantMIME)
+			}
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		request := &schemas.BifrostResponsesRequest{
+			Model: "gemini-2.5-flash",
+			Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+					Audio: &schemas.ResponsesInputMessageContentBlockAudio{URL: gcsURI, Format: "wav"},
+				}}},
+			}},
+		}
+		if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, request); err != nil {
+			t.Fatalf("inlineDocumentURLsResponses: %v", err)
+		}
+		resolved, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+		if err != nil {
+			t.Fatalf("ResolveResponsesAudioURLs: %v", err)
+		}
+		result, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolved, geminiImageURLSchemes...)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		part := result.Contents[0].Parts[0]
+		if part.FileData == nil || part.FileData.FileURI != gcsURI || part.FileData.MIMEType != "audio/wav" {
+			t.Fatalf("part = %#v, want fileData %q audio/wav", part.FileData, gcsURI)
+		}
+	})
+
+	t.Run("untouched", func(t *testing.T) {
+		for _, tc := range []struct{ model, url string }{
+			{"gemini-2.5-flash", "https://example.com/clip.wav"},
+			{"claude-sonnet-4-5", gcsURI},
+		} {
+			request := chatRequest(tc.model, tc.url, nil)
+			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+				t.Fatalf("%s %s: %v", tc.model, tc.url, err)
+			}
+			block := request.Input[0].Content.ContentBlocks[0]
+			if block.InputAudio == nil || block.File != nil || block.Type != schemas.ChatContentBlockTypeInputAudio {
+				t.Fatalf("%s %s: audio block rewritten: %#v", tc.model, tc.url, block)
+			}
+		}
+	})
+}
+
 // TestVertexServiceTierReadsDatasheet covers the datasheet side of the tier gate.
 // The published-prefix fallback is covered by the test above; these pin that a
 // service_tiers list overrides it in both directions, and that the list is

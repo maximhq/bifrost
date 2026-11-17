@@ -554,6 +554,32 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 	return base64.StdEncoding.EncodeToString(content), nil
 }
 
+// forwardsAudioURLAsFileURI reports whether an input_audio URL is a gs:// URI that
+// classifyURLSource forwards for this model family. Such audio is sent the way a gs://
+// file is, as fileData.fileUri, instead of being downloaded by the Gemini audio resolver,
+// which only fetches over http(s).
+func forwardsAudioURLAsFileURI(rawURL string, isAnthropicFamily bool) bool {
+	if classifyURLSource(rawURL, isAnthropicFamily) != urlSourceForward {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	return err == nil && parsed.Scheme == "gs"
+}
+
+// audioFileType maps an input_audio format ("mp3", "audio/wav") to the MIME type a
+// fileData part needs. It returns nil for an empty format, so the Gemini converter
+// falls back to the URI's extension.
+func audioFileType(format string) *string {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		return nil
+	}
+	if !strings.HasPrefix(format, "audio/") {
+		format = "audio/" + format
+	}
+	return &format
+}
+
 // inlineRemoteURLSources rewrites document AND image content blocks carrying a URL
 // source into whatever the target model family can actually accept, fetching bytes
 // when the reference cannot be forwarded. Mutates the request in place; safe to call
@@ -595,6 +621,18 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 					}
 					block.File.FileURL = nil
 				}
+			}
+
+			// gs:// audio goes to Gemini as a file reference, like a gs:// file.
+			if audio := block.InputAudio; audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+				fileURL := audio.URL
+				format := ""
+				if audio.Format != nil {
+					format = *audio.Format
+				}
+				block.Type = schemas.ChatContentBlockTypeFile
+				block.File = &schemas.ChatInputFile{FileURL: &fileURL, FileType: audioFileType(format)}
+				block.InputAudio = nil
 			}
 
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
@@ -658,6 +696,14 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 					}
 					f.FileURL = nil
 				}
+			}
+
+			// gs:// audio goes to Gemini as a file reference, like a gs:// file.
+			if audio := block.Audio; audio != nil && audio.Data == "" && audio.URL != "" && forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+				fileURL := audio.URL
+				block.Type = schemas.ResponsesInputMessageContentBlockTypeFile
+				block.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL, FileType: audioFileType(audio.Format)}
+				block.Audio = nil
 			}
 
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
