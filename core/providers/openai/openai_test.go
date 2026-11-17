@@ -707,3 +707,44 @@ func TestContainerFileListNotFoundOnEveryKey(t *testing.T) {
 		t.Fatalf("error = %+v, want 404", err)
 	}
 }
+
+// TestSpeechStreamUnsupportedModelIsBadRequest pins that streaming speech on tts-1 / tts-1-hd
+// is rejected before reaching upstream as a caller error (400), not an internal 500.
+func TestSpeechStreamUnsupportedModelIsBadRequest(t *testing.T) {
+	for _, model := range []string{"tts-1", "tts-1-hd"} {
+		t.Run(model, func(t *testing.T) {
+			var hits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+			}, oauthTestLogger{})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}
+			stream, bErr := provider.SpeechStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostSpeechRequest{
+				Provider: schemas.OpenAI,
+				Model:    model,
+				Input:    &schemas.SpeechInput{Input: "hello"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr("alloy")}},
+			})
+			if stream != nil || bErr == nil {
+				t.Fatalf("expected an error and no stream, got stream=%v err=%v", stream, bErr)
+			}
+			if got := bErr.EffectiveHTTPStatus(); got != http.StatusBadRequest {
+				t.Fatalf("expected HTTP status 400, got %d: %s", got, bErr)
+			}
+			if bErr.Error == nil || bErr.Error.Type == nil || *bErr.Error.Type != "invalid_request_error" {
+				t.Fatalf("expected error type invalid_request_error, got %s", bErr)
+			}
+			if hits.Load() != 0 {
+				t.Fatalf("expected no upstream call, got %d", hits.Load())
+			}
+		})
+	}
+}

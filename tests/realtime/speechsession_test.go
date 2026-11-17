@@ -136,7 +136,7 @@ func TestSpeech_RefusalsComeBeforeAnythingOpens(t *testing.T) {
 
 	c = connect(t, dial{route: speechRoute})
 	c.send(speechConfig("openai/tts-1", "alloy", nil))
-	c.expectError("invalid_request_error", "does not support incremental speech")
+	c.expectError("invalid_request_error", "provider does not support incremental speech: openai; it is available for elevenlabs, soniox")
 	c.expectClosed()
 
 	c = connect(t, dial{route: speechRoute})
@@ -274,7 +274,7 @@ func TestSpeech_AlignmentIsForwardedWhenAskedFor(t *testing.T) {
 				for _, char := range chars.Array() {
 					spoken.WriteString(char.Str)
 				}
-				assert.Len(t, alignment.Get("char_start_times_ms").Array(), len(chars.Array()))
+				assert.Len(t, alignment.Get("character_start_times_seconds").Array(), len(chars.Array()))
 			}
 			assert.Equal(t, text, spoken.String())
 		})

@@ -44,6 +44,7 @@ import {
 	SlidersHorizontal,
 	Split,
 	SquareKanban,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -794,6 +795,14 @@ export function useNavItems(): NavItem[] {
 						title: t("nav.security"),
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						id: "settings.gateways",
+						title: t("nav.gateways"),
+						url: "/workspace/config/gateways",
+						icon: SquareTerminal,
+						description: t("navDesc.gateways"),
 						hasAccess: hasSettingsAccess,
 					},
 					{

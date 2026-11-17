@@ -1378,6 +1378,9 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
 // standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
 func isInferenceWSEndpoint(path string) bool {
+	if path == integrations.ChatGPTCodexResponsesRoute {
+		return true
+	}
 	for strings.HasPrefix(path, "/openai/") {
 		path = strings.TrimPrefix(path, "/openai")
 	}
@@ -2201,7 +2204,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 					return
 				}
-				// Continue with the next handler
+				// Basic authenticates the caller but does not mark the local admin: admin-only
+				// handlers need a session or the Bearer-encoded credentials.
 				next(ctx)
 				return
 			}

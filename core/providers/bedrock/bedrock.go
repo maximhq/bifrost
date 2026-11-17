@@ -411,7 +411,31 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	if bErr != nil {
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+	}
 	return body, latency, providerResponseHeaders, bErr
+}
+
+// nativeSchemaRejections are the Converse 400s for a native structured-output schema Claude will
+// not compile (shape or grammar size); the same request succeeds on the synthetic tool.
+var nativeSchemaRejections = []string{"output_config.format.schema:", "compiled grammar is too large", "grammar compilation timed out", "schema is too complex"}
+
+// markNativeSchemaRejection flags a natively sent structured-output request whose schema was
+// rejected, so core re-sends it once with the synthetic tool.
+func markNativeSchemaRejection(ctx *schemas.BifrostContext, jsonData []byte, bErr *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool ||
+		bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest || bErr.Error == nil ||
+		!providerUtils.JSONFieldExists(jsonData, "outputConfig") {
+		return
+	}
+	message := strings.ToLower(bErr.Error.Message)
+	for _, limit := range nativeSchemaRejections {
+		if strings.Contains(message, limit) {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return
+		}
+	}
 }
 
 // newRequestError classifies a failed net/http request the way the shared fasthttp
@@ -595,7 +619,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
+		bErr := parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
 	}
 
 	return resp, nil

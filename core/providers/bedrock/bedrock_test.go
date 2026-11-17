@@ -4293,6 +4293,101 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	assert.Equal(t, "customValue", customField)
 }
 
+// TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta pins that a
+// caller's additionalModelRequestFieldPaths.anthropic_beta is unioned with the
+// betas the gateway derives (fine-grained tool streaming, server tools) instead
+// of replacing them, on both the Chat and Responses Converse paths.
+func TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta(t *testing.T) {
+	const (
+		eagerBeta  = "fine-grained-tool-streaming-2025-05-14"
+		memoryBeta = "context-management-2025-06-27"
+		callerBeta = "context-1m-2025-08-07"
+	)
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+	betaList := func(t *testing.T, fields *schemas.OrderedMap) []string {
+		t.Helper()
+		require.NotNil(t, fields)
+		raw, ok := fields.Get("anthropic_beta")
+		require.True(t, ok, "anthropic_beta missing")
+		encoded, err := json.Marshal(raw)
+		require.NoError(t, err)
+		var out []string
+		require.NoError(t, json.Unmarshal(encoded, &out), "anthropic_beta is not a string list: %s", encoded)
+		return out
+	}
+
+	cases := []struct {
+		name        string
+		callerBetas any
+		eager       bool
+		serverTool  bool
+		want        []string
+	}{
+		{name: "caller list keeps the eager beta", callerBetas: []interface{}{callerBeta}, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller string keeps the eager beta", callerBetas: callerBeta, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller repeating the eager beta is not duplicated", callerBetas: []string{eagerBeta, callerBeta}, eager: true, want: []string{eagerBeta, callerBeta}},
+		{name: "caller list keeps server-tool betas", callerBetas: []string{callerBeta}, serverTool: true, want: []string{callerBeta, memoryBeta}},
+		{name: "caller list alone is forwarded unchanged", callerBetas: []string{callerBeta}, want: []string{callerBeta}},
+	}
+
+	for _, tc := range cases {
+		extra := func() map[string]any {
+			return map[string]any{
+				"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(schemas.KV("anthropic_beta", tc.callerBetas)),
+			}
+		}
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: schemas.Ptr(true),
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+
+		if tc.serverTool {
+			continue // server tools are tunneled only on the Chat path
+		}
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   schemas.Ptr(true),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+	}
+}
+
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
 // the "reasoningConfig" field (camelCase) and NOT "thinking".
 func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
@@ -9485,4 +9580,217 @@ func TestBedrockNativeStructuredOutput_ResponsesNoToolInterception(t *testing.T)
 	require.Len(t, chat.Choices, 1)
 	assert.Equal(t, text, *chat.Choices[0].Message.Content.ContentStr)
 	assert.Equal(t, "stop", *chat.Choices[0].FinishReason)
+}
+
+// TestBedrockNativeStructuredOutput_ClaudeSchemaRulesBothConverters: a schema hitting each Claude rule
+// (live 400s natively, 200 on the tool path) keeps bf_so_* on both converters.
+func TestBedrockNativeStructuredOutput_ClaudeSchemaRulesBothConverters(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	cases := map[string]string{
+		"unknown key on an object": `{"type":"object","properties":{"greeting":{"type":"object","x-order":1,"properties":{"x":{"type":"string"}},"required":["x"]}},"required":["greeting"]}`,
+		"typeless property":        `{"type":"object","properties":{"greeting":{"title":"Greeting"}},"required":["greeting"]}`,
+		"nullable enum":            `{"type":"object","properties":{"greeting":{"type":["string","null"],"enum":["hi",null]}},"required":["greeting"]}`,
+		"object const":             `{"type":"object","properties":{"greeting":{"const":{"a":1}}},"required":["greeting"]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name+"/chat", func(t *testing.T) {
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal([]byte(raw), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, schema, nil))
+			require.NoError(t, err)
+			assertSyntheticStructuredOutput(t, req)
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			var schema schemas.OrderedMap
+			require.NoError(t, json.Unmarshal([]byte(raw), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := bedrock.ToBedrockResponsesRequest(ctx, nativeSOResponsesRequest(model, &schema))
+			require.NoError(t, err)
+			assertSyntheticStructuredOutput(t, req)
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ClaudePrefill: Claude 400s on a trailing assistant message with an
+// output format (verified live) while the forced tool accepts it; GPT takes it natively.
+func TestBedrockNativeStructuredOutput_ClaudePrefill(t *testing.T) {
+	cases := []struct {
+		model           string
+		prefill, native bool
+	}{
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", false, true},
+		{"us.openai.gpt-6-luna", true, true},
+	}
+	for _, tc := range cases {
+		name := fmt.Sprintf("%s/prefill=%v", tc.model, tc.prefill)
+		t.Run(name+"/chat", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := nativeSOChatRequest(tc.model, greetingSchema, nil)
+			if tc.prefill {
+				req.Input = append(req.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("{")}})
+			}
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schemaMap := schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+				schemas.KV("required", []string{"greeting"}),
+			)
+			req := nativeSOResponsesRequest(tc.model, schemaMap)
+			if tc.prefill {
+				req.Input = append(req.Input, schemas.ResponsesMessage{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("{")},
+				})
+			}
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ToolChoiceNone: Converse has no "none" choice, so with tools the
+// native path lets the model call one; "none" keeps bf_so_* pinned, as before native output.
+func TestBedrockNativeStructuredOutput_ToolChoiceNone(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	for _, choice := range []string{"none", "auto", ""} {
+		t.Run("chat/"+choice, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "get_weather",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"}))},
+			}}}}
+			if choice != "" {
+				params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(choice)}
+			}
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, params))
+			require.NoError(t, err)
+			if choice == "none" {
+				assertSyntheticStructuredOutput(t, out)
+				require.NotNil(t, out.ToolConfig.ToolChoice)
+				require.NotNil(t, out.ToolConfig.ToolChoice.Tool)
+				assert.Equal(t, "bf_so_greeting", out.ToolConfig.ToolChoice.Tool.Name)
+			} else {
+				assertNativeStructuredOutput(t, ctx, out)
+			}
+		})
+		t.Run("responses/"+choice, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schemaMap := schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+				schemas.KV("required", []string{"greeting"}),
+			)
+			req := nativeSOResponsesRequest(model, schemaMap)
+			req.Params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"}))}}}}
+			if choice != "" {
+				req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(choice)}
+			}
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			if choice == "none" {
+				assertSyntheticStructuredOutput(t, out)
+				require.NotNil(t, out.ToolConfig.ToolChoice)
+				require.NotNil(t, out.ToolConfig.ToolChoice.Tool)
+				assert.Equal(t, "bf_so_greeting", out.ToolConfig.ToolChoice.Tool.Name)
+			} else {
+				assertNativeStructuredOutput(t, ctx, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_GPTStrictSchemaRules: under text.format.strict Bedrock's GPT 400s or
+// 500s on these keywords (verified live on gpt-6-luna and gpt-6.1-sol), so they keep bf_so_*.
+func TestBedrockNativeStructuredOutput_GPTStrictSchemaRules(t *testing.T) {
+	obj := func(props string) string {
+		return `{"type":"object","properties":` + props + `,"required":["greeting"],"additionalProperties":false}`
+	}
+	cases := map[string]struct {
+		schema string
+		native bool
+	}{
+		"uniqueItems true":               {obj(`{"greeting":{"type":"array","items":{"type":"string"},"uniqueItems":true}}`), false},
+		"contains":                       {obj(`{"greeting":{"type":"array","contains":{"type":"string"}}}`), false},
+		"minContains":                    {obj(`{"greeting":{"type":"array","items":{"type":"string"},"minContains":1}}`), false},
+		"unevaluatedItems":               {obj(`{"greeting":{"type":"array","items":{"type":"string"},"unevaluatedItems":false}}`), false},
+		"not":                            {obj(`{"greeting":{"type":"string","not":{"const":"x"}}}`), false},
+		"if":                             {obj(`{"greeting":{"type":"string","if":{"const":"x"},"then":{"minLength":1}}}`), false},
+		"propertyNames":                  {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"propertyNames":{"pattern":"^g"}}`, false},
+		"dependentRequired":              {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"dependentRequired":{"greeting":[]}}`, false},
+		"unevaluatedProperties":          {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"unevaluatedProperties":false}`, false},
+		"format uri":                     {obj(`{"greeting":{"type":"string","format":"uri"}}`), false},
+		"format phone":                   {obj(`{"greeting":{"type":"string","format":"phone"}}`), false},
+		"lookahead pattern":              {obj(`{"greeting":{"type":"string","pattern":"^(?=.*a).+$"}}`), false},
+		"backreference pattern":          {obj(`{"greeting":{"type":"string","pattern":"^(a)\\1$"}}`), false},
+		"word boundary pattern":          {obj(`{"greeting":{"type":"string","pattern":"\\bhi\\b"}}`), false},
+		"empty enum":                     {obj(`{"greeting":{"type":"string","enum":[]}}`), false},
+		"enum not matching type":         {obj(`{"greeting":{"type":"string","enum":[1,2]}}`), false},
+		"required without property":      {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting","ghost"],"additionalProperties":false}`, false},
+		"nested in $defs":                {`{"type":"object","properties":{"greeting":{"$ref":"#/$defs/G"}},"required":["greeting"],"$defs":{"G":{"type":"array","items":{"type":"string"},"uniqueItems":true}}}`, false},
+		"nested in anyOf":                {obj(`{"greeting":{"anyOf":[{"type":"string","format":"phone"},{"type":"null"}]}}`), false},
+		"nested in items":                {obj(`{"greeting":{"type":"array","items":{"type":"string","not":{"const":"x"}}}}`), false},
+		"nested in additionalProperties": {obj(`{"greeting":{"type":"object","additionalProperties":{"type":"string","format":"phone"}}}`), false},
+		"uniqueItems false":              {obj(`{"greeting":{"type":"array","items":{"type":"string"},"uniqueItems":false}}`), true},
+		"format email":                   {obj(`{"greeting":{"type":"string","format":"email"}}`), true},
+		"oneOf":                          {obj(`{"greeting":{"oneOf":[{"type":"string"},{"type":"integer"}]}}`), true},
+		"property named format":          {`{"type":"object","properties":{"format":{"type":"string"},"not":{"type":"string"},"greeting":{"type":"string"}},"required":["greeting","format","not"],"additionalProperties":false}`, true},
+		"unknown key":                    {obj(`{"greeting":{"type":"string","x-order":1}}`), true},
+		"nullable enum":                  {obj(`{"greeting":{"type":["string","null"],"enum":["hi",null]}}`), true},
+		"numeric bounds and lengths":     {obj(`{"greeting":{"type":"string","minLength":1,"maxLength":9},"n":{"type":"integer","minimum":1}}`), true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.schema), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.openai.gpt-6-luna", schema, nil))
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ForceToolAfterGrammarRejection: once core marks the request for
+// the tool path after a grammar-limit 400, both converters send bf_so_* for a schema that is otherwise native.
+func TestBedrockNativeStructuredOutput_ForceToolAfterGrammarRejection(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	forced := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+		return ctx
+	}
+	chatReq, err := bedrock.ToBedrockChatCompletionRequest(forced(), nativeSOChatRequest(model, greetingSchema, nil))
+	require.NoError(t, err)
+	assertSyntheticStructuredOutput(t, chatReq)
+
+	schemaMap := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+		schemas.KV("required", []string{"greeting"}),
+	)
+	responsesReq, err := bedrock.ToBedrockResponsesRequest(forced(), nativeSOResponsesRequest(model, schemaMap))
+	require.NoError(t, err)
+	assertSyntheticStructuredOutput(t, responsesReq)
 }

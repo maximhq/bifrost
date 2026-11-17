@@ -167,7 +167,7 @@ func TestPrepareClaudeNativeSchema(t *testing.T) {
 		"pattern":                          closed(`{"a":{"type":"string","pattern":"^[a-z]+$"}}`),
 		"minItems 1":                       closed(`{"a":{"type":"array","items":{"type":"string"},"minItems":1}}`),
 		"nullable unions":                  closed(`{"a":{"type":["string","null"]},"b":{"anyOf":[{"type":"string"},{"type":"null"}]}}`),
-		"allOf and if":                     closed(`{"a":{"allOf":[{"type":"string"}],"if":{"const":"x"},"then":{"const":"x"}}}`),
+		"allOf":                            closed(`{"a":{"allOf":[{"type":"string"}]}}`),
 		"local ref":                        `{"type":"object","properties":{"a":{"$ref":"#/$defs/X"}},"required":["a"],"additionalProperties":false,"$defs":{"X":` + closed(`{"x":{"type":"string"}}`) + `}}`,
 		"empty closed object":              closed(`{"a":{"type":"object","properties":{},"additionalProperties":false}}`),
 		"top-level array":                  `{"type":"array","items":{"type":"string"}}`,
@@ -178,6 +178,16 @@ func TestPrepareClaudeNativeSchema(t *testing.T) {
 		"definitions ref":                  `{"type":"object","properties":{"a":{"$ref":"#/definitions/X"}},"required":["a"],"additionalProperties":false,"definitions":{"X":` + closed(`{"x":{"type":"string"}}`) + `}}`,
 		"dotted def name":                  `{"type":"object","properties":{"a":{"$ref":"#/$defs/x.y"}},"required":["a"],"additionalProperties":false,"$defs":{"x.y":` + closed(`{"x":{"type":"string"}}`) + `}}`,
 		"16 unions":                        nullable(16),
+		// Claude ignores unknown keys on scalar and array nodes.
+		"unknown keys on a string":    closed(`{"a":{"type":"string","x-order":1,"example":"x","nullable":true,"$comment":"c"}}`),
+		"unknown keys on an array":    closed(`{"a":{"type":"array","items":{"type":"string"},"x-order":1}}`),
+		"annotations on an object":    `{"type":"object","title":"T","description":"d","default":{"a":"x"},"examples":[],"deprecated":false,"readOnly":true,"writeOnly":false,"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"t","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"annotated anyOf":             closed(`{"a":{"description":"d","anyOf":[{"type":"string"},{"type":"null"}]}}`),
+		"annotated $ref":              `{"type":"object","properties":{"a":{"$ref":"#/$defs/X","description":"d"}},"required":["a"],"additionalProperties":false,"$defs":{"X":` + closed(`{"x":{"type":"string"}}`) + `}}`,
+		"empty items":                 closed(`{"a":{"type":"array","items":{}}}`),
+		"typed enum and const":        closed(`{"a":{"type":"integer","enum":[1,2]},"b":{"type":"number","enum":[1,2.5]},"c":{"type":"boolean","enum":[true]},"d":{"type":"null","enum":[null]}}`),
+		"nullable enum through anyOf": closed(`{"a":{"anyOf":[{"type":"string","enum":["x","y"]},{"type":"null"}]}}`),
+		"scalar const":                closed(`{"a":{"const":1},"b":{"const":null},"c":{"type":"string","const":1}}`),
 	}
 	for name, schema := range accepted {
 		t.Run("accepted/"+name, func(t *testing.T) {
@@ -221,6 +231,38 @@ func TestPrepareClaudeNativeSchema(t *testing.T) {
 		"ref to a missing def": `{"type":"object","properties":{"a":{"$ref":"#/$defs/Missing"}},"required":["a"],"additionalProperties":false}`,
 		"external ref":         `{"type":"object","properties":{"a":{"$ref":"https://example.com/s.json"}},"required":["a"],"additionalProperties":false}`,
 		"17 unions":            nullable(17),
+		// Live: "For 'object' type, property '<key>' is not supported", at the root or nested.
+		"x-order on an object":       `{"type":"object","x-order":1,"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"example on an object":       closed(`{"a":{"type":"object","example":{"x":"y"},"properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}}`),
+		"nullable on an object":      `{"type":"object","nullable":true,"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"discriminator on an object": `{"type":"object","discriminator":{"propertyName":"a"},"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"xml on an object":           `{"type":"object","xml":{"name":"a"},"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"externalDocs on an object":  `{"type":"object","externalDocs":{"url":"https://example.com"},"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"$comment on an object":      `{"type":"object","$comment":"c","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		"type beside anyOf":          closed(`{"a":{"type":"string","anyOf":[{"type":"string"},{"type":"null"}]}}`),
+		"$defs beside a root anyOf":  `{"anyOf":[{"$ref":"#/$defs/X"},{"type":"null"}],"$defs":{"X":` + closed(`{"x":{"type":"string"}}`) + `}}`,
+		"x-foo beside $ref":          `{"type":"object","properties":{"a":{"$ref":"#/$defs/X","x-foo":1}},"required":["a"],"additionalProperties":false,"$defs":{"X":` + closed(`{"x":{"type":"string"}}`) + `}}`,
+		"if beside allOf":            closed(`{"a":{"allOf":[{"type":"string"}],"if":{"const":"x"},"then":{"const":"x"}}}`),
+		// Live: "Schema type is missing" / "Empty schema ({}) ... is not supported".
+		"title-only property":           closed(`{"a":{"title":"A"}}`),
+		"description-only property":     closed(`{"a":{"description":"A"}}`),
+		"empty property":                closed(`{"a":{}}`),
+		"typeless object property":      closed(`{"a":{"properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}}`),
+		"typeless def":                  `{"type":"object","properties":{"a":{"$ref":"#/$defs/X"}},"required":["a"],"additionalProperties":false,"$defs":{"X":{"title":"X"}}}`,
+		"typeless anyOf branch":         closed(`{"a":{"anyOf":[{"title":"x"},{"type":"null"}]}}`),
+		"typeless items":                closed(`{"a":{"type":"array","items":{"title":"x"}}}`),
+		"typeless root with properties": `{"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`,
+		// Live: "Enum must be a non-empty array" / "Enum value ... does not match declared type".
+		"empty enum":                  closed(`{"a":{"type":"string","enum":[]}}`),
+		"nullable enum":               closed(`{"a":{"type":["string","null"],"enum":["x",null]}}`),
+		"nullable integer enum":       closed(`{"a":{"type":["integer","null"],"enum":[1,2]}}`),
+		"null in a string enum":       closed(`{"a":{"type":"string","enum":["x",null]}}`),
+		"number in a string enum":     closed(`{"a":{"type":"string","enum":[1,2]}}`),
+		"fraction in an integer enum": closed(`{"a":{"type":"integer","enum":[1,1.5]}}`),
+		"string in a boolean enum":    closed(`{"a":{"type":"boolean","enum":["x"]}}`),
+		// Live: "Schema type 'const - complex' is not supported".
+		"object const": closed(`{"a":{"const":{"x":1}}}`),
+		"array const":  closed(`{"a":{"const":[1,2]}}`),
 	}
 	for name, schema := range rejected {
 		t.Run("rejected/"+name, func(t *testing.T) {

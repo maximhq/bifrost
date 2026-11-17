@@ -492,6 +492,56 @@ test.describe("LLM Logs", () => {
         await expect(page.getByTestId("logdetails-fallback-chip-2")).toBeVisible();
         await expect(page.getByTestId("logdetails-fallback-chip-3")).toHaveCount(0);
       });
+
+      // The preview order matches the stored content_summary of hybrid rows:
+      // last user text, then the latest tool result or tool call.
+      test("should preview the last user text when a turn ends on a tool call", async ({ page, logsPage }) => {
+        const summary = `synthetic-summary-${Date.now()}`;
+        const turn = {
+          ...syntheticLog(`synthetic-toolcall-user-${Date.now()}`, 0, "success"),
+          input_history: [
+            { role: "user", content: "what's the weather?" },
+            { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Paris"}' } }] },
+          ],
+          content_summary: summary,
+        };
+        await mockLogs(page, turn, {});
+        await logsPage.goto();
+        const row = logsPage.tableRows.first();
+        await expect(row).toContainText("what's the weather?");
+        await expect(row).not.toContainText("get_weather(");
+        await expect(row).not.toContainText(summary);
+      });
+
+      test("should preview a tool call as name(args) when the turn has no user text", async ({ page, logsPage }) => {
+        const summary = `synthetic-summary-${Date.now()}`;
+        const turn = {
+          ...syntheticLog(`synthetic-toolcall-agent-${Date.now()}`, 0, "success"),
+          input_history: [
+            { role: "system", content: "You are an agent." },
+            { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Paris"}' } }] },
+          ],
+          content_summary: summary,
+        };
+        await mockLogs(page, turn, {});
+        await logsPage.goto();
+        const row = logsPage.tableRows.first();
+        await expect(row).toContainText('get_weather({"city":"Paris"})');
+        await expect(row).not.toContainText(summary);
+      });
+
+      test("should preview a chat custom tool call as name(input)", async ({ page, logsPage }) => {
+        const turn = {
+          ...syntheticLog(`synthetic-customcall-${Date.now()}`, 0, "success"),
+          input_history: [
+            { role: "system", content: "You are an agent." },
+            { role: "assistant", tool_calls: [{ id: "call_1", type: "custom", custom: { name: "code_exec", input: "print(1)" } }] },
+          ],
+        };
+        await mockLogs(page, turn, {});
+        await logsPage.goto();
+        await expect(logsPage.tableRows.first()).toContainText("code_exec(print(1))");
+      });
     });
 
     test.describe("Speech stream rows", () => {
