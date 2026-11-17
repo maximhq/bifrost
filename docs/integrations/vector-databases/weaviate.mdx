@@ -143,4 +143,20 @@ vectorConfig := &vectorstore.Config{
 **Authentication**: Always use API keys for Weaviate Cloud deployments and configure proper authentication for self-hosted instances in production.
 </Warning>
 
+### Semantic-Cache Indexes
+
+Bifrost declares every semantic-cache property in new collections so cached
+responses, streaming chunks, and expiry timestamps remain available for reads.
+Only `cache_key`, `provider`, `model`, `params_hash`, and
+`from_bifrost_semantic_cache_plugin` need filtering indexes. For payload-only
+properties, Bifrost disables `indexFilterable` and, for string properties,
+`indexSearchable`; leaving the searchable index enabled would still index the
+response text. Expiry is checked after retrieval, not through a database filter.
+
+Unannotated schemas used by other vector-store callers keep Weaviate's default
+indexing behavior. Existing collections are left unchanged on initialization,
+including their index settings and cached objects. Upgrading does not remove
+old indexes; changing property index settings requires an operator-managed
+collection migration rather than deleting or recreating the collection on startup.
+
 For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).

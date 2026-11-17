@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"strconv"
@@ -19,6 +20,183 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Capture the concrete client's provisioning commands without substituting
+// the VectorStore implementation or needing a search server for unit tests.
+type redisNamespaceHook struct {
+	existing bool
+	creates  [][]interface{}
+}
+
+func (h *redisNamespaceHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *redisNamespaceHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h *redisNamespaceHook) ProcessHook(_ redis.ProcessHook) redis.ProcessHook {
+	return func(_ context.Context, command redis.Cmder) error {
+		cmd := command.(*redis.Cmd)
+		switch cmd.Name() {
+		case "ft.info":
+			if !h.existing {
+				return fmt.Errorf("unknown index name")
+			}
+			cmd.SetVal([]interface{}{"attributes", []interface{}{[]interface{}{"type", "VECTOR", "dim", int64(3)}}})
+		case "ft.create":
+			h.creates = append(h.creates, append([]interface{}(nil), cmd.Args()...))
+			cmd.SetVal("OK")
+		default:
+			return fmt.Errorf("unexpected command %s", cmd.Name())
+		}
+		return nil
+	}
+}
+
+func TestRedisStore_CreateNamespaceIndexPolicy(t *testing.T) {
+	filterable := map[string]VectorStoreProperties{
+		"label": {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"count": {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+		"flag":  {DataType: VectorStorePropertyTypeBoolean, Filterable: true},
+		"tags":  {DataType: VectorStorePropertyTypeStringArray, Filterable: true},
+	}
+	mixed := maps.Clone(filterable)
+	mixed["response"] = VectorStoreProperties{DataType: VectorStorePropertyTypeString}
+	mixed["stream_chunks"] = VectorStoreProperties{DataType: VectorStorePropertyTypeStringArray}
+	mixed["expires_at"] = VectorStoreProperties{DataType: VectorStorePropertyTypeInteger}
+	mixed["payload_flag"] = VectorStoreProperties{DataType: VectorStorePropertyTypeBoolean}
+	legacy := maps.Clone(mixed)
+	for field, prop := range legacy {
+		prop.Filterable = false
+		legacy[field] = prop
+	}
+	for _, tt := range []struct {
+		name       string
+		properties map[string]VectorStoreProperties
+		indexed    map[string]VectorStoreProperties
+	}{
+		{"mixed", mixed, filterable},
+		{"all filterable", filterable, filterable},
+		{"legacy", legacy, legacy},
+		{"empty", map[string]VectorStoreProperties{}, nil},
+		{"nil", nil, nil},
+	} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", tt.name, existing), func(t *testing.T) {
+				client := redis.NewClient(&redis.Options{Addr: "unused"})
+				t.Cleanup(func() { assert.NoError(t, client.Close()) })
+				hook := &redisNamespaceHook{existing: existing}
+				client.AddHook(hook)
+				store := &RedisStore{client: client}
+				require.NoError(t, store.CreateNamespace(context.Background(), "index-policy", 3, tt.properties))
+				if len(tt.properties) > 0 {
+					assert.Equal(t, tt.properties, store.getNamespaceFieldTypes("index-policy"), "encoding metadata must retain payload-only definitions too")
+				}
+				if existing {
+					assert.Empty(t, hook.creates, "do not rebuild or drop operator-managed indexes")
+					return
+				}
+				require.Len(t, hook.creates, 1)
+				args := hook.creates[0]
+				require.GreaterOrEqual(t, len(args), 18)
+				assert.Equal(t, []interface{}{"FT.CREATE", "index-policy", "ON", "HASH", "PREFIX", "1", "index-policy:", "SCHEMA", "embedding", "VECTOR", "HNSW", "6", "TYPE", "FLOAT32", "DIM", 3, "DISTANCE_METRIC", "COSINE"}, args[:18])
+				actual := map[string]string{}
+				for i := 18; i < len(args); i += 2 {
+					actual[args[i].(string)] = args[i+1].(string)
+				}
+				expected := map[string]string{}
+				for field, prop := range tt.indexed {
+					expected[field] = "TAG"
+					if prop.DataType == VectorStorePropertyTypeInteger {
+						expected[field] = "NUMERIC"
+					}
+				}
+				assert.Equal(t, expected, actual)
+			})
+		}
+	}
+}
+
+// Run this against Redis Stack, or against Valkey search via REDIS_ADDR.
+// These are actual search queries, with scan fallback disabled, so a missing
+// index cannot be hidden by reading and filtering every hash client-side.
+func TestRedisStore_FilterablePayloadRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping search-server integration test in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	t.Cleanup(func() { setup.Cleanup(t) })
+	ctx := WithDisableScanFallback(setup.ctx)
+	namespace := "index-policy-" + generateUUID()
+	t.Cleanup(func() { assert.NoError(t, setup.Store.DeleteNamespace(context.Background(), namespace)) })
+	properties := map[string]VectorStoreProperties{
+		"cache_key":     {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"model":         {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"owned":         {DataType: VectorStorePropertyTypeBoolean, Filterable: true},
+		"count":         {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+		"response":      {DataType: VectorStorePropertyTypeString},
+		"stream_chunks": {DataType: VectorStorePropertyTypeStringArray},
+		"expires_at":    {DataType: VectorStorePropertyTypeInteger},
+	}
+	require.NoError(t, setup.Store.CreateNamespace(ctx, namespace, 3, properties))
+	info, err := setup.Store.client.Do(ctx, "FT.INFO", namespace).Result()
+	require.NoError(t, err)
+	attributes, ok := ftInfoField(info, "attributes")
+	require.True(t, ok)
+	fields := []string{}
+	for _, attribute := range attributes.([]interface{}) {
+		field, ok := ftInfoField(attribute, "attribute")
+		require.True(t, ok)
+		name, ok := toString(field)
+		require.True(t, ok)
+		fields = append(fields, name)
+	}
+	assert.ElementsMatch(t, []string{"embedding", "cache_key", "model", "owned", "count"}, fields)
+	id := generateUUID()
+	response := strings.Repeat(`{"content":"full response, with punctuation: | {}"}`, 128)
+	metadata := map[string]interface{}{
+		"cache_key": "tenant:{a}|b,c", "model": "llama3.2:3b", "owned": true, "count": 7,
+		"response": response, "stream_chunks": []string{"first, chunk", "second: chunk"}, "expires_at": 1234567890,
+	}
+	require.NoError(t, setup.Store.Add(ctx, namespace, id, []float32{1, 0, 0}, metadata))
+	queries := []Query{
+		{Field: "cache_key", Operator: QueryOperatorEqual, Value: metadata["cache_key"]},
+		{Field: "model", Operator: QueryOperatorEqual, Value: metadata["model"]},
+		{Field: "owned", Operator: QueryOperatorEqual, Value: true},
+		{Field: "count", Operator: QueryOperatorGreaterThan, Value: 5},
+	}
+	projection := []string{"response", "stream_chunks", "expires_at", "cache_key", "model"}
+	var results []SearchResult
+	require.Eventually(t, func() bool {
+		results, err = setup.Store.GetNearest(ctx, namespace, []float32{1, 0, 0}, queries, projection, 0.8, 1)
+		return err == nil && len(results) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, response, results[0].Properties["response"])
+	assert.Equal(t, `["first, chunk","second: chunk"]`, results[0].Properties["stream_chunks"])
+	assert.Equal(t, "1234567890", results[0].Properties["expires_at"])
+	assert.Equal(t, metadata["cache_key"], results[0].Properties["cache_key"])
+	all, _, err := setup.Store.GetAll(ctx, namespace, queries, projection, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, response, all[0].Properties["response"])
+	stored, err := setup.Store.GetChunk(ctx, namespace, id)
+	require.NoError(t, err)
+	assert.Equal(t, response, stored.Properties["response"])
+	// Simulate another process reopening the existing index. The field-type
+	// cache must be repopulated so marked TAGs still encode/decode correctly.
+	setup.Store.deleteNamespaceFieldTypes(namespace)
+	require.NoError(t, setup.Store.CreateNamespace(ctx, namespace, 3, properties))
+	results, err = setup.Store.GetNearest(ctx, namespace, []float32{1, 0, 0}, queries, projection, 0.8, 1)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	queries[0].Value = "another tenant"
+	results, err = setup.Store.GetNearest(ctx, namespace, []float32{1, 0, 0}, queries, projection, 0.8, 1)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+	queries[0].Value = metadata["cache_key"]
+	deleted, err := setup.Store.DeleteAll(ctx, namespace, queries)
+	require.NoError(t, err)
+	require.Len(t, deleted, 1)
+	assert.Equal(t, DeleteStatusSuccess, deleted[0].Status)
+}
 
 // Test constants
 const (
