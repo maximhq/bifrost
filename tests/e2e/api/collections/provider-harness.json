@@ -331584,11 +331584,11 @@
       ]
     },
     {
-      "name": "353. Warp does not answer without the Bifrost MCP (warp-needs-mcp) [SERIAL]",
-      "description": "Warp reads this deployment's configuration through the Bifrost MCP, the server behind /v1/mcp that loads only when client.bifrost_url is set. Without it Warp used to keep answering from its traffic tools alone, and asked \"what routing rules exist?\" it listed the rules it had seen in logged traffic as if they were the configured list. Warp now does not answer at all without the Bifrost MCP: GET /api/warp/config reports bifrost_mcp_available, and POST /api/warp/chat returns 503 with reason no_bifrost_mcp before any model is called, so no tokens are spent. The case confirms the profile's Bifrost MCP is loaded, clears bifrost_url, waits for the config to report it gone, sends one chat and expects the refusal, then restores the client config and waits for the Bifrost MCP to load again so later Warp cases can answer. Red before the change: the chat answered 200 and the config had no bifrost_mcp_available. Requires the profile to set client.bifrost_url and the warp flag to be unlocked; the client config, Warp config and flag are restored at the end.",
+      "name": "353. Warp answers without the Bifrost MCP while decoupled from it (warp-decoupled-mcp) [SERIAL]",
+      "description": "Warp is decoupled from the Bifrost MCP for now (warp.BifrostMCPEnabled is off): it answers from its own traffic tools only, never reaches the gateway's /api through the Bifrost MCP, and does not need client.bifrost_url. Coupled, it refused every chat with 503 no_bifrost_mcp while the Bifrost MCP was not loaded. The case confirms GET /api/warp/config reports bifrost_mcp_enabled false (and bifrost_mcp_available false, since Warp reads nothing through it) with bifrost_url set, clears bifrost_url, sends one chat and expects a 200 answer whose tool calls are all Warp's own snake_case tools (no camelCase /api operation), then restores the client config and checks the flag again. Red before the change: the config had no bifrost_mcp_enabled and the chat was refused with 503 no_bifrost_mcp. Requires the profile to set client.bifrost_url and the warp flag to be unlocked; the client config, Warp config and flag are restored at the end.",
       "item": [
         {
-          "name": "openai warp-needs-mcp setup: read warp feature flag",
+          "name": "openai warp-decoupled-mcp setup: read warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -331605,12 +331605,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: feature flags list', function () {",
+                  "pm.test('warp-decoupled-mcp: feature flags list', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var flag;",
                   "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
-                  "pm.test('warp-needs-mcp: warp flag exists', function () {",
+                  "pm.test('warp-decoupled-mcp: warp flag exists', function () {",
                   "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
                   "});",
@@ -331630,7 +331630,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: enable warp feature flag",
+          "name": "openai warp-decoupled-mcp setup: enable warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -331647,7 +331647,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp flag enabled', function () {",
+                  "pm.test('warp-decoupled-mcp: warp flag enabled', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331675,7 +331675,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: read current warp config",
+          "name": "openai warp-decoupled-mcp setup: read current warp config",
           "event": [
             {
               "listen": "prerequest",
@@ -331692,13 +331692,13 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var config;",
                   "try { config = pm.response.json(); } catch (e) { config = undefined; }",
                   "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
-                  "pm.test('warp-needs-mcp: warp config is a config object', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config is a config object', function () {",
                   "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
                   "});",
                   "// Saved unchanged, and only when it is a config: an error body must never be written",
@@ -331715,7 +331715,7 @@
           }
         },
         {
-          "name": "openai gpt-4o-mini warp-needs-mcp: configure Warp on gpt-4o-mini",
+          "name": "openai gpt-4o-mini warp-decoupled-mcp: configure Warp on gpt-4o-mini",
           "event": [
             {
               "listen": "prerequest",
@@ -331746,7 +331746,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: config saved', function () {",
+                  "pm.test('warp-decoupled-mcp: config saved', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331774,7 +331774,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: read current client config",
+          "name": "openai warp-decoupled-mcp setup: read current client config",
           "event": [
             {
               "listen": "prerequest",
@@ -331791,13 +331791,13 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: client config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var body;",
                   "try { body = pm.response.json(); } catch (e) { body = undefined; }",
                   "var client = body && body.client_config;",
-                  "pm.test('warp-needs-mcp: the profile sets bifrost_url, which Warp needs', function () {",
+                  "pm.test('warp-decoupled-mcp: the profile sets bifrost_url', function () {",
                   "  pm.expect(client && client.bifrost_url, 'no bifrost_url: ' + pm.response.text()).to.be.an('object');",
                   "});",
                   "// Saved unchanged, and only when it is a config with a Bifrost URL: the clear and",
@@ -331814,30 +331814,23 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: the config reports the Bifrost MCP loaded",
+          "name": "openai warp-decoupled-mcp: the config reports Warp does not use the Bifrost MCP",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== true && polls < 40) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true with bifrost_url set', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false with bifrost_url set', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -331850,7 +331843,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: clear the Bifrost URL",
+          "name": "openai warp-decoupled-mcp: clear the Bifrost URL",
           "event": [
             {
               "listen": "prerequest",
@@ -331870,7 +331863,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config saved without bifrost_url', function () {",
+                  "pm.test('warp-decoupled-mcp: client config saved without bifrost_url', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331898,7 +331891,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: the config reports no Bifrost MCP",
+          "name": "openai warp-decoupled-mcp: the config reports no setup step without bifrost_url",
           "event": [
             {
               "listen": "prerequest",
@@ -331914,23 +331907,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== false && polls < 40) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is false without bifrost_url', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false without bifrost_url', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -331943,7 +331929,7 @@
           }
         },
         {
-          "name": "openai gpt-4o-mini warp-needs-mcp: chat without the Bifrost MCP is refused before any model call [EXPECT-503]",
+          "name": "openai gpt-4o-mini warp-decoupled-mcp: chat without the Bifrost URL is answered from Warp's own tools",
           "event": [
             {
               "listen": "prerequest",
@@ -331959,15 +331945,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Red before the change: Warp answered from traffic alone (200), passing off",
-                  "// routing rules seen in logs as the configured list.",
-                  "pm.test('warp-needs-mcp: 503 when the Bifrost MCP is not loaded', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(503);",
+                  "// Red before the change: Warp refused with 503 no_bifrost_mcp before any model call.",
+                  "pm.test('warp-decoupled-mcp: 200 without the Bifrost MCP', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "var body;",
+                  "var body = {};",
                   "try { body = pm.response.json(); } catch (e) { body = {}; }",
-                  "pm.test('warp-needs-mcp: reason is no_bifrost_mcp', function () {",
-                  "  pm.expect(body.reason, 'reason: ' + pm.response.text()).to.equal('no_bifrost_mcp');",
+                  "pm.test('warp-decoupled-mcp: the turn answers', function () {",
+                  "  pm.expect(body.answer, 'answer: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.error, 'error: ' + pm.response.text()).to.be.undefined;",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: the turn calls at least one tool', function () {",
+                  "  pm.expect(body.tool_calls, 'tool_calls: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: only Warp\\'s own tools are called, no /api operation', function () {",
+                  "  var names = (body.tool_calls || []).map(function (c) { return c.name; });",
+                  "  names.forEach(function (name) {",
+                  "    pm.expect(name, 'tool ' + name + ' in ' + pm.response.text()).to.match(/^[a-z][a-z0-9_]*$/);",
+                  "  });",
                   "});"
                 ]
               }
@@ -331984,7 +331979,7 @@
             "url": "{{baseUrl}}/api/warp/chat",
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"what routing rules exist?\"}], \"stream\": false}",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"How many requests did this deployment serve in the last 24 hours?\"}], \"stream\": false}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -331994,7 +331989,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore client config",
+          "name": "openai warp-decoupled-mcp cleanup: restore client config",
           "event": [
             {
               "listen": "prerequest",
@@ -332010,7 +332005,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config restored', function () {",
+                  "pm.test('warp-decoupled-mcp: client config restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "// Its snapshot is cleared at the end of the folder, and only if this restore succeeded.",
@@ -332040,7 +332035,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: the Bifrost MCP loads again",
+          "name": "openai warp-decoupled-mcp cleanup: Warp still does not use the Bifrost MCP",
           "event": [
             {
               "listen": "prerequest",
@@ -332056,23 +332051,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== true && polls < 60) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true again, so later Warp cases can answer', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false with bifrost_url restored', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -332085,7 +332073,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore warp config",
+          "name": "openai warp-decoupled-mcp cleanup: restore warp config",
           "event": [
             {
               "listen": "prerequest",
@@ -332102,7 +332090,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: previous config restored', function () {",
+                  "pm.test('warp-decoupled-mcp: previous config restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "pm.collectionVariables.unset('warpNeedsMcpConfigBody');",
@@ -332133,7 +332121,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore warp feature flag",
+          "name": "openai warp-decoupled-mcp cleanup: restore warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -332151,7 +332139,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: flag restored', function () {",
+                  "pm.test('warp-decoupled-mcp: flag restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "// Last request of the folder. Each snapshot is cleared only once its own restore succeeded,",
@@ -339296,7 +339284,307 @@
       ]
     },
     {
-      "name": "363. Chat stream usage isolation (#10139)",
+      "name": "364. Bedrock synthetic structured-output tool streams as one text block (bedrock synthetic structured output stream) (#10128 / PR #10138)",
+      "description": "When a Bedrock model keeps the synthetic bf_so_* tool for structured output (older Claude, Fable 5.1+, or a schema Claude rejects natively, here a nullable enum on Claude Sonnet 4.5), the streamed tool input used to go out as bare output_text.delta events with no item id. /anthropic/v1/messages then emitted content_block_delta with a fresh index per delta and no content_block_start/stop, so Anthropic SDK clients assembled nothing (#10128, #8158 shape 1). When the tool is unpinned (thinking on), the model may answer in plain text instead, and every text event was dropped, leaving only message_delta with billed output tokens (#8158 shape 2). Cases pin one well-formed text block on the /anthropic stream, one announced output_text item on the /v1/responses stream, and streamed content on /v1/chat/completions under reasoning. The two unpinned cases are red before the fix only on turns where the model answers in prose.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format on the synthetic tool arrives as one text block (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('one text block: content_block_start, deltas on its index, content_block_stop', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"stream\":true,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format with thinking (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('the answer streams as one text block whether the model used the tool or plain text', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses stream text.format on the synthetic tool streams one output_text item (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('output_text deltas belong to one announced message item', function () {",
+                  "  var added = {}, parts = {}, text = '', itemIds = {}, done = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'response.output_item.added' && ev.item) { added[ev.item.id] = ev.item.type; }",
+                  "    if (ev.type === 'response.content_part.added') { parts[ev.item_id] = true; }",
+                  "    if (ev.type === 'response.output_text.delta') {",
+                  "      pm.expect(ev.item_id, 'delta without item_id: ' + body).to.be.a('string').and.not.empty;",
+                  "      pm.expect(added[ev.item_id], 'delta before output_item.added for ' + ev.item_id + ': ' + body).to.equal('message');",
+                  "      pm.expect(parts[ev.item_id], 'delta before content_part.added for ' + ev.item_id + ': ' + body).to.equal(true);",
+                  "      itemIds[ev.item_id] = true;",
+                  "      text += ev.delta;",
+                  "    }",
+                  "    if (ev.type === 'response.output_item.added' && ev.item && ev.item.type === 'function_call') {",
+                  "      pm.expect.fail('the synthetic tool leaked as a function_call: ' + body);",
+                  "    }",
+                  "    if (ev.type === 'response.completed') { done = true; }",
+                  "  });",
+                  "  pm.expect(Object.keys(itemIds).length, 'items carrying text: ' + body).to.equal(1);",
+                  "  pm.expect(done, 'no response.completed: ' + body).to.equal(true);",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_output_tokens\":400,\"stream\":true,\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"input\":\"The ticket is open. Report its status.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream response_format with reasoning (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('content deltas concatenate to schema JSON, finish_reason stop, no tool_calls', function () {",
+                  "  var text = '', finish = null, toolCalls = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.error, 'error event: ' + body).to.be.undefined;",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.delta && c.delta.tool_calls) { toolCalls = true; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(toolCalls, 'unexpected tool_calls: ' + body).to.equal(false);",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "  pm.expect(text, 'no content streamed: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"reasoning\":{\"max_tokens\":1024},\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "365. Chat stream usage isolation (#10139)",
       "description": "OpenAI-compatible streaming must emit usage in a separate choices: [] event after finish_reason and before [DONE]. Anthropic previously produced a single combined finish/usage event on all normalized chat routes. These cases pin native and SDK drop-in HTTP writers with include_usage enabled.",
       "item": [
         {

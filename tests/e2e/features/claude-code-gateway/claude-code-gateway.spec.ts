@@ -116,7 +116,7 @@ test.describe('Claude Code gateway settings', () => {
       },
     })
     await claudeCodeGatewayPage.goto()
-    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('300')
     const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
     const clientConfig = (await submitted).postDataJSON().client_config
@@ -134,7 +134,7 @@ test.describe('Claude Code gateway settings', () => {
       },
     })
     await claudeCodeGatewayPage.goto()
-    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('300')
     const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
     const clientConfig = (await submitted).postDataJSON().client_config
@@ -145,21 +145,21 @@ test.describe('Claude Code gateway settings', () => {
     })
   })
 
-  test('edits the shared access token lifetime in minutes and refuses one under a minute', async ({ page, claudeCodeGatewayPage }) => {
+  test('edits the shared access token TTL in seconds and refuses one under 60 seconds', async ({ page, claudeCodeGatewayPage }) => {
     await mockConfig(page, 'https://bifrost.example.com')
     await claudeCodeGatewayPage.goto()
-    await expect(claudeCodeGatewayPage.accessTokenTTLInput).toHaveValue('10')
+    await expect(claudeCodeGatewayPage.accessTokenTTLInput).toHaveValue('600')
 
     let puts = 0
     page.on('request', r => { if (new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT') puts++ })
-    await claudeCodeGatewayPage.accessTokenTTLInput.fill('0')
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('59')
     await claudeCodeGatewayPage.saveBtn.click()
-    const invalidToast = page.getByText('The access token lifetime must be at least 1 minute.')
+    const invalidToast = page.getByText('Access token TTL must be at least 60 seconds.')
     await expect(invalidToast).toBeVisible()
     expect(puts).toBe(0)
     await expect(invalidToast).toBeHidden({ timeout: 15000 })
 
-    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('300')
     const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
     const clientConfig = (await submitted).postDataJSON().client_config

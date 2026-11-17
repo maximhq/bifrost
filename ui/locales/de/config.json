@@ -393,7 +393,7 @@
 		"authModeHelp": "Steuert, wie sich eingehende MCP-Clients (z. B. Claude Code, Cursor) am <code0>/mcp</code0>-Endpunkt authentifizieren. <b1>headers</b1> (Standard) – nur VK- / api-key- / Sitzungs-Header, OAuth-Discovery deaktiviert. <b2>both</b2> – akzeptiert Header-Anmeldedaten und von Bifrost ausgestellte JWTs; bestehende Integrationen bleiben unberührt. <b3>oauth</b3> – nur JWTs; VK- und Header-Zugriff ist deaktiviert.",
 		"issuerUrlHelp": "Stabile öffentliche URL, die in Discovery-Dokumenten angegeben und als <code0>iss</code0>-Claim in jedes JWT eingebettet wird. Erforderlich in den Modi OAuth und Beide: Bifrost leitet den Issuer nie aus dem Anfrage-Header <code1>Host</code1> ab, da dieser Header vom Aufrufer kontrolliert wird. Unterstützt die Syntax für Umgebungsvariablen (z. B. <code2>env.BIFROST_ISSUER_URL</code2>).",
 		"authCodeTtlHelp": "Wie lange der Einmalcode gültig ist, nachdem die Zustimmungsseite zurück zum MCP-Client weiterleitet (Standard: 300, max. 900 = 15 Min.).",
-		"accessTokenTtlHelp": "Lebensdauer ausgestellter JWT-Bearer-Tokens. Clients aktualisieren diese bei Ablauf lautlos (Standard: 600 = 10 Min.). Begrenzt auch, wie lange eine widerrufene Berechtigung noch funktioniert, bevor sie getrennt wird.",
+		"accessTokenTtlHelp": "Lebensdauer ausgestellter JWT-Bearer-Tokens. Clients aktualisieren diese bei Ablauf lautlos (Standard: 600 = 10 Min.). Begrenzt auch, wie lange eine widerrufene Berechtigung noch funktioniert, bevor sie getrennt wird. Wird mit dem Claude Code Gateway unter Einstellungen → Gateways geteilt.",
 		"requireIdpLoginHelp": "Wenn aktiviert, bietet der OAuth-Zustimmungs-Flow nur noch die Anmeldung über Identity-Anbieter an. Virtuelle Schlüssel können nicht mehr zum Abrufen eines MCP-Tokens verwendet werden, und bestehende OAuth-Sitzungen mit virtuellem Schlüssel verlieren sofort den Zugriff. Der Zugriff auf anonyme Sitzungen bleibt unberührt (gesteuert durch „Authentifizierung bei Inferenz erzwingen“).",
 		"vFSStructure": "VFS-Struktur:",
 		"allToolsPerServerInASinglePyFile": "Alle Tools pro Server in einer einzelnen .py-Datei",
@@ -1764,9 +1764,9 @@
 		"issuerDescription": "Die stabile öffentliche URL von Bifrost. Jedes Gateway ist unter <code0/> erreichbar. Es ist derselbe Issuer, den der MCP-OAuth-Server nutzt; eine Änderung betrifft also auch per OAuth angemeldete MCP-Clients. Unterstützt Umgebungsvariablen-Syntax (z. B. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com oder env.BIFROST_ISSUER_URL",
 		"urlTemplate": "<Issuer-URL>/gateway/<Client>",
-		"accessTokenTtlLabel": "Lebensdauer des Zugriffstokens (Minuten)",
-		"accessTokenTtlDescription": "Wie lange das Zugriffstoken einer Anmeldung gültig bleibt (Standard 10, mindestens 1). Abmelden oder Widerrufen einer Anmeldung verhindert die nächste Aktualisierung, das bereits ausgestellte Zugriffstoken funktioniert aber bis zu seinem Ablauf weiter. Um den Zugriff sofort zu sperren, deaktiviere den virtuellen Schlüssel oder den Benutzer. Diese Einstellung wird mit MCP OAuth geteilt.",
-		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss mindestens 1 Minute betragen.",
+		"accessTokenTtlLabel": "TTL für Zugriffstoken (Sekunden)",
+		"accessTokenTtlDescription": "Wie lange das Zugriffstoken einer Anmeldung gültig bleibt (Standard 600, mindestens 60). Abmelden oder Widerrufen einer Anmeldung verhindert die nächste Aktualisierung, das bereits ausgestellte Zugriffstoken funktioniert aber bis zu seinem Ablauf weiter. Um den Zugriff sofort zu sperren, deaktiviere den virtuellen Schlüssel oder den Benutzer. Diese Einstellung wird mit MCP OAuth geteilt.",
+		"accessTokenTtlInvalid": "Die TTL für das Zugriffstoken muss mindestens 60 Sekunden betragen.",
 		"allowTempTokenLabel": "Temporäre Token-Authentifizierungs-Links erlauben",
 		"allowTempTokenDescription": "Wenn aktiviert, können benutzerbezogene MCP-OAuth-Links und Claude-Code-Anmeldelinks ein kurzlebiges, berechtigungsbeschränktes Token enthalten, sodass jemand ohne aktive Bifrost-Dashboard-Sitzung den Ablauf abschließen kann. Deaktiviert lassen, um die normale Dashboard-Authentifizierung zu verlangen."
 	}

@@ -393,7 +393,7 @@
 		"authModeHelp": "Controla cómo los clientes de MCP entrante (por ejemplo. Código Claude, Cursor) autentica al punto final<code0>/mcp</code0>.<b1>headers</b1>(default) - VK / api-key / Sesion headers only, OAuth discovery disabled.<b2>ambos</b2>- acepta las credenciales de encabezado y los JWT de Bifrost; las integraciones existentes no son afectadas.<b3>oauth</b3>- JWT s solamente; VK y acceso de cabecera está deshabilitado.",
 		"issuerUrlHelp": "URL pública estable que se anuncia en los documentos de descubrimiento y se incluye como claim <code0>iss</code0> en cada JWT. Obligatoria en los modos OAuth y Ambos: Bifrost nunca deriva el emisor del encabezado <code1>Host</code1> de la solicitud, porque lo controla quien llama. Admite la sintaxis de variables de entorno (p. ej., <code2>env.BIFROST_ISSUER_URL</code2>).",
 		"authCodeTtlHelp": "¿Cuánto tiempo el código de una sola vez es válido después de que la página de consentimiento redirige de nuevo al cliente MCP (por defecto: 300, max 900 = 15 min).",
-		"accessTokenTtlHelp": "Lifetime of issued JWT Bearer tokens. Clientes silenciosamente refrescan cuando se vence (default: 600 = 10 min). También limita cuánto tiempo una subvención revocada sigue trabajando antes de que se corte.",
+		"accessTokenTtlHelp": "Lifetime of issued JWT Bearer tokens. Clientes silenciosamente refrescan cuando se vence (default: 600 = 10 min). También limita cuánto tiempo una subvención revocada sigue trabajando antes de que se corte. Se comparte con el gateway de Claude Code en Configuración → Gateways.",
 		"requireIdpLoginHelp": "Cuando está habilitado, el flujo de consentimiento de OAuth sólo ofrece acceso de proveedor de identidad. Las claves virtuales ya no se pueden utilizar para obtener un token MCP, y las sesiones existentes de OAuth de tecla virtual pierden acceso inmediatamente. El acceso anónimo a la sesión no se ve afectado (controlado por la autenticación de la fuerza en la inferencia).",
 		"vFSStructure": "Estructura VFS:",
 		"allToolsPerServerInASinglePyFile": "Todas las herramientas por servidor en un solo archivo .py",
@@ -1740,9 +1740,9 @@
 		"issuerDescription": "La URL pública estable de Bifrost. Cada gateway se sirve en <code0/>. Es el mismo emisor que usa el servidor OAuth de MCP, así que cambiarlo también afecta a los clientes MCP que iniciaron sesión con OAuth. Admite la sintaxis de variables de entorno (p. ej., <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com o env.BIFROST_ISSUER_URL",
 		"urlTemplate": "<URL del emisor>/gateway/<cliente>",
-		"accessTokenTtlLabel": "Duración del token de acceso (minutos)",
-		"accessTokenTtlDescription": "Cuánto tiempo sigue siendo válido el token de acceso de cada inicio de sesión (predeterminado 10, mínimo 1). Cerrar sesión o revocar un inicio de sesión impide que se renueve, pero el token de acceso que ya tiene sigue funcionando hasta que caduca. Para cortar el acceso de inmediato, desactiva la clave virtual o el usuario. Esta opción se comparte con MCP OAuth.",
-		"accessTokenTtlInvalid": "La duración del token de acceso debe ser de al menos 1 minuto.",
+		"accessTokenTtlLabel": "TTL del token de acceso (segundos)",
+		"accessTokenTtlDescription": "Cuánto tiempo sigue siendo válido el token de acceso de cada inicio de sesión (predeterminado 600, mínimo 60). Cerrar sesión o revocar un inicio de sesión impide que se renueve, pero el token de acceso que ya tiene sigue funcionando hasta que caduca. Para cortar el acceso de inmediato, desactiva la clave virtual o el usuario. Esta opción se comparte con MCP OAuth.",
+		"accessTokenTtlInvalid": "El TTL del token de acceso debe ser de al menos 60 segundos.",
 		"allowTempTokenLabel": "Permitir enlaces de autenticación con token temporal",
 		"allowTempTokenDescription": "Cuando está habilitado, los enlaces de MCP OAuth por usuario y los enlaces de inicio de sesión de Claude Code pueden incluir un token de corta duración y alcance limitado, para que alguien sin una sesión activa en el panel de Bifrost pueda completar el flujo. Manténgalo desactivado para exigir la autenticación normal del panel."
 	}
