@@ -201088,7 +201088,7 @@
     },
     {
       "name": "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)",
-      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses. Case 162.14 is a chat completion on the fixture key's alias claude-app-profile, whose model_id is an application inference profile ARN (the fixture answers Converse for such ARNs); with x-bf-prompt-cache-auto-inject on (the fixture config sets prompt_cache.auto_inject false, so no other case changes) the Converse body must carry a cachePoint (#10026).",
       "item": [
         {
           "name": "162.1 bedrock passthrough InvokeAgent is signed, forwarded to agent-runtime and the event stream returns untouched (bedrock agents)",
@@ -201887,6 +201887,141 @@
                 "exec": [
                   "pm.test('the 4s Retrieve is cut off by the 3s request timeout, not streamed through', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.error, pm.response.text()).to.include('context deadline exceeded'); });",
                   "pm.test('it was refused before the 4s upstream finished', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3900); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.14 bedrock alias to an application inference profile ARN gets the prompt cache marker from auto_inject (bedrock alias prompt cache)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/claude-app-profile\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a terse assistant. This system prompt is the stable prefix an agent loop replays every turn.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #10026: the alias's wire model is an opaque application inference profile ARN; only its model_name says Claude.",
+                  "// The prompt cache gate judged the ARN and injected nothing. It must judge the canonical model, and the wire model must stay the ARN.",
+                  "pm.test('the chat request is served with an assistant reply', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); var j = pm.response.json(); pm.expect(j.choices, pm.response.text().slice(0, 400)).to.be.an('array').that.is.not.empty; pm.expect(j.choices[0].message.role).to.equal('assistant'); pm.expect(j.choices[0].message.content).to.equal('OK'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+                  "  pm.test('exactly one Converse request reached bedrock-runtime', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+                  "  pm.test('the wire model is the profile ARN, not the alias or model_name', function () { pm.expect(call.port).to.equal(8798); pm.expect(decodeURIComponent(call.path)).to.equal('/model/arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01/converse'); });",
+                  "  var body = {};",
+                  "  try { body = JSON.parse(call.body || '{}'); } catch (e) { body = {}; }",
+                  "  var wire = JSON.stringify(body);",
+                  "  pm.test('auto_inject put a cachePoint on the Converse body', function () { pm.expect(wire, wire.slice(0, 800)).to.include('\"cachePoint\"'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.15 bedrock alias to an application inference profile ARN gets the prompt cache marker from auto_inject on the Responses API (bedrock alias prompt cache)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/claude-app-profile\",\n  \"max_output_tokens\": 16,\n  \"instructions\": \"You are a terse assistant. This system prompt is the stable prefix an agent loop replays every turn.\",\n  \"input\": \"Reply OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #10026: the alias's wire model is an opaque application inference profile ARN; only its model_name says Claude.",
+                  "// Same as 162.14 on /v1/responses: the prompt cache gate judged the ARN and injected nothing. It must judge the canonical model, and the wire model must stay the ARN.",
+                  "pm.test('the responses request is served with an assistant reply', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); var j = pm.response.json(); pm.expect(j.output, pm.response.text().slice(0, 400)).to.be.an('array').that.is.not.empty; var msg = j.output.filter(function (o) { return o.type === 'message'; })[0] || {}; pm.expect(msg.role, pm.response.text().slice(0, 400)).to.equal('assistant'); pm.expect((msg.content || []).map(function (c) { return c.text; }).join('')).to.equal('OK'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+                  "  pm.test('exactly one Converse request reached bedrock-runtime', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+                  "  pm.test('the wire model is the profile ARN, not the alias or model_name', function () { pm.expect(call.port).to.equal(8798); pm.expect(decodeURIComponent(call.path)).to.equal('/model/arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01/converse'); });",
+                  "  var body = {};",
+                  "  try { body = JSON.parse(call.body || '{}'); } catch (e) { body = {}; }",
+                  "  var wire = JSON.stringify(body);",
+                  "  pm.test('auto_inject put a cachePoint on the Converse body', function () { pm.expect(wire, wire.slice(0, 800)).to.include('\"cachePoint\"'); });",
+                  "});"
                 ]
               }
             }
@@ -338981,11 +339116,191 @@
       ]
     },
     {
-      "name": "362. Vertex passthrough keeps an explicit v1beta1 for Google publisher models (vertex-google-v1beta1-passthrough)",
-      "description": "Vertex passthrough rebuilt the upstream URL with /v1 for every /models/ path, so an explicit /genai_passthrough/v1beta1 request to a Google publisher model reached /v1. Fields that exist only in v1beta1, such as Part.mediaProcessing, then failed with 400 \"Unknown name\". Google publisher models now keep the client version; other model calls (Claude streamRawPredict, 212.5), requests without a version and Gemini's v1beta stay on v1.\n\n362.1 sends mediaProcessing: AGENTIC on an inline video part to gemini-3.8-flash through /genai_passthrough/v1beta1. It returns 200 only when the request reaches v1beta1. The Vertex key must allow gemini-3.8-flash.",
+      "name": "362. Anthropic passthrough stream usage counts cached prompt tokens once (passthrough stream cache usage)",
+      "description": "Streaming /v1/messages passthrough usage is assembled per SSE event by AnthropicPassthroughStreamUsage (core/providers/anthropic/passthrough_usage.go). It used to max-merge every usage field across message_start and message_delta, so an upstream that put a prompt-scale input_tokens on message_start and the cache-aware split only on message_delta (QwenCloud, Moonshot/Kimi; issue #5510, PR #6378) was logged with the cached prefix counted twice. The merge now takes the prompt split from message_delta once it reports a non-zero prompt counter, keeping message_start values for counters the delta omits. Neither deviating upstream is in the harness profile, so these cases pin the compliant Anthropic side of the same rule on a cold write and a warm read: the logged prompt_tokens, cached_read_tokens and cached_write_tokens must equal the split the stream itself reported, counted once. Each case resolves that split from the SSE body with the same rule the gateway uses, then polls /api/logs for the row.",
       "item": [
         {
-          "name": "362.1 vertex google v1beta1 passthrough accepts mediaProcessing - vertex-google-v1beta1-passthrough",
+          "name": "362.1 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream cold prefix logs the cache write once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream cold prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream cold prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream cold prefix: stream reported a cache write', function () { pm.expect(writeTokens, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream cold prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream cold prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream cold prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "362.2 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream warm prefix logs the cache read once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream warm prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream warm prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream warm prefix: stream reported a cache read', function () { pm.expect(read, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream warm prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream warm prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream warm prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "363. Vertex passthrough keeps an explicit v1beta1 for Google publisher models (vertex-google-v1beta1-passthrough)",
+      "description": "Vertex passthrough rebuilt the upstream URL with /v1 for every /models/ path, so an explicit /genai_passthrough/v1beta1 request to a Google publisher model reached /v1. Fields that exist only in v1beta1, such as Part.mediaProcessing, then failed with 400 \"Unknown name\". Google publisher models now keep the client version; other model calls (Claude streamRawPredict, 212.5), requests without a version and Gemini's v1beta stay on v1.\n\n363.1 sends mediaProcessing: AGENTIC on an inline video part to gemini-3.8-flash through /genai_passthrough/v1beta1. It returns 200 only when the request reaches v1beta1. The Vertex key must allow gemini-3.8-flash.",
+      "item": [
+        {
+          "name": "363.1 vertex google v1beta1 passthrough accepts mediaProcessing - vertex-google-v1beta1-passthrough",
           "event": [
             {
               "listen": "test",
@@ -338993,13 +339308,13 @@
                 "type": "text/javascript",
                 "exec": [
                   "var body = pm.response.text() || '';",
-                  "pm.test('362.1 status 200: the request reached v1beta1 - vertex-google-v1beta1-passthrough', function () {",
+                  "pm.test('363.1 status 200: the request reached v1beta1 - vertex-google-v1beta1-passthrough', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.equal(200);",
                   "});",
-                  "pm.test('362.1 v1beta1-only field not rejected as unknown - vertex-google-v1beta1-passthrough', function () {",
+                  "pm.test('363.1 v1beta1-only field not rejected as unknown - vertex-google-v1beta1-passthrough', function () {",
                   "  pm.expect(body, 'v1 rejects mediaProcessing: ' + body.slice(0, 400)).to.not.include('Unknown name');",
                   "});",
-                  "pm.test('362.1 model answered with a candidate - vertex-google-v1beta1-passthrough', function () {",
+                  "pm.test('363.1 model answered with a candidate - vertex-google-v1beta1-passthrough', function () {",
                   "  var j = pm.response.json();",
                   "  pm.expect(j.candidates, 'no candidates: ' + body.slice(0, 400)).to.be.an('array').that.is.not.empty;",
                   "});"

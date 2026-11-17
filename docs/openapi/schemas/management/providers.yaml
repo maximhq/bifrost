@@ -11,7 +11,7 @@ NetworkConfig:
   properties:
     base_url:
       type: string
-      description: Base URL for the provider (optional)
+      description: Base URL for the provider (optional). For Bedrock, only the host is used, as the bedrock-runtime host for all inference; a key's bedrock_key_config.endpoints.runtime takes precedence.
     extra_headers:
       type: object
       additionalProperties:

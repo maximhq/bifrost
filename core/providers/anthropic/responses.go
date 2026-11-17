@@ -1338,10 +1338,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						OutputTokens: chunk.Message.Usage.OutputTokens,
 						TotalTokens:  chunk.Message.Usage.InputTokens + chunk.Message.Usage.OutputTokens,
 					}
-					if chunk.Message.Usage.CacheReadInputTokens > 0 || chunk.Message.Usage.CacheCreationInputTokens > 0 {
+					cacheCreation := anthropicCacheCreationTotal(chunk.Message.Usage)
+					if chunk.Message.Usage.CacheReadInputTokens > 0 || cacheCreation > 0 {
 						inputTokensDetails := &schemas.ResponsesResponseInputTokens{
 							CachedReadTokens:  chunk.Message.Usage.CacheReadInputTokens,
-							CachedWriteTokens: chunk.Message.Usage.CacheCreationInputTokens,
+							CachedWriteTokens: cacheCreation,
 						}
 						if chunk.Message.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || chunk.Message.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
 							inputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -1351,8 +1352,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						}
 						response.Usage.InputTokensDetails = inputTokensDetails
 						// Bifrost convention: InputTokens includes cached tokens
-						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
-						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + cacheCreation
+						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + cacheCreation
 					}
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -5492,19 +5493,19 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	}
 
 	// Handle cache creation tokens
-	if billable.CacheCreationInputTokens > 0 {
+	if cacheCreation := anthropicCacheCreationTotal(billable); cacheCreation > 0 {
 		if bifrostUsage.InputTokensDetails == nil {
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.InputTokensDetails.CachedWriteTokens = billable.CacheCreationInputTokens
+		bifrostUsage.InputTokensDetails.CachedWriteTokens = cacheCreation
 		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			bifrostUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
 				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
 				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
-		bifrostUsage.InputTokens = bifrostUsage.InputTokens + billable.CacheCreationInputTokens
-		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheCreationInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + cacheCreation
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + cacheCreation
 	}
 
 	// Propagate server tool use (web search) counts

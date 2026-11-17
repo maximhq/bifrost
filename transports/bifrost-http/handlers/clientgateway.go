@@ -544,10 +544,12 @@ func (ep *clientGatewayEndpoint) handleRevoke(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "temporarily_unavailable", "failed to look up token")
 		return
 	case rt.ClientID == ep.profile.ClientID():
-		if err := ep.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, rt.FamilyID); err != nil {
+		revokedRows, err := ep.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, rt.FamilyID)
+		if err != nil {
 			sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "temporarily_unavailable", "failed to revoke token")
 			return
 		}
+		logTokenEvent(ctx, "family.revoked", "reason=client_revoked family_id=%s refresh_token_id=%s revoked_rows=%d", rt.FamilyID, rt.ID, revokedRows)
 	}
 	ctx.SetStatusCode(fasthttp.StatusOK)
 }

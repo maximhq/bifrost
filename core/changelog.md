@@ -1,5 +1,6 @@
 - fix: vertex - passthrough keeps an explicit v1beta1 for Google publisher models instead of forcing v1 (#9891) [@Xanonymous-GitHub](https://github.com/Xanonymous-GitHub)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)
+- fix: prompt cache auto_inject and injection points now check an alias's canonical model, so Bedrock application inference profile aliases for Claude get cache markers (#10026) [@bardrop](https://github.com/bardrop)
 - fix: a caller's `additionalModelRequestFieldPaths.anthropic_beta` on Bedrock Converse is now unioned with the betas Bifrost derives (fine-grained tool streaming, server-tool betas such as memory's context-management) instead of replacing them, so eager tools stream incrementally and tunneled server tools keep the beta they need (thanks [@fus3r](https://github.com/fus3r)!)
 - fix: gemini - decisions reject an empty input, a non-image data URL in `input_image`, and an image, file or audio part given as a single instruction object before calling Gemini, and read a part's `detail` case-insensitively (thanks [@Xytronix](https://github.com/Xytronix)!)
 - feat: Kimchi provider for chat, Responses and embeddings
