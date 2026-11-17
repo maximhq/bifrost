@@ -25,6 +25,8 @@ type FileRecords struct {
 	Budgets      []*Budget
 	RateLimits   []*RateLimit
 	ModelConfigs []*ModelConfig
+	// PricingOverrides are the pricing overrides governance lists.
+	PricingOverrides []*PricingOverride
 	// GrantSets are the keys' grant sets, which the store interns before it loads the keys.
 	GrantSets []*GrantSet
 }
@@ -42,6 +44,11 @@ type FileRecords struct {
 func FromConfig(in FileInput) *FileRecords {
 	g := &FileRecords{}
 	providerBudget, providerRateLimit := governanceRecords(g, in.Governance)
+	if in.Governance != nil {
+		for i := range in.Governance.PricingOverrides {
+			g.PricingOverrides = append(g.PricingOverrides, &PricingOverride{TablePricingOverride: in.Governance.PricingOverrides[i]})
+		}
+	}
 	names := make([]schemas.ModelProvider, 0, len(in.Providers))
 	for name := range in.Providers {
 		names = append(names, name)

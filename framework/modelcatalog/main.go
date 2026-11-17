@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -37,6 +38,10 @@ type ModelCatalog struct {
 	// ownedStore is the live store a test catalog made for itself; Cleanup
 	// closes it. A catalog from Init uses the gateway's store and owns none.
 	ownedStore *livestore.Store
+	// store is the live store a catalog from Init follows for its pricing
+	// overrides, and cancelOverrides stops following it.
+	store           *livestore.Store
+	cancelOverrides func()
 
 	// capabilities caches datasheet capability records by (provider, model).
 	// Flushed whenever a sync applies a new sheet.
@@ -141,6 +146,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if err := mc.initCaches(live); err != nil {
 		return nil, fmt.Errorf("failed to create the model catalog caches: %w", err)
 	}
+	mc.store = live
+	mc.cancelOverrides = live.Collections.PricingOverrides.Subscribe(func(context.Context, []livestore.Change[registry.PricingOverride]) {
+		mc.applyPricingOverrides()
+	})
+	mc.applyPricingOverrides()
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
 	// Core providers reach capabilities through this hook — they cannot import
@@ -163,6 +173,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			// context, so cancelling syncCtx does not stop it.
 			providerUtils.SetCapabilityResolver(nil)
 			mc.syncCancel()
+			// The caller keeps the live store, so stop following its overrides.
+			mc.cancelOverrides()
 		}
 	}()
 
@@ -293,10 +305,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	mc.datasheet.MarkSynced(time.Now())
 
-	if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
-		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
-	}
-
 	mc.startSyncWorker(mc.syncCtx)
 	initSucceeded = true
 	return mc, nil
@@ -406,7 +414,12 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 			pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 			return
 		}
-		if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
+		// Overrides are re-read from the database; without a config store there
+		// is none, and the overrides config.json declared stay as they are.
+		if mc.configStore == nil {
+			return
+		}
+		if err := mc.store.RefreshKind(ctx, livestore.KindPricingOverride); err != nil {
 			pricingErr = fmt.Errorf("failed to load pricing overrides: %w", err)
 		}
 	}()
@@ -455,6 +468,9 @@ func (mc *ModelCatalog) Cleanup() error {
 		}
 		close(mc.done)
 		mc.wg.Wait()
+		if mc.cancelOverrides != nil {
+			mc.cancelOverrides()
+		}
 		if mc.ownedStore != nil {
 			mc.ownedStore.Close()
 		}

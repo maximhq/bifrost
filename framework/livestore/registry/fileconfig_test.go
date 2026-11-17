@@ -226,3 +226,11 @@ func TestFromConfigKeepsTeamsContentLoggingDecision(t *testing.T) {
 	require.False(t, *got["t-on"], "a team that keeps content logging on says so")
 	require.Nil(t, got["t-inherit"], "a team without the field inherits")
 }
+
+// TestFromConfigCarriesPricingOverrides checks that a gateway without a config store loads the
+// pricing overrides governance lists.
+func TestFromConfigCarriesPricingOverrides(t *testing.T) {
+	recs := FromConfig(FileInput{Governance: &configstore.GovernanceConfig{PricingOverrides: []tables.TablePricingOverride{{ID: "o1", Pattern: "gpt-4o"}}}})
+	require.Len(t, recs.PricingOverrides, 1)
+	require.Equal(t, "o1", recs.PricingOverrides[0].ID)
+}

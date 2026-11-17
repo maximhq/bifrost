@@ -289,3 +289,14 @@ func TestPromptVersionsReadMoreVersionsThanTheParameterLimit(t *testing.T) {
 	rows, err = PromptVersionsByID(ctx, db, append(ids, NumericID(1_000_000)))
 	check("by ID", rows, err)
 }
+
+// TestPricingOverridesByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more pricing
+// override IDs than one statement may bind still reads the overrides that exist.
+func TestPricingOverridesByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TablePricingOverride{ID: "po-1", Name: "one", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o"})
+	rows, err := PricingOverridesByID(context.Background(), db, withMissingIDs("po-1"))
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "po-1", PricingOverrideID(rows[0]))
+}

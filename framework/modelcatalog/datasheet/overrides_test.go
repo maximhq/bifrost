@@ -346,7 +346,7 @@ func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 	}
 
 	providerID := "openai"
-	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+	overrides := []configstoreTables.TablePricingOverride{
 		{
 			ID:               "openai-override-0",
 			ScopeKind:        string(ScopeKindProvider),
@@ -365,14 +365,16 @@ func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
 			PricingPatchJSON: `{"input_cost_per_token":22}`,
 		},
-	}))
+	}
+	require.NoError(t, s.SetOverrides(overrides))
 
 	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 11.0, *pricing.InputCostPerToken)
 
-	s.DeleteOverride("openai-override-0")
+	// Removing the first override leaves the set without it.
+	require.NoError(t, s.SetOverrides(overrides[1:]))
 
 	pricing = s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)

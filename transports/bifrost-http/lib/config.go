@@ -4038,8 +4038,8 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 			AuthConfig: configData.Governance.AuthConfig,
 		}
 		config.GovernanceConfig = governanceConfig
-		// Pricing overrides are loaded into ModelCatalog after initFrameworkConfig,
-		// once ModelCatalog is initialized.
+		// Pricing overrides reach the model catalog through the live store, which
+		// loads them after initFrameworkConfig.
 	} else {
 		logger.Debug("no governance config in store or config file")
 	}
@@ -4919,22 +4919,6 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		config.GovernanceFileSync = fileSync
 	}
 
-	// Sync pricing overrides into the model catalog in one batch to avoid
-	// rebuilding the lookup map on every iteration.
-	if config.ModelCatalog != nil {
-		rows := make([]*configstoreTables.TablePricingOverride, 0, len(pricingOverridesToAdd)+len(pricingOverridesToUpdate))
-		for i := range pricingOverridesToAdd {
-			rows = append(rows, &pricingOverridesToAdd[i])
-		}
-		for i := range pricingOverridesToUpdate {
-			rows = append(rows, &pricingOverridesToUpdate[i])
-		}
-		if len(rows) > 0 {
-			if err := config.ModelCatalog.UpsertPricingOverrides(rows...); err != nil {
-				logger.Error("failed to upsert pricing overrides into model catalog: %v", err)
-			}
-		}
-	}
 	if configData.isConfigJSONSourceOfTruth() {
 		pruneGovernanceConfigToFile(ctx, config, configData)
 	}
@@ -7805,15 +7789,6 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 		logger.Warn("failed to initialize MCP catalog: %v", err)
 	}
 	config.MCPCatalog = mcpCatalog
-
-	// ModelCatalog is now initialized; replay pricing overrides for the no-store path.
-	// loadGovernanceConfig ran before ModelCatalog existed, so the in-memory
-	// load was skipped. Do it here now that ModelCatalog is available.
-	if config.ModelCatalog != nil && config.GovernanceConfig != nil && len(config.GovernanceConfig.PricingOverrides) > 0 {
-		if err := config.ModelCatalog.SetPricingOverrides(config.GovernanceConfig.PricingOverrides); err != nil {
-			logger.Warn("failed to set pricing overrides from config file: %v", err)
-		}
-	}
 
 	loadDatasheetOverridesFromFile(ctx, config, configData)
 	return nil

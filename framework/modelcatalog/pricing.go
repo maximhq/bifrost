@@ -2,11 +2,14 @@ package modelcatalog
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -174,16 +177,32 @@ func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model 
 	return mc.datasheet.UpsertModelPricingAttributes(ctx, model, provider, attrs)
 }
 
+// SetPricingOverrides replaces the overrides requests are priced with. A catalog
+// from Init follows the live store's pricing overrides on its own; a test
+// catalog, whose store loads nothing, sets them here.
 func (mc *ModelCatalog) SetPricingOverrides(rows []configstoreTables.TablePricingOverride) error {
 	return mc.datasheet.SetOverrides(rows)
 }
 
-func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TablePricingOverride) error {
-	return mc.datasheet.UpsertOverrides(rows...)
-}
-
-func (mc *ModelCatalog) DeletePricingOverride(id string) {
-	mc.datasheet.DeleteOverride(id)
+// applyPricingOverrides prices requests with every override the live store
+// holds, in the order the database lists them: creation time, then ID. A set
+// that does not convert is logged and the previous set kept, as a reload that
+// failed kept it.
+func (mc *ModelCatalog) applyPricingOverrides() {
+	var rows []configstoreTables.TablePricingOverride
+	mc.store.Collections.PricingOverrides.Range(func(o *registry.PricingOverride) bool {
+		rows = append(rows, o.TablePricingOverride)
+		return true
+	})
+	slices.SortFunc(rows, func(a, b configstoreTables.TablePricingOverride) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if err := mc.datasheet.SetOverrides(rows); err != nil {
+		mc.logger.Error("failed to apply pricing overrides: %v", err)
+	}
 }
 
 // CalculateVideoCostDetails prices a video job from its merged request/response

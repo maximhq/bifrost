@@ -1,7 +1,6 @@
 package datasheet
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -631,19 +629,6 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 	return patched
 }
 
-// LoadOverridesFromStore reloads all overrides from the config store. Called
-// at bootstrap and after force-reload paths.
-func (s *Store) LoadOverridesFromStore(ctx context.Context) error {
-	if s.configStore == nil {
-		return nil
-	}
-	rows, err := s.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilters{})
-	if err != nil {
-		return err
-	}
-	return s.SetOverrides(rows)
-}
-
 // SetOverrides replaces the full in-memory override set. Duplicate IDs in
 // the input keep the last-seen entry (matching today's behavior).
 func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) error {
@@ -666,51 +651,4 @@ func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) erro
 	s.customPricing = buildCustomPricingData(overrides)
 	s.overridesMu.Unlock()
 	return nil
-}
-
-// UpsertOverrides inserts or replaces one or more overrides, rebuilding the
-// lookup map exactly once at the end.
-func (s *Store) UpsertOverrides(rows ...*configstoreTables.TablePricingOverride) error {
-	seenIncoming := make(map[string]int, len(rows))
-	overrides := make([]Override, 0, len(rows))
-	for _, row := range rows {
-		o, err := convertTableOverride(row)
-		if err != nil {
-			return err
-		}
-		if idx, exists := seenIncoming[o.ID]; exists {
-			overrides[idx] = o
-		} else {
-			seenIncoming[o.ID] = len(overrides)
-			overrides = append(overrides, o)
-		}
-	}
-
-	s.overridesMu.Lock()
-	defer s.overridesMu.Unlock()
-
-	updated := make([]Override, 0, len(s.rawOverrides)+len(overrides))
-	for _, o := range s.rawOverrides {
-		if _, replacing := seenIncoming[o.ID]; !replacing {
-			updated = append(updated, o)
-		}
-	}
-	updated = append(updated, overrides...)
-	s.rawOverrides = updated
-	s.customPricing = buildCustomPricingData(updated)
-	return nil
-}
-
-// DeleteOverride removes an override by ID.
-func (s *Store) DeleteOverride(id string) {
-	s.overridesMu.Lock()
-	defer s.overridesMu.Unlock()
-	updated := make([]Override, 0, len(s.rawOverrides))
-	for _, o := range s.rawOverrides {
-		if o.ID != id {
-			updated = append(updated, o)
-		}
-	}
-	s.rawOverrides = updated
-	s.customPricing = buildCustomPricingData(updated)
 }

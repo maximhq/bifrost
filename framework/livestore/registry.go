@@ -45,6 +45,9 @@ const KindRoutingRule Kind = "routing_rule"
 // KindModelRouter names the model router collection.
 const KindModelRouter Kind = "model_router"
 
+// KindPricingOverride names the pricing override collection.
+const KindPricingOverride Kind = "pricing_override"
+
 // KindPrompt and KindPromptVersion name the prompt collections: prompts, and their versions with
 // their messages.
 const (
@@ -73,6 +76,8 @@ type Collections struct {
 	RoutingRules *Collection[registry.RoutingRule]
 	ModelRouters *Collection[registry.ModelRouter]
 	Prompts      *Collection[registry.Prompt]
+	// PricingOverrides holds every pricing override; the model catalog prices requests with them.
+	PricingOverrides *Collection[registry.PricingOverride]
 	// PromptVersions holds every prompt version, by prompt and number and as each prompt's latest;
 	// a prompt's refresh re-reads its versions and its removal removes them.
 	PromptVersions *Collection[registry.PromptVersion]
@@ -94,7 +99,7 @@ func (c *Collections) FileRecords(fc *registry.FileRecords) []Record {
 		c.GrantSets.Intern(set)
 	}
 	recs := make([]Record, 0, len(fc.Providers)+len(fc.ProviderKeys)+len(fc.VirtualKeys)+len(fc.Teams)+
-		len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs))
+		len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs)+len(fc.PricingOverrides))
 	for _, p := range fc.Providers {
 		recs = append(recs, Rec(c.Providers, p))
 	}
@@ -118,6 +123,9 @@ func (c *Collections) FileRecords(fc *registry.FileRecords) []Record {
 	}
 	for _, m := range fc.ModelConfigs {
 		recs = append(recs, Rec(c.ModelConfigs, m))
+	}
+	for _, o := range fc.PricingOverrides {
+		recs = append(recs, Rec(c.PricingOverrides, o))
 	}
 	return recs
 }
@@ -248,6 +256,13 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		ID:   registry.ModelRouterID,
 		Page: registry.ModelRoutersPage,
 		ByID: registry.ModelRoutersByID,
+	}); err != nil {
+		return nil, err
+	}
+	if c.PricingOverrides, err = s.Register(KindPricingOverride, nil, Loader[registry.PricingOverride]{
+		ID:   registry.PricingOverrideID,
+		Page: registry.PricingOverridesPage,
+		ByID: registry.PricingOverridesByID,
 	}); err != nil {
 		return nil, err
 	}
