@@ -889,17 +889,17 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		}
 	}
 	// Handle cached tokens if present
-	if usageToProcess.CacheCreationInputTokens > 0 {
+	if cacheCreation := anthropicCacheCreationTotal(usageToProcess); cacheCreation > 0 {
 		if usage.InputTokensDetails == nil {
 			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
 		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
 			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 		}
-		if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-			usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+		if cacheCreation > usage.InputTokensDetails.CachedWriteTokens {
+			usage.InputTokensDetails.CachedWriteTokens = cacheCreation
 			if billedUsage != nil {
-				billedUsage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+				billedUsage.PromptTokensDetails.CachedWriteTokens = cacheCreation
 			}
 		}
 		if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
@@ -1281,12 +1281,12 @@ func HandleAnthropicChatCompletionStreaming(
 						usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
 					}
 				}
-				if usageToProcess.CacheCreationInputTokens > 0 {
+				if cacheCreation := anthropicCacheCreationTotal(usageToProcess); cacheCreation > 0 {
 					if usage.PromptTokensDetails == nil {
 						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 					}
-					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
-						usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+					if cacheCreation > usage.PromptTokensDetails.CachedWriteTokens {
+						usage.PromptTokensDetails.CachedWriteTokens = cacheCreation
 					}
 					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
 						if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {

@@ -339114,6 +339114,186 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "362. Anthropic passthrough stream usage counts cached prompt tokens once (passthrough stream cache usage)",
+      "description": "Streaming /v1/messages passthrough usage is assembled per SSE event by AnthropicPassthroughStreamUsage (core/providers/anthropic/passthrough_usage.go). It used to max-merge every usage field across message_start and message_delta, so an upstream that put a prompt-scale input_tokens on message_start and the cache-aware split only on message_delta (QwenCloud, Moonshot/Kimi; issue #5510, PR #6378) was logged with the cached prefix counted twice. The merge now takes the prompt split from message_delta once it reports a non-zero prompt counter, keeping message_start values for counters the delta omits. Neither deviating upstream is in the harness profile, so these cases pin the compliant Anthropic side of the same rule on a cold write and a warm read: the logged prompt_tokens, cached_read_tokens and cached_write_tokens must equal the split the stream itself reported, counted once. Each case resolves that split from the SSE body with the same rule the gateway uses, then polls /api/logs for the row.",
+      "item": [
+        {
+          "name": "362.1 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream cold prefix logs the cache write once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream cold prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream cold prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream cold prefix: stream reported a cache write', function () { pm.expect(writeTokens, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream cold prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream cold prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream cold prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "362.2 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream warm prefix logs the cache read once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream warm prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream warm prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream warm prefix: stream reported a cache read', function () { pm.expect(read, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream warm prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream warm prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream warm prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
