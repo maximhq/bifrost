@@ -407,7 +407,7 @@ func HandleOpenAIDecisionRequest(
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIDecisionRequest, error) {
 			return ToOpenAIDecisionRequest(request)
 		},
 	)

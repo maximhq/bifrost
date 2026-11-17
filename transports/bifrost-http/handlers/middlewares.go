@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -87,7 +86,7 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 			defer func() {
 				if r := recover(); r != nil {
 					// Never format r with %v: a panic value can wrap request content or secrets.
-					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", panicSummary(r), debug.Stack()))
+					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", lib.PanicSummary(r), debug.Stack()))
 					// Reset drops partial handler output, including the headers the outer
 					// SecurityHeaders and CORS middlewares set before the panic, so re-apply them.
 					ctx.Response.Reset()
@@ -166,16 +165,6 @@ func webSocketPeer(conn *ws.Conn) (remote string) {
 		return ""
 	}
 	return conn.RemoteAddr().String()
-}
-
-// panicSummary describes a recovered panic value without echoing arbitrary content.
-// Runtime errors keep their message (runtime-generated, no request data); any other
-// value is reduced to its type.
-func panicSummary(r any) string {
-	if rerr, ok := r.(runtime.Error); ok {
-		return rerr.Error()
-	}
-	return fmt.Sprintf("%T", r)
 }
 
 // ServerRootHandler wraps the router with the server-level middlewares. The
