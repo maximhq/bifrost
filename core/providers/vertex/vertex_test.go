@@ -15,12 +15,9 @@ import (
 
 func TestVertex(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("VERTEX_API_KEY")) == "" && (strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "") {
-		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
+	if strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "" {
+		t.Skip("Skipping Vertex tests because VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}
-
-	// Live sessions need a project and OAuth credentials; an API key alone cannot authenticate them.
-	liveConfigured := strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) != "" && strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) != ""
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
@@ -112,7 +109,7 @@ func TestVertex(t *testing.T) {
 			FileContent:                  true,
 			FileBatchInput:               true,
 			BatchCreate:                  true,
-			Realtime:                     liveConfigured, // gemini-3.8-live through the translated Live protocol
+			Realtime:                     true, // gemini-3.8-live through the translated Live protocol
 			BatchList:                    true,
 			BatchRetrieve:                true,
 			BatchCancel:                  true,

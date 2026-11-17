@@ -110,6 +110,7 @@ export default function MCPView() {
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			(localConfig.mcp_max_protocol_version || "auto") !== (config.mcp_max_protocol_version || "auto") ||
+			(localConfig.mcp_server_max_protocol_version || "auto") !== (config.mcp_server_max_protocol_version || "auto") ||
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
 			localConfig.mcp_openapi_max_spec_mb !== (config.mcp_openapi_max_spec_mb ?? 0) ||
@@ -726,6 +727,29 @@ export default function MCPView() {
 									onChange={handleClientMetadataURLChange}
 									disabled={!hasSettingsUpdateAccess}
 								/>
+							</div>
+							{/* Protocol version Bifrost's own /mcp serves */}
+							<div className="mt-4 space-y-2 border-t pt-4">
+								<label htmlFor="mcp-server-max-protocol-version" className="text-sm font-medium">
+									{t("mcpSettings.serverMaxProtocolVersion")}
+								</label>
+								<p className="text-muted-foreground text-sm">{t("mcpSettings.serverMaxProtocolVersionHelp")}</p>
+								<Select
+									value={localConfig.mcp_server_max_protocol_version || "auto"}
+									onValueChange={(value) => setLocalConfig((prev) => ({ ...prev, mcp_server_max_protocol_version: value }))}
+									disabled={!hasSettingsUpdateAccess}
+								>
+									<SelectTrigger id="mcp-server-max-protocol-version" data-testid="mcp-server-max-protocol-version-select" className="w-40">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{MCP_MAX_PROTOCOL_VERSION_OPTIONS.map((option) => (
+											<SelectItem key={option.value} value={option.value} data-testid={`mcp-server-max-protocol-version-${option.value}`}>
+												{mcpMaxProtocolVersionLabel(option.value)}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
 							</div>
 							{/* MCP Server Auth Mode */}
 							<div className="mt-4 space-y-2 border-t pt-4">

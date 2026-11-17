@@ -319,6 +319,8 @@ type BifrostHTTPServer struct {
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
 	OAuth2SweepWorker    *oauth2SweepWorker
+	ClientGateways       *handlers.ClientGatewayHandler // set in RegisterInferenceRoutes
+	InferenceAuthStart   int                            // index in the inference chain where auth starts; the gateway bearer check is inserted there
 	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
 	// tools. Optional; wired at server init when user-mode identity resolution
 	// is available, otherwise left nil (user-mode requests fall back to the
@@ -1705,6 +1707,10 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
 	s.reloadBifrostMCP(ctx)
+	// Cluster peers reload here too, so every node's /mcp follows the cap.
+	if s.MCPServerHandler != nil {
+		s.MCPServerHandler.UpdateServerMaxProtocolVersion(config.MCPServerMaxProtocolVersion)
+	}
 	// This path also serves cluster peers, so one node's allowlist edit
 	// reaches every node's OAuth client.
 	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
@@ -3048,6 +3054,15 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 			}
 		}
 	}
+	// One client gateway handler serves every client gateway (Claude Code, ...),
+	// so the sign-in limiters, poll tracker and verified-token cache are shared,
+	// and every bearer check uses the governance virtual-key cache. The sign-in,
+	// settings and telemetry routes are public by protocol or bearer-authenticated
+	// by the handler itself, so they take no middleware.
+	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache)
+	clientGateways.RegisterRoutes(s.Router)
+	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, s.InferenceAuthStart, middlewares...)
+	s.ClientGateways = clientGateways
 	return nil
 }
 
@@ -3360,7 +3375,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if err != nil || plugin == nil {
 			return nil, nil
 		}
-		return plugin.GetMetricsGatherer().Gather()
+		gatherers := prometheus.Gatherers{plugin.GetMetricsGatherer()}
+		if s.ClientGateways != nil {
+			gatherers = append(gatherers, s.ClientGateways.MetricsGatherer())
+		}
+		return gatherers.Gather()
 	})
 	metricsAdapter := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(metricsGatherer, promhttp.HandlerOpts{}))
 	metricsHandler := func(ctx *fasthttp.RequestCtx) {
@@ -3898,10 +3917,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				s.TempTokenSweepWorker.Stop()
 				s.TempTokenSweepWorker = nil
 			}
-			if s.OAuth2SweepWorker != nil {
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
+			s.stopOAuth2Background()
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -3955,10 +3971,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return err
 	}
 
@@ -3979,16 +3992,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
 	// Skipped entirely when no transport plugin is loaded.
+	authStart := len(inferenceMiddlewares) // the gateway bearer check runs here: after tracing and metrics, before auth
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportPreAuthInterceptorMiddleware(s.Config))
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.InferenceMiddleware())
@@ -4014,7 +4025,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Order: Tracing.pre → Recovery → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
 	//        TransportInterceptor.post → Recovery.defer → Tracing.defer
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
-	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
+	outerMiddlewares := handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware)
+	s.InferenceAuthStart = len(outerMiddlewares) + authStart
+	inferenceMiddlewares = append(outerMiddlewares, inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
@@ -4027,10 +4040,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
@@ -4276,11 +4286,8 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping temp-token sweep worker...")
 				s.TempTokenSweepWorker.Stop()
 			}
-			if s.OAuth2SweepWorker != nil {
-				logger.Info("stopping oauth2 sweep worker...")
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
+			logger.Info("stopping oauth2 sweep worker and client gateways...")
+			s.stopOAuth2Background()
 			if s.GovernanceHandler != nil {
 				s.GovernanceHandler.StopExpiryCleanupScheduler()
 			}
@@ -4349,4 +4356,27 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
 	}
+	s.stopClientGateways()
+}
+
+// stopOAuth2Background stops the OAuth2 sweep worker, when one runs, and the client
+// gateways. The gateways are stopped on their own: they exist without a config store,
+// where no sweep worker is started.
+func (s *BifrostHTTPServer) stopOAuth2Background() {
+	if s.OAuth2SweepWorker != nil {
+		s.OAuth2SweepWorker.stop()
+		s.OAuth2SweepWorker = nil
+	}
+	s.stopClientGateways()
+}
+
+// stopClientGateways drains queued client gateway telemetry, for at most five
+// seconds, on every shutdown path, including a failed Serve.
+func (s *BifrostHTTPServer) stopClientGateways() {
+	if s.ClientGateways == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.ClientGateways.Close(ctx)
 }

@@ -342,6 +342,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:                   config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                       config.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                     config.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:               config.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                  config.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                    config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                         config.AsyncJobResultTTL,
@@ -670,6 +671,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:                 dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                     dbConfig.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                   dbConfig.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:             dbConfig.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                dbConfig.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                  dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                       dbConfig.AsyncJobResultTTL,
@@ -1937,8 +1939,9 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		// config row. Without carrying it here, a boot with no mcp section in
 		// config.json would hand bifrost.Init a zero and the checkers would
 		// silently fall back to the built-in default.
-		ToolSyncInterval:   time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
-		MaxProtocolVersion: clientConfig.MCPMaxProtocolVersion,
+		ToolSyncInterval:         time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
+		MaxProtocolVersion:       clientConfig.MCPMaxProtocolVersion,
+		ServerMaxProtocolVersion: clientConfig.MCPServerMaxProtocolVersion,
 	}, nil
 }
 
@@ -10609,6 +10612,38 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context
 	return &req, nil
 }
 
+// GetOAuth2AuthorizeRequestByDeviceCodeHash finds a device-grant authorize
+// request by the hash of its device_code, whatever its status. Used by the
+// device-grant token endpoint.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).Where("device_code_hash = ?", deviceCodeHash).First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by device code hash: %w", err)
+	}
+	return &req, nil
+}
+
+// GetPendingOAuth2AuthorizeRequestByUserCodeHash finds the pending, unexpired
+// device-grant authorize request for a user_code hash. Used by the device
+// verification page to hand the user to the consent flow.
+func (s *RDBConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).
+		Where("user_code_hash = ? AND status = ? AND expires_at > ?", userCodeHash, tables.OAuth2AuthorizeRequestStatusPending, time.Now()).
+		First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by user code hash: %w", err)
+	}
+	return &req, nil
+}
+
 // ConsentOAuth2AuthorizeRequest atomically transitions a still-pending authorize
 // request to consented, recording the minted code hash and resolved identity in
 // a single conditional update. The status guard makes the transition idempotent
@@ -10626,6 +10661,26 @@ func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req 
 		})
 	if result.Error != nil {
 		return fmt.Errorf("consent authorize request: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DenyOAuth2AuthorizeRequest atomically transitions a still-pending authorize
+// request to revoked, for a sign-in the person on the consent page refused. The
+// status guard keeps it from undoing a consent that won a race: a request that
+// is no longer pending matches zero rows and returns ErrNotFound.
+func (s *RDBConfigStore) DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error {
+	result := s.DB().WithContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
+		Where("id = ? AND status = ?", id, tables.OAuth2AuthorizeRequestStatusPending).
+		Updates(map[string]any{
+			"status":     tables.OAuth2AuthorizeRequestStatusRevoked,
+			"updated_at": time.Now(),
+		})
+	if result.Error != nil {
+		return fmt.Errorf("deny authorize request: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrNotFound

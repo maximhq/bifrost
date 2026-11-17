@@ -356,6 +356,8 @@ false
 {{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
 {{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
 {{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}
+{{- /* hasKey: [] must render (reads only), since an omitted list keeps the stored value */ -}}
+{{- if hasKey . "managementWrites" }}{{- $_ := set $warp "management_writes" (.managementWrites | default list) }}{{- end }}
 {{- if $warp }}{{- $_ := set $config "warp" $warp }}{{- end }}
 {{- end }}
 {{- if .Values.bifrost.client }}
@@ -524,6 +526,16 @@ false
 {{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
 {{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "bifrostUrl" }}
+{{- $_ := set $client "bifrost_url" .Values.bifrost.client.bifrostUrl }}
+{{- end }}
+{{- /* hasKey: an explicit false must render, since the default is true */ -}}
+{{- if hasKey .Values.bifrost.client "bifrostMcpAllowWrites" }}
+{{- $_ := set $client "bifrost_mcp_allow_writes" .Values.bifrost.client.bifrostMcpAllowWrites }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpOpenapiMaxSpecMb" }}
+{{- $_ := set $client "mcp_openapi_max_spec_mb" (.Values.bifrost.client.mcpOpenapiMaxSpecMb | int) }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
 {{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
 {{- end }}
@@ -548,6 +560,22 @@ false
 {{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "allowedRedirectUris" }}{{- $_ := set $oauth2 "allowed_redirect_uris" (default (list) .Values.bifrost.client.oauth2ServerConfig.allowedRedirectUris) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.gateways }}
+{{- $gateways := dict }}
+{{- with .claudeCode }}
+{{- if and .enabled (not $.Values.bifrost.client.oauth2ServerConfig.issuerUrl) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.oauth2ServerConfig.gateways.claudeCode.enabled is true. Bifrost exits at startup without it." }}{{- end }}
+{{- $claudeCode := dict "enabled" (.enabled | default false) }}
+{{- if hasKey . "managedSettings" }}{{- $_ := set $claudeCode "managed_settings" .managedSettings }}{{- end }}
+{{- with .telemetry }}
+{{- $telemetry := dict "enabled" (.enabled | default false) }}
+{{- with .destinations }}{{- $_ := set $telemetry "destinations" . }}{{- end }}
+{{- with .dropAttributes }}{{- $_ := set $telemetry "drop_attributes" . }}{{- end }}
+{{- $_ := set $claudeCode "telemetry" $telemetry }}
+{{- end }}
+{{- $_ := set $gateways "claude_code" $claudeCode }}
+{{- end }}
+{{- if $gateways }}{{- $_ := set $oauth2 "gateways" $gateways }}{{- end }}
+{{- end }}
 {{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
@@ -605,7 +633,11 @@ false
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
+{{- /* hasKey: "" must render (the build's default spec, clearing a stored override), since an omitted one keeps the stored value */ -}}
+{{- if hasKey .Values.bifrost.framework.pricing "openapiUrl" }}
+{{- $_ := set $pricing "openapi_url" .Values.bifrost.framework.pricing.openapiUrl }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") (hasKey $pricing "openapi_url") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
