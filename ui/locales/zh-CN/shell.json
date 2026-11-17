@@ -459,7 +459,15 @@
 			"label": "问题",
 			"skip": "跳过",
 			"orType": "或在下方输入你自己的回答。",
-			"skipAnswer": "请自行判断，并说明你的假设。"
+			"skipAnswer": "请自行判断，并说明你的假设。",
+			"confirm": {
+				"subtitle": "确认后，Warp 将执行此更改。",
+				"destructiveSubtitle": "确认后，Warp 将执行此更改。请仔细检查。",
+				"cannotUndo": "此操作无法撤销。",
+				"noArguments": "无参数。",
+				"cancel": "取消",
+				"confirm": "确认"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",

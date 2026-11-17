@@ -1414,8 +1414,6 @@ paths:
     $ref: "./paths/management/infrastructure.yaml#/websocket"
   /mcp:
     $ref: "./paths/management/infrastructure.yaml#/mcp-server"
-  /v1/mcp:
-    $ref: "./paths/management/infrastructure.yaml#/bifrost-mcp"
   /metrics:
     $ref: "./paths/management/infrastructure.yaml#/metrics"
   /inspect:

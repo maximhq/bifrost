@@ -561,7 +561,11 @@ export default function WarpView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
-			<WarpBifrostMCPNotice warpEnabled={!!config?.enabled} bifrostMCPAvailable={!!config?.bifrost_mcp_available} />
+			<WarpBifrostMCPNotice
+				bifrostMCPEnabled={!!config?.bifrost_mcp_enabled}
+				warpEnabled={!!config?.enabled}
+				bifrostMCPAvailable={!!config?.bifrost_mcp_available}
+			/>
 			<form onSubmit={onSubmit} className="space-y-4">
 				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>
@@ -798,15 +802,18 @@ export default function WarpView() {
 							</WarpField>
 						</WarpSection>
 
-						<WarpSection title={t("warp.managementTools.title")} description={t("warp.managementTools.description")}>
-							<WarpManagementToolsSection
-								writes={form.managementWrites}
-								onChange={(writes) => update("managementWrites", writes)}
-								sizes={config?.management_tool_sizes}
-								writesAvailable={!!config?.management_writes_available}
-								disabled={!hasWarpUpdateAccess}
-							/>
-						</WarpSection>
+						{/* Only while Warp uses the Bifrost MCP; decoupled, it has no management tools to choose. */}
+						{config?.bifrost_mcp_enabled && (
+							<WarpSection title={t("warp.managementTools.title")} description={t("warp.managementTools.description")}>
+								<WarpManagementToolsSection
+									writes={form.managementWrites}
+									onChange={(writes) => update("managementWrites", writes)}
+									sizes={config?.management_tool_sizes}
+									writesAvailable={!!config?.management_writes_available}
+									disabled={!hasWarpUpdateAccess}
+								/>
+							</WarpSection>
+						)}
 
 						<WarpSection
 							title={t("warp.conversationSearch")}

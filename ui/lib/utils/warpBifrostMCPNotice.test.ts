@@ -58,7 +58,14 @@ describe("warpManagementMode", () => {
 });
 
 describe("warpBifrostMCPNoticeMode", () => {
-	const admin = { warpEnabled: true, canUpdateWarp: true, bifrostMCPAvailable: true, acknowledged: false, laterCount: 0 };
+	const admin = {
+		bifrostMCPEnabled: true,
+		warpEnabled: true,
+		canUpdateWarp: true,
+		bifrostMCPAvailable: true,
+		acknowledged: false,
+		laterCount: 0,
+	};
 	it("shows only to an admin of an enabled Warp who has not acknowledged it", () => {
 		expect(warpBifrostMCPNoticeMode(admin)).toBe("dialog");
 		expect(warpBifrostMCPNoticeMode({ ...admin, warpEnabled: false })).toBe("hidden");
@@ -82,6 +89,14 @@ describe("warpBifrostMCPNoticeMode", () => {
 		expect(warpBifrostMCPNoticeMode({ ...off, acknowledged: true, laterCount: WARP_BIFROST_MCP_NOTICE_MAX_REMINDERS })).toBe("banner");
 		expect(warpBifrostMCPNoticeMode({ ...off, canUpdateWarp: false })).toBe("hidden");
 		expect(warpBifrostMCPNoticeMode({ ...off, warpEnabled: false })).toBe("hidden");
+	});
+	it("never shows while Warp is decoupled from the Bifrost MCP", () => {
+		const decoupled = { ...admin, bifrostMCPEnabled: false };
+		expect(warpBifrostMCPNoticeMode(decoupled)).toBe("hidden");
+		expect(warpBifrostMCPNoticeMode({ ...decoupled, bifrostMCPAvailable: false })).toBe("hidden");
+		expect(warpBifrostMCPNoticeMode({ ...decoupled, bifrostMCPAvailable: false, laterCount: WARP_BIFROST_MCP_NOTICE_MAX_REMINDERS })).toBe(
+			"hidden",
+		);
 	});
 });
 

@@ -2181,6 +2181,20 @@ const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
 // compaction summarization pass when context_management compaction fires.
 const AnthropicUsageIterationTypeCompaction = "compaction"
 
+// anthropicCacheCreationTotal returns the cache-write tokens a usage object bills. cache_creation is
+// the 5m/1h split OF cache_creation_input_tokens, a breakdown and not an addend, so it stands in for
+// the total only when the top-level counter is absent. Every Anthropic usage converter goes through
+// this, so the same usage object bills the same on each route.
+func anthropicCacheCreationTotal(u *AnthropicUsage) int {
+	if u == nil {
+		return 0
+	}
+	if u.CacheCreationInputTokens != 0 {
+		return u.CacheCreationInputTokens
+	}
+	return u.CacheCreation.Ephemeral5mInputTokens + u.CacheCreation.Ephemeral1hInputTokens
+}
+
 // billableAnthropicUsage returns the usage Anthropic actually charges for billing.
 // Top-level input/output/cache fields mirror the reply (message) pass only; the
 // compaction pass is listed separately under usage.iterations. When iterations

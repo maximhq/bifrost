@@ -10,6 +10,7 @@ import WarpHistory from "@/components/warp/warpHistory";
 import { useWarpBifrostMCPNotice, WarpBifrostMCPNoticeDialog } from "@/components/warp/warpBifrostMCPNotice";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
+import { questionCardKey } from "@/components/warp/warpQuestion.utils";
 import {
 	decodeTurnError,
 	indexStatusLabel,
@@ -89,11 +90,13 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
-	// Warp does not answer without the Bifrost MCP: admins get the setup popup on
-	// every open, everyone else an ask-an-admin message, and no one a composer.
+	// While Warp uses the Bifrost MCP (bifrost_mcp_enabled), it does not answer without
+	// it: admins get the setup popup on every open, everyone else an ask-an-admin
+	// message, and no one a composer. Decoupled (for now), it answers from its own tools.
+	const bifrostMCPEnabled = !!config?.bifrost_mcp_enabled;
 	const bifrostMCPAvailable = !!config?.bifrost_mcp_available;
-	const needsBifrostMCP = isConfigured && !bifrostMCPAvailable;
-	const bifrostMCPNotice = useWarpBifrostMCPNotice({ warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
+	const needsBifrostMCP = isConfigured && bifrostMCPEnabled && !bifrostMCPAvailable;
+	const bifrostMCPNotice = useWarpBifrostMCPNotice({ bifrostMCPEnabled, warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
 
 	const models = useMemo(() => warpModels(config), [config]);
 	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
@@ -454,20 +457,21 @@ export default function WarpPanel() {
 					</div>
 
 					<div className="bg-card absolute inset-x-0 bottom-0" ref={setControlsNode}>
-						{question && !isStreaming && (
-							<div className="px-3 pt-3 pb-2">
-								<WarpQuestionCard
-									question={question}
-									onAnswer={ask}
-									onSkip={() => {
-										ask(t("warp.question.skipAnswer"));
-									}}
-								/>
-							</div>
-						)}
 						<WarpComposer
 							isStreaming={isStreaming}
-							attached={!!question && !isStreaming}
+							tray={
+								question && !isStreaming ? (
+									<WarpQuestionCard
+										// A new question must not inherit the state of the card still folding back.
+										key={questionCardKey(question)}
+										question={question}
+										onAnswer={ask}
+										onSkip={() => {
+											ask(t("warp.question.skipAnswer"));
+										}}
+									/>
+								) : undefined
+							}
 							onCommand={(command) => {
 								if (command.id === "clear") {
 									stop();

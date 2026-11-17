@@ -281,7 +281,8 @@
 	"budgetDisplay": {
 		"usageAria": "Использование бюджета",
 		"override": "переопределение",
-		"baseTooltip": "Базовый {{base}} + переопределение {{override}}"
+		"baseTooltip": "Базовый {{base}} + переопределение {{override}}",
+		"sharedTag": "общий"
 	},
 	"rateLimit": {
 		"tokens": "токенов",
