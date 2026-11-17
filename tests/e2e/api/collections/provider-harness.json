@@ -339296,11 +339296,11 @@
       ]
     },
     {
-      "name": "363. Vertex passthrough keeps an explicit v1beta1 for Google publisher models (vertex-google-v1beta1-passthrough)",
+      "name": "363. Vertex passthrough keeps an explicit v1beta1 for Google publisher models (vertex-google-v1beta1-passthrough) (#9891 / PR #9896)",
       "description": "Vertex passthrough rebuilt the upstream URL with /v1 for every /models/ path, so an explicit /genai_passthrough/v1beta1 request to a Google publisher model reached /v1. Fields that exist only in v1beta1, such as Part.mediaProcessing, then failed with 400 \"Unknown name\". Google publisher models now keep the client version; other model calls (Claude streamRawPredict, 212.5), requests without a version and Gemini's v1beta stay on v1.\n\n363.1 sends mediaProcessing: AGENTIC on an inline video part to gemini-3.8-flash through /genai_passthrough/v1beta1. It returns 200 only when the request reaches v1beta1. The Vertex key must allow gemini-3.8-flash.",
       "item": [
         {
-          "name": "363.1 vertex google v1beta1 passthrough accepts mediaProcessing - vertex-google-v1beta1-passthrough",
+          "name": "363.1 vertex gemini-3.8-flash v1beta1 passthrough accepts mediaProcessing (vertex-google-v1beta1-passthrough) - #9891",
           "event": [
             {
               "listen": "test",
