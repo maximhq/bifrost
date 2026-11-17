@@ -263,11 +263,16 @@ func (c *LogsCleaner) reclaimFreeSpace(ctx context.Context) {
 		return
 	}
 	reclaimed, err := reclaimer.ReclaimFreeSpace(ctx)
-	if err != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// Shutdown or the pass deadline cut the reclaim short. The next pass resumes it.
+		c.logger.Debug("log cleanup stopped reclaiming free space: %v", err)
+	default:
 		c.logger.Warn("failed to reclaim free space after log cleanup: %v", err)
 	}
 	if reclaimed > 0 {
-		c.logger.Info("log cleanup returned %d bytes of free space to the filesystem", reclaimed)
+		c.logger.Info("log cleanup released %d bytes of free space from the database", reclaimed)
 	}
 }
 

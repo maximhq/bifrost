@@ -534,15 +534,18 @@ func TestSQLiteRetentionPassShrinksDatabase(t *testing.T) {
 	}
 	seed("old", time.Now().UTC().AddDate(0, 0, -40), 2000)
 	seed("new", time.Now().UTC(), 50)
-	fileSize := func() int64 {
+	// Measure only what production leaves on disk: no forced checkpoint, and the
+	// WAL counts too, because freed pages can move into logs.db-wal.
+	fileSizes := func() (db, wal int64) {
 		t.Helper()
-		// In WAL mode the database file shrinks when a checkpoint writes the truncation back.
-		require.NoError(t, store.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error)
 		info, err := os.Stat(path)
 		require.NoError(t, err)
-		return info.Size()
+		if walInfo, err := os.Stat(path + "-wal"); err == nil {
+			wal = walInfo.Size()
+		}
+		return info.Size(), wal
 	}
-	before := fileSize()
+	beforeDB, beforeWAL := fileSizes()
 
 	NewLogsCleaner(store, CleanerConfig{RetentionDays: 30}, testLogger{}).cleanupOldLogs(ctx)
 
@@ -550,7 +553,10 @@ func TestSQLiteRetentionPassShrinksDatabase(t *testing.T) {
 	require.NoError(t, store.db.Model(&Log{}).Count(&kept).Error)
 	require.Equal(t, int64(50), kept, "only the logs inside retention survive")
 	assert.Zero(t, sqlitePragma(t, store, "freelist_count"), "the freed pages must leave the file, not wait on its freelist")
-	assert.Less(t, fileSize(), before/4, "logs.db must shrink back toward its live size")
+	afterDB, afterWAL := fileSizes()
+	t.Logf("logs.db %d -> %d bytes, logs.db-wal %d -> %d bytes", beforeDB, afterDB, beforeWAL, afterWAL)
+	assert.Less(t, afterDB, beforeDB/4, "logs.db must shrink back toward its live size")
+	assert.Less(t, afterDB+afterWAL, beforeDB+beforeWAL, "the space must leave the files, not move into the WAL")
 }
 
 // Postgres runs retention hourly because only the lock holder does work; every other dialect stays daily.
@@ -560,4 +566,48 @@ func TestRDBRetentionIntervalByDialect(t *testing.T) {
 	}
 	assert.Equal(t, time.Hour, onDialect(postgres.Dialector{Config: &postgres.Config{}}).RetentionInterval())
 	assert.Equal(t, 24*time.Hour, onDialect(&sqlite.Dialector{}).RetentionInterval())
+}
+
+// reclaimingRetentionManager reports a fixed reclaim result, so a test can see
+// what the cleaner logs for it.
+type reclaimingRetentionManager struct {
+	plainRetentionManager
+	reclaimed int64
+	err       error
+}
+
+func (m reclaimingRetentionManager) ReclaimFreeSpace(context.Context) (int64, error) {
+	return m.reclaimed, m.err
+}
+
+// warnRecorder keeps the Warn and Info messages that a cleaner logs.
+type warnRecorder struct {
+	testLogger
+	warns []string
+	infos []string
+}
+
+func (l *warnRecorder) Warn(format string, args ...any) {
+	l.warns = append(l.warns, fmt.Sprintf(format, args...))
+}
+
+func (l *warnRecorder) Info(format string, args ...any) {
+	l.infos = append(l.infos, fmt.Sprintf(format, args...))
+}
+
+// Shutdown or the pass deadline can stop a reclaim partway. The next pass
+// resumes it, so the cleaner must not warn, but it still logs the bytes that
+// the stopped reclaim released. Any other error is still a warning.
+func TestReclaimFreeSpaceStopIsNotAWarning(t *testing.T) {
+	for _, stop := range []error{context.Canceled, context.DeadlineExceeded, fmt.Errorf("pass stopped: %w", context.Canceled)} {
+		logger := &warnRecorder{}
+		manager := reclaimingRetentionManager{reclaimed: 4096, err: stop}
+		NewLogsCleaner(manager, CleanerConfig{RetentionDays: 7}, logger).reclaimFreeSpace(context.Background())
+		assert.Empty(t, logger.warns, stop.Error())
+		assert.Len(t, logger.infos, 1, stop.Error())
+	}
+	logger := &warnRecorder{}
+	manager := reclaimingRetentionManager{err: errors.New("disk I/O error")}
+	NewLogsCleaner(manager, CleanerConfig{RetentionDays: 7}, logger).reclaimFreeSpace(context.Background())
+	assert.Len(t, logger.warns, 1)
 }
