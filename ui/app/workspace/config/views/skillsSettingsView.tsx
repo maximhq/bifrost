@@ -87,7 +87,7 @@ export default function SkillsSettingsView() {
 					disabled={!config || !hasSettingsUpdateAccess}
 				/>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button data-testid="skills-settings-save-btn" onClick={handleSave} disabled={!hasChanges || isSaving || !hasSettingsUpdateAccess}>
 					{isSaving ? t("saving") : t("saveChanges")}
 				</Button>
