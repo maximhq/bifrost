@@ -346506,6 +346506,286 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. prewarm and background_options reach OpenAI as typed params (prewarm and background options)",
+      "description": "OpenAI's Responses API takes prompt_cache_options.prewarm (write the prompt cache without generating output), prompt_cache_options.comparison_response_id (cache diagnostics) and background_options {completion_window: soonest|2h|8h, continuation_id} (discounted background windows on gpt-6.2-astra, gpt-6.2-sol, gpt-6.1-terra and gpt-6-luna).\n\nBefore the fix the typed PromptCacheOptions held only mode and ttl, so prewarm was dropped at decode on every route and a cache-warming request became a billed generation. background_options was not a typed Responses parameter: /openai/v1/responses dropped it at decode, and /v1/responses carried it in extra params, which reach the provider only behind x-bf-passthrough-extra-params.\n\nNo case here sends the passthrough header. The prewarm cases expect 200 and check raw_request for the two fields. The background cases pin the same thing two ways: a valid soonest window with a continuation id is forwarded intact, and an invalid window is rejected by OpenAI with a 4xx that names completion_window, where a dropped field would have returned 200.",
+      "item": [
+        {
+          "name": "372.1 openai gpt-6.2-sol /v1/responses: prompt_cache_options.prewarm and comparison_response_id reach OpenAI - prewarm and background options",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A prefix long enough to be cacheable, so the prewarm has something to write.",
+                  "pm.variables.set('prewarmPrefix', new Array(151).join('The gateway forwards prewarm requests unchanged. '));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('372.1 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('372.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('372.1 outbound body carries prompt_cache_options.prewarm', function () {",
+                  "  pm.expect((rr.prompt_cache_options || {}).prewarm, 'raw_request: ' + rawStr.slice(0, 800)).to.equal(true);",
+                  "});",
+                  "pm.test('372.1 outbound body carries prompt_cache_options.comparison_response_id', function () {",
+                  "  pm.expect((rr.prompt_cache_options || {}).comparison_response_id, 'raw_request: ' + rawStr.slice(0, 800)).to.equal('resp_harness_missing');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.2-sol\",\n  \"max_output_tokens\": 16,\n  \"prompt_cache_options\": {\n    \"prewarm\": true,\n    \"comparison_response_id\": \"resp_harness_missing\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"{{prewarmPrefix}}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "372.2 openai gpt-6.2-sol /openai/v1/responses: prompt_cache_options.prewarm and comparison_response_id reach OpenAI - prewarm and background options",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A prefix long enough to be cacheable, so the prewarm has something to write.",
+                  "pm.variables.set('prewarmPrefix', new Array(151).join('The gateway forwards prewarm requests unchanged. '));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('372.2 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('372.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('372.2 outbound body carries prompt_cache_options.prewarm', function () {",
+                  "  pm.expect((rr.prompt_cache_options || {}).prewarm, 'raw_request: ' + rawStr.slice(0, 800)).to.equal(true);",
+                  "});",
+                  "pm.test('372.2 outbound body carries prompt_cache_options.comparison_response_id', function () {",
+                  "  pm.expect((rr.prompt_cache_options || {}).comparison_response_id, 'raw_request: ' + rawStr.slice(0, 800)).to.equal('resp_harness_missing');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.2-sol\",\n  \"max_output_tokens\": 16,\n  \"prompt_cache_options\": {\n    \"prewarm\": true,\n    \"comparison_response_id\": \"resp_harness_missing\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"{{prewarmPrefix}}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "372.3 openai gpt-6.2-sol /v1/responses: background_options forwarded with its continuation id - prewarm and background options",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('372.3 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('372.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('372.3 outbound body carries background_options.completion_window', function () {",
+                  "  pm.expect((rr.background_options || {}).completion_window, 'raw_request: ' + rawStr.slice(0, 800)).to.equal('soonest');",
+                  "});",
+                  "pm.test('372.3 outbound body carries background_options.continuation_id', function () {",
+                  "  pm.expect((rr.background_options || {}).continuation_id, 'raw_request: ' + rawStr.slice(0, 800)).to.equal('harness-run-1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.2-sol\",\n  \"max_output_tokens\": 16,\n  \"background\": true,\n  \"background_options\": {\n    \"completion_window\": \"soonest\",\n    \"continuation_id\": \"harness-run-1\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "372.4 [EXPECT-4XX] openai gpt-6.2-sol /v1/responses: invalid background_options.completion_window is rejected by OpenAI, not dropped - prewarm and background options",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('372.4 upstream names completion_window in the rejection', function () {",
+                  "  pm.expect(pm.response.text(), 'rejection does not mention completion_window; background_options may not have reached the provider: ' + pm.response.text()).to.match(/completion_window/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.2-sol\",\n  \"max_output_tokens\": 16,\n  \"background\": true,\n  \"background_options\": {\n    \"completion_window\": \"1h\",\n    \"continuation_id\": \"harness-run-1\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "372.5 [EXPECT-4XX] openai gpt-6.2-sol /openai/v1/responses: invalid background_options.completion_window is rejected by OpenAI, not dropped - prewarm and background options",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('372.5 upstream names completion_window in the rejection', function () {",
+                  "  pm.expect(pm.response.text(), 'rejection does not mention completion_window; background_options may not have reached the provider: ' + pm.response.text()).to.match(/completion_window/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.2-sol\",\n  \"max_output_tokens\": 16,\n  \"background\": true,\n  \"background_options\": {\n    \"completion_window\": \"1h\",\n    \"continuation_id\": \"harness-run-1\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
