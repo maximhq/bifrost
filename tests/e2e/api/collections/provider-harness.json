@@ -339294,6 +339294,306 @@
           }
         }
       ]
+    },
+    {
+      "name": "364. Bedrock synthetic structured-output tool streams as one text block (bedrock synthetic structured output stream) (#10128 / PR #10138)",
+      "description": "When a Bedrock model keeps the synthetic bf_so_* tool for structured output (older Claude, Fable 5.1+, or a schema Claude rejects natively, here a nullable enum on Claude Sonnet 4.5), the streamed tool input used to go out as bare output_text.delta events with no item id. /anthropic/v1/messages then emitted content_block_delta with a fresh index per delta and no content_block_start/stop, so Anthropic SDK clients assembled nothing (#10128, #8158 shape 1). When the tool is unpinned (thinking on), the model may answer in plain text instead, and every text event was dropped, leaving only message_delta with billed output tokens (#8158 shape 2). Cases pin one well-formed text block on the /anthropic stream, one announced output_text item on the /v1/responses stream, and streamed content on /v1/chat/completions under reasoning. The two unpinned cases are red before the fix only on turns where the model answers in prose.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format on the synthetic tool arrives as one text block (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('one text block: content_block_start, deltas on its index, content_block_stop', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"stream\":true,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format with thinking (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('the answer streams as one text block whether the model used the tool or plain text', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses stream text.format on the synthetic tool streams one output_text item (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('output_text deltas belong to one announced message item', function () {",
+                  "  var added = {}, parts = {}, text = '', itemIds = {}, done = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'response.output_item.added' && ev.item) { added[ev.item.id] = ev.item.type; }",
+                  "    if (ev.type === 'response.content_part.added') { parts[ev.item_id] = true; }",
+                  "    if (ev.type === 'response.output_text.delta') {",
+                  "      pm.expect(ev.item_id, 'delta without item_id: ' + body).to.be.a('string').and.not.empty;",
+                  "      pm.expect(added[ev.item_id], 'delta before output_item.added for ' + ev.item_id + ': ' + body).to.equal('message');",
+                  "      pm.expect(parts[ev.item_id], 'delta before content_part.added for ' + ev.item_id + ': ' + body).to.equal(true);",
+                  "      itemIds[ev.item_id] = true;",
+                  "      text += ev.delta;",
+                  "    }",
+                  "    if (ev.type === 'response.output_item.added' && ev.item && ev.item.type === 'function_call') {",
+                  "      pm.expect.fail('the synthetic tool leaked as a function_call: ' + body);",
+                  "    }",
+                  "    if (ev.type === 'response.completed') { done = true; }",
+                  "  });",
+                  "  pm.expect(Object.keys(itemIds).length, 'items carrying text: ' + body).to.equal(1);",
+                  "  pm.expect(done, 'no response.completed: ' + body).to.equal(true);",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_output_tokens\":400,\"stream\":true,\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"input\":\"The ticket is open. Report its status.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream response_format with reasoning (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('content deltas concatenate to schema JSON, finish_reason stop, no tool_calls', function () {",
+                  "  var text = '', finish = null, toolCalls = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.error, 'error event: ' + body).to.be.undefined;",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.delta && c.delta.tool_calls) { toolCalls = true; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(toolCalls, 'unexpected tool_calls: ' + body).to.equal(false);",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "  pm.expect(text, 'no content streamed: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"reasoning\":{\"max_tokens\":1024},\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
