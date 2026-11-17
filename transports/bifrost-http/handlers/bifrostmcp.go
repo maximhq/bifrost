@@ -39,10 +39,10 @@ import (
 
 const (
 	// DefaultOpenAPIURL is the spec /v1/mcp reads while the framework config's
-	// openapi_url is unset: dev's openapi-oss.json, which bundle.py writes without
+	// openapi_url is unset: the published openapi-oss.json, which bundle.py writes without
 	// the enterprise-only operations. A build that serves another spec passes its
 	// own default to StartBifrostMCP.
-	DefaultOpenAPIURL = "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi-oss.json"
+	DefaultOpenAPIURL = "https://getbifrost.ai/openapi-oss.json"
 
 	bifrostMCPUnavailableMsg = "the Bifrost MCP spec is unavailable"
 )

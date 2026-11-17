@@ -128,6 +128,12 @@ var ignoreGoFields = map[string]string{
 	// only as mcp.max_protocol_version (applyMCPMaxProtocolVersion).
 	"/properties/client|mcp_max_protocol_version":        "storage column; configured only via mcp.max_protocol_version",
 	"/properties/client|mcp_server_max_protocol_version": "storage column; configured only via mcp.server_max_protocol_version",
+	// The Bifrost MCP server (/v1/mcp) is not released yet. config.json still reads its
+	// settings, but the schema leaves them out so they are not advertised. Mirrors
+	// excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/client|bifrost_url":                       "Bifrost MCP server setting; unreleased, left out of the schema",
+	"/properties/client|bifrost_mcp_allow_writes":          "Bifrost MCP server setting; unreleased, left out of the schema",
+	"/properties/framework/properties/pricing|openapi_url": "Bifrost MCP server setting; unreleased, left out of the schema",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",

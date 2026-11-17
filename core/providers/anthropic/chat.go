@@ -1476,9 +1476,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	// Convert usage information
 	if response.Usage != nil {
 		billable := billableAnthropicUsage(response.Usage)
+		cacheCreation := anthropicCacheCreationTotal(billable)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  billable.CacheReadInputTokens,
-			CachedWriteTokens: billable.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -1487,7 +1488,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + cacheCreation,
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    billable.OutputTokens,
 		}

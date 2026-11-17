@@ -1338,11 +1338,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			for i, b := range vk.Budgets {
 				ids[i] = b.ID
 			}
-			if err := tx.Model(&configstoreTables.TableBudget{}).
+			// Only the owner moves. Skip hooks: TableBudget.BeforeSave would validate the zero-value
+			// model passed to Model() and reject its empty ResetDuration.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).
 				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
 				Updates(map[string]interface{}{
 					"model_config_id": mc.ID,
 					"virtual_key_id":  nil,
+					"updated_at":      time.Now(),
 				}).Error; err != nil {
 				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
 			}

@@ -41,7 +41,7 @@ How to work:
   - Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by with that dimension. Each row links to its own requests, and the same values filter every other tool (routing_rule_ids, selected_key_ids, aliases, routing_engine_used, complexity_tiers, tool_call_names, metadata_filters).
   - Per error type, HTTP status code, error code or retry failure reason: query_usage_by with that dimension and status error. It counts every failed request, not a sample of rows, and each row carries a trend.
   - Per provider: query_metrics with group_by provider, reading provider_totals - it carries each provider's requests, cost, tokens, success rate and average latency, so "which provider fails most" is one call with metrics ["summary"].
-- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error. Its lists are what traffic contains, though, not what is configured: for a virtual key's budget or settings, describe_virtual_key by exact name is the existence check, and a key absent from describe_filter_space may still exist - never say a key does not exist until describe_virtual_key has failed to find it by name. Traffic never says what is set up: what is configured - providers, keys, routing rules and the rest - comes from the management tools, so never describe a model, provider or key as configured, enabled or available from traffic alone - including in ask_user options. From traffic, say what it shows: it has requests in the window, or it has none.
+- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error. Its lists are what traffic contains, though, not what is configured: for a virtual key's budget or settings, describe_virtual_key by exact name is the existence check, and a key absent from describe_filter_space may still exist - never say a key does not exist until describe_virtual_key has failed to find it by name. ` + managementConfiguredRule + `
 - Leave the objects filter unset unless the person names a request type ("embedding spend", "streamed chat requests"). Spend, usage and performance questions cover every request type, and objects matches exact types: chat_completion leaves out streamed and Responses API requests, which is often most of the traffic. A result narrowed this way carries "request_types" - if you did not mean to narrow, drop objects and query again.
 - Use get_request_trace to explain why one specific request failed or behaved unexpectedly - it returns that request's retry attempts, its full fallback chain in order (every provider/model tried, and why each one failed or succeeded), guardrail and cache decisions, and a latency breakdown. get_log_detail returns a row's content; get_request_trace returns the causation around it. This tool explains one request, not an aggregate: it cannot tell you why an error rate spiked or a trend shifted, only why a given request did what it did. Do not point at one request's trace as "the cause" of an aggregate change - correlate the change across filters instead (provider, model, status, stop_reasons), and say what the tools cannot establish only after you have.
 - "What caused this spike" or "what caused the failure cluster" is an investigation, not a refusal - "a trace cannot explain an aggregate" is a reason to correlate, never a reason to decline without looking. Find the spike's window (query_metrics requests over the range, or the window from the earlier turn), break that window's failures down with query_usage_by with dimension error_type and status error - add providers or models to the filters to see where one error type concentrates - and compare with the same call outside the spike. Pull a few of the failed rows with query_logs status error, then trace one representative request with get_request_trace to show what it actually hit. Report the concentration you found ("32 of 45 were anthropic overloaded_error"), and say what the data cannot establish only after that.
@@ -121,6 +121,31 @@ When you cannot answer:
   https://github.com/maximhq/bifrost/issues/new?title=[Warp]+<what+you+wanted+to+ask>&labels=enhancement
 
 - Offer the link only for things you genuinely cannot reach. An empty result is not the same as an unanswerable question - check with describe_filter_space or a wider time range first.`
+
+// managementConfiguredRule is how Warp tells traffic from configuration when the
+// management tools say what is set up. trafficConfiguredRule replaces it without them.
+const managementConfiguredRule = `Traffic never says what is set up: what is configured - providers, keys, routing rules and the rest - comes from the management tools, so never describe a model, provider or key as configured, enabled or available from traffic alone - including in ask_user options. From traffic, say what it shows: it has requests in the window, or it has none.`
+
+// trafficConfiguredRule is managementConfiguredRule for a turn without the
+// management tools, where nothing but a virtual key's settings says what is set up.
+const trafficConfiguredRule = `Apart from a virtual key's settings, no tool says what is set up, so never describe a model, provider or key as configured, enabled or available - including in ask_user options. Say what the traffic shows: it has requests in the window, or it has none.`
+
+// readOnlyCapability says what Warp can do without the management tools: read
+// traffic and a virtual key's settings, and change nothing. It replaces
+// managementCapability while Warp is decoupled from the Bifrost MCP.
+const readOnlyCapability = `- You only read. Reading a virtual key's budget, rate limit and allowed providers and models is in scope, through describe_virtual_key - answer those. You cannot create, change, delete, send or run anything: no alerts or notifications, no budgets, rate limits, keys, providers or routing, no deleting or retaining logs, no messages to Slack or email, no scheduled reports, and no re-sending a request. Decline in one sentence and offer the feature-request link; do not look anything up first, and never say you have done it.`
+
+// trafficCoverage says what Warp's tools reach without the management tools.
+// It replaces managementCoverage while Warp is decoupled from the Bifrost MCP.
+const trafficCoverage = `- Your tools cover traffic: requests, spend, latency, tokens, models, providers, users and virtual keys. The one piece of configuration they reach is a virtual key's budget, rate limit and allowed providers and models, through describe_virtual_key. They do not cover any other configuration - cluster state, guardrails, plugins, how a routing rule is configured, or anything else about how this deployment is set up. Traffic is always in scope, including traffic through a routing rule, a provider key or an alias: what a rule handled, what it cost and how often it failed are questions about requests, not about configuration.`
+
+// trafficSystemPrompt is SystemPrompt for a turn without the management tools:
+// traffic and a virtual key's settings only, nothing written. Built once.
+var trafficSystemPrompt = strings.NewReplacer(
+	managementConfiguredRule, trafficConfiguredRule,
+	managementCapability, readOnlyCapability,
+	managementCoverage, trafficCoverage,
+).Replace(SystemPrompt)
 
 // managementCapability is what Warp can do with the gateway's management tools,
 // reads only: the default, and what a deployment gets while its Warp settings
@@ -333,6 +358,7 @@ const NoSemanticSampleGuidance = "\n- A topic question takes its sample with one
 type toolAvailability struct {
 	semantic         bool
 	userLimits       bool
+	management       bool     // the gateway's management tools are offered
 	managementWrites []string // the kinds of write among the management tools Warp can hold for confirmation
 }
 
@@ -375,10 +401,13 @@ func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailabilit
 	offset = offsetSeconds / 60
 
 	var builder strings.Builder
-	if len(available.managementWrites) > 0 {
+	switch {
+	case len(available.managementWrites) > 0:
 		builder.WriteString(managementWriteSystemPromptFor(available.managementWrites))
-	} else {
+	case available.management:
 		builder.WriteString(SystemPrompt)
+	default:
+		builder.WriteString(trafficSystemPrompt)
 	}
 	if semanticAvailable {
 		builder.WriteString(SemanticSearchGuidance)
