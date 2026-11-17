@@ -47,7 +47,7 @@
 
 ## 🐞 Fixed
 
-- **Chat Streaming Usage** - Native and OpenAI-compatible chat streams emit token usage in a separate chunk with `choices: []`, after the finish chunk and before `[DONE]`
+- **Chat Streaming Usage** - When usage is included, normalized native and OpenAI-compatible chat streams emit it in a separate chunk with `choices: []`, after the finish chunk and before `[DONE]`. Raw forwarding is unchanged
 
 - **Custom Provider Prefixes on Create** - A provider created through the API resolves by its `name/model` prefix as soon as its configuration is stored, so requests sent during the post-create reload and model discovery are no longer load balanced to another provider. A create that is rolled back also stops any workers such a request started
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
