@@ -284,7 +284,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 						return (
 							<CollapsibleBox
 								key={index}
-								title={t("logs.detail.toolCall", { name: toolCall.function?.name || `#${index + 1}` })}
+								title={t("logs.detail.toolCall", { name: toolCall.function?.name || toolCall.custom?.name || `#${index + 1}` })}
 								onCopy={() => jsonContent}
 								collapsedHeight={100}
 							>

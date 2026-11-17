@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -110,6 +111,15 @@ func awsPartitionForRegion(region string) string {
 // returned value is a bare host, so callers keep ownership of the scheme and path — including
 // the bucket prefix S3's virtual-hosted URLs carry.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, "")
+}
+
+// resolveBedrockHostWithRuntimeDefault is resolveBedrockHost with a provider-wide host for the
+// bedrock-runtime service, taken from network_config.base_url. Precedence for bedrock-runtime is
+// the per-key endpoints.runtime override, then runtimeDefault, then the public regional host.
+// The other services ignore runtimeDefault: one base URL cannot serve the control plane, mantle,
+// agent-runtime and S3 as well, so those keep their per-key overrides or public hosts.
+func resolveBedrockHostWithRuntimeDefault(endpoints *schemas.BedrockEndpoints, service bedrockService, region, runtimeDefault string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar
 		switch service {
@@ -128,11 +138,20 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
+	if service == bedrockServiceRuntime && runtimeDefault != "" {
+		return runtimeDefault
+	}
 	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
 	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+}
+
+// serviceHost resolves the host for an AWS endpoint service, applying network_config.base_url as
+// the provider-wide bedrock-runtime host when the key carries no endpoints.runtime override.
+func (provider *BedrockProvider) serviceHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, provider.runtimeHost)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so
@@ -617,7 +636,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// Structured output goes natively through outputConfig.textFormat when the model and schema
 	// allow it, otherwise through the synthetic `bf_so_*` tool.
 	var responseFormatTool *BedrockTool
-	if outputConfig := chatNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params); outputConfig != nil {
+	if outputConfig := chatNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params, bedrockReq.Messages); outputConfig != nil {
 		bedrockReq.OutputConfig = outputConfig
 	} else {
 		responseFormatTool, _ = convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
@@ -2681,8 +2700,14 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 
 // chatNativeOutputConfig returns the native outputConfig for a json_schema response_format, or nil
 // when the request keeps the synthetic bf_so_* tool.
-func chatNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ChatParameters) json.RawMessage {
-	if params == nil || params.ResponseFormat == nil || !supportsNativeStructuredOutput(caps) {
+func chatNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ChatParameters, messages []BedrockMessage) json.RawMessage {
+	if params == nil || params.ResponseFormat == nil || !supportsNativeStructuredOutput(caps) || claudePrefill(ctx, model, messages) {
+		return nil
+	}
+	// Converse has no "none" choice: only the pinned bf_so_* tool keeps the model off the caller's tools.
+	if tc := params.ToolChoice; len(params.Tools) > 0 && tc != nil &&
+		((tc.ChatToolChoiceStr != nil && *tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeNone)) ||
+			(tc.ChatToolChoiceStruct != nil && tc.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone)) {
 		return nil
 	}
 	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
@@ -2700,9 +2725,16 @@ func chatNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps,
 	return nativeOutputConfig(ctx, model, rf.RawSchema(), name, description, load)
 }
 
-func responsesNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, textConfig *schemas.ResponsesTextConfig, tools []schemas.ResponsesTool) json.RawMessage {
+func responsesNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ResponsesParameters, messages []BedrockMessage) json.RawMessage {
+	textConfig, tools := params.Text, params.Tools
 	if textConfig == nil || textConfig.Format == nil || textConfig.Format.Type != "json_schema" || textConfig.Format.JSONSchema == nil ||
-		!supportsNativeStructuredOutput(caps) {
+		!supportsNativeStructuredOutput(caps) || claudePrefill(ctx, model, messages) {
+		return nil
+	}
+	// Converse has no "none" choice: only the pinned bf_so_* tool keeps the model off the caller's tools.
+	if tc := params.ToolChoice; len(tools) > 0 && tc != nil &&
+		((tc.ResponsesToolChoiceStr != nil && *tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeNone)) ||
+			(tc.ResponsesToolChoiceStruct != nil && tc.ResponsesToolChoiceStruct.Type == schemas.ResponsesToolChoiceTypeNone)) {
 		return nil
 	}
 	if _, acceptAll, err := textConfig.Format.JSONSchema.CompositeSchema(); err != nil || acceptAll {
@@ -2724,6 +2756,12 @@ func responsesNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.Model
 	return nativeOutputConfig(ctx, model, extractJSONSchemaObject(textConfig.Format.JSONSchema), name, description, load)
 }
 
+// claudePrefill reports a trailing assistant message on Claude, which 400s beside an output format
+// while the forced tool accepts it.
+func claudePrefill(ctx *schemas.BifrostContext, model string, messages []BedrockMessage) bool {
+	return len(messages) > 0 && messages[len(messages)-1].Role == BedrockMessageRoleAssistant && schemas.IsAnthropicModelFamily(ctx, model)
+}
+
 // claudeSchemaLoad counts the optional and union-typed properties of strict caller tools, which share
 // Claude's structured-output limits with the output schema (verified live).
 type claudeSchemaLoad struct {
@@ -2739,7 +2777,7 @@ func (l *claudeSchemaLoad) add(params *schemas.ToolFunctionParameters) {
 		return
 	}
 	walk := claudeSchemaWalk{schema: raw}
-	walk.node(gjson.ParseBytes(raw))
+	walk.node(gjson.ParseBytes(raw), false)
 	l.optional += walk.optional
 	l.unions += walk.unions
 }
@@ -2787,6 +2825,10 @@ func nativeOutputConfig(ctx *schemas.BifrostContext, model string, schema json.R
 	if len(schema) == 0 {
 		return nil
 	}
+	// Core re-sends once with the synthetic tool after a grammar-limit rejection.
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool {
+		return nil
+	}
 	if schemas.IsAnthropicModelFamily(ctx, model) {
 		prepared, ok := prepareClaudeNativeSchema(schema, load)
 		if !ok {
@@ -2797,6 +2839,8 @@ func nativeOutputConfig(ctx *schemas.BifrostContext, model string, schema json.R
 		// Non-Claude models answer a non-object schema with unconstrained text.
 		return nil
 	} else if bytes.Contains(schema, []byte(`"$ref"`)) && !localRefsResolve(gjson.ParseBytes(schema)) {
+		return nil
+	} else if schemas.IsOpenAIModelFamily(ctx, model) && !gptStrictSchemaAccepted(gjson.ParseBytes(schema)) {
 		return nil
 	}
 	// GPT answers a name outside [A-Za-z0-9_-] with 200 and no text.
@@ -2823,6 +2867,79 @@ func nativeOutputConfig(ctx *schemas.BifrostContext, model string, schema json.R
 		}
 	}
 	return out
+}
+
+// gptStrictRejectedSchemaKeys are keywords Bedrock's GPT answers with a 400 or 500 under
+// text.format.strict.
+var gptStrictRejectedSchemaKeys = map[string]bool{
+	"contains": true, "minContains": true, "maxContains": true, "unevaluatedItems": true, "not": true,
+	"if": true, "then": true, "else": true,
+	"propertyNames": true, "dependentRequired": true, "dependentSchemas": true, "unevaluatedProperties": true,
+}
+
+var gptStrictSchemaFormats = map[string]bool{
+	"date-time": true, "time": true, "date": true, "duration": true, "email": true,
+	"hostname": true, "ipv4": true, "ipv6": true, "uuid": true,
+}
+
+// gptStrictSchemaAccepted reports whether Bedrock's GPT takes the schema under text.format.strict.
+func gptStrictSchemaAccepted(n gjson.Result) bool {
+	if !n.IsObject() {
+		return true
+	}
+	var typ, enum, properties, required gjson.Result
+	ok := true
+	each := func(v gjson.Result) {
+		v.ForEach(func(_, sub gjson.Result) bool {
+			ok = gptStrictSchemaAccepted(sub)
+			return ok
+		})
+	}
+	n.ForEach(func(k, v gjson.Result) bool {
+		switch key := k.String(); {
+		case gptStrictRejectedSchemaKeys[key]:
+			ok = false
+		case key == "uniqueItems":
+			ok = v.Type != gjson.True
+		case key == "format":
+			ok = gptStrictSchemaFormats[v.String()]
+		case key == "pattern":
+			p := v.String()
+			ok = !patternHasLookaroundOrBackref(p) && !strings.Contains(p, `\b`)
+		case key == "type":
+			typ = v
+		case key == "enum":
+			enum = v
+		case key == "required":
+			required = v
+		case key == "properties":
+			properties = v
+			each(v)
+		case key == "$defs", key == "definitions", key == "patternProperties", key == "prefixItems",
+			key == "anyOf", key == "oneOf", key == "allOf":
+			each(v)
+		case key == "items", key == "additionalProperties":
+			if v.IsArray() {
+				each(v)
+			} else {
+				ok = gptStrictSchemaAccepted(v)
+			}
+		}
+		return ok
+	})
+	if !ok {
+		return false
+	}
+	if enum.Exists() && (len(enum.Array()) == 0 || typ.Type == gjson.String && !enumMatchesType(typ.Str, enum)) {
+		return false
+	}
+	// A required name missing from properties answers 500.
+	accepted := true
+	required.ForEach(func(_, name gjson.Result) bool {
+		accepted = properties.Get(gjson.Escape(name.String())).Exists()
+		return accepted
+	})
+	return accepted
 }
 
 var claudeRejectedSchemaKeys = map[string]bool{
@@ -2854,7 +2971,7 @@ func prepareClaudeNativeSchema(schema []byte, load claudeSchemaLoad) ([]byte, bo
 		return nil, false
 	}
 	walk := claudeSchemaWalk{schema: schema}
-	if !walk.node(root) || walk.optional+load.optional > claudeSchemaMaxOptionalProperties ||
+	if !walk.node(root, root.Get("properties").Exists()) || walk.optional+load.optional > claudeSchemaMaxOptionalProperties ||
 		walk.unions+load.unions > claudeSchemaMaxUnionProperties || (bytes.Contains(schema, []byte(`"$ref"`)) && schemaRefsRejected(root)) {
 		return nil, false
 	}
@@ -2882,20 +2999,47 @@ type claudeSchemaWalk struct {
 	unions   int
 }
 
-// node checks one sub-schema, reporting false when Claude would reject it.
-func (w *claudeSchemaWalk) node(n gjson.Result) bool {
+// claudeSchemaAnnotations are keys Claude accepts on every node.
+var claudeSchemaAnnotations = map[string]bool{
+	"title": true, "description": true, "default": true, "examples": true, "deprecated": true,
+	"readOnly": true, "writeOnly": true, "$schema": true, "$id": true,
+}
+
+// claudeSchemaObjectKeys are the only other keys Claude accepts on an object node.
+var claudeSchemaObjectKeys = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true, "$defs": true, "definitions": true,
+}
+
+// node checks one sub-schema, reporting false when Claude would reject it; needType requires a
+// type or a combinator, which Claude asks of property, $defs, anyOf and items schemas.
+func (w *claudeSchemaWalk) node(n gjson.Result, needType bool) bool {
 	if !n.IsObject() {
 		return false
 	}
-	var typ, properties, required gjson.Result
+	var typ, properties, required, enum gjson.Result
 	ok, closed, hasAllOf, conditional := true, false, false, false
+	// structural counts anyOf/allOf/$ref; objectExtra counts keys an object node may not carry;
+	// other counts non-annotation keys a combinator node may not carry.
+	structural, objectExtra, other, typed := 0, 0, 0, false
 	n.ForEach(func(k, v gjson.Result) bool {
 		key := k.String()
+		switch {
+		case claudeSchemaAnnotations[key]:
+		case key == "anyOf", key == "allOf", key == "$ref":
+			structural++
+			objectExtra++
+			typed = true
+		case claudeSchemaObjectKeys[key]:
+			other++
+		default:
+			objectExtra++
+			other++
+		}
 		switch {
 		case claudeRejectedSchemaKeys[key]:
 			ok = false
 		case key == "type":
-			typ = v
+			typ, typed = v, true
 		case key == "required":
 			required = v
 		case key == "minItems":
@@ -2903,18 +3047,25 @@ func (w *claudeSchemaWalk) node(n gjson.Result) bool {
 		case key == "format":
 			ok = claudeSchemaFormats[v.String()]
 		case key == "pattern":
-			p := v.String()
-			ok = !strings.Contains(p, "(?=") && !strings.Contains(p, "(?!") && !strings.Contains(p, "(?<") && !regexBackreferenceRe.MatchString(p)
+			ok = !patternHasLookaroundOrBackref(v.String())
 		case key == "enum":
+			enum, typed = v, true
+			ok = v.IsArray()
 			v.ForEach(func(_, e gjson.Result) bool {
 				ok = !e.IsObject() && !e.IsArray()
 				return ok
 			})
+		case key == "const":
+			typed = true
+			ok = !v.IsObject() && !v.IsArray()
 		case key == "additionalProperties":
 			ok, closed = v.Type == gjson.False, true
-		case key == "items", key == "if", key == "then", key == "else":
-			conditional = conditional || key != "items"
-			ok = w.node(v)
+		case key == "items":
+			// Claude accepts an empty items schema.
+			ok = w.node(v, !isEmptyJSONObject(v))
+		case key == "if", key == "then", key == "else":
+			conditional = true
+			ok = w.node(v, false)
 		case key == "anyOf", key == "allOf":
 			hasAllOf = hasAllOf || key == "allOf"
 			ok = v.IsArray()
@@ -2922,7 +3073,7 @@ func (w *claudeSchemaWalk) node(n gjson.Result) bool {
 			v.ForEach(func(_, branch gjson.Result) bool {
 				branches++
 				refBranch = refBranch || strings.Contains(branch.Raw, `"$ref"`)
-				ok = w.node(branch)
+				ok = w.node(branch, key == "anyOf")
 				return ok
 			})
 			if ok && key == "allOf" && branches > 1 && refBranch {
@@ -2937,20 +3088,27 @@ func (w *claudeSchemaWalk) node(n gjson.Result) bool {
 				if key == "properties" && isUnionSchema(sub) {
 					w.unions++
 				}
-				ok = w.node(sub)
+				ok = w.node(sub, true)
 				return ok
 			})
 		}
 		return ok
 	})
-	if !ok {
+	if !ok || needType && !typed {
+		return false
+	}
+	isObject := isObjectSchema(typ, properties)
+	if isObject && objectExtra > 0 || structural > 1 || structural == 1 && other > 0 {
+		return false
+	}
+	if enum.Exists() && !claudeEnumAccepted(typ, enum) {
 		return false
 	}
 	// Live: Claude cannot merge allOf beside the node's own properties, and rejects if/then/else on objects.
-	if hasAllOf && properties.Exists() || conditional && isObjectSchema(typ, properties) {
+	if hasAllOf && properties.Exists() || conditional && isObject {
 		return false
 	}
-	if !isObjectSchema(typ, properties) {
+	if !isObject {
 		return true
 	}
 	hasProperties, requiredNames := false, required.Array()
@@ -2970,6 +3128,51 @@ func (w *claudeSchemaWalk) node(n gjson.Result) bool {
 		w.closeAt = append(w.closeAt, at)
 	}
 	return true
+}
+
+// isEmptyJSONObject reports whether v is {}.
+func isEmptyJSONObject(v gjson.Result) bool {
+	empty := v.IsObject()
+	v.ForEach(func(_, _ gjson.Result) bool {
+		empty = false
+		return false
+	})
+	return empty
+}
+
+// claudeEnumAccepted reports whether Claude takes this enum beside typ: non-empty, no type array,
+// and every value matching a single type.
+func claudeEnumAccepted(typ, enum gjson.Result) bool {
+	if len(enum.Array()) == 0 || typ.IsArray() {
+		return false
+	}
+	return !typ.Exists() || enumMatchesType(typ.String(), enum)
+}
+
+// enumMatchesType reports whether every enum value is an instance of the JSON Schema type name typ.
+func enumMatchesType(typ string, enum gjson.Result) bool {
+	matches := true
+	enum.ForEach(func(_, e gjson.Result) bool {
+		switch typ {
+		case "string":
+			matches = e.Type == gjson.String
+		case "integer":
+			matches = e.Type == gjson.Number && e.Num == math.Trunc(e.Num)
+		case "number":
+			matches = e.Type == gjson.Number
+		case "boolean":
+			matches = e.Type == gjson.True || e.Type == gjson.False
+		case "null":
+			matches = e.Type == gjson.Null
+		}
+		return matches
+	})
+	return matches
+}
+
+// patternHasLookaroundOrBackref reports a lookahead, lookbehind or backreference in a regex.
+func patternHasLookaroundOrBackref(p string) bool {
+	return strings.Contains(p, "(?=") || strings.Contains(p, "(?!") || strings.Contains(p, "(?<") || regexBackreferenceRe.MatchString(p)
 }
 
 // isUnionSchema reports whether a property uses a type array or anyOf, which Bedrock counts.

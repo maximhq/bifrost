@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"maps"
 	"slices"
 	"sync"
 )
@@ -49,7 +50,9 @@ const (
 	GuardrailDetectionActionTransform = "transform"
 )
 
-// BifrostGuardrailJudgeCall records one billable guardrail judge invocation.
+// BifrostGuardrailJudgeCall records one billable guardrail call: an LLM judge
+// invocation billed in tokens, or a call to an external guardrail service billed
+// in the vendor's own usage units.
 type BifrostGuardrailJudgeCall struct {
 	Phase                   string                       `json:"phase,omitempty"`
 	RuleID                  *uint                        `json:"rule_id,omitempty"`
@@ -66,6 +69,13 @@ type BifrostGuardrailJudgeCall struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens,omitempty"`
+	// UsageUnits is what an external guardrail service reported consuming, keyed
+	// by the vendor's unit name. EstimatedCost is that usage in USD at the
+	// vendor's list price. Both are display-only: request cost and budgets price
+	// judge tokens alone, and an external call has no judge model, so it never
+	// counts toward either.
+	UsageUnits    map[string]int `json:"usage_units,omitempty"`
+	EstimatedCost float64        `json:"estimated_cost,omitempty"`
 }
 
 // isEmpty reports whether the metadata carries nothing worth storing or emitting.
@@ -86,6 +96,7 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 			clone.JudgeCalls[index].RuleID = cloneUint(call.RuleID)
 			clone.JudgeCalls[index].PromptTokensDetails = cloneChatPromptTokensDetails(call.PromptTokensDetails)
 			clone.JudgeCalls[index].CompletionTokensDetails = cloneChatCompletionTokensDetails(call.CompletionTokensDetails)
+			clone.JudgeCalls[index].UsageUnits = maps.Clone(call.UsageUnits)
 		}
 	}
 	if len(d.Detections) > 0 {
@@ -165,9 +176,11 @@ func SetGuardrailMetadataOnContext(ctx *BifrostContext, metadata *BifrostGuardra
 	return true
 }
 
-// AppendGuardrailJudgeCallOnContext appends one guardrail judge call to ctx.
+// AppendGuardrailJudgeCallOnContext appends one guardrail judge call to ctx. A
+// call that reported neither tokens nor usage units consumed nothing billable
+// and is skipped.
 func AppendGuardrailJudgeCallOnContext(ctx *BifrostContext, call BifrostGuardrailJudgeCall) bool {
-	if ctx == nil || call.TotalTokens == 0 && call.PromptTokens == 0 && call.CompletionTokens == 0 {
+	if ctx == nil || call.TotalTokens == 0 && call.PromptTokens == 0 && call.CompletionTokens == 0 && len(call.UsageUnits) == 0 {
 		return false
 	}
 	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {

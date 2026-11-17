@@ -2,6 +2,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { APIRequestContext, Page, TestInfo } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { openCommandPalette } from '../../core/utils/test-helpers'
 
 /**
  * Bifrost mounted under a URL prefix (server.base_path). scripts/run-e2e.mjs
@@ -165,18 +166,24 @@ async function startStrippingProxy(target: string, basePath: string): Promise<{ 
     })
     req.pipe(forwarded)
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  // Same hostname as the worker so the browser sends its session cookie (cookies ignore the port).
+  await new Promise<void>((resolve) => server.listen(0, resolve))
   const { port } = server.address() as AddressInfo
   return {
-    origin: `http://127.0.0.1:${port}`,
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+    origin: `http://${upstream.hostname}:${port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()))
+        // close() waits for the browser's keep-alive sockets otherwise.
+        server.closeAllConnections()
+      }),
   }
 }
 
 async function createVirtualMcp(request: APIRequestContext, basePath: string, slug: string): Promise<number> {
   const res = await request.post(`${basePath}/api/mcp/virtual-mcps`, { data: { name: `Base path ${slug}`, endpoint_slug: slug, tools: [] } })
-  expect(res.status(), await res.text()).toBe(200)
-  return ((await res.json()) as { id: number }).id
+  expect(res.status(), await res.text()).toBe(201)
+  return ((await res.json()) as { virtual_mcp: { id: number } }).virtual_mcp.id
 }
 
 async function createVirtualKey(request: APIRequestContext, basePath: string, name: string): Promise<string> {
@@ -263,15 +270,13 @@ test.describe('Base path: self URLs', () => {
     const origin = originOf(testInfo)
     await page.goto(`${basePath}/workspace/dashboard`)
 
-    await page.keyboard.press('ControlOrMeta+k')
-    await page.getByTestId('command-palette-input').fill('logs')
+    await (await openCommandPalette(page)).fill('logs')
     await page.getByTestId('command-palette-item-/workspace/logs').click()
     await expect(page).toHaveURL(new RegExp(`^${origin}${basePath}/workspace/logs`))
     await page.reload()
     await expect(page).toHaveURL(new RegExp(`^${origin}${basePath}/workspace/logs`))
 
-    await page.keyboard.press('ControlOrMeta+k')
-    await page.getByTestId('command-palette-input').fill('providers')
+    await (await openCommandPalette(page)).fill('providers')
     const popup = context.waitForEvent('page')
     await page.keyboard.press('ControlOrMeta+Enter')
     const newTab = await popup

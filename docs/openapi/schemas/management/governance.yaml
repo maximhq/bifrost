@@ -216,7 +216,7 @@ BudgetOverrideRequest:
       description: |
         Number of reset windows the override stays active for, counting the current window as the first.
         Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
-      minimum: 1
+      minimum: 0
 
 ApproveBudgetRequestRequest:
   type: object
@@ -3222,9 +3222,10 @@ ComplexityDecisionTierCriteria:
 ComplexityLLMConfig:
   type: object
   description: |
-    Chat-completion (LLM) fallback classifier settings. The block is inert
-    unless `semantic.fallback` selects `llm`; the classifier runs only after
-    semantic classification produces no tier. Tier names (SIMPLE, MEDIUM,
+    Chat-completion (LLM) classifier settings. Used as the primary classifier
+    when `classifier` is `llm`, and as the fallback when `semantic.fallback`
+    selects `llm`, where it runs only after semantic classification produces no
+    tier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM,
     COMPLEX) and the response format are fixed: the gateway always appends a
     non-editable reinforcement stating them.
   additionalProperties: false
@@ -3239,7 +3240,7 @@ ComplexityLLMConfig:
     model:
       type: string
       minLength: 1
-      description: Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one.
+      description: Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one.
     timeout:
       description: Per-request classification timeout. Accepts a duration string ("2s") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
       oneOf:
@@ -3262,7 +3263,7 @@ ComplexityLLMConfig:
 
 ComplexitySemanticStatus:
   type: object
-  description: Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.
+  description: Runtime status of the semantic complexity classifier and, when configured, the LLM classifier. Never contains phrases, embeddings, or provider secrets.
   properties:
     state:
       type: string
@@ -3451,7 +3452,7 @@ ComplexitySuggestionsConfig:
   properties:
     enabled:
       type: boolean
-      description: Capture a sample of classified requests and run suggestions on the schedule; default false. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block).
+      description: Capture a sample of classified requests and run suggestions on the schedule; default false. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; a router left at false runs suggestions only on demand, each run first embedding the router's logged requests in its window that are not yet captured - the sample_rate share of those whose content was logged, up to max_clustered_requests per run and newest first, so a smaller backlog is embedded in full and older requests past the limit wait for later runs. A run started without a suggestion model is accepted and then fails. Estimates and impact replays need this block but not the suggestion model, which they do not call. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block).
     sample_rate:
       type: number
       exclusiveMinimum: 0

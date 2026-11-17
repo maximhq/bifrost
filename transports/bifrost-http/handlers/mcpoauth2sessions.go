@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -187,6 +188,10 @@ func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
 		logger.Error("oauth2 sessions: failed to revoke session: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to revoke session")
 		return
+	}
+	if grant != nil {
+		logger.Debug(oauth2TokenLogPrefix+" event=family.revoked at=%s reason=session_revoked refresh_token_id=%s client_id=%q",
+			time.Now().UTC().Format(time.RFC3339Nano), id, grant.ClientID)
 	}
 	var before map[string]any
 	targetName := id

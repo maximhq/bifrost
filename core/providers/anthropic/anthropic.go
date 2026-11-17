@@ -824,7 +824,7 @@ type anthropicPromptCounts struct {
 func (c *anthropicPromptCounts) add(u *AnthropicUsage) {
 	c.input += u.InputTokens
 	c.cacheRead += u.CacheReadInputTokens
-	c.cacheWrite += u.CacheCreationInputTokens
+	c.cacheWrite += anthropicCacheCreationTotal(u)
 	c.cacheWrite5m += u.CacheCreation.Ephemeral5mInputTokens
 	c.cacheWrite1h += u.CacheCreation.Ephemeral1hInputTokens
 }
@@ -856,8 +856,11 @@ func (s *anthropicStreamPromptUsage) observe(topLevel bool, usage *AnthropicUsag
 	if reported&anthropicPromptCounterCacheReadInputTokens != 0 {
 		s.topLevel.cacheRead = usage.CacheReadInputTokens
 	}
-	if reported&anthropicPromptCounterCacheCreationInputTokens != 0 {
-		s.topLevel.cacheWrite = usage.CacheCreationInputTokens
+	// The 5m/1h split is a breakdown of the write total, so a frame carrying
+	// either one sets the total, and the split stands in for an absent total
+	// (anthropicCacheCreationTotal), as on every other route.
+	if reported&(anthropicPromptCounterCacheCreationInputTokens|anthropicPromptCounterCacheCreation) != 0 {
+		s.topLevel.cacheWrite = anthropicCacheCreationTotal(usage)
 	}
 	if reported&anthropicPromptCounterCacheCreation != 0 {
 		s.topLevel.cacheWrite5m = usage.CacheCreation.Ephemeral5mInputTokens

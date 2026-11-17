@@ -126,7 +126,8 @@ var ignoreGoFields = map[string]string{
 	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
 	// Same shape: the client column stores the global MCP protocol cap, which config.json sets
 	// only as mcp.max_protocol_version (applyMCPMaxProtocolVersion).
-	"/properties/client|mcp_max_protocol_version": "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_max_protocol_version":        "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_server_max_protocol_version": "storage column; configured only via mcp.server_max_protocol_version",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
@@ -238,7 +239,7 @@ var narrowedEnumPaths = map[string]struct {
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
-		excluded: []string{"baseten", "byteplus", "kimchi", "minimax", "sagemaker", "soniox"},
+		excluded: []string{"baseten", "byteplus", "kimchi", "machgen", "minimax", "sagemaker", "soniox"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
 }

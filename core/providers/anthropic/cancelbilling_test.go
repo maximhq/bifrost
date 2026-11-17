@@ -320,6 +320,20 @@ var streamPromptUsageCases = []streamPromptUsageCase{
 		prompt:     20010, cachedWrite: 20000, write1h: 20000, completion: 300,
 	},
 	{
+		// cache_creation is the split of cache_creation_input_tokens, so a split
+		// with no total stands in for the total (anthropicCacheCreationTotal).
+		name:       "cache write reported only as the 5m/1h split",
+		startUsage: `{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":20000},"output_tokens":1}`,
+		deltaUsage: `{"output_tokens":300}`,
+		prompt:     20010, cachedWrite: 20000, write1h: 20000, completion: 300,
+	},
+	{
+		name:       "delta replaces the cache write with only the split",
+		startUsage: `{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":5000,"cache_creation":{"ephemeral_5m_input_tokens":5000,"ephemeral_1h_input_tokens":0},"output_tokens":1}`,
+		deltaUsage: `{"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":20000},"output_tokens":300}`,
+		prompt:     20010, cachedWrite: 20000, write1h: 20000, completion: 300,
+	},
+	{
 		name:       "delta repeats message_start's prompt counters",
 		startUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":50,"output_tokens":1}`,
 		deltaUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":50,"output_tokens":300}`,
