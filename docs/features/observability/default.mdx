@@ -298,6 +298,12 @@ When running the Gateway, access the built-in dashboard at `http://localhost:808
 - Detailed request/response inspection
 - Token and cost analytics
 
+#### Stop reason column
+
+Open the column selector in the **LLM Logs** toolbar and enable **Stop Reason** to see why each response ended, such as `stop`, `length`, `content_filter`, or `tool_calls`. The column is hidden by default, and your selection persists across refreshes. Rows without a stop reason display `-`.
+
+![LLM Logs with the Stop Reason column enabled](/media/ui-logs-stop-reason-enabled.png)
+
 #### Grouped view
 
 The **Group** button in the logs toolbar folds related requests into one row. The row's label says what it holds:
