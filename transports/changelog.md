@@ -8,7 +8,7 @@
 
 ## 🐞 Fixed
 
-- **Chat Streaming Usage** - Native and OpenAI-compatible chat streams emit token usage in a separate chunk with `choices: []`, after the finish chunk and before `[DONE]`
+- **Chat Streaming Usage** - When usage is included, normalized native and OpenAI-compatible chat streams emit it in a separate chunk with `choices: []`, after the finish chunk and before `[DONE]`. Raw forwarding is unchanged
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
 - **Budget Update on config.json Virtual Keys** - Updating the budget of a virtual key provisioned from config.json no longer fails with a 500 `invalid reset duration format: ` when its standalone budget is adopted into the key's model config
