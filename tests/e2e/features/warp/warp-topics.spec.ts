@@ -23,6 +23,7 @@ const configuredWarp = {
   semantic_search_limit: 10,
   topic_discovery_min_requests: 250,
   vector_store_connected: true,
+  bifrost_mcp_available: true,
 }
 
 // Live filing before any topic exists, and after a seed run built them.
@@ -81,6 +82,9 @@ interface TopicsMock {
 // and it only gates the UI. Turning it on in this page's view of the flags
 // leaves the server's copy alone, so no suite races another over it.
 async function mockWarpTopics(page: Page, mock: TopicsMock) {
+  // The settings page opens a one-time notice about Warp's configuration tools
+  // for an enabled Warp; acknowledged up front so it does not cover the form.
+  await page.addInitScript(() => localStorage.setItem('bifrost.warpBifrostMCPNoticeSeen', '1'))
   await page.route('**/api/feature-flags', async (route) => {
     if (route.request().method() !== 'GET') return route.continue()
     const response = await route.fetch()
@@ -101,6 +105,7 @@ async function mockWarpTopics(page: Page, mock: TopicsMock) {
       body: JSON.stringify({
         state: 'ready',
         vector_store_connected: true,
+        bifrost_mcp_available: true,
         embedding_configured: true,
         topics: mock.health ?? unseeded,
         ...(mock.indexed === undefined ? {} : { has_indexed_requests: mock.indexed }),

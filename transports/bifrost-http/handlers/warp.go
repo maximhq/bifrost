@@ -215,6 +215,15 @@ func (h *WarpHandler) gated(next fasthttp.RequestHandler) fasthttp.RequestHandle
 	}
 }
 
+// SearchLogs serves GET /api/logs/search from Warp's log index. It needs the
+// Warp feature flag on; the index itself reports when it is not set up.
+func (h *WarpHandler) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error) {
+	if !h.isEnabled() {
+		return warp.SemanticSearchResult{}, warp.ErrUnavailable
+	}
+	return h.service.SearchLogs(ctx, queries, filters, limit)
+}
+
 // Service exposes the underlying service to in-process callers.
 func (h *WarpHandler) Service() *warp.Service {
 	return h.service

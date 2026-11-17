@@ -161,6 +161,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  machgen: ["machgen", "machgen/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
@@ -342,6 +343,13 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // MachGen model ids often carry the original vendor ("machgen/MiniMax-H3", "machgen/FLUX.2-dev"),
+  // so the minimax and replicate ("flux") partitions would claim them too. Route them exclusively
+  // to machgen, so those runs do not try to reach MachGen without its key.
+  const isMachGen = haystack.includes("machgen");
+  if (provider === "machgen") return isMachGen;
+  if (isMachGen) return false;
+
   // Soniox rows on the OpenAI drop-in routes carry the openai keywords in their URL, so route them exclusively to soniox.
   // A Soniox row is known by its model prefix, name, URL or folder; prose in a request body is not identity.
   const isSoniox =

@@ -773,6 +773,7 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/openai/realtime",
 		"/v1/audio/speech/stream",
 		"/elevenlabs/v1/text-to-dialogue/stream-input",
+		"/chatgpt_passthrough/backend-api/codex/responses",
 	}
 
 	for _, path := range paths {
@@ -786,6 +787,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 	}
 	if isInferenceWSEndpoint("/openai/chat/completions") {
 		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/chatgpt_passthrough/backend-api/codex/models") {
+		t.Fatal("the Codex model list is not a websocket path")
 	}
 }
 
@@ -1819,6 +1823,34 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin pins that the admin's username and
+// password sent as Basic authenticate the request without marking it the local admin, so
+// admin-only handlers (Warp's settings, publishing notifications) and deployments that skip
+// their access checks for the local admin still require a session or the Bearer form.
+func TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hash, err := encrypt.Hash("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := newSetupLockedAuthMiddleware("", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	})
+	encoded := base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	for _, header := range []string{"Basic " + encoded} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.Header.Set("Authorization", header)
+		if !runOSSAPIChain(am, ctx) {
+			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+		assert.False(t, admin, "%s admin credentials should not run as the local admin", strings.Fields(header)[0])
 	}
 }
 
@@ -3679,6 +3711,61 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 }
 
+// TestTracingMiddleware_StoresDimAttributesOnTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on TraceAttrDimensions so
+// observability plugins can propagate them onto child spans when enabled.
+func TestTracingMiddleware_StoresDimAttributesOnTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedDims map[string]string
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok {
+				capturedDims = dims
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedDims == nil {
+		t.Fatal("trace.Attributes[bifrost.dimensions] was missing")
+	}
+	if got := capturedDims["customer_id"]; got != "acme" {
+		t.Errorf("dims[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedDims["environment"]; got != "prod" {
+		t.Errorf("dims[environment] = %v, want %q", got, "prod")
+	}
+	// Reserved suffixes stay in the nested map for connectors; OTEL export
+	// skips them so they never become child-span attributes.
+	if _, ok := capturedDims["method"]; !ok {
+		t.Error("expected reserved dim 'method' to be stored on TraceAttrDimensions")
+	}
+	if _, ok := capturedDims["path"]; !ok {
+		t.Error("expected reserved dim 'path' to be stored on TraceAttrDimensions")
+	}
+}
+
 func TestCollectDimensionHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
@@ -3821,6 +3908,11 @@ type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
 	errors []string
+	debugs []string
+}
+
+func (l *captureLogger) Debug(format string, args ...any) {
+	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) Error(format string, args ...any) {

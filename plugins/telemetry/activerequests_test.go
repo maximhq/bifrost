@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,24 @@ func newPreHookContext(t *testing.T, p *PrometheusPlugin, rt schemas.RequestType
 	return ctx
 }
 
+// newHTTPContexts returns the transport context (HTTPTransportPreHook run) and the handler
+// context seeded from it with PreLLMHook run, as the HTTP server splits one request.
+func newHTTPContexts(t *testing.T, p *PrometheusPlugin, rt schemas.RequestType) (transportCtx, handlerCtx *schemas.BifrostContext) {
+	t.Helper()
+	transportCtx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := p.HTTPTransportPreHook(transportCtx, &schemas.HTTPRequest{}); err != nil {
+		t.Fatalf("HTTPTransportPreHook: %v", err)
+	}
+	handlerCtx = schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	for k, v := range transportCtx.GetUserValues() {
+		handlerCtx.SetValue(k, v)
+	}
+	if _, _, err := p.PreLLMHook(handlerCtx, &schemas.BifrostRequest{RequestType: rt}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	return transportCtx, handlerCtx
+}
+
 // streamError builds a terminal stream error as core reports it to post hooks.
 func streamError(rt schemas.RequestType, status int) *schemas.BifrostError {
 	bErr := &schemas.BifrostError{
@@ -42,11 +61,11 @@ func streamError(rt schemas.RequestType, status int) *schemas.BifrostError {
 // post hook must release the slot.
 func TestActiveRequestsReleasedByTransportHookWhenPostHookSkipped(t *testing.T) {
 	p := newTestPlugin(t)
-	ctx := newPreHookContext(t, p, schemas.ResponsesStreamRequest)
+	transportCtx, _ := newHTTPContexts(t, p, schemas.ResponsesStreamRequest)
 	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 1 {
 		t.Fatalf("after PreLLMHook gauge = %v, want 1", got)
 	}
-	if err := p.HTTPTransportPostHook(ctx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
 		t.Fatalf("HTTPTransportPostHook: %v", err)
 	}
 	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 0 {
@@ -59,12 +78,12 @@ func TestActiveRequestsReleasedByTransportHookWhenPostHookSkipped(t *testing.T) 
 // decrement again.
 func TestActiveRequestsMidStreamCancelReleasesOnce(t *testing.T) {
 	p := newTestPlugin(t)
-	ctx := newPreHookContext(t, p, schemas.ResponsesStreamRequest)
+	transportCtx, ctx := newHTTPContexts(t, p, schemas.ResponsesStreamRequest)
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	if _, _, err := p.PostLLMHook(ctx, nil, streamError(schemas.ResponsesStreamRequest, 499)); err != nil {
 		t.Fatalf("PostLLMHook: %v", err)
 	}
-	if err := p.HTTPTransportPostHook(ctx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
 		t.Fatalf("HTTPTransportPostHook: %v", err)
 	}
 	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 0 {
@@ -111,7 +130,7 @@ func TestActiveRequestsNonFinalChunkKeepsSlot(t *testing.T) {
 // PreLLMHook once per attempt on the shared context.
 func TestActiveRequestsFallbackAttemptsStayBalanced(t *testing.T) {
 	p := newTestPlugin(t)
-	ctx := newPreHookContext(t, p, schemas.ResponsesStreamRequest)
+	transportCtx, ctx := newHTTPContexts(t, p, schemas.ResponsesStreamRequest)
 	// Attempt 1 fails terminally, then the fallback attempt starts.
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	if _, _, err := p.PostLLMHook(ctx, nil, streamError(schemas.ResponsesStreamRequest, 500)); err != nil {
@@ -125,10 +144,51 @@ func TestActiveRequestsFallbackAttemptsStayBalanced(t *testing.T) {
 		t.Fatalf("during fallback attempt gauge = %v, want 1", got)
 	}
 	// Attempt 2 is cancelled before its stream reaches the handler: only the transport hook runs.
-	if err := p.HTTPTransportPostHook(ctx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
 		t.Fatalf("HTTPTransportPostHook: %v", err)
 	}
 	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 0 {
+		t.Fatalf("after request gauge = %v, want 0", got)
+	}
+}
+
+// TestActiveRequestsDerivedContextsCountSeparately pins that concurrent calls on contexts
+// derived from one HTTP request (the ListAllModels fan-out) each hold their own slot.
+func TestActiveRequestsDerivedContextsCountSeparately(t *testing.T) {
+	p := newTestPlugin(t)
+	transportCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := p.HTTPTransportPreHook(transportCtx, &schemas.HTTPRequest{}); err != nil {
+		t.Fatalf("HTTPTransportPreHook: %v", err)
+	}
+	handlerCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	for k, v := range transportCtx.GetUserValues() {
+		handlerCtx.SetValue(k, v)
+	}
+	pages := []*schemas.BifrostContext{
+		schemas.NewBifrostContext(handlerCtx, time.Now().Add(time.Minute)),
+		schemas.NewBifrostContext(handlerCtx, time.Now().Add(time.Minute)),
+	}
+	var wg sync.WaitGroup
+	for _, page := range pages {
+		wg.Go(func() {
+			if _, _, err := p.PreLLMHook(page, &schemas.BifrostRequest{RequestType: schemas.ListModelsRequest}); err != nil {
+				t.Errorf("PreLLMHook: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := activeGauge(p, schemas.ListModelsRequest); got != 2 {
+		t.Fatalf("with two calls in flight gauge = %v, want 2", got)
+	}
+	p.releaseActiveRequest(pages[0])
+	if got := activeGauge(p, schemas.ListModelsRequest); got != 1 {
+		t.Fatalf("after one call ended gauge = %v, want 1", got)
+	}
+	p.releaseActiveRequest(pages[1])
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+		t.Fatalf("HTTPTransportPostHook: %v", err)
+	}
+	if got := activeGauge(p, schemas.ListModelsRequest); got != 0 {
 		t.Fatalf("after request gauge = %v, want 0", got)
 	}
 }

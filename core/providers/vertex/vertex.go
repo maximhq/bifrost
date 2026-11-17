@@ -372,7 +372,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// No deployments configured - fetch from Model Garden API
-	host := getVertexModelListingAPIHost(region)
+	host := getVertexAPIHost(region)
 
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel
@@ -2338,7 +2338,9 @@ func (provider *VertexProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key
 // so every other model is unsupported.
 func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) {
-		return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+		unsupported := providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+		unsupported.Error.Message = fmt.Sprintf("%s is not supported for model %s on the %s provider; only Gemini TTS models can stream there", schemas.SpeechStreamRequest, request.Model, provider.GetProviderKey())
+		return nil, unsupported
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(

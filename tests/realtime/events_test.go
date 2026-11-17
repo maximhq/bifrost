@@ -80,6 +80,16 @@ var weatherTool = map[string]any{
 	},
 }
 
+// timeTool is a function the model is told to call for time questions; a session swaps the weather tool for it.
+var timeTool = map[string]any{
+	"type": "function", "name": "get_time", "description": "Get the current local time in a city.",
+	"parameters": map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"city": map[string]any{"type": "string"}},
+		"required":   []string{"city"},
+	},
+}
+
 // Provider events.
 
 // usageOf reads the usage a response.done reported.

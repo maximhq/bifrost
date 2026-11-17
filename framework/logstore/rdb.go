@@ -459,6 +459,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
@@ -1307,6 +1310,8 @@ func logsOrderClause(sortBy, order string) string {
 		return "total_tokens " + direction + ", id " + direction
 	case "cost":
 		return "cost " + direction + " NULLS LAST, id " + direction
+	case "fallback_index":
+		return "fallback_index " + direction + ", id " + direction
 	default:
 		return "timestamp " + direction + ", id " + direction
 	}
@@ -5361,6 +5366,9 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		if !acquired {
 			return ErrRetentionBusy
 		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
 		result := tx.Exec(stmt, cutoff, batchSize)
 		if result.Error != nil {
 			return result.Error
@@ -5372,6 +5380,16 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
 }
 
 // RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
@@ -5461,6 +5479,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5468,8 +5489,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})

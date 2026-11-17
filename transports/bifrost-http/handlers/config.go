@@ -381,6 +381,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.BifrostURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("bifrost_url %v", err))
+		return
+	}
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		if err := configstore.ValidateOpenAPIURL(*payload.FrameworkConfig.OpenAPIURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("openapi_url %v", err))
+			return
+		}
+	}
 
 	// enforce_vk_object_ownership is a plain bool that defaults to true, so a JSON null would
 	// decode as true and silently re-enable ownership. Refuse it; omit the field to keep the stored value.
@@ -396,6 +406,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
 			return
 		}
+	}
+	// A JSON null would decode as 0 and silently reset the limit; an explicit 0 is the reset.
+	if raw, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be an integer between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
+		return
 	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
@@ -464,10 +479,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
-		logger.Warn("MCP library sync interval must be greater than 0")
-		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
+	// Checking the MCP library sync interval: 0 disables background sync, as in
+	// config.json; otherwise the same minimum the config schema enforces.
+	if v := payload.FrameworkConfig.MCPLibrarySyncInterval; v != nil && *v != modelcatalog.MCPLibrarySyncDisabled && *v < modelcatalog.MinimumPricingSyncIntervalSec {
+		msg := fmt.Sprintf("MCP library sync interval must be 0 (disabled) or at least %d seconds", modelcatalog.MinimumPricingSyncIntervalSec)
+		logger.Warn(msg)
+		SendError(ctx, fasthttp.StatusBadRequest, msg)
 		return
 	}
 	// Checking the live models sync interval. Unlike the intervals above, 0 is
@@ -556,6 +573,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if effectiveAuthMode == "" {
 		effectiveAuthMode = currentConfig.MCPServerAuthMode
 	}
+	// The config API redacts plain telemetry header values; a value sent back still redacted
+	// keeps the stored one, as provider proxy and MCP credentials do.
+	restoreRedactedTelemetryHeaders(payload.ClientConfig.OAuth2ServerConfig, currentConfig.OAuth2ServerConfig)
+	// A redacted value that matched nothing (its collector's endpoint or the header's name
+	// changed) would be saved as the credential itself, so it must be typed again.
+	if endpoint, name, ok := unrestoredRedactedTelemetryHeader(payload.ClientConfig.OAuth2ServerConfig); ok {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("re-enter the value of the %s header for collector %s: a redacted value can only be kept as it is", name, endpoint))
+		return
+	}
 	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
 	if payload.ClientConfig.OAuth2ServerConfig != nil {
 		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
@@ -565,6 +591,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		if isAuthBypassed(ctx) && !slices.Equal(previousRedirects, effectiveOAuth2Config.AllowedRedirectURIs) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDestinationsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayEnabled(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "enabling the client gateway requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayManagedSettingsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway managed settings requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDropAttributesChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry drop_attributes requires an authenticated admin session")
 			return
 		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
@@ -592,6 +634,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		effectiveOAuth2Config.DisableVKIdentity &&
 		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
 		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Client gateways derive every URL and token claim they issue from
+	// issuer_url, independently of mcp_server_auth_mode, so they need one pinned
+	// just as OAuth discovery does below. Evaluated on the merged config so a
+	// partial update cannot clear the issuer while a gateway stays on.
+	if effectiveOAuth2Config.AnyClientGatewayEnabled() &&
+		(!effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
+		return
+	}
+	if err := effectiveOAuth2Config.ValidateClientGateways(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -645,9 +701,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
 		return
 	}
+	// The same for the entity access profile mode: only an omitted field keeps the stored mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeUnion &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeIntersect {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("entity_access_profile_mode must be 'union' or 'intersect', got %q", payload.ClientConfig.EntityAccessProfileMode))
+		return
+	}
 
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if mb := payload.ClientConfig.MCPOpenAPIMaxSpecMB; mb < 0 || mb > maxMCPOpenAPISpecMB {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
 		return
 	}
 	if payload.ClientConfig.LogRetentionDays < 1 {
@@ -700,6 +767,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
+	}
+
+	// Checked before any live change below. Omitted keeps the current cap, so a caller unaware of
+	// the field never lifts it; "auto" lifts it.
+	if err := setMCPProtocolCap("mcp_max_protocol_version", payload.ClientConfig.MCPMaxProtocolVersion, &updatedConfig.MCPMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setMCPProtocolCap("mcp_server_max_protocol_version", payload.ClientConfig.MCPServerMaxProtocolVersion, &updatedConfig.MCPServerMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 
 	var restartReasons []string
@@ -768,14 +846,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
-	}
-	// Omitted keeps the current cap, so a caller unaware of the field never lifts it; "auto" lifts it.
-	if v := payload.ClientConfig.MCPMaxProtocolVersion; v != "" {
-		if err := schemas.ValidateMCPMaxProtocolVersion("mcp_max_protocol_version", v); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
-		}
-		updatedConfig.MCPMaxProtocolVersion = v
 	}
 	// 0 means the built-in default, so compare against the current value
 	// instead of the > 0 guard used by other numeric fields.
@@ -926,6 +996,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
 	}
+	// Copied only when sent, so a partial save keeps the limit; 0 resets it to the default.
+	// The next spec load reads it, so no reload is needed.
+	if _, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present {
+		updatedConfig.MCPOpenAPIMaxSpecMB = payload.ClientConfig.MCPOpenAPIMaxSpecMB
+	}
+	// Copied only when sent (validated up front), so a partial save keeps the stored entity access profile mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present {
+		updatedConfig.EntityAccessProfileMode = payload.ClientConfig.EntityAccessProfileMode
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
@@ -953,6 +1032,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
+	}
+	// Copied only when sent, so a partial save keeps them; an empty value or null resets
+	// each to its default. The reload that follows the save rebuilds /v1/mcp.
+	if _, present := clientConfigFields["bifrost_url"]; present {
+		updatedConfig.BifrostURL = payload.ClientConfig.BifrostURL
+	}
+	if _, present := clientConfigFields["bifrost_mcp_allow_writes"]; present {
+		updatedConfig.BifrostMCPAllowWrites = payload.ClientConfig.BifrostMCPAllowWrites
 	}
 
 	// Only update each field when explicitly provided so partial /api/config
@@ -1134,6 +1221,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	// openapi_url is copied only when sent; empty clears it back to the build's
+	// default spec. Validated up front; the reload below rebuilds /v1/mcp.
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		var next *string
+		if trimmed := strings.TrimSpace(*payload.FrameworkConfig.OpenAPIURL); trimmed != "" {
+			next = &trimmed
+		}
+		stored := ""
+		if frameworkConfig.OpenAPIURL != nil {
+			stored = strings.TrimSpace(*frameworkConfig.OpenAPIURL)
+		}
+		if (next == nil && stored != "") || (next != nil && *next != stored) {
+			frameworkConfig.OpenAPIURL = next
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -1150,6 +1253,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
+				OpenAPIURL:             frameworkConfig.OpenAPIURL,
 			},
 		}
 		// Persist first so a failed store write leaves the runtime config
@@ -1729,6 +1833,9 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 	return nil
 }
 
+// maxMCPOpenAPISpecMB bounds mcp_openapi_max_spec_mb; see configstore.MaxMCPOpenAPISpecMB.
+const maxMCPOpenAPISpecMB = configstore.MaxMCPOpenAPISpecMB
+
 // validateMCPInstructionCaps rejects bounds that cannot hold: a negative value, or a per-client
 // cap larger than the total it must fit inside. 0 means "use the built-in default" for either.
 // maxInstructionCapBytes bounds both caps: far above any real server, far below prompt bloat.
@@ -1826,4 +1933,135 @@ func effectiveGlobalProxyType(t network.GlobalProxyType) network.GlobalProxyType
 		return network.GlobalProxyTypeHTTP
 	}
 	return t
+}
+
+// setMCPProtocolCap validates v and stores it in dst; "" leaves dst as it is.
+func setMCPProtocolCap(field, v string, dst *string) error {
+	if v == "" {
+		return nil
+	}
+	if err := schemas.ValidateMCPMaxProtocolVersion(field, v); err != nil {
+		return err
+	}
+	*dst = v
+	return nil
+}
+
+// clientGatewayEnabled reports whether the save switches the client gateway on. Switching it
+// off needs no admin session, as pausing telemetry does not.
+func clientGatewayEnabled(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := before.ClaudeCodeGateway(), after.ClaudeCodeGateway()
+	return a != nil && a.Enabled && (b == nil || !b.Enabled)
+}
+
+// clientGatewayManagedSettingsChanged reports whether the managed settings pushed to every
+// signed-in client change.
+func clientGatewayManagedSettingsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	var b, a map[string]any
+	if g := before.ClaudeCodeGateway(); g != nil {
+		b = g.ManagedSettings
+	}
+	if g := after.ClaudeCodeGateway(); g != nil {
+		a = g.ManagedSettings
+	}
+	bj, _ := json.Marshal(b)
+	aj, _ := json.Marshal(a)
+	return !bytes.Equal(bj, aj)
+}
+
+// clientGatewayTelemetryDropAttributesChanged reports whether the attributes dropped before
+// forwarding change; removing one would start forwarding it.
+func clientGatewayTelemetryDropAttributesChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	return !slices.Equal(clientGatewayTelemetryDropAttributes(before), clientGatewayTelemetryDropAttributes(after))
+}
+
+func clientGatewayTelemetryDropAttributes(c *configstoreTables.OAuth2ServerConfig) []string {
+	g := c.ClaudeCodeGateway()
+	if g == nil || g.Telemetry == nil {
+		return nil
+	}
+	return g.Telemetry.DropAttributes
+}
+
+// clientGatewayTelemetryDestinationsChanged reports whether the Claude Code telemetry
+// destinations differ: any endpoint or header whose value, reference or type changed.
+func clientGatewayTelemetryDestinationsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := clientGatewayTelemetryDestinations(before), clientGatewayTelemetryDestinations(after)
+	if len(b) != len(a) {
+		return true
+	}
+	for i := range b {
+		if !b[i].Endpoint.Equals(a[i].Endpoint) || len(b[i].Headers) != len(a[i].Headers) {
+			return true
+		}
+		for name, v := range b[i].Headers {
+			if w, ok := a[i].Headers[name]; !ok || !v.Equals(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// restoreRedactedTelemetryHeaders puts the stored value back for each telemetry header sent
+// back exactly as GET /api/config redacted it. Headers are matched by their collector's
+// endpoint and name, not position, so removing a collector cannot shift a secret onto another.
+func restoreRedactedTelemetryHeaders(next, stored *configstoreTables.OAuth2ServerConfig) {
+	storedDests := clientGatewayTelemetryDestinations(stored)
+	if len(storedDests) == 0 {
+		return
+	}
+	redactedDests := clientGatewayTelemetryDestinations(stored.Redacted())
+	nextDests := clientGatewayTelemetryDestinations(next)
+	matches := func(d configstoreTables.ClientGatewayTelemetryDestination, i int) bool {
+		return d.Endpoint.Equals(storedDests[i].Endpoint) || d.Endpoint.Equals(redactedDests[i].Endpoint)
+	}
+	for _, d := range nextDests {
+		// Only an endpoint listed once on both sides identifies its collector; otherwise the
+		// placeholder stays and the save is refused rather than guessing which secret is meant.
+		match, storedCount, nextCount := -1, 0, 0
+		for i := range storedDests {
+			if matches(d, i) {
+				match = i
+				storedCount++
+			}
+		}
+		for _, other := range nextDests {
+			if other.Endpoint.Equals(d.Endpoint) {
+				nextCount++
+			}
+		}
+		if storedCount != 1 || nextCount != 1 {
+			continue
+		}
+		for name, v := range d.Headers {
+			if v.IsMaskedPlaceholder() && v.Equals(redactedDests[match].Headers[name]) {
+				d.Headers[name] = storedDests[match].Headers[name]
+			}
+		}
+	}
+}
+
+// unrestoredRedactedTelemetryHeader reports a telemetry header still holding a redaction
+// placeholder after restoreRedactedTelemetryHeaders, with its collector's endpoint.
+func unrestoredRedactedTelemetryHeader(c *configstoreTables.OAuth2ServerConfig) (endpoint, name string, ok bool) {
+	for _, d := range clientGatewayTelemetryDestinations(c) {
+		for n, v := range d.Headers {
+			if v.IsMaskedPlaceholder() {
+				if d.Endpoint.IsFromSecret() {
+					return d.Endpoint.GetRawRef(), n, true
+				}
+				return d.Endpoint.GetValue(), n, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func clientGatewayTelemetryDestinations(c *configstoreTables.OAuth2ServerConfig) []configstoreTables.ClientGatewayTelemetryDestination {
+	cc := c.ClaudeCodeGateway()
+	if cc == nil || cc.Telemetry == nil {
+		return nil
+	}
+	return cc.Telemetry.Destinations
 }

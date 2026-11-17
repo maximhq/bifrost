@@ -117,6 +117,27 @@ func IsWarpReasoningEffort(value string) bool {
 	return slices.Contains(WarpReasoningEfforts, value)
 }
 
+// The kinds of configuration change Warp may make through the Bifrost MCP, each
+// run only after the person confirms it. Reads are always offered; a deployment
+// turns each of these on in Warp's settings, and none is on by default: every
+// kind adds its tools to every Warp request, and the updates alone can outgrow a
+// model's context window. bifrost_mcp_allow_writes stays the ceiling: with it
+// off the Bifrost MCP serves no writes, whatever is chosen here.
+const (
+	WarpManagementCreate = "create" // POST operations named create*
+	WarpManagementUpdate = "update" // PUT and PATCH
+	WarpManagementDelete = "delete" // DELETE
+	WarpManagementAction = "action" // the other POSTs: test, rotate, flush, ...
+)
+
+// WarpManagementWrites lists the kinds in the order they are shown and stored.
+var WarpManagementWrites = []string{WarpManagementCreate, WarpManagementUpdate, WarpManagementDelete, WarpManagementAction}
+
+// IsWarpManagementWrite reports whether value names one of WarpManagementWrites.
+func IsWarpManagementWrite(value string) bool {
+	return slices.Contains(WarpManagementWrites, value)
+}
+
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
 type WarpConfig struct {
 	Enabled bool `json:"enabled"`
@@ -184,6 +205,8 @@ type WarpConfig struct {
 	// TopicDiscoveryMinRequests is how many unmatched requests start a
 	// discovery; zero means the default.
 	TopicDiscoveryMinRequests int `json:"topic_discovery_min_requests"`
+	// ManagementWrites are the kinds of change Warp may offer (WarpManagementWrites); empty means reads only.
+	ManagementWrites []string `json:"management_writes,omitempty"`
 	// RetiredLogVectorStoreNamespaces is internal lifecycle state. It is stored
 	// so source-log deletion can clean embedding spaces that are no longer read.
 	RetiredLogVectorStoreNamespaces []string `json:"-"`
@@ -338,6 +361,11 @@ const (
 	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
 	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
 	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
+	// WarpUnavailableNoBifrostMCP means the Bifrost MCP is not loaded (no
+	// bifrost_url, or its OpenAPI spec could not be read). Warp needs it to read
+	// configuration, so it does not answer at all without it. The dashboard shows
+	// admins the setup notice and everyone else an ask-an-admin message.
+	WarpUnavailableNoBifrostMCP WarpUnavailableReason = "no_bifrost_mcp"
 )
 
 // WarpUnavailableResponse is the 503 body for both reasons above.
@@ -433,6 +461,27 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Action is what a confirmation card shows: the call without its token.
+	Action *WarpConfirmAction `json:"action,omitempty"`
+	// Pending is the management call a confirmation card is asking about. It is
+	// persisted with the card and never returned by the conversation API.
+	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpConfirmAction is the management write a confirmation card describes.
+type WarpConfirmAction struct {
+	Tool        string `json:"tool"`
+	Arguments   string `json:"arguments"`
+	Destructive bool   `json:"destructive,omitempty"`
+}
+
+// WarpPendingCall is a management write held until the person confirms it.
+// Token is what the card's Confirm option sends back; Arguments is the JSON the
+// model gave the tool.
+type WarpPendingCall struct {
+	Token     string `json:"token"`
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments"`
 }
 
 // WarpStoredQuestionOpt is one pickable answer.
