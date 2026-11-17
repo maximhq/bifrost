@@ -1,5 +1,5 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { openCommandPalette } from '../../core/utils/test-helpers'
 
 // The ⌘K palette: opening it, jumping to a page, keeping the selected time
 // range on the move, copying the link on a host without the Clipboard API, and
@@ -20,14 +20,11 @@ const configuredWarp = {
   semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
+  bifrost_mcp_available: true,
   additional_models: [],
 }
 
-async function openPalette(page: Page) {
-  await page.keyboard.press('ControlOrMeta+k')
-  await expect(page.getByTestId('command-palette')).toBeVisible()
-  return page.getByTestId('command-palette-input')
-}
+const openPalette = openCommandPalette
 
 test.describe('Command palette', () => {
   test.beforeEach(async ({ dashboardPage }) => {

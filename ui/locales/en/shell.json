@@ -67,6 +67,7 @@
 		"caching": "Caching",
 		"security": "Security",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "API Keys",
 		"performanceTuning": "Performance Tuning",
@@ -150,6 +151,7 @@
 		"caching": "Caching configuration",
 		"security": "Security settings",
 		"warp": "Warp agent configuration",
+		"gateways": "Coding-client sign-in",
 		"proxy": "Proxy configuration",
 		"apiKeys": "API keys management",
 		"performanceTuning": "Performance tuning settings",
@@ -430,6 +432,10 @@
 			"indexStatusUnavailable": "Index status unavailable",
 			"askAdminTurnOn": "Ask an administrator to turn Warp on.",
 			"askAdminSetUp": "Ask an administrator to set Warp up.",
+			"needsBifrostMCP": "Warp needs the Bifrost MCP",
+			"needsBifrostMCPHint": "Set the Bifrost URL so Warp can read this deployment's configuration.",
+			"setUpBifrostMCP": "Set up",
+			"askAdminBifrostMCP": "Ask an administrator to set up the Bifrost MCP for Warp.",
 			"sendsWhenFinished": "Sends when this answer finishes",
 			"remove": "Remove"
 		},
@@ -544,6 +550,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp isn't set up on this deployment.",
+				"cause": "Warp needs the Bifrost MCP to read this deployment's configuration, and it is not loaded.",
+				"suggestions": ["Ask an administrator to set the Bifrost URL in Client settings."]
+			},
 			"not_configured": {
 				"summary": "Warp is not configured yet.",
 				"cause": "No provider and model are set, or Warp is switched off in settings.",

@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "Complexity Router is being upgraded to Routers",
-				"body": "Routers can run several classifiers, each with its own models and the requests it handles. This page keeps working as it does today; we recommend trying Routers for new setups.",
+				"body": "With Routers, you can create multiple routers, each with its own classifier and models. This page keeps working as it does today; we recommend moving to Routers for both existing and new setups.",
 				"action": "Open Routers"
 			}
 		},

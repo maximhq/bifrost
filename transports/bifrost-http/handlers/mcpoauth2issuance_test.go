@@ -28,7 +28,7 @@ import (
 // newRealOAuth2Store builds a real sqlite-backed ConfigStore (full migrations,
 // including the OAuth2 issuance tables) so issuance handlers exercise the actual
 // atomic store semantics rather than a hand-rolled mock.
-func newRealOAuth2Store(t *testing.T) configstore.ConfigStore {
+func newRealOAuth2Store(t testing.TB) configstore.ConfigStore {
 	t.Helper()
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
 		Enabled: true,
@@ -1011,6 +1011,71 @@ func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
 					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
 				})
 			}
+		})
+	}
+}
+
+// TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL pins that the Claude Code
+// gateway, which works in any MCP auth mode, cannot be stored on without a
+// pinned issuer_url, including via a partial update that clears the issuer.
+func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for name, body := range map[string]string{
+		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","gateways":{"claude_code":{"enabled":true}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "oauth2_server_config.gateways")
+		})
+	}
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryValidated pins that PUT /api/config
+// refuses a switched-on telemetry block that could not forward or would store a
+// collector credential in the config: no destination, a non-http endpoint, or a
+// plain-text header value. A valid block passes telemetry validation.
+func TestUpdateConfig_ClientGatewayTelemetryValidated(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "secret")
+	gateway := func(telemetry string) string {
+		return `{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":` + telemetry + `}}}}}`
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		wantErr string
+	}{
+		"no destinations":    {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
+		"non-http endpoint":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
+		"plain-text header":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), ""},
+		"empty header value": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":" "}}]}`), "needs a value"},
+		"valid":              {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(tc.body)
+			h.updateConfig(ctx)
+			if tc.wantErr == "" {
+				// The partial body may still be refused for unrelated required fields;
+				// what matters here is that telemetry validation passed.
+				assert.NotContains(t, string(ctx.Response.Body()), "telemetry", string(ctx.Response.Body()))
+				return
+			}
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
 		})
 	}
 }

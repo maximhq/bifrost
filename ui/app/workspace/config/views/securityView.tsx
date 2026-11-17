@@ -156,6 +156,7 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
+		const bifrostMCPAllowWritesChanged = (localConfig.bifrost_mcp_allow_writes ?? true) !== (config.bifrost_mcp_allow_writes ?? true);
 		const skipAccessProfileUserVirtualKeyCreationChanged =
 			IS_ENTERPRISE &&
 			(localConfig.skip_access_profile_user_virtual_key_creation ?? false) !==
@@ -164,6 +165,8 @@ export default function SecurityView() {
 			IS_ENTERPRISE &&
 			(localConfig.skip_access_profile_user_virtual_key_deletion ?? false) !==
 				(config.skip_access_profile_user_virtual_key_deletion ?? false);
+		const entityAccessProfileModeChanged =
+			IS_ENTERPRISE && (localConfig.entity_access_profile_mode || "union") !== (config.entity_access_profile_mode || "union");
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -179,8 +182,10 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
+			bifrostMCPAllowWritesChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
 			skipAccessProfileUserVirtualKeyDeletionChanged ||
+			entityAccessProfileModeChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged ||
 			issuerURLChanged
@@ -666,6 +671,23 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
+				{/* Bifrost MCP: whether /v1/mcp serves non-GET /api operations as tools */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="bifrost-mcp-allow-writes" className="text-sm font-medium">
+							{t("security.bifrostMcpAllowWrites")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="security.bifrostMcpAllowWritesHelp" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+					</div>
+					<Switch
+						id="bifrost-mcp-allow-writes"
+						data-testid="security-bifrost-mcp-allow-writes-switch"
+						checked={localConfig.bifrost_mcp_allow_writes ?? true}
+						onCheckedChange={(checked) => handleConfigChange("bifrost_mcp_allow_writes", checked)}
+					/>
+				</div>
 				{/* Access profiles creating and deleting users' virtual keys, each switched separately */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
@@ -697,6 +719,40 @@ export default function SecurityView() {
 							checked={localConfig.skip_access_profile_user_virtual_key_deletion ?? false}
 							onCheckedChange={(checked) => handleConfigChange("skip_access_profile_user_virtual_key_deletion", checked)}
 						/>
+					</div>
+				)}
+				{/* Whether team, business unit and customer access profiles extend or restrict their members, like a project access rule */}
+				{IS_ENTERPRISE && (
+					<div className="flex flex-col items-start gap-2 rounded-sm border p-4 sm:flex-row sm:items-center sm:justify-between">
+						<div className="space-y-0.5">
+							<label htmlFor="entity-access-profile-mode" className="text-sm font-medium">
+								{t("security.entityAccessProfileMode")}
+							</label>
+							<p className="text-muted-foreground text-sm">{t("security.entityAccessProfileModeHelp")}</p>
+						</div>
+						<Select
+							value={localConfig.entity_access_profile_mode || "union"}
+							// Only editable when the choice can be saved: the config has loaded and the user may update settings.
+							disabled={isConfigLoading || !config || !hasSettingsUpdateAccess}
+							onValueChange={(value) =>
+								setLocalConfig((prev) => ({
+									...prev,
+									entity_access_profile_mode: value as CoreConfig["entity_access_profile_mode"],
+								}))
+							}
+						>
+							<SelectTrigger
+								id="entity-access-profile-mode"
+								data-testid="security-entity-access-profile-mode-select"
+								className="w-full shrink-0 sm:w-[180px]"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="union">{t("security.entityAccessProfileModeExtend")}</SelectItem>
+								<SelectItem value="intersect">{t("security.entityAccessProfileModeRestrict")}</SelectItem>
+							</SelectContent>
+						</Select>
 					</div>
 				)}
 				{/* OAuth issuer URL: shared by MCP OAuth and Cross App Access */}
@@ -731,9 +787,7 @@ export default function SecurityView() {
 						!secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config?.oauth2_server_config?.issuer_url) && (
 							<Alert variant="warning" data-testid="oauth2-issuer-url-change-warning">
 								<AlertTriangle className="size-4" />
-								<AlertDescription>
-									{t("security.issuerChangeWarning")}
-								</AlertDescription>
+								<AlertDescription>{t("security.issuerChangeWarning")}</AlertDescription>
 							</Alert>
 						)}
 				</div>
