@@ -430,7 +430,9 @@ func TestWebSearch_PendingCallKeepsNoResultOnRequestRoundTrip(t *testing.T) {
 }
 
 // A search that did return keeps its web_search_tool_result, including one that found
-// nothing: an empty result is a finished search, not a pending one.
+// nothing: an empty result is a finished search, not a pending one. The error case records
+// current behavior, not the contract: the error code is not kept in the neutral item, so
+// it replays as an empty result, which Anthropic accepts as a finished search.
 func TestWebSearch_FinishedCallKeepsResultOnRequestRoundTrip(t *testing.T) {
 	const use = `{"type":"server_tool_use","id":"srvtoolu_01Js","name":"web_search","input":{"query":"pod crashloop"}}`
 	cases := []struct {
