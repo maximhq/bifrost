@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,9 +17,10 @@ type TableOption func(*tableOptions)
 
 // tableOptions collects a table's options.
 type tableOptions struct {
-	ttl     time.Duration
-	gen     func() uint64
-	handles bool
+	ttl        time.Duration
+	gen        func() uint64
+	writeTimes bool
+	handles    bool
 }
 
 // WithTTL gives every entry Put stores an expiry of ttl. Expired entries read as missing and
@@ -40,20 +42,32 @@ func HoldsHandles() TableOption {
 	return func(o *tableOptions) { o.handles = true }
 }
 
+// WithWriteTimes makes every entry keep the Unix nanosecond time it was written, which
+// PutIfNewer and DeleteIfNewer compare against and the set observer receives. A table that keeps
+// write times cannot also be a memo.
+func WithWriteTimes() TableOption {
+	return func(o *tableOptions) { o.writeTimes = true }
+}
+
 // Table is a map a component owns and writes itself: state tied to an entity, derived views,
 // runtime status. It has no loader, so a miss means nothing was written yet, and v1 never evicts
 // from it for size. Put replaces a value whole; a value is never changed after Put. A table
 // starts empty, so it may be created after LoadAll, from a plugin's Init.
+//
+// OnSet and OnDelete install observers of the table's own writes. Each observer is read without a
+// lock on every write, so a table nobody observes pays one nil check per write for them.
 type Table[K comparable, V any] struct {
-	name   string
-	seed   maphash.Seed
-	opts   tableOptions
-	shards [tableShards]tableShard[K, V]
+	name     string
+	seed     maphash.Seed
+	opts     tableOptions
+	shards   [tableShards]tableShard[K, V]
+	onSet    atomic.Pointer[func(k K, v V, writtenAt, expiresAt int64)] // the observer OnSet installs
+	onDelete atomic.Pointer[func(k K, deletedAt int64)]                 // the observer OnDelete installs
 }
 
 // tableShard is one lock and its part of the table. An entry that neither expires nor carries a
-// generation is kept in plain as its value alone, so a table whose entries never expire pays
-// nothing per entry for either; every other entry is in m. A key is in at most one of the two, and
+// stamp is kept in plain as its value alone, so a table whose entries never expire pays nothing
+// per entry for either; every other entry is in m. A key is in at most one of the two, and
 // each map is made by the first write that needs it.
 type tableShard[K comparable, V any] struct {
 	mu    sync.RWMutex
@@ -70,10 +84,10 @@ func (sh *tableShard[K, V]) get(k K) (tableEntry[V], bool) {
 	return e, ok
 }
 
-// set stores e under k, in plain when it neither expires nor carries a generation and in m
-// otherwise, and takes k out of the other map. The caller holds mu.
+// set stores e under k, in plain when it neither expires nor carries a stamp and in m otherwise,
+// and takes k out of the other map. The caller holds mu.
 func (sh *tableShard[K, V]) set(k K, e tableEntry[V]) {
-	if e.expires == 0 && e.gen == 0 {
+	if e.expires == 0 && e.stamp == 0 {
 		if sh.plain == nil {
 			sh.plain = make(map[K]V)
 		}
@@ -97,15 +111,18 @@ func (sh *tableShard[K, V]) del(k K) bool {
 	return inPlain || inM
 }
 
-// tableEntry is one value with its expiry (zero for none) and generation.
+// tableEntry is one value with its expiry (zero for none) and its stamp: the generation it was
+// stored under in a memo, or the Unix nanosecond time it was written in a table that keeps write
+// times. A table is never both, so one field serves both and entries stay small.
 type tableEntry[V any] struct {
 	v       V
 	expires int64
-	gen     uint64
+	stamp   uint64
 }
 
 // NewTable creates a table under name. It fails when the name is empty, already registered or in
-// the store's reserved internal: range, and with ErrInSubscriber when ctx is a subscriber's.
+// the store's reserved internal: range, or the table would keep write times and be a memo, and
+// with ErrInSubscriber when ctx is a subscriber's.
 func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, opts ...TableOption) (*Table[K, V], error) {
 	if err := inSubscriber(ctx); err != nil {
 		return nil, err
@@ -113,7 +130,11 @@ func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, 
 	if err := publicTableName(name); err != nil {
 		return nil, err
 	}
-	t := newTable[K, V](name, collectTableOptions(opts))
+	o := collectTableOptions(opts)
+	if o.writeTimes && o.gen != nil {
+		return nil, fmt.Errorf("livestore: table %q cannot keep write times and be a memo", name)
+	}
+	t := newTable[K, V](name, o)
 	if err := s.addTable(name, t, ""); err != nil {
 		return nil, err
 	}
@@ -156,6 +177,9 @@ func newTable[K comparable, V any](name string, o tableOptions) *Table[K, V] {
 	return t
 }
 
+// KeepsWriteTimes reports whether the table was created WithWriteTimes.
+func (t *Table[K, V]) KeepsWriteTimes() bool { return t.opts.writeTimes }
+
 // Name is the name the table was registered under, which DropTable takes.
 func (t *Table[K, V]) Name() string { return t.name }
 
@@ -176,22 +200,76 @@ func (t *Table[K, V]) live(e tableEntry[V], at int64) bool {
 			return false
 		}
 	}
-	if t.opts.gen != nil && e.gen != t.opts.gen() {
+	if t.opts.gen != nil && e.stamp != t.opts.gen() {
 		return false
 	}
 	return true
 }
 
-// entry builds the stored form of v with the given time to live; zero means never.
+// entry builds the stored form of v with the given time to live; zero means never. It reads the
+// clock only for an expiry or a write time, so a write to a table that keeps neither never pays
+// for it.
 func (t *Table[K, V]) entry(v V, ttl time.Duration) tableEntry[V] {
+	var at time.Time
+	if ttl > 0 || t.opts.writeTimes {
+		at = now()
+	}
 	e := tableEntry[V]{v: v}
 	if ttl > 0 {
-		e.expires = now().Add(ttl).UnixNano()
+		e.expires = at.Add(ttl).UnixNano()
 	}
-	if t.opts.gen != nil {
-		e.gen = t.opts.gen()
+	switch {
+	case t.opts.gen != nil:
+		e.stamp = t.opts.gen()
+	case t.opts.writeTimes:
+		e.stamp = uint64(at.UnixNano())
 	}
 	return e
+}
+
+// OnSet makes fn hear every later write through Put, PutWithTTL, PutIfAbsent, CompareAndSwap and
+// GetOrCompute, replacing the observer an earlier call installed; nil removes it. fn runs on the
+// writer's goroutine after the write, outside every table lock, with the entry's write time (zero
+// in a table that does not keep write times) and its absolute expiry (zero for none), both in
+// Unix nanoseconds. PutIfNewer does not reach it.
+func (t *Table[K, V]) OnSet(fn func(k K, v V, writtenAt, expiresAt int64)) {
+	if fn == nil {
+		t.onSet.Store(nil)
+		return
+	}
+	t.onSet.Store(&fn)
+}
+
+// OnDelete makes fn hear every later Delete that found k, expired or not, and every GetAndDelete
+// that returned a value, replacing the observer an earlier call installed; nil removes it. fn runs
+// on the deleting goroutine after the delete, outside every table lock, with the delete's time in
+// Unix nanoseconds. DeleteIfNewer does not reach it.
+func (t *Table[K, V]) OnDelete(fn func(k K, deletedAt int64)) {
+	if fn == nil {
+		t.onDelete.Store(nil)
+		return
+	}
+	t.onDelete.Store(&fn)
+}
+
+// notifySet hands a write to the set observer, if there is one.
+func (t *Table[K, V]) notifySet(k K, e tableEntry[V]) {
+	fn := t.onSet.Load()
+	if fn == nil {
+		return
+	}
+	var writtenAt int64
+	if t.opts.writeTimes {
+		writtenAt = int64(e.stamp)
+	}
+	(*fn)(k, e.v, writtenAt, e.expires)
+}
+
+// notifyDelete hands a delete to the delete observer, if there is one.
+func (t *Table[K, V]) notifyDelete(k K, at int64) {
+	if fn := t.onDelete.Load(); fn != nil {
+		(*fn)(k, at)
+	}
 }
 
 // Get returns the value under k.
@@ -236,6 +314,7 @@ func (t *Table[K, V]) putEntry(k K, e tableEntry[V]) {
 	sh.mu.Lock()
 	sh.set(k, e)
 	sh.mu.Unlock()
+	t.notifySet(k, e)
 }
 
 // GetOrCompute returns k's value, or runs compute and returns what it gives, storing it when
@@ -254,7 +333,9 @@ func (t *Table[K, V]) GetOrCompute(k K, compute func() (v V, ttl time.Duration, 
 	v, ttl, store := compute()
 	if store {
 		e := t.entry(v, ttl)
-		e.gen = gen
+		if t.opts.gen != nil {
+			e.stamp = gen // the generation read before compute, not the one entry just read
+		}
 		t.putEntry(k, e)
 	}
 	return v
@@ -262,15 +343,19 @@ func (t *Table[K, V]) GetOrCompute(k K, compute func() (v V, ttl time.Duration, 
 
 // PutIfAbsent stores v under k, expiring after ttl, only when k holds no live value. It reports
 // whether it stored v.
+//
+// Only what this table holds is checked: a later PutIfNewer can still replace v.
 func (t *Table[K, V]) PutIfAbsent(k K, v V, ttl time.Duration) bool {
 	e := t.entry(v, ttl)
 	sh := t.shard(k)
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	if cur, ok := sh.get(k); ok && t.live(cur, 0) {
+		sh.mu.Unlock()
 		return false
 	}
 	sh.set(k, e)
+	sh.mu.Unlock()
+	t.notifySet(k, e)
 	return true
 }
 
@@ -283,24 +368,87 @@ func CompareAndSwap[K, V comparable](t *Table[K, V], k K, old, next V) bool {
 	e := t.entry(next, t.opts.ttl)
 	sh := t.shard(k)
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	var cur V
 	if c, ok := sh.get(k); ok && t.live(c, 0) {
 		cur = c.v
 	}
 	if cur != old {
+		sh.mu.Unlock()
 		return false
 	}
 	sh.set(k, e)
+	sh.mu.Unlock()
+	t.notifySet(k, e)
 	return true
 }
 
-// Delete removes k.
+// Delete removes k. The delete observer hears it when k was there, expired or not. The clock is
+// read only when there is an observer to hand the time to.
 func (t *Table[K, V]) Delete(k K) {
+	fn := t.onDelete.Load()
+	var at int64
+	if fn != nil {
+		at = now().UnixNano()
+	}
 	sh := t.shard(k)
 	sh.mu.Lock()
+	ok := sh.del(k)
+	sh.mu.Unlock()
+	if ok && fn != nil {
+		(*fn)(k, at)
+	}
+}
+
+// GetAndDelete removes k and returns its value, so of two callers taking the same key only one
+// gets it. An expired value is removed and not returned; the delete observer hears it only when
+// it returns one.
+func (t *Table[K, V]) GetAndDelete(k K) (V, bool) {
+	at := now().UnixNano()
+	sh := t.shard(k)
+	sh.mu.Lock()
+	e, ok := sh.get(k)
 	sh.del(k)
 	sh.mu.Unlock()
+	if !ok || !t.live(e, at) {
+		var zero V
+		return zero, false
+	}
+	t.notifyDelete(k, at)
+	return e.v, true
+}
+
+// PutIfNewer stores v under k with the given write time and absolute expiry (zero for none), both
+// in Unix nanoseconds, unless k's entry was written later; an entry written at the same time is
+// replaced. It reports whether it stored v. The observers do not hear it. A table that does not
+// keep write times has nothing to compare, so there it stores nothing and reports false.
+func (t *Table[K, V]) PutIfNewer(k K, v V, writtenAt, expiresAt int64) bool {
+	if !t.opts.writeTimes {
+		return false
+	}
+	sh := t.shard(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if cur, ok := sh.get(k); ok && int64(cur.stamp) > writtenAt {
+		return false
+	}
+	sh.set(k, tableEntry[V]{v: v, expires: expiresAt, stamp: uint64(writtenAt)})
+	return true
+}
+
+// DeleteIfNewer removes k unless its entry was written after deletedAt, in Unix nanoseconds; an
+// entry written at the same time is removed. It reports whether it removed one. The observers do
+// not hear it. A table that does not keep write times removes nothing and reports false.
+func (t *Table[K, V]) DeleteIfNewer(k K, deletedAt int64) bool {
+	if !t.opts.writeTimes {
+		return false
+	}
+	sh := t.shard(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if cur, ok := sh.get(k); ok && int64(cur.stamp) > deletedAt {
+		return false
+	}
+	return sh.del(k)
 }
 
 // Len reports how many live entries t holds. It visits every shard, so it is for setup, resets
