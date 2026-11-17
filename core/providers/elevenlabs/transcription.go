@@ -122,9 +122,18 @@ func ToBifrostTranscriptionResponse(chunks []ElevenlabsSpeechToTextChunkResponse
 
 	var language *string
 	var overallDuration *float64
+	var billedSeconds *float64
 
 	for _, chunk := range chunks {
 		textParts = append(textParts, chunk.Text)
+		// Each channel of a multichannel transcript is billed at the full duration, so the channels add up.
+		if chunk.AudioDurationSecs != nil {
+			seconds := *chunk.AudioDurationSecs
+			if billedSeconds != nil {
+				seconds += *billedSeconds
+			}
+			billedSeconds = &seconds
+		}
 
 		words, logProbs, chunkDuration := convertWords(chunk.Words)
 		allWords = append(allWords, words...)
@@ -157,6 +166,10 @@ func ToBifrostTranscriptionResponse(chunks []ElevenlabsSpeechToTextChunkResponse
 
 	if overallDuration != nil {
 		response.Duration = overallDuration
+	}
+
+	if billedSeconds != nil {
+		response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: billedSeconds}
 	}
 
 	return response

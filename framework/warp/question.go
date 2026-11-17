@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // Clarifying questions.
@@ -50,6 +51,11 @@ type Question struct {
 	// no list, because it forces a wrong answer.
 	AllowOther bool   `json:"allow_other"`
 	Kind       string `json:"kind,omitempty"`
+	// Action is the write a confirmation card asks about, for the UI to lay out.
+	Action *schemas.WarpConfirmAction `json:"action,omitempty"`
+	// pending is the write a confirmation card asks about. Filed with the card,
+	// never sent to the client.
+	pending *schemas.WarpPendingCall
 }
 
 type QuestionOpt struct {

@@ -776,3 +776,68 @@ func TestRegexEntries_AggregateKeepsExactNamesNextToRegex(t *testing.T) {
 		t.Error("IsAllowed(gpt-3.5-turbo) = true; want false")
 	}
 }
+
+func TestResolveAliasPatternFallback(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{
+				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"regex:claude-.*"},
+				Aliases: schemas.KeyAliases{
+					"regex:(claude-.*)": schemas.AliasConfig{ModelID: "global.anthropic.$1"},
+				},
+			},
+			{
+				ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
+				Aliases: schemas.KeyAliases{
+					"claude-opus-4-8": schemas.AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+				},
+			},
+		},
+	})
+	owner, ok := s.ResolveAlias(schemas.Bedrock, "claude-fable-5")
+	if !ok {
+		t.Fatal("ResolveAlias !ok for a name a pattern alias matches")
+	}
+	if owner.KeyID != "k1" || owner.Config.ModelID != "global.anthropic.claude-fable-5" {
+		t.Errorf("owner = %s/%q, want k1/global.anthropic.claude-fable-5", owner.KeyID, owner.Config.ModelID)
+	}
+	if owner.Config.ModelName != nil {
+		t.Errorf("owner.Config.ModelName = %q, want unset", *owner.Config.ModelName)
+	}
+	owner, ok = s.ResolveAlias(schemas.Bedrock, "claude-opus-4-8")
+	if !ok || owner.KeyID != "k2" {
+		t.Errorf("exact alias on k2 should win over k1's pattern, got %s ok=%v", owner.KeyID, ok)
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "regex:(claude-.*)"); ok {
+		t.Error("ResolveAlias resolved the pattern text itself")
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "mistral-large"); ok {
+		t.Error("ResolveAlias ok for a name no alias matches")
+	}
+}
+
+// TestResolveAliasPatternSkipsKeysThatCannotServe pins that a pattern is ignored when its own key's lists refuse the model.
+func TestResolveAliasPatternSkipsKeysThatCannotServe(t *testing.T) {
+	pattern := func(prefix string) schemas.KeyAliases {
+		return schemas.KeyAliases{"regex:(claude-.*)": schemas.AliasConfig{ModelID: prefix + ".$1"}}
+	}
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"claude-opus-5"}, Aliases: pattern("us")},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"claude-haiku-5"}, Aliases: pattern("eu")},
+		},
+	})
+	for model, want := range map[string]string{
+		"claude-opus-5":   "k1/us.claude-opus-5",
+		"claude-sonnet-5": "k2/eu.claude-sonnet-5",
+		"claude-haiku-5":  "",
+	} {
+		got := ""
+		if owner, ok := s.ResolveAlias(schemas.Bedrock, model); ok {
+			got = owner.KeyID + "/" + owner.Config.ModelID
+		}
+		if got != want {
+			t.Errorf("ResolveAlias(%q) = %q, want %q", model, got, want)
+		}
+	}
+}

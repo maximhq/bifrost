@@ -268,6 +268,8 @@ export class LogsPage extends BasePage {
    */
   async viewLogDetails(rowIndex: number = 0): Promise<void> {
     const rows = this.tableRows
+    // Rows render after the list request settles; counting first races it.
+    await rows.nth(rowIndex).waitFor({ state: 'visible' }).catch(() => undefined)
     const count = await rows.count()
 
     if (count <= rowIndex) {

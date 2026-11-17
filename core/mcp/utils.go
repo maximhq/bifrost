@@ -292,7 +292,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			// A client with a visible tool is one the caller can reach, so its
 			// instructions apply. A code mode client's ride in its stub instead
 			// (see GetAggregatedServerInstructions for the scoping rule).
-			if withInstructions && !client.ExecutionConfig.IsCodeModeClient {
+			if withInstructions && !client.ExecutionConfig.CodeModeFor(ctx) {
 				if instructions := discovery.GetInstructions(); instructions != "" {
 					if result.Instructions == nil {
 						result.Instructions = make([]schemas.MCPServerInstructions, 0, len(clientNames))
@@ -789,8 +789,9 @@ var relayedClientCapabilities = mcp.ClientCapabilities{
 
 // BifrostContextKeyMCPToolListing values.
 const (
-	listModelTools = "model"
-	listAllTools   = "all"
+	listModelTools   = "model"
+	listAllTools     = "all"
+	listGatewayTools = "gateway"
 )
 
 // WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
@@ -802,6 +803,22 @@ func WithModelToolsOnly(ctx context.Context) context.Context {
 // WithAllTools lists app-only tools on ctx too. Only for the gateway's sync; calls still follow AppToolsAllowed.
 func WithAllTools(ctx context.Context) context.Context {
 	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listAllTools)
+}
+
+// WithGatewayTools is WithAllTools plus every tool either /mcp or a client's /mcp/<slug> may serve, for
+// the gateway's install. Each request still sees only what CodeModeFor gives it.
+func WithGatewayTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listGatewayTools)
+}
+
+// codeModeListing reports whether a listing on ctx shows the client's own tools directly, and whether
+// the client needs the code-mode tools listed.
+func codeModeListing(ctx context.Context, client *schemas.MCPClientConfig) (direct, codeMode bool) {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listGatewayTools {
+		return client.ServesOwnToolsGlobalOrSlug(), client.UsesCodeModeGlobalOrSlug()
+	}
+	codeMode = client.CodeModeFor(ctx)
+	return !codeMode, codeMode
 }
 
 // AppToolsAllowed reports whether the request may see and call app-only tools: a /mcp/<slug> request for
@@ -900,7 +917,7 @@ func CallerDeclaresApps(ctx context.Context) bool {
 
 // listsAppTools reports whether a tool listing on ctx includes app-only tools.
 func listsAppTools(ctx context.Context) bool {
-	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools || listing == listGatewayTools {
 		return true
 	}
 	return AppToolsAllowed(ctx)

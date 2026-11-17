@@ -725,6 +725,8 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 type anthropicNativeRequestSurface struct {
 	// Thinking is set only for the closed preservable set; nil otherwise.
 	Thinking *AnthropicThinking
+	// BlockBinding is the caller's thinking.block_binding, kept for every thinking type.
+	BlockBinding *AnthropicThinkingBlockBinding
 	// MaxTokens is the caller's own max_tokens, kept only so the restore can
 	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
 	// one case where the caller's budget_tokens has to be refitted rather than
@@ -805,7 +807,12 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		if req.Thinking.Display != nil {
 			recorded.Display = schemas.Ptr(*req.Thinking.Display)
 		}
+		// Restored separately, behind the host gate, by restoreThinkingBlockBinding.
+		recorded.BlockBinding = nil
 		surface.Thinking = &recorded
+	}
+	if req.Thinking != nil {
+		surface.BlockBinding = copyThinkingBlockBinding(req.Thinking.BlockBinding)
 	}
 	surface.MaxTokens = req.MaxTokens
 	// Deep copy: the projection's pointer fields alias the inbound request
@@ -813,6 +820,19 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 	// and reused after conversion.
 	surface.NeutralReasoning = copyResponsesReasoning(neutralReasoning)
 	ctx.SetValue(anthropicNativeRequestSurfaceKey, surface)
+}
+
+// copyThinkingBlockBinding deep-copies a thinking.block_binding so the recorded
+// witness shares no pointer with the (possibly pooled) inbound request.
+func copyThinkingBlockBinding(in *AnthropicThinkingBlockBinding) *AnthropicThinkingBlockBinding {
+	if in == nil {
+		return nil
+	}
+	out := AnthropicThinkingBlockBinding{}
+	if in.PrefixMismatchBehavior != nil {
+		out.PrefixMismatchBehavior = schemas.Ptr(*in.PrefixMismatchBehavior)
+	}
+	return &out
 }
 
 // copyResponsesReasoning deep-copies a reasoning projection so the recorded
@@ -912,6 +932,23 @@ func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
 	return set
 }
 
+// restoreThinkingBlockBinding puts the caller's thinking.block_binding back on the
+// egress thinking object. The neutral reasoning shape has no slot for it, so the
+// converter rebuilds thinking without it -- and for "adaptive", the mode the
+// prefix-check models require, the thinking object is always rebuilt rather than
+// restored. It is reattached whatever thinking type the egress settled on, as long
+// as that type can carry it and the host accepts the beta: a plugin that turned
+// thinking off, or a fallback onto a host without the beta, simply leaves it off.
+func restoreThinkingBlockBinding(req *AnthropicMessageRequest, binding *AnthropicThinkingBlockBinding, provider schemas.ModelProvider) {
+	if binding == nil || req.Thinking == nil || req.Thinking.BlockBinding != nil {
+		return
+	}
+	if !ProviderFeatures[provider].ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		return
+	}
+	req.Thinking.BlockBinding = copyThinkingBlockBinding(binding)
+}
+
 // restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
 // Anthropic Messages request that the round trip through the neutral shape
 // could not carry. It is a no-op unless this request arrived as a native
@@ -996,6 +1033,8 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 			}
 		}
 	}
+
+	restoreThinkingBlockBinding(req, surface.BlockBinding, provider)
 
 	// Sampling is deliberately NOT restored, and the reason is worth keeping
 	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
@@ -1299,10 +1338,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						OutputTokens: chunk.Message.Usage.OutputTokens,
 						TotalTokens:  chunk.Message.Usage.InputTokens + chunk.Message.Usage.OutputTokens,
 					}
-					if chunk.Message.Usage.CacheReadInputTokens > 0 || chunk.Message.Usage.CacheCreationInputTokens > 0 {
+					cacheCreation := anthropicCacheCreationTotal(chunk.Message.Usage)
+					if chunk.Message.Usage.CacheReadInputTokens > 0 || cacheCreation > 0 {
 						inputTokensDetails := &schemas.ResponsesResponseInputTokens{
 							CachedReadTokens:  chunk.Message.Usage.CacheReadInputTokens,
-							CachedWriteTokens: chunk.Message.Usage.CacheCreationInputTokens,
+							CachedWriteTokens: cacheCreation,
 						}
 						if chunk.Message.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || chunk.Message.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
 							inputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -1312,8 +1352,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						}
 						response.Usage.InputTokensDetails = inputTokensDetails
 						// Bifrost convention: InputTokens includes cached tokens
-						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
-						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + cacheCreation
+						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + cacheCreation
 					}
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -5315,10 +5355,48 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
 
-		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
+		// Convert tool choice. allowed_tools narrows the declarations even when the model rejects a
+		// forced choice; only a forced choice itself is then dropped.
+		if bifrostReq.Params.ToolChoice != nil {
 			anthropicToolChoice := convertResponsesToolChoiceToAnthropic(bifrostReq.Params.ToolChoice)
-			if anthropicToolChoice != nil {
+			if choice := bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct; anthropicToolChoice != nil && choice != nil &&
+				choice.Type == schemas.ResponsesToolChoiceTypeAllowedTools {
+				// Function/custom selectors narrow by name; any other selector (mcp, image_generation)
+				// permits a server tool, which is never filtered, so it rules out "none".
+				named := make([]schemas.ChatToolChoiceAllowedToolsTool, 0, len(choice.Tools))
+				otherSelected := false
+				for _, allowedTool := range choice.Tools {
+					switch allowedTool.Type {
+					case "", string(schemas.ResponsesToolTypeFunction), string(schemas.ResponsesToolTypeCustom):
+						if allowedTool.Name != nil && *allowedTool.Name != "" {
+							named = append(named, schemas.ChatToolChoiceAllowedToolsTool{Type: allowedTool.Type, Function: schemas.ChatToolChoiceFunction{Name: *allowedTool.Name}})
+						}
+					default:
+						otherSelected = true
+					}
+				}
+				if len(named) > 0 || otherSelected {
+					// The synthetic structured-output tool is the gateway's, not the caller's to exclude.
+					if structuredOutputTool, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && structuredOutputTool != "" {
+						named = append(named, schemas.ChatToolChoiceAllowedToolsTool{Function: schemas.ChatToolChoiceFunction{Name: structuredOutputTool}})
+					}
+					if len(named) > 0 {
+						anthropicReq.Tools = filterToolsByAllowed(anthropicReq.Tools, named)
+					} else {
+						serverTools := make([]AnthropicTool, 0, len(anthropicReq.Tools))
+						for _, tool := range anthropicReq.Tools {
+							if tool.Type != nil || tool.MCPToolset != nil {
+								serverTools = append(serverTools, tool)
+							}
+						}
+						anthropicReq.Tools = serverTools
+					}
+					if !otherSelected && countFunctionTools(anthropicReq.Tools) == 0 {
+						anthropicToolChoice.Type = "none"
+					}
+				}
+			}
+			if anthropicToolChoice != nil && (!forcedToolChoiceRejected || anthropicToolChoice.Type == "none") {
 				anthropicReq.ToolChoice = anthropicToolChoice
 			}
 		}
@@ -5415,19 +5493,19 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	}
 
 	// Handle cache creation tokens
-	if billable.CacheCreationInputTokens > 0 {
+	if cacheCreation := anthropicCacheCreationTotal(billable); cacheCreation > 0 {
 		if bifrostUsage.InputTokensDetails == nil {
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.InputTokensDetails.CachedWriteTokens = billable.CacheCreationInputTokens
+		bifrostUsage.InputTokensDetails.CachedWriteTokens = cacheCreation
 		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			bifrostUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
 				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
 				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
-		bifrostUsage.InputTokens = bifrostUsage.InputTokens + billable.CacheCreationInputTokens
-		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheCreationInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + cacheCreation
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + cacheCreation
 	}
 
 	// Propagate server tool use (web search) counts
@@ -5875,6 +5953,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the same way. The
 	// <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := isRequestMessage
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -6233,6 +6312,9 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					// instead of collapsing the prefix from the system block. The override goes
 					// first: effort applies "from the next user turn on", so the reply to the
 					// reminder turn already runs at the new level, as the native item would.
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					appendEffortOnly()
 					if inlined := inlineMidConversationSystem(content); inlined != nil {
 						anthropicMessages = append(anthropicMessages, *inlined)
@@ -10677,6 +10759,13 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 		anthropicChoice.Type = "auto"
 	case "required":
 		anthropicChoice.Type = "any"
+	case string(schemas.ResponsesToolChoiceTypeAllowedTools):
+		// Anthropic has no subset form; the caller narrows the declarations to the allowed names.
+		anthropicChoice.Type = "auto"
+		if toolChoice.ResponsesToolChoiceStruct.Mode != nil && *toolChoice.ResponsesToolChoiceStruct.Mode == "required" {
+			anthropicChoice.Type = "any"
+		}
+		return anthropicChoice
 	case "function":
 		// Handle function type - set as "tool" with specific function name
 		if toolChoice.ResponsesToolChoiceStruct != nil && toolChoice.ResponsesToolChoiceStruct.Name != nil {

@@ -280,6 +280,66 @@ test.describe("MCP Registry", () => {
     });
   });
 
+  test.describe("Slug Code Mode", () => {
+    test("should store a code mode override for the slug endpoint and clear it back to inherit", async ({
+      mcpRegistryPage,
+      request,
+    }) => {
+      const clientData = createCodeModeClientData({
+        name: `server_type_on_slug_${Date.now()}`,
+        serverTypeOnSlug: "disabled",
+      });
+      const stored = () => mcpRegistryPage.storedServerTypeOnSlug(request, clientData.name);
+      const summary = mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-summary");
+
+      const created = await mcpRegistryPage.createClient(clientData);
+      expect(created).toBe(true);
+      createdClients.push(clientData.name);
+      expect(await stored()).toBe("disabled");
+      const slug = await mcpRegistryPage.storedEndpointSlug(request, clientData.name);
+      const directBadge = summary.getByText(`Direct tools on /mcp/${slug}`, { exact: true });
+      const codeModeBadge = summary.getByText(`Code mode on /mcp/${slug}`, { exact: true });
+
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await expect(directBadge).toBeVisible();
+      await expect(codeModeBadge).toHaveCount(0);
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.openClientEditor(clientData.name);
+      await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-client-server-type-on-slug-select")).toContainText("Direct tools");
+      // The Code Mode switch keeps its label in the edit sheet.
+      await expect(mcpRegistryPage.detailSheet.getByRole("switch", { name: "Code Mode Server" })).toBeChecked();
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.editClient(clientData.name, { serverTypeOnSlug: "enabled" });
+      expect(await stored()).toBe("enabled");
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await expect(codeModeBadge).toBeVisible();
+      await expect(directBadge).toHaveCount(0);
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.editClient(clientData.name, { serverTypeOnSlug: "inherit" });
+      expect(await stored()).toBe("inherit");
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await expect(summary).toBeVisible();
+      await expect(codeModeBadge).toHaveCount(0);
+      await expect(directBadge).toHaveCount(0);
+      await mcpRegistryPage.closeDetailSheet();
+    });
+
+    test("should default a new client to inherit", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await expect(mcpRegistryPage.sheet.getByTestId("mcp-client-server-type-on-slug-select")).toContainText("Inherit (Disabled)");
+      // The override's help opens from the keyboard.
+      const help = mcpRegistryPage.sheet.getByTestId("mcp-client-server-type-on-slug-help");
+      await expect(help).toHaveAccessibleName(/^About Code Mode behaviour on /);
+      await help.focus();
+      await expect(mcpRegistryPage.page.getByRole("tooltip")).toContainText("Overrides Code Mode only when this server is used through its own endpoint.");
+      await mcpRegistryPage.closeSheet();
+    });
+  });
+
   test.describe("Max Protocol Version", () => {
     test("should create a client with a max protocol version and switch it to the global setting", async ({
       mcpRegistryPage,
@@ -454,6 +514,8 @@ test.describe("MCP Registry", () => {
 
   // http-no-ping-server lists one prompt (review) and one resource (file:///fixture/handbook.md).
   test.describe("MCP Client Prompts and Resources", () => {
+    // These tests open MCP logs, whose table has no room for a clickable row at 720px.
+    test.use({ viewport: { width: 1440, height: 900 } });
     const PROMPT = "review";
     const RESOURCE = "file:///fixture/handbook.md";
 

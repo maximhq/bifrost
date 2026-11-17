@@ -1466,6 +1466,105 @@ func TestUsesAnthropicInvokePath_ComputerTools(t *testing.T) {
 	}
 }
 
+// Converse has no content block for tool_addition / tool_removal, so a request carrying
+// them (or a replayed compaction with tool_changes) must reach InvokeModel to keep them.
+func TestResponsesUsesAnthropicInvokePath_ToolChanges(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	model := "us.anthropic.claude-opus-5-5"
+	user := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	system := func(blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	developer := func(blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("reminder")}
+	removal := schemas.ResponsesMessageContentBlock{
+		Type:       schemas.ResponsesInputMessageContentBlockTypeToolRemoval,
+		ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+	}
+	addition := schemas.ResponsesMessageContentBlock{
+		Type:       schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+		ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+	}
+	compaction := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{
+		ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                    schemas.ResponsesOutputMessageContentTypeCompaction,
+			ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{Summary: "s", ToolChanges: []schemas.ResponsesMessageContentBlock{addition}},
+		}},
+	}}
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		input []schemas.ResponsesMessage
+		want  bool
+	}{
+		{"tool_removal on a system message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), system(text, removal)}, true},
+		{"tool_addition on a system message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), system(addition)}, true},
+		{"tool_addition on a developer message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), developer(addition)}, true},
+		{"compaction tool_changes route to invoke", model, []schemas.ResponsesMessage{user("hi"), compaction, user("go on")}, true},
+		{"plain system message stays on converse", model, []schemas.ResponsesMessage{user("hi"), system(text)}, false},
+		{"non-Claude model stays on converse", "amazon.nova-pro-v1:0", []schemas.ResponsesMessage{user("hi"), system(removal)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: tc.model, Input: tc.input, Params: &schemas.ResponsesParameters{}}
+			require.Equal(t, tc.want, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+	}
+	t.Run("nil params still routes on input", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Input: []schemas.ResponsesMessage{user("hi"), system(removal)}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+// BenchmarkResponsesUsesAnthropicInvokePath measures the Converse-vs-InvokeModel decision on a
+// 400-turn Claude Code input: the common case (no tool-change blocks, full walk) and one with a
+// tool_removal block near the end.
+func BenchmarkResponsesUsesAnthropicInvokePath(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	build := func(withToolChange bool) *schemas.BifrostResponsesRequest {
+		input := make([]schemas.ResponsesMessage, 0, 401)
+		for i := range 400 {
+			role := schemas.ResponsesInputMessageRoleUser
+			if i%2 == 1 {
+				role = schemas.ResponsesInputMessageRoleAssistant
+			}
+			input = append(input, schemas.ResponsesMessage{Role: schemas.Ptr(role), Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("x")}},
+			}})
+		}
+		if withToolChange {
+			input = append(input, schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:       schemas.ResponsesInputMessageContentBlockTypeToolRemoval,
+					ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("Old")},
+				}},
+			}})
+		}
+		return &schemas.BifrostResponsesRequest{
+			Model: "us.anthropic.claude-opus-5-5", Input: input,
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather")}}},
+		}
+	}
+	for _, bc := range []struct {
+		name string
+		req  *schemas.BifrostResponsesRequest
+	}{
+		{"no tool-change blocks", build(false)},
+		{"one tool_removal block", build(true)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = responsesUsesAnthropicInvokePath(ctx, bc.req)
+			}
+		})
+	}
+}
+
 // Bedrock rejects a toolset pair tagged on one half only. The InvokeModel body
 // must carry the toolset bare and toolset_name on both the tool_use and its tool_result.
 func TestInvokeAnthropicBody_ComputerToolsetReplayKeepsToolsetName(t *testing.T) {
@@ -1520,8 +1619,10 @@ func TestInvokeAnthropicBody_ToolSearchReplayKeepsServerBlocks(t *testing.T) {
 		Input:    input,
 		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
 			{Type: schemas.ResponsesToolTypeToolSearch, Name: new("tool_search_tool_bm25")},
-			{Type: schemas.ResponsesToolTypeFunction, Name: new("summarize_source_1"), DeferLoading: new(true),
-				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+			{
+				Type: schemas.ResponsesToolTypeFunction, Name: new("summarize_source_1"), DeferLoading: new(true),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
 		}},
 	}
 	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
@@ -3022,8 +3123,10 @@ func TestInvokeChatGuardTagging_RendersMarkersAsInlineTags(t *testing.T) {
 	assert.False(t, gjson.GetBytes(body, "guardrailConfig").Exists(), "%s", body)
 	assert.Contains(t, string(body), queryOpen+"What is the capital of France?"+queryClosing)
 
-	plain := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
-		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}}}
+	plain := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}},
+	}
 	same, none, err := invokeChatGuardTagging(plain)
 	require.NoError(t, err)
 	assert.Same(t, plain, same)
@@ -3083,12 +3186,16 @@ func TestGuardTagSuffixValidation_InvokePath(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
 	build := func(suffix string) (*schemas.BifrostResponsesRequest, *schemas.BifrostChatRequest) {
 		extra := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr", "guardrailVersion": "1", "tagSuffix": suffix}}
-		responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+		responses := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
 			Input:  []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
-			Params: &schemas.ResponsesParameters{ExtraParams: extra}}
-		chat := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+			Params: &schemas.ResponsesParameters{ExtraParams: extra},
+		}
+		chat := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
 			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
-			Params: &schemas.ChatParameters{ExtraParams: extra}}
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}
 		return responses, chat
 	}
 	for _, bad := range []string{"xy>z", "with space", "toolongtoolongtoolong", "ünïcode", "a-b"} {
@@ -3491,9 +3598,11 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason(t *testing.T) {
 			events: []*BedrockStreamEvent{
 				{Role: schemas.Ptr("assistant")},
 				{ContentBlockIndex: &idx, Start: &BedrockContentBlockStart{
-					ToolUse: &BedrockToolUseStart{ToolUseID: "tooluse_1", Name: "get_weather"}}},
+					ToolUse: &BedrockToolUseStart{ToolUseID: "tooluse_1", Name: "get_weather"},
+				}},
 				{ContentBlockIndex: &idx, Delta: &BedrockContentBlockDelta{
-					ToolUse: &BedrockToolUseDelta{Input: `{"city":"Paris"}`}}},
+					ToolUse: &BedrockToolUseDelta{Input: `{"city":"Paris"}`},
+				}},
 				{ContentBlockIndex: &idx, ContentBlockStop: true},
 				{StopReason: schemas.Ptr("tool_use")},
 			},

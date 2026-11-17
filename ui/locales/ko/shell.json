@@ -19,6 +19,7 @@
 		"budgetsLimits": "예산 및 한도",
 		"routingRules": "라우팅 규칙",
 		"complexityRouter": "복잡도 라우터",
+		"routers": "라우터",
 		"circuitBreaker": "서킷 브레이커",
 		"pricingOverrides": "가격 재정의",
 		"modelSettings": "모델 설정",
@@ -66,6 +67,7 @@
 		"caching": "캐싱",
 		"security": "보안",
 		"warp": "Warp",
+		"gateways": "게이트웨이",
 		"proxy": "프록시",
 		"apiKeys": "API 키",
 		"performanceTuning": "성능 튜닝",
@@ -149,6 +151,7 @@
 		"caching": "캐싱 구성",
 		"security": "보안 설정",
 		"warp": "Warp 에이전트 구성",
+		"gateways": "코딩 클라이언트 로그인",
 		"proxy": "프록시 구성",
 		"apiKeys": "API 키 관리",
 		"performanceTuning": "성능 튜닝 설정",
@@ -429,6 +432,10 @@
 			"indexStatusUnavailable": "색인 상태를 확인할 수 없음",
 			"askAdminTurnOn": "관리자에게 Warp를 켜달라고 요청하세요.",
 			"askAdminSetUp": "관리자에게 Warp 설정을 요청하세요.",
+			"needsBifrostMCP": "Warp에는 Bifrost MCP가 필요합니다",
+			"needsBifrostMCPHint": "Warp가 이 배포의 구성을 읽을 수 있도록 Bifrost URL을 설정하세요.",
+			"setUpBifrostMCP": "설정",
+			"askAdminBifrostMCP": "관리자에게 Warp용 Bifrost MCP 설정을 요청하세요.",
 			"sendsWhenFinished": "이 답변이 완료되면 전송됩니다.",
 			"remove": "제거하다"
 		},
@@ -452,7 +459,15 @@
 			"label": "질문",
 			"skip": "건너뛰기",
 			"orType": "또는 아래에 직접 답변을 입력하세요.",
-			"skipAnswer": "최선의 판단으로 진행하고 어떤 가정을 했는지 알려 주세요."
+			"skipAnswer": "최선의 판단으로 진행하고 어떤 가정을 했는지 알려 주세요.",
+			"confirm": {
+				"subtitle": "확인하면 Warp가 이 변경을 적용합니다.",
+				"destructiveSubtitle": "확인하면 Warp가 이 변경을 적용합니다. 내용을 신중히 확인하세요.",
+				"cannotUndo": "이 작업은 되돌릴 수 없습니다.",
+				"noArguments": "인수가 없습니다.",
+				"cancel": "취소",
+				"confirm": "확인"
+			}
 		},
 		"message": {
 			"whatThisCovers": "다루는 내용",
@@ -543,6 +558,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "이 배포에는 Warp가 설정되어 있지 않습니다.",
+				"cause": "Warp는 이 배포의 구성을 읽으려면 Bifrost MCP가 필요하지만, 로드되어 있지 않습니다.",
+				"suggestions": ["관리자에게 클라이언트 설정에서 Bifrost URL을 설정하도록 요청하세요."]
+			},
 			"not_configured": {
 				"summary": "Warp가 아직 구성되지 않았습니다.",
 				"cause": "프로바이더와 모델이 설정되지 않았거나, 설정에서 Warp가 꺼져 있습니다.",

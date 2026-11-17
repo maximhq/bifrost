@@ -102,7 +102,8 @@ export interface EntitySelectorCommonProps {
 	/**
 	 * Extra classes for the default combobox trigger — e.g. `h-9` to line up
 	 * with a taller control beside it. Ignored when `trigger` is supplied.
-	 * Single mode only.
+	 * In multi mode it styles the react-select control, which grows with its
+	 * chips, so pass a min-height (e.g. `!min-h-9`) rather than a fixed height.
 	 */
 	triggerClassName?: string;
 	/** Icon shown before the label in the default combobox trigger. Single mode only. */
@@ -369,6 +370,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 				{labelResolvers}
 				<AsyncMultiSelect<EntityOptionMeta>
 					className={className}
+					triggerClassName={triggerClassName}
 					disabled={disabled}
 					placeholder={resolvedPlaceholder}
 					defaultOptions={multiOptions}

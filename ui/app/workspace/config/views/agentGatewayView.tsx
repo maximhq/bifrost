@@ -172,7 +172,7 @@ export default function AgentGatewayView() {
 					}}
 				/>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button
 					onClick={handleSave}
 					disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}

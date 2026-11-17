@@ -67,3 +67,17 @@ func TestToBifrostTranscriptionResponse_RoleBasedSpeakers(t *testing.T) {
 		t.Fatalf("expected speaker %q, got %+v", "agent", resp.Words[0].Speaker)
 	}
 }
+
+func BenchmarkToBifrostTranscriptionResponse(b *testing.B) {
+	words := make([]ElevenlabsSpeechToTextWord, 200)
+	for i := range words {
+		start, end := float64(i)*0.3, float64(i)*0.3+0.25
+		words[i] = ElevenlabsSpeechToTextWord{Text: "word", Type: "word", Start: &start, End: &end, LogProb: -0.1}
+	}
+	seconds := 61.0
+	chunks := []ElevenlabsSpeechToTextChunkResponse{{LanguageCode: "en", Text: "word", Words: words, AudioDurationSecs: &seconds}}
+	b.ReportAllocs()
+	for b.Loop() {
+		ToBifrostTranscriptionResponse(chunks)
+	}
+}

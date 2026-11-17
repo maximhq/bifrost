@@ -272,14 +272,14 @@ func isTopLevelToolName(name string, tools []schemas.ResponsesTool, aliases map[
 	return false
 }
 
-// RestoreResponsesNamespaceToolCalls rewrites function_call items whose name is a
+// restoreResponsesNamespaceToolCalls rewrites function_call items whose name is a
 // flattened alias back to the caller's shape: the bare function name plus the
 // namespace field, which is how OpenAI reports a namespaced call. aliases is the map
 // the prepared request carried (BifrostResponsesRequest.NamespaceToolAliases). It
 // covers the unary response, the stream item events (output_item.added /
 // output_item.done) and the terminal stream events that carry the full response.
 // No-op when the map is empty, so plain function tools are never touched.
-func RestoreResponsesNamespaceToolCalls(aliases map[string]schemas.NamespaceToolAlias, resp *schemas.BifrostResponse) {
+func restoreResponsesNamespaceToolCalls(aliases map[string]schemas.NamespaceToolAlias, resp *schemas.BifrostResponse) {
 	if resp == nil || len(aliases) == 0 {
 		return
 	}
@@ -296,16 +296,16 @@ func RestoreResponsesNamespaceToolCalls(aliases map[string]schemas.NamespaceTool
 	}
 }
 
-// WrapNamespaceRestorePostHookRunner returns a PostHookRunner that restores the
+// wrapNamespaceRestorePostHookRunner returns a PostHookRunner that restores the
 // caller's tool names on every streaming chunk before delegating, so the post hooks
 // and the client both see bare names plus namespaces. Returns the runner unchanged
 // when there is nothing to restore.
-func WrapNamespaceRestorePostHookRunner(runner schemas.PostHookRunner, aliases map[string]schemas.NamespaceToolAlias) schemas.PostHookRunner {
+func wrapNamespaceRestorePostHookRunner(runner schemas.PostHookRunner, aliases map[string]schemas.NamespaceToolAlias) schemas.PostHookRunner {
 	if len(aliases) == 0 || runner == nil {
 		return runner
 	}
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		RestoreResponsesNamespaceToolCalls(aliases, result)
+		restoreResponsesNamespaceToolCalls(aliases, result)
 		return runner(ctx, result, bifrostErr)
 	}
 }
