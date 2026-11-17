@@ -597,6 +597,13 @@
                   "integrations/cohere-sdk/overview"
                 ]
               },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
+                ]
+              },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
