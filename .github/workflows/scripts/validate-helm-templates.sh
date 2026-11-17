@@ -1553,6 +1553,11 @@ assert egress_ports(nps["bifrost"]) == [53, 53, 443, 5432, 6379], "egress ports:
 stores = [r for r in spec["egress"] if "to" in r]
 assert all(r["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] in ("database", "redis") for r in stores), "bundled store egress not limited to the store pods"' \
   "${NP_BUNDLED[@]}" --set networkPolicy.egress.enabled=true
+check_workload "networkPolicy: an empty egress.ports adds no rule that would allow every port" \
+  "$NP"'
+assert all(r.get("ports") for r in nps["bifrost"]["spec"]["egress"]), "an egress rule without ports allows all: %r" % nps["bifrost"]["spec"]["egress"]
+assert egress_ports(nps["bifrost"]) == [53, 53, 5432, 6379], "egress ports: %r" % egress_ports(nps["bifrost"])' \
+  "${NP_BUNDLED[@]}" --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.ports=[]'
 check_workload "networkPolicy: external PostgreSQL and Redis ports are allowed to any destination" \
   "$NP"'
 assert sorted(nps) == ["bifrost"], "store policies rendered for external stores: %r" % sorted(nps)
