@@ -12,6 +12,7 @@ import (
 	"github.com/fasthttp/router"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -144,6 +145,19 @@ func TestCatalogRejectsUnresolvedAccess(t *testing.T) {
 	}
 }
 
+type catalogAccessManager struct{ ModelsManager }
+
+func (m catalogAccessManager) ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error) {
+	access, err := m.ModelsManager.ResolveAccess(ctx)
+	if access != nil {
+		if ctx.Grant() == nil {
+			ctx.SetGrant(grant.New())
+		}
+		ctx.Grant().SetAccess(access)
+	}
+	return access, err
+}
+
 func TestCatalogInferenceAuthentication(t *testing.T) {
 	SetLogger(&mockLogger{})
 	for _, format := range []string{"codex", "claude", "pi", "opencode"} {
@@ -158,15 +172,18 @@ func TestCatalogInferenceAuthentication(t *testing.T) {
 			{name: "anonymous allowed", want: fasthttp.StatusOK},
 			{name: "virtual key header", enforce: true, header: "x-bf-vk", value: "sk-bf-catalog-test", want: fasthttp.StatusOK},
 			{name: "bearer virtual key", enforce: true, header: "Authorization", value: "Bearer sk-bf-catalog-test", want: fasthttp.StatusOK},
+			{name: "unknown virtual key", enforce: true, header: "x-bf-vk", value: "sk-bf-unknown", want: fasthttp.StatusUnauthorized},
+			{name: "unknown bearer key", enforce: true, header: "Authorization", value: "Bearer sk-bf-unknown", want: fasthttp.StatusUnauthorized},
 		} {
 			t.Run(format+"/"+tc.name, func(t *testing.T) {
 				h := providerHandlerForTest(schemas.OpenAI, nil, []string{"allowed", "secret"}, nil)
 				h.inMemoryStore.ClientConfig.EnforceAuthOnInference = tc.enforce
-				if tc.header != "" {
+				if tc.header != "" && tc.want == fasthttp.StatusOK {
 					h.modelsManager.(*mockModelsManager).access = accessForProviderPermits(schemas.ProviderPermit{
 						Provider: "openai", AllowedModels: []string{"allowed"},
 					})
 				}
+				h.modelsManager = catalogAccessManager{h.modelsManager}
 				r := router.New()
 				h.RegisterCatalogRoutes(r)
 				ctx := &fasthttp.RequestCtx{}

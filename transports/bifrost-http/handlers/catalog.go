@@ -94,6 +94,10 @@ func (h *ProviderHandler) catalog(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusUnauthorized, "failed to resolve catalog access")
 		return
 	}
+	if enforceAuth && !governance.PresentedCredentialResolved(bifrostCtx) {
+		SendError(ctx, fasthttp.StatusUnauthorized, "authentication required")
+		return
+	}
 	if access != nil {
 		query.HasVKFilter = true
 		query.Access = access

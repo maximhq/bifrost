@@ -337980,6 +337980,162 @@
           ]
         },
         {
+          "name": "[EXPECT-401] openai codex catalog exports refuse an unresolved virtual key - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/codex?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });",
+                  "pm.request.headers.upsert({key: 'x-bf-vk', value: 'sk-bf-catalog-unresolvable-10096'});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports with an unresolved key require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'unresolved-key catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai claude catalog exports refuse an unresolved virtual key - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/claude?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });",
+                  "pm.request.headers.upsert({key: 'x-bf-vk', value: 'sk-bf-catalog-unresolvable-10096'});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports with an unresolved key require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'unresolved-key catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai pi catalog exports refuse an unresolved virtual key - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/pi?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });",
+                  "pm.request.headers.upsert({key: 'x-bf-vk', value: 'sk-bf-catalog-unresolvable-10096'});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports with an unresolved key require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'unresolved-key catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai opencode catalog exports refuse an unresolved virtual key - PR #10096",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/catalog/opencode?provider=openai"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Item scripts run after collection-level auth/setup-token injection.",
+                  "['Authorization', 'Proxy-Authorization', 'x-bf-vk', 'x-api-key', 'x-goog-api-key', 'api-key', 'xi-api-key', 'Ocp-Apim-Subscription-Key', 'x-bf-api-key', 'x-bf-api-key-id', 'x-bf-direct-key', 'X-Bifrost-Setup-Token', 'X-Bifrost-Temp-Token', 'Cookie'].forEach(function (key) { pm.request.headers.remove(key); });",
+                  "pm.request.headers.upsert({key: 'x-bf-vk', value: 'sk-bf-catalog-unresolvable-10096'});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('catalog exports with an unresolved key require inference authentication', function () {",
+                  "  pm.expect(pm.response.code, 'unresolved-key catalog leaked or wrong refusal: ' + pm.response.text()).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "openai catalog exports restore inference enforcement - PR #10096",
           "request": {
             "auth": {
@@ -338020,7 +338176,7 @@
                   "pm.test('catalog exports restore original client configuration', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "});",
-                  "pm.collectionVariables.unset('catalogExportsClientConfig');"
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('catalogExportsClientConfig'); }"
                 ]
               }
             }

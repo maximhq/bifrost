@@ -1012,6 +1012,61 @@ def test_oauth_key_config_contract_matches_server_validation():
 
 
 
+def test_budget_override_cycles_match_server_validation():
+    """SetOverride requires positive cycles for finite grants and zero for forever.
+    Approval and budget updates are partial requests, not replacement overrides."""
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    sources = {
+        "governance.yaml": load(HERE / "schemas" / "management" / "governance.yaml"),
+        **{
+            name: json.loads((HERE / name).read_text(encoding="utf-8"))["components"]["schemas"]
+            for name in ("openapi.json", "openapi-oss.json")
+        },
+    }
+    cases = [
+        ("one cycle", {"amount": 10, "mode": "cycles", "cycles": 1}, True),
+        ("no direct-override cycle cap", {"amount": 10, "mode": "cycles", "cycles": 121}, True),
+        ("forever without cycles", {"amount": 10, "mode": "forever"}, True),
+        ("forever with zero cycles", {"amount": 10, "mode": "forever", "cycles": 0}, True),
+        ("finite grant without cycles", {"amount": 10, "mode": "cycles"}, False),
+        ("finite grant with zero cycles", {"amount": 10, "mode": "cycles", "cycles": 0}, False),
+        ("finite grant with negative cycles", {"amount": 10, "mode": "cycles", "cycles": -1}, False),
+        ("finite grant with fractional cycles", {"amount": 10, "mode": "cycles", "cycles": 1.5}, False),
+        ("finite grant with string cycles", {"amount": 10, "mode": "cycles", "cycles": "1"}, False),
+        ("forever with positive cycles", {"amount": 10, "mode": "forever", "cycles": 1}, False),
+        ("forever with negative cycles", {"amount": 10, "mode": "forever", "cycles": -1}, False),
+        ("missing mode", {"amount": 10, "cycles": 1}, False),
+        ("unknown mode", {"amount": 10, "mode": "unknown", "cycles": 1}, False),
+        ("missing amount", {"mode": "cycles", "cycles": 1}, False),
+    ]
+    partial_cases = {
+        "UpdateBudgetRequest": [{}, {"max_limit": 10}],
+        # Approval defaults omitted fields from the stored request; cycles can also
+        # be ignored for forever or add_keep_lifetime, so they cannot require mode.
+        "ApproveBudgetRequestRequest": [
+            {}, {"amount": 10}, {"mode": "cycles"}, {"cycles": 1},
+            {"mode": "forever", "cycles": 0},
+            {"mode": "cycles", "cycles": 0, "override_strategy": "add_keep_lifetime"},
+        ],
+    }
+    problems = []
+    for where, schemas in sources.items():
+        validator = jsonschema.Draft202012Validator(schemas["BudgetOverrideRequest"])
+        for name, block, want in cases:
+            if validator.is_valid(block) != want:
+                problems.append(f"{where}: {name}: expected {'valid' if want else 'invalid'}")
+        for schema_name, blocks in partial_cases.items():
+            validator = jsonschema.Draft202012Validator(schemas[schema_name])
+            for block in blocks:
+                if not validator.is_valid(block):
+                    problems.append(f"{where}: {schema_name} rejects partial request {block}")
+    assert not problems, "Budget override cycle contract drift:\n    " + "\n    ".join(problems)
+
+
 def test_oauth_token_url_descriptions_state_the_server_rules():
     """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
     carrying userinfo, a query or a fragment (extra parameters go in extra_params). Every
@@ -1196,6 +1251,7 @@ check("warp config input models its enabled-state contract", test_warp_config_in
 check("every operation declares its own security", test_every_operation_declares_security)
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
+check("budget override cycles match server validation and preserve partial updates", test_budget_override_cycles_match_server_validation)
 check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)

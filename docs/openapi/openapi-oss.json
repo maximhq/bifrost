@@ -117832,10 +117832,34 @@
           },
           "cycles": {
             "type": "integer",
-            "description": "Number of reset windows the override stays active for, counting the current window as the first.\nRequired and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.\n",
-            "minimum": 1
+            "description": "Number of reset windows the override stays active for, counting the current window as the first.\nRequired and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.\n"
           }
-        }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "mode": {
+                "const": "cycles"
+              },
+              "cycles": {
+                "minimum": 1
+              }
+            },
+            "required": [
+              "cycles"
+            ]
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "forever"
+              },
+              "cycles": {
+                "const": 0
+              }
+            }
+          }
+        ]
       },
       "BudgetOverrideResponse": {
         "type": "object",

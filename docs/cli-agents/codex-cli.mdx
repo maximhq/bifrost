@@ -416,12 +416,30 @@ existing `[model_providers.bifrost]` table, as shown in the
 Keep `base_url` pointed at `/openai/v1` for inference.
 The Bifrost launcher does not set the catalog URL for you.
 
-Preview the catalog with your inference credential:
+Preview the catalog with your inference credential. Bifrost CLI supplies
+credentials only to the launched child process; it does not set
+`OPENAI_API_KEY` in your terminal. Set a separate variable for this request:
+
+- **Static virtual key:** set `BIFROST_CATALOG_TOKEN=sk-bf-your-virtual-key`,
+  using the same key as your Codex setup.
+- **Enterprise CLI SSO:** after signing in, obtain a current token:
+
+  ```bash
+  BIFROST_CATALOG_TOKEN="$(bifrost --context production auth print-token)"
+  ```
+
+  `print-token` refreshes the SSO session when needed; it does not retrieve a
+  stored static virtual key.
+
+Use the gateway URL that matches your key or SSO context below, replacing
+`http://localhost:8080` if needed. Keep this token separate from
+`OPENAI_API_KEY` so it does not affect later Codex launches.
 
 ```bash
 curl --fail --silent --show-error \
   "http://localhost:8080/catalog/codex" \
-  -H "Authorization: Bearer $OPENAI_API_KEY"
+  -H "Authorization: Bearer $BIFROST_CATALOG_TOKEN"
+unset BIFROST_CATALOG_TOKEN
 ```
 
 See [model catalogs](/cli-agents/overview#model-catalogs) for access rules and

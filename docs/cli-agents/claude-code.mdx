@@ -434,13 +434,34 @@ Claude Code does not fetch this export automatically; its `/model` discovery
 uses `/anthropic/v1/models`. Keep `ANTHROPIC_BASE_URL` pointed at
 `http://localhost:8080/anthropic`.
 
+For the export, set a separate shell variable to your current credential.
+Launching through Bifrost CLI or configuring `apiKeyHelper` does not set
+`ANTHROPIC_AUTH_TOKEN` in your terminal.
+
+- **Static virtual key:** set `BIFROST_CATALOG_TOKEN=sk-bf-your-virtual-key`,
+  using the same key as your Claude Code setup.
+- **Enterprise CLI SSO:** after signing in, obtain a current token:
+
+  ```bash
+  BIFROST_CATALOG_TOKEN="$(bifrost --context production auth print-token)"
+  ```
+
+  `print-token` refreshes the SSO session when needed; it does not retrieve a
+  stored static virtual key. For another `apiKeyHelper`, run your configured
+  helper command instead to populate `BIFROST_CATALOG_TOKEN`.
+
+Use the gateway URL that matches your key or SSO context in the request below,
+replacing `http://localhost:8080` if needed. Do not export this token as
+`ANTHROPIC_AUTH_TOKEN`: a stale value would override `apiKeyHelper` on later launches.
+
 ```bash
 curl --fail --silent --show-error --get \
   "http://localhost:8080/catalog/claude" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+  -H "Authorization: Bearer $BIFROST_CATALOG_TOKEN" \
   --data-urlencode "provider=anthropic" \
   --data-urlencode "query=claude" \
   --output claude-models.json
+unset BIFROST_CATALOG_TOKEN
 ```
 
 See [model catalogs](/cli-agents/overview#model-catalogs) for access rules and
