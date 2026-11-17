@@ -2,6 +2,7 @@ package rules
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -182,6 +183,49 @@ func (r *TestRules) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	return r.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindRoutingRule, ID: id, Remove: true}})
+}
+
+// SaveModelRouter saves router, its targets and its routing through the config store, creating it
+// or replacing what was saved, and refreshes it, as a save does. A router saved without routing
+// keeps the routing it had, or the default a new router gets.
+func (r *TestRules) SaveModelRouter(ctx context.Context, router *configstore.ModelRouter) error {
+	saved := *router
+	_, err := r.configStore.GetModelRouter(ctx, router.ID)
+	switch {
+	case errors.Is(err, configstore.ErrNotFound):
+		err = r.configStore.CreateModelRouter(ctx, &saved)
+	case err == nil:
+		err = r.configStore.UpdateModelRouter(ctx, &saved)
+		if err == nil && router.Routing != nil {
+			err = r.configStore.SetModelRouterRouting(ctx, router.ID, *router.Routing)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if err := r.configStore.SetModelRouterTargets(ctx, router.ID, router.Targets); err != nil {
+		return err
+	}
+	return r.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: router.ID}})
+}
+
+// SaveModelRouterTargets replaces a saved router's targets and refreshes it, as saving its targets
+// does.
+func (r *TestRules) SaveModelRouterTargets(ctx context.Context, id string, targets []configstoreTables.TableModelRouterTarget) error {
+	if err := r.configStore.SetModelRouterTargets(ctx, id, targets); err != nil {
+		return err
+	}
+	return r.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: id}})
+}
+
+// ConfigStore returns the config store the rules and model routers are saved in.
+func (r *TestRules) ConfigStore() configstore.ConfigStore {
+	return r.configStore
+}
+
+// Live returns the live store the rules and model routers are served from.
+func (r *TestRules) Live() *livestore.Store {
+	return r.live
 }
 
 // Close releases the rule store, its live store and its config store.

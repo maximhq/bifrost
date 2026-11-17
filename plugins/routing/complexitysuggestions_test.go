@@ -21,7 +21,6 @@ import (
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"github.com/maximhq/bifrost/plugins/routing/complexity/suggestrun"
-	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -927,9 +926,7 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	p := &RoutingPlugin{logger: logger, semanticClassifier: complexity.NewSemanticClassifier(ctx, logger)}
-	matcher, err := rules.NewModelRouterMatcher()
-	require.NoError(t, err)
-	p.routerMatcher = matcher
+	p.routerMatcher = newTestRouterMatcher(t)
 	p.startComplexityCapture(ctx, time.Hour, time.Hour)
 	p.startComplexitySuggestions(ctx, 0)
 	t.Cleanup(func() { _ = p.Cleanup() })
@@ -943,7 +940,7 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	require.Eventually(t, func() bool { return rt.semantic.Status().State == complexity.SemanticStatusFailed },
 		2*time.Second, 5*time.Millisecond)
 
-	_, err = p.StartComplexitySuggestionRunNow(ctx, captureRouterID, 0)
+	_, err := p.StartComplexitySuggestionRunNow(ctx, captureRouterID, 0)
 	require.ErrorIs(t, err, complexity.ErrNoServingGeneration)
 	p.suggestions.wg.Wait()
 	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{}, 10)
