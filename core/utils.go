@@ -873,7 +873,7 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 			return fmt.Errorf("link-local IP addresses are not allowed")
 		}
 		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
-			return fmt.Errorf("private IP addresses are not allowed")
+			return fmt.Errorf("private IP addresses are not allowed: set network_config.allow_private_network to true to use a private endpoint")
 		}
 	}
 	return nil
