@@ -1602,13 +1602,21 @@ func pgRelOptions(t *testing.T, db *gorm.DB, table string) []string {
 // retention tables get per-table autovacuum settings that run vacuum after a
 // small, bounded share of dead rows.
 func TestMigrationTuneRetentionAutovacuum_Postgres(t *testing.T) {
+	// setupRetentionPostgres recreates only logs and mcp_tool_logs, so the other
+	// retention tables keep settings from an earlier run on a reused database.
+	// Clear them first, or a broken migration still passes on those tables.
+	if pre := trySetupPostgresDB(t); pre != nil {
+		reset := "RESET (" + strings.Join(retentionAutovacuumOptionNames(), ", ") + ")"
+		for _, table := range retentionAutovacuumTables {
+			require.NoError(t, pre.Exec("ALTER TABLE IF EXISTS "+table+" "+reset).Error)
+		}
+	}
+
 	_, db := setupRetentionPostgres(t, 0, 0)
 	for _, table := range retentionAutovacuumTables {
 		var exists bool
 		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error)
-		if !exists {
-			continue
-		}
+		require.True(t, exists, "%s is created by an earlier migration", table)
 		assert.Subset(t, pgRelOptions(t, db, table), retentionAutovacuumOptions, "%s must vacuum after a bounded share of dead rows", table)
 	}
 
@@ -1616,7 +1624,19 @@ func TestMigrationTuneRetentionAutovacuum_Postgres(t *testing.T) {
 	require.NoError(t, tx.Error)
 	defer tx.Rollback()
 	require.NoError(t, retentionAutovacuumMigration(context.Background(), testLogger{}).Rollback(tx))
-	assert.Empty(t, pgRelOptions(t, tx, "logs"), "rollback restores the server's autovacuum defaults")
+	for _, table := range retentionAutovacuumTables {
+		assert.Empty(t, pgRelOptions(t, tx, table), "rollback restores the server's autovacuum defaults on %s", table)
+	}
+}
+
+// Every table the retention cleaner deletes from must get the autovacuum
+// settings. Adding a retention table without tuning it fails here.
+func TestRetentionAutovacuumTablesMatchCleaner(t *testing.T) {
+	cleaned := make([]string, 0, len(retentionAdvisoryLockKeys))
+	for table := range retentionAdvisoryLockKeys {
+		cleaned = append(cleaned, table)
+	}
+	assert.ElementsMatch(t, cleaned, retentionAutovacuumTables)
 }
 
 // The settings are Postgres storage parameters; SQLite and MySQL skip the step.

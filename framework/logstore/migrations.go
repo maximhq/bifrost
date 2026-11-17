@@ -6513,6 +6513,17 @@ var retentionAutovacuumTables = []string{"logs", "mcp_tool_logs", "relay_logs", 
 // table, written as Postgres reports them in pg_class.reloptions.
 var retentionAutovacuumOptions = []string{"autovacuum_vacuum_scale_factor=0.01", "autovacuum_vacuum_threshold=10000"}
 
+// retentionAutovacuumOptionNames returns the parameter names of
+// retentionAutovacuumOptions, so rollback resets exactly what migrate set.
+func retentionAutovacuumOptionNames() []string {
+	names := make([]string, 0, len(retentionAutovacuumOptions))
+	for _, opt := range retentionAutovacuumOptions {
+		name, _, _ := strings.Cut(opt, "=")
+		names = append(names, name)
+	}
+	return names
+}
+
 // migrationTuneRetentionAutovacuum makes autovacuum keep up with retention on
 // Postgres. Retention deletes expired rows every hour, and a DELETE only leaves
 // dead tuples; autovacuum turns them into reusable space, but by default it
@@ -6568,7 +6579,7 @@ func retentionAutovacuumMigration(ctx context.Context, logger schemas.Logger) *m
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return eachTable(tx, func(table string) string {
-				return "ALTER TABLE " + table + " RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_threshold)"
+				return "ALTER TABLE " + table + " RESET (" + strings.Join(retentionAutovacuumOptionNames(), ", ") + ")"
 			})
 		},
 	}
