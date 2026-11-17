@@ -32,6 +32,9 @@ func BuildServer(opts ServerOptions) (*server.MCPServer, error) {
 	if instructions := buildInstructions(doc); instructions != "" {
 		serverOpts = append(serverOpts, server.WithInstructions(instructions))
 	}
+	if opts.ToolFilter != nil {
+		serverOpts = append(serverOpts, server.WithToolFilter(opts.ToolFilter))
+	}
 	s := server.NewMCPServer(name, version, serverOpts...)
 	for i := range opts.Synthesis.Tools {
 		tool := &opts.Synthesis.Tools[i]

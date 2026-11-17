@@ -69,12 +69,14 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
+	machgen: "e.g. MiniMax-H3, Kling-v3, FLUX.2-dev",
 	baseten: "e.g. zai-org/GLM-5.3, openai/gpt-oss-120b",
 	kimchi: "e.g. deepseek-v4.1-flash, glm-5.3-flash, minimax-m3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
+	soniox: "e.g. stt-async-v6, stt-rt-v6, tts-rt-v2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -111,12 +113,14 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	minimax: true,
 	byteplus: true,
+	machgen: true,
 	baseten: true,
 	kimchi: true,
 	databricks: false,
 	cloudflare: true,
 	"github-copilot": true,
 	typesafe: true,
+	soniox: true,
 };
 
 export const DefaultNetworkConfig = {

@@ -21,3 +21,7 @@ export function isInteractiveTarget(target: KeyEventTarget | null | undefined): 
 	}
 	return false;
 }
+/** Whether the card's option keys (arrows, Enter, letters) may pick an answer. A confirmation card runs a write, so it takes a click. */
+export function acceptsOptionShortcuts(question: { kind?: string }): boolean {
+	return question.kind !== "confirm";
+}

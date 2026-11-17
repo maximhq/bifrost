@@ -96,9 +96,10 @@ export default function SuggestionsTab({
 	const [awaitedRun, setAwaitedRun] = useState<string | null>(null);
 	const [pollInterval, setPollInterval] = useState(0);
 	// The list loads a page at a time; the first page carries the counts, the
-	// last run and the schedule.
+	// last run and the schedule, which are the same for either list.
 	const {
 		data: pages,
+		currentData: listPages,
 		isLoading,
 		error,
 		refetch,
@@ -110,7 +111,11 @@ export default function SuggestionsTab({
 		{ pollingInterval: pollInterval },
 	);
 	const data = pages?.pages[0];
-	const groups = useMemo(() => mergeSuggestionPages(pages?.pages), [pages]);
+	// The rows come from the selected list only (currentData): data keeps the
+	// last list's rows while a switch loads, and they would show, and be acted
+	// on, as the other list's.
+	const listLoading = listPages === undefined && !error;
+	const groups = useMemo(() => mergeSuggestionPages(listPages?.pages), [listPages]);
 	const dispatch = useAppDispatch();
 	const latestRun = data?.last_run;
 	const awaiting = awaitedRun !== null && (latestRun?.id !== awaitedRun || runInProgress(latestRun));
@@ -308,9 +313,10 @@ export default function SuggestionsTab({
 							pendingCount={counts.open ?? 0}
 							dismissedCount={counts.dismissed ?? 0}
 							groups={groups}
+							loading={listLoading}
 							expandGroupId={focusGroup}
-							total={data?.total ?? groups.length}
-							hasMore={hasNextPage}
+							total={listPages?.pages[0]?.total ?? groups.length}
+							hasMore={!listLoading && hasNextPage}
 							loadingMore={isFetchingNextPage}
 							onLoadMore={() => void fetchNextPage()}
 							staged={staged}

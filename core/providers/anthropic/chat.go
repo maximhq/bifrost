@@ -293,29 +293,9 @@ func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[
 //
 // Returns (nil, nil) for anything unrecognised, leaving existing behaviour intact.
 func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, *AnthropicThinking) {
-	if value == nil {
+	thinking, ok := decodeThinkingExtraParam(value)
+	if !ok {
 		return nil, nil
-	}
-
-	// Accept the typed form as well as the decoded-JSON map, mirroring the
-	// context_management/diagnostics promotions above them.
-	var thinking AnthropicThinking
-	switch v := value.(type) {
-	case *AnthropicThinking:
-		if v == nil {
-			return nil, nil
-		}
-		thinking = *v
-	case AnthropicThinking:
-		thinking = v
-	default:
-		data, err := providerUtils.MarshalSorted(value)
-		if err != nil {
-			return nil, nil
-		}
-		if err := sonic.Unmarshal(data, &thinking); err != nil {
-			return nil, nil
-		}
 	}
 
 	switch thinking.Type {
@@ -340,6 +320,33 @@ func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, 
 	default:
 		return nil, nil
 	}
+}
+
+// decodeThinkingExtraParam decodes an ExtraParams "thinking" value, accepting the
+// typed form as well as the decoded-JSON map, mirroring the
+// context_management/diagnostics promotions.
+func decodeThinkingExtraParam(value interface{}) (AnthropicThinking, bool) {
+	var thinking AnthropicThinking
+	switch v := value.(type) {
+	case nil:
+		return thinking, false
+	case *AnthropicThinking:
+		if v == nil {
+			return thinking, false
+		}
+		thinking = *v
+	case AnthropicThinking:
+		thinking = v
+	default:
+		data, err := providerUtils.MarshalSorted(value)
+		if err != nil {
+			return thinking, false
+		}
+		if err := sonic.Unmarshal(data, &thinking); err != nil {
+			return thinking, false
+		}
+	}
+	return thinking, true
 }
 
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
@@ -414,9 +421,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// it would send two conflicting thinking objects).
 		reasoningParams := bifrostReq.Params.Reasoning
 		var promotedThinking *AnthropicThinking
-		if reasoningParams == nil {
-			if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
+		// thinking.block_binding has no neutral spelling either, and unlike the
+		// thinking mode it is taken even when an explicit Reasoning wins: it only
+		// says what to do with stale signed blocks, so it composes with any mode.
+		var promotedBlockBinding *AnthropicThinkingBlockBinding
+		if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
+			if reasoningParams == nil {
 				reasoningParams, promotedThinking = promoteThinkingFromExtraParams(bifrostReq.Params.ExtraParams["thinking"])
+			}
+			if thinking, ok := decodeThinkingExtraParam(bifrostReq.Params.ExtraParams["thinking"]); ok {
+				promotedBlockBinding = copyThinkingBlockBinding(thinking.BlockBinding)
 			}
 		}
 
@@ -880,6 +894,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}
 
+		// Attached once the thinking mode is final; stripUnsupportedAnthropicFields
+		// below drops it again on a host without the beta.
+		if promotedBlockBinding != nil && anthropicReq.Thinking != nil && thinkingTypeTakesBlockBinding(anthropicReq.Thinking.Type) {
+			anthropicReq.Thinking.BlockBinding = promotedBlockBinding
+		}
+
 		// Convert service tier
 		if bifrostReq.Params.ServiceTier != nil {
 			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
@@ -905,6 +925,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
 	// same way. The <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := true
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	i := 0
 	for i < len(messages) {
@@ -979,6 +1000,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					inlined = inlineMidConversationSystem(&newContent)
 				}
 				if inlined != nil {
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					anthropicMessages = append(anthropicMessages, *inlined)
 					i++
 					continue

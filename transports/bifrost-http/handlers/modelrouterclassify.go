@@ -99,7 +99,7 @@ func (h *RoutingHandler) classifyWithModelRouter(ctx *fasthttp.RequestCtx) {
 	result, err := classifier.ClassifyWithModelRouter(ctx, id, inputs)
 	switch {
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", id))
+		h.sendModelRouterNotServed(ctx, id)
 		return
 	case errors.Is(err, routing.ErrInvalidModelRouterClassify):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())

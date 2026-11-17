@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -83,9 +84,30 @@ func chatToolCallsFromResponsesOutput(output []schemas.ResponsesMessage) []schem
 // are projected. Returns nil when the response called no tools.
 func collectToolCalls(outputMessage *schemas.ChatMessage, responsesOutput []schemas.ResponsesMessage) []schemas.ChatAssistantMessageToolCall {
 	if outputMessage != nil && outputMessage.ChatAssistantMessage != nil && len(outputMessage.ChatAssistantMessage.ToolCalls) > 0 {
-		return outputMessage.ChatAssistantMessage.ToolCalls
+		return chatCustomCallsAsFunctions(outputMessage.ChatAssistantMessage.ToolCalls)
 	}
 	return chatToolCallsFromResponsesOutput(responsesOutput)
+}
+
+// chatCustomCallsAsFunctions returns a copy with custom calls stored like the Responses path does, or calls itself.
+func chatCustomCallsAsFunctions(calls []schemas.ChatAssistantMessageToolCall) []schemas.ChatAssistantMessageToolCall {
+	var out []schemas.ChatAssistantMessageToolCall
+	for i, tc := range calls {
+		if tc.Custom == nil {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(calls)
+		}
+		tc.Type = schemas.Ptr("custom")
+		tc.Function = schemas.ChatAssistantMessageToolCallFunction{Name: tc.Custom.Name, Arguments: tc.Custom.Input}
+		tc.Custom = nil
+		out[i] = tc
+	}
+	if out == nil {
+		return calls
+	}
+	return out
 }
 
 // toolCallNames extracts the distinct function names from tool calls, keeping

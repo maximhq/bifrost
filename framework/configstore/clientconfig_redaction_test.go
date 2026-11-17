@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -641,4 +642,51 @@ func TestProviderConfig_PassthroughSurvivesRedactionAndHash(t *testing.T) {
 	off, err := (&ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}).GenerateConfigHash("openai")
 	require.NoError(t, err)
 	assert.NotEqual(t, without, off, "an empty allowlist is a different config from no policy")
+}
+
+// TestClientConfig_Redacted_ClientGatewayTelemetry pins that the config API never
+// returns a client gateway telemetry credential: header values and an env-backed
+// endpoint are fully masked with their references kept, a plain endpoint URL
+// stays readable, and the live configuration is not modified.
+func TestClientConfig_Redacted_ClientGatewayTelemetry(t *testing.T) {
+	const canary = "synthetic-otel-token-canary-0123456789"
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", canary)
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://collector.internal.example.com")
+	live := &ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL: schemas.NewSecretVar("https://bifrost.example.com"),
+		Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+			Enabled: true,
+			Telemetry: &tables.ClientGatewayTelemetryConfig{
+				Enabled: true,
+				Destinations: []tables.ClientGatewayTelemetryDestination{
+					{Endpoint: schemas.NewSecretVar("https://otel.example.com"), Headers: map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar("env.BIFROST_TEST_OTEL_TOKEN")}},
+					{Endpoint: schemas.NewSecretVar("env.BIFROST_TEST_OTEL_ENDPOINT")},
+				},
+			},
+		}},
+	}}
+
+	redacted := live.Redacted()
+	out, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), canary, "a header credential leaked")
+	assert.NotContains(t, string(out), "collector.internal.example.com", "an env-backed endpoint leaked")
+	assert.Contains(t, string(out), "https://otel.example.com", "a plain endpoint URL stays readable")
+	assert.Contains(t, string(out), "env.BIFROST_TEST_OTEL_TOKEN", "the header reference stays visible")
+
+	liveTelemetry := live.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.Equal(t, canary, liveTelemetry.Destinations[0].Headers["authorization"].GetValue(), "redaction modified the live config")
+	assert.Equal(t, "https://collector.internal.example.com", liveTelemetry.Destinations[1].Endpoint.GetValue())
+
+	// A redacted header read back from the dashboard resolves from its reference again.
+	var roundTrip tables.ClientGatewayTelemetryDestination
+	require.NoError(t, json.Unmarshal(mustMarshal(t, redacted.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0]), &roundTrip))
+	assert.Equal(t, canary, roundTrip.Headers["authorization"].GetValue())
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }

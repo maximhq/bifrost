@@ -520,9 +520,17 @@ func suggestionRecordContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(context.WithoutCancel(ctx), suggestionRecordTimeout)
 }
 
-// ErrComplexitySuggestionsOff is a run asked for while suggestions are off or
-// have nowhere to be kept.
-var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are off: enable them in the complexity router settings")
+// ErrComplexitySuggestionsOff is a run asked for on a router with no
+// suggestions settings, or while suggestions have nowhere to be kept.
+var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are not set up for this router: add its suggestions settings (enabled may stay false to run them only on demand)")
+
+// suggestionsConfigured reports whether a router has suggestions settings to
+// run with. Runs started on demand, estimates and impact replays need only
+// these: enabled turns on capture and the schedule, not the on-demand APIs,
+// which backfill what they read from the router's logs.
+func suggestionsConfigured(router suggestionRouter) bool {
+	return router.config != nil && router.config.Suggestions != nil
+}
 
 // ErrComplexitySuggestionRunInFlight is a run asked for while one is already
 // queued or running.
@@ -536,7 +544,7 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, rou
 	if !ok {
 		return "", ErrUnknownComplexityRouter
 	}
-	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !router.config.SuggestionsEnabled() {
+	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !suggestionsConfigured(router) {
 		return "", ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -612,7 +620,7 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if !ok {
 		return suggestrun.Estimate{}, ErrUnknownComplexityRouter
 	}
-	if !router.config.SuggestionsEnabled() {
+	if !suggestionsConfigured(router) {
 		return suggestrun.Estimate{}, ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -636,18 +644,25 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if err != nil {
 		return suggestrun.Estimate{}, err
 	}
-	// What a run would first embed from logs, as it would plan it.
+	// What a run would first embed from logs, as it would plan it. A plan
+	// that fails leaves the backfill unknown rather than failing the
+	// estimate: the run plans again, and the dialog starts a run only on an
+	// estimate.
 	var backfill int
+	backfillUnknown := false
 	if deps := p.suggestionDeps(); deps != nil && router.capture != nil {
 		logs, _ := deps.store.(ComplexitySuggestionRouterLogs)
 		plan, err := p.planBackfill(ctx, router, space, logs, now.Add(-window), now, backfillLimit(router))
 		if err != nil {
-			return suggestrun.Estimate{}, err
+			p.logger.Warn("[Routing] phrase suggestion estimate for router %s: backfill unknown: %v", routerID, err)
+			backfillUnknown = true
+		} else {
+			backfill = min(plan.missing, backfillLimit(router))
 		}
-		backfill = min(plan.missing, backfillLimit(router))
 	}
 	estimate := suggestrun.EstimateRun(count+backfill, settings)
 	estimate.Backfill = backfill
+	estimate.BackfillUnknown = backfillUnknown
 	return estimate, nil
 }
 
@@ -843,22 +858,24 @@ func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, route
 	if run.Status != logstore.ComplexitySuggestionRunQueued && run.Status != logstore.ComplexitySuggestionRunRunning {
 		return run, ErrComplexitySuggestionRunEnded
 	}
-	// Whether a handler is still there to record the outcome itself.
+	// Whether a handler is still there to record the outcome itself. An
+	// inline run on this node is stopped directly, whether or not the job
+	// runner is wired now: one started before it was (at start-up, say) has
+	// no job to cancel.
 	handlerRecords := false
-	if jobs := cs.jobs.Load(); jobs != nil {
+	cs.inlineMu.Lock()
+	if stop, ok := cs.inlineCancels[runID]; ok {
+		cs.cancelled[runID] = true
+		stop()
+		handlerRecords = true
+	}
+	cs.inlineMu.Unlock()
+	if jobs := cs.jobs.Load(); jobs != nil && !handlerRecords {
 		stopped, err := jobs.queue.Cancel(ctx, runID)
 		if err != nil {
 			return run, fmt.Errorf("cancel the suggestion run: %w", err)
 		}
 		handlerRecords = stopped && run.Status == logstore.ComplexitySuggestionRunRunning
-	} else {
-		cs.inlineMu.Lock()
-		if stop, ok := cs.inlineCancels[runID]; ok {
-			cs.cancelled[runID] = true
-			stop()
-			handlerRecords = true
-		}
-		cs.inlineMu.Unlock()
 	}
 	if handlerRecords {
 		return awaitSuggestionRunEnd(ctx, store, routerID, run), nil
@@ -955,7 +972,7 @@ func (p *RoutingPlugin) ComplexitySuggestionImpact(ctx context.Context, routerID
 	if !ok {
 		return suggestrun.Impact{}, 0, ErrUnknownComplexityRouter
 	}
-	if !router.config.SuggestionsEnabled() {
+	if !suggestionsConfigured(router) {
 		return suggestrun.Impact{}, 0, ErrComplexitySuggestionsOff
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
@@ -1230,7 +1247,10 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 	if p.suggestions != nil {
 		deps = p.suggestions.deps.Load()
 	}
-	if !ok || !router.config.SuggestionsEnabled() || deps == nil || router.classifier == nil {
+	// A scheduled run needs suggestions still on; one started on demand
+	// needs only their settings.
+	if !ok || !suggestionsConfigured(router) || deps == nil || router.classifier == nil ||
+		(meta.TriggeredBy == logstore.ComplexitySuggestionTriggerSchedule && !router.config.SuggestionsEnabled()) {
 		return suggestrun.Result{}, errSuggestionsUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, suggestionRunTimeout)
