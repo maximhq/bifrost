@@ -342149,6 +342149,122 @@
               ]
             }
           }
+        },
+        {
+          "name": "369.28 openai/whisper-1 /openai_passthrough/v1/audio/transcriptions part without a filename keeps its Content-Type in the log summary (request body stream)",
+          "description": "A streamed passthrough upload is parsed by Go's ReadForm, which files every part without a filename under Value and drops its Content-Type, so the log summary could only guess from the bytes. A file sent without a filename (here the prompt part, sent as application/octet-stream with printable bytes) was logged as a text field. passthroughparse.ReadMultipartForm now records each value part's Content-Type while the form is parsed, the summary records a non-text part like a file (field, content_type, bytes), as the buffered summary does, and the part is forwarded with its Content-Type. Red before the change: fields.prompt holds RBS-OCTET-PROMPT-7f3a.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('octet value part: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('octet value part: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "      pm.test('octet value part: log read answered 200, or 404 until the log is written', function () { pm.expect.fail('log ' + reqId + ' read failed: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.passthrough_request_body) {",
+                  "      var s = JSON.parse(j.passthrough_request_body);",
+                  "      pm.test('octet value part: body logged as a form summary', function () { pm.expect(j.params && j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); pm.expect(s.fields && s.fields.model, j.passthrough_request_body).to.eql('whisper-1'); });",
+                  "      pm.test('octet value part: the part sent without a filename is recorded like a file, with its Content-Type', function () { var f = (s.files || []).filter(function (x) { return x.field === 'prompt'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].content_type, j.passthrough_request_body).to.eql('application/octet-stream'); pm.expect(f[0].bytes, j.passthrough_request_body).to.be.above(0); });",
+                  "      pm.test('octet value part: its bytes are not logged as a text field', function () { pm.expect(s.fields || {}, j.passthrough_request_body).to.not.have.property('prompt'); pm.expect(j.passthrough_request_body, 'summary').to.not.include('RBS-OCTET-PROMPT-7f3a'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('octet value part: log row carries the request body summary', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_request_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "RBS-OCTET-PROMPT-7f3a octet part without a filename",
+                  "type": "text",
+                  "contentType": "application/octet-stream"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.29 [EXPECT-400] openai /openai_passthrough/v1/files multipart body that does not parse is refused by the gateway (request body stream)",
+          "description": "A streamed multipart passthrough upload whose form does not parse (here the closing boundary is missing) used to fall back to Body(), which on a streamed request returns only what the failed parse left unread, so a truncated or empty body went upstream and the client got the provider's error. The gateway now refuses it with 400 and its own message before anything is forwarded. Red before the change: the error text is OpenAI's, not 'invalid multipart/form-data body'.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unparseable multipart: refused by the gateway with its own message', function () { pm.expect(pm.response.text(), 'status ' + pm.response.code).to.include('invalid multipart/form-data body'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data; boundary=rbsTruncatedBoundary"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nbatch\r\n--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.jsonl\"\r\nContent-Type: application/jsonl\r\n\r\n{\"custom_id\":\"r\"}\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
         }
       ]
     }

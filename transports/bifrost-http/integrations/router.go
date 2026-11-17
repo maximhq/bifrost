@@ -733,7 +733,9 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	}
 
 	if g.passthroughCfg != nil {
-		catchAll := lib.ChainMiddlewares(g.handlePassthrough, middlewares...)
+		// Marked before the middlewares run, so a transport plugin reading the upload gets the
+		// passthrough parse (lib.SharedMultipartForm).
+		catchAll := lib.MarkPassthroughRoute(lib.ChainMiddlewares(g.handlePassthrough, middlewares...))
 		if len(g.passthroughCfg.AllowedRoutes) > 0 {
 			// Restricted mode: only the explicitly allowed method+path pairs are forwarded.
 			for _, allowed := range g.passthroughCfg.AllowedRoutes {
@@ -3682,20 +3684,20 @@ func isJSONMediaType(mediaType string) bool {
 // has read part of it, so Body() would return only the unread rest. A form that parses but cannot
 // be streamed (a boundary multipart.Writer does not accept) returns nils too: Body() then rebuilds
 // the whole parsed form.
-func passthroughMultipartBody(req *fasthttp.Request) (*multipart.Form, schemas.BodySource, error) {
-	boundary := req.Header.MultipartFormBoundary()
+func passthroughMultipartBody(ctx *fasthttp.RequestCtx) (*multipart.Form, map[string][]string, schemas.BodySource, error) {
+	boundary := ctx.Request.Header.MultipartFormBoundary()
 	if len(boundary) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
-	form, err := req.MultipartForm()
+	form, types, err := lib.PassthroughMultipartForm(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid multipart/form-data body: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid multipart/form-data body: %w", err)
 	}
-	source, err := schemas.NewMultipartFormBodySource(form, string(boundary))
+	source, err := schemas.NewMultipartFormBodySource(form, string(boundary), types)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
-	return form, source, nil
+	return form, types, source, nil
 }
 
 // multipartFormModelAndStream reads the model and stream fields of a parsed multipart form. The
@@ -3840,7 +3842,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// A multipart upload is passed on as its parsed form and a stream of it, never as bytes:
 	// fasthttp parsed it while reading the request and keeps large files in temp files, and
 	// Body() would rebuild the whole form in memory. Anything else is read as bytes.
-	form, bodySource, err := passthroughMultipartBody(&ctx.Request)
+	form, formTypes, bodySource, err := passthroughMultipartBody(ctx)
 	if err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return
@@ -3925,6 +3927,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		Body:         body,
 		BodySource:   bodySource,
 		Form:         form,
+		FormTypes:    formTypes,
 		SafeHeaders:  safeHeaders,
 		Provider:     provider,
 		BaseProvider: baseProvider,

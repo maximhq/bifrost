@@ -16,6 +16,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net"
+	"net/textproto"
 	"os"
 	"reflect"
 	"runtime"
@@ -4669,6 +4670,90 @@ func TestTransportInterceptorMiddleware_MultipartBodySetByPluginApplied(t *testi
 				t.Errorf("handler body = %q, want the plugin's replacement", handlerBody)
 			}
 		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_MultipartReplacedFormReachesPassthrough asserts that when a
+// plugin reads a multipart body (which parses and caches form A) and then replaces it with form B,
+// the passthrough route parses B: the cached form A is dropped with the body it came from. B's
+// value types are read from its bytes. On a passthrough route (marked, as the router registers it)
+// form A is the passthrough parse Bifrost owns, so replacing it also removes its temp files.
+func TestTransportInterceptorMiddleware_MultipartReplacedFormReachesPassthrough(t *testing.T) {
+	raw := multipartUploadTestRequest(t, 1024)
+	head, upload, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
+	boundary := ""
+	for _, line := range strings.Split(string(head), "\r\n") {
+		if v, ok := strings.CutPrefix(line, "Content-Type: "); ok {
+			_, params, _ := mime.ParseMediaType(v)
+			boundary = params["boundary"]
+		}
+	}
+	var replacement bytes.Buffer
+	w := multipart.NewWriter(&replacement)
+	if err := w.SetBoundary(boundary); err != nil {
+		t.Fatal(err)
+	}
+	w.WriteField("purpose", "assistants") //nolint:errcheck
+	part, _ := w.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}})
+	part.Write([]byte("replaced mask bytes")) //nolint:errcheck
+	w.Close()                                 //nolint:errcheck
+
+	for _, phase := range bodyTestPhases {
+		for _, streamed := range []bool{true, false} {
+			for _, marked := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/streamed=%v/passthrough-route=%v", phase.name, streamed, marked), func(t *testing.T) {
+					var readFormA string
+					config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+						rc, err := req.BodySource.Open()
+						if err != nil {
+							t.Errorf("open body: %v", err)
+							return
+						}
+						a, _ := io.ReadAll(rc)
+						rc.Close()
+						readFormA = string(a)
+						req.Body = replacement.Bytes()
+					}))
+					var ctx *fasthttp.RequestCtx
+					if streamed {
+						ctx = &fasthttp.RequestCtx{}
+						ctx.Init(&fasthttp.Request{}, nil, nil)
+						ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+						ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+						ctx.Request.Header.SetContentType("multipart/form-data; boundary=" + boundary)
+						ctx.Request.SetBodyStream(bytes.NewReader(upload), len(upload))
+					} else {
+						ctx = multipartUploadTestCtx(t, raw)
+					}
+					defer ctx.Request.Reset()
+					var form *multipart.Form
+					var types map[string][]string
+					var formErr error
+					chain := phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+						form, types, formErr = lib.PassthroughMultipartForm(ctx)
+					})
+					if marked {
+						chain = lib.MarkPassthroughRoute(chain)
+					}
+					chain(ctx)
+					if !strings.Contains(readFormA, "batch") {
+						t.Fatalf("the plugin did not read form A: %q", readFormA)
+					}
+					if formErr != nil {
+						t.Fatalf("passthrough form after the plugin replaced the body: %v", formErr)
+					}
+					if got := form.Value["purpose"]; len(got) != 1 || got[0] != "assistants" {
+						t.Errorf("passthrough got purpose %q, want the replacement's %q (form A was still cached)", got, "assistants")
+					}
+					if len(form.File["file"]) != 0 {
+						t.Errorf("passthrough still sees form A's file part")
+					}
+					if got := types["mask"]; len(got) != 1 || got[0] != "application/octet-stream" {
+						t.Errorf("replacement value types = %v, want mask typed application/octet-stream", types)
+					}
+				})
+			}
+		}
 	}
 }
 
