@@ -408,6 +408,51 @@
         }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "description": "NetworkPolicy for the Bifrost pods and the stores this chart deploys. Off by default.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the NetworkPolicies (default false)."
+        },
+        "allowExternal": {
+          "type": "boolean",
+          "description": "Accept connections to the Bifrost API port from any source (default true). When false, only ingressFrom can connect."
+        },
+        "ingressFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "NetworkPolicyPeers that can reach the Bifrost API port and the Redis exporter when allowExternal is false."
+        },
+        "egress": {
+          "type": "object",
+          "description": "Egress restriction for the Bifrost pods. When enabled, DNS, the bundled stores, cluster peers and the ports of configured external stores are always allowed.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Restrict the Bifrost pods' egress (default false)."
+            },
+            "ports": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Additional NetworkPolicyPorts the Bifrost pods can connect to (default 443/TCP)."
+            },
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "NetworkPolicyPeers for those ports. Empty allows any destination."
+            }
+          }
+        }
+      }
+    },
     "volumes": {
       "type": "array"
     },

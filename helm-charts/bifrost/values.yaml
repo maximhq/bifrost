@@ -257,6 +257,42 @@ podDisruptionBudget:
   minAvailable: 1
   # maxUnavailable: 1
 
+# NetworkPolicy for the Bifrost pods and the stores this chart deploys. Off by default. When enabled:
+# - the bundled PostgreSQL, Redis, Qdrant and Weaviate accept connections only from the Bifrost pods
+#   (and the Redis exporter port from the same sources as the Bifrost API);
+# - in cluster mode the Bifrost pods accept gossip and gRPC only from each other;
+# - the Bifrost API port accepts connections from any source unless allowExternal is false.
+#   NetworkPolicy cannot filter by path, so to keep /metrics to Prometheus (see
+#   bifrost.client.whitelistedRoutes), set allowExternal: false and list the ingress controller and
+#   Prometheus in ingressFrom.
+# Egress stays open unless egress.enabled is true, because providers, MCP servers and plugins can be on
+# any host and port. When it is enabled, Bifrost can reach DNS, the bundled stores, cluster peers, the
+# ports of the external stores configured above (PostgreSQL, ClickHouse, Redis, Qdrant, Weaviate) on any
+# host, and egress.ports. NetworkPolicy is only enforced by network plugins that support it (on EKS,
+# enable network policy in the Amazon VPC CNI).
+networkPolicy:
+  enabled: false
+  allowExternal: true
+  # NetworkPolicyPeers that can reach the Bifrost API port when allowExternal is false, e.g.:
+  # - namespaceSelector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: ingress-nginx
+  #   podSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: ingress-nginx
+  ingressFrom: []
+  egress:
+    enabled: false
+    # Additional ports the Bifrost pods can connect to. 443 covers most providers, Pinecone and object
+    # storage; add self-hosted models, MCP servers, telemetry collectors (e.g. OTLP 4317), a secret
+    # manager such as Vault (8200), external store ports set as env.VAR references and, for cluster
+    # discovery, the Kubernetes API.
+    ports:
+      - port: 443
+        protocol: TCP
+    # Destinations for those ports (NetworkPolicyPeers). Empty allows any destination.
+    to: []
+
 # Additional volumes on the output Deployment definition.
 volumes: []
 
