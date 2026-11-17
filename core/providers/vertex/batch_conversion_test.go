@@ -521,3 +521,72 @@ func TestVertexNormalizeBatchUsage_ThinkingTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestVertexBatchGCSAudioURLForwardedAsFileURI pins that a chat-shaped inline batch item
+// with gs:// input_audio is sent to Gemini-on-Vertex as fileData.fileUri, the way the chat
+// path forwards it, instead of reaching the batch audio resolver, which only downloads
+// over http(s) and would fail the whole batch.
+func TestVertexBatchGCSAudioURLForwardedAsFileURI(t *testing.T) {
+	t.Parallel()
+
+	const gcsURI = "gs://bucket/audio/clip.wav"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	audioBody := func(audioURL string) map[string]interface{} {
+		return map[string]interface{}{
+			"messages": []interface{}{
+				map[string]interface{}{
+					"role": "user",
+					"content": []interface{}{
+						map[string]interface{}{
+							"type":        "input_audio",
+							"input_audio": map[string]interface{}{"url": audioURL},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("gemini gs audio becomes fileData", func(t *testing.T) {
+		original := audioBody(gcsURI)
+		requests := []schemas.BatchRequestItem{{CustomID: "audio-1", Body: original}}
+
+		resolved, bifrostErr := resolveVertexBatchAudio(ctx, requests, "gemini-2.5-flash")
+		require.Nil(t, bifrostErr)
+		require.Len(t, resolved, 1)
+		assert.Equal(t, audioBody(gcsURI), original, "the caller's batch body must not be modified")
+
+		data, err := vertexConvertRequestsToJSONL(ctx, resolved, "gemini-2.5-flash")
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+
+		request := lines[0]["request"].(map[string]interface{})
+		contents := request["contents"].([]interface{})
+		require.Len(t, contents, 1)
+		parts := contents[0].(map[string]interface{})["parts"].([]interface{})
+		require.Len(t, parts, 1)
+		fileData, ok := parts[0].(map[string]interface{})["fileData"].(map[string]interface{})
+		require.True(t, ok, "gs:// audio must be sent as fileData, got %#v", parts[0])
+		assert.Equal(t, gcsURI, fileData["fileUri"])
+		assert.Equal(t, "audio/wav", fileData["mimeType"])
+	})
+
+	t.Run("http audio and Anthropic family left for existing paths", func(t *testing.T) {
+		httpBody := audioBody("https://example.com/clip.wav")
+		got, err := forwardGCSAudioBatchBody(httpBody, false)
+		require.NoError(t, err)
+		assert.Equal(t, httpBody, got)
+
+		gcsBody := audioBody(gcsURI)
+		got, err = forwardGCSAudioBatchBody(gcsBody, true)
+		require.NoError(t, err)
+		assert.Equal(t, gcsBody, got)
+
+		requests := []schemas.BatchRequestItem{{CustomID: "claude-1", Body: gcsBody}}
+		resolved, bifrostErr := resolveVertexBatchAudio(ctx, requests, "claude-sonnet-4-5")
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, requests, resolved)
+	})
+}

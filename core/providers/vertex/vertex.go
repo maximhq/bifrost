@@ -596,9 +596,16 @@ func forwardGCSAudioChat(ctx *schemas.BifrostContext, request *schemas.BifrostCh
 		return request
 	}
 	copied := *request
-	copied.Input = slices.Clone(request.Input)
-	for mi := range copied.Input {
-		msg := &copied.Input[mi]
+	copied.Input = forwardGCSAudioChatMessages(request.Input, isAnthropicFamily)
+	return &copied
+}
+
+// forwardGCSAudioChatMessages returns a copy of input with every qualifying gs://
+// input_audio block rewritten as a file reference. input itself is not modified.
+func forwardGCSAudioChatMessages(input []schemas.ChatMessage, isAnthropicFamily bool) []schemas.ChatMessage {
+	copied := slices.Clone(input)
+	for mi := range copied {
+		msg := &copied[mi]
 		if msg.Content == nil || !chatBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
 			continue
 		}
@@ -621,7 +628,67 @@ func forwardGCSAudioChat(ctx *schemas.BifrostContext, request *schemas.BifrostCh
 			block.InputAudio = nil
 		}
 	}
-	return &copied
+	return copied
+}
+
+// forwardGCSAudioBatchBody applies forwardGCSAudioChat's rule to one chat-shaped
+// (OpenAI "messages") inline batch body, so gs:// input_audio is sent as fileData
+// instead of reaching gemini.ResolveBatchAudioURLs, which only fetches over http(s).
+// It returns body unchanged when it has no messages or nothing qualifies, and a
+// copy otherwise.
+func forwardGCSAudioBatchBody(body map[string]interface{}, isAnthropicFamily bool) (map[string]interface{}, error) {
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return body, nil
+	}
+	messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal messages: %w", err)
+	}
+	if !bytes.Contains(messagesBytes, []byte(`"input_audio"`)) {
+		return body, nil
+	}
+	var messages []schemas.ChatMessage
+	if err := sonic.Unmarshal(messagesBytes, &messages); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal messages: %w", err)
+	}
+	if !chatInputForwardsGCSAudio(messages, isAnthropicFamily) {
+		return body, nil
+	}
+	forwarded := make(map[string]interface{}, len(body))
+	for key, value := range body {
+		forwarded[key] = value
+	}
+	forwarded["messages"] = forwardGCSAudioChatMessages(messages, isAnthropicFamily)
+	return forwarded, nil
+}
+
+// resolveVertexBatchAudio prepares inline Gemini-family batch items for conversion:
+// gs:// input_audio is forwarded as a file reference first, then any remaining
+// http(s) audio URLs are fetched under one budget shared by the whole batch.
+// Claude-on-Vertex instances do not carry input_audio, so their items pass through.
+func resolveVertexBatchAudio(ctx *schemas.BifrostContext, requests []schemas.BatchRequestItem, model string) ([]schemas.BatchRequestItem, *schemas.BifrostError) {
+	resolved := append([]schemas.BatchRequestItem(nil), requests...)
+	if schemas.IsAnthropicModelFamily(ctx, model) {
+		return resolved, nil
+	}
+	audioBudget := gemini.NewAudioURLBudget()
+	for i, item := range resolved {
+		body := item.Body
+		if body == nil {
+			body = item.Params
+		}
+		forwardedBody, err := forwardGCSAudioBatchBody(body, false)
+		if err != nil {
+			return nil, gemini.BatchAudioURLError(i, item.CustomID, err)
+		}
+		resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, forwardedBody, audioBudget)
+		if err != nil {
+			return nil, gemini.BatchAudioURLError(i, item.CustomID, err)
+		}
+		resolved[i].Body = resolvedBody
+	}
+	return resolved, nil
 }
 
 func chatInputForwardsGCSAudio(input []schemas.ChatMessage, isAnthropicFamily bool) bool {
@@ -3234,21 +3301,9 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			resolvedRequests := append([]schemas.BatchRequestItem(nil), request.Requests...)
-			// Claude-on-Vertex instances do not carry input_audio, so only the Gemini family resolves.
-			if !schemas.IsAnthropicModelFamily(ctx, *request.Model) {
-				audioBudget := gemini.NewAudioURLBudget()
-				for i, item := range resolvedRequests {
-					body := item.Body
-					if body == nil {
-						body = item.Params
-					}
-					resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body, audioBudget)
-					if err != nil {
-						return nil, gemini.BatchAudioURLError(i, item.CustomID, err)
-					}
-					resolvedRequests[i].Body = resolvedBody
-				}
+			resolvedRequests, resolveErr := resolveVertexBatchAudio(ctx, request.Requests, *request.Model)
+			if resolveErr != nil {
+				return nil, resolveErr
 			}
 			jsonlData, err := vertexConvertRequestsToJSONL(ctx, resolvedRequests, *request.Model)
 			if err != nil {
