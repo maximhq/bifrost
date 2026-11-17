@@ -319,7 +319,7 @@ func isExpiredEntry(properties map[string]interface{}) (bool, bool) {
 	default:
 		return false, true
 	}
-	return expiresAt < time.Now().Unix(), false
+	return expiresAt <= time.Now().Unix(), false
 }
 
 // buildNonStreamingResponseFromResult constructs a single response from cached data.

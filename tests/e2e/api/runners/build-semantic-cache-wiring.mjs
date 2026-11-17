@@ -253,7 +253,10 @@ function call(name, method, segs, body, headers, spec, opts = {}) {
     req.body = { mode: "raw", raw: JSON.stringify(body) };
   }
   const pre = opts.wait ? [EVAL, `scw.waitFirst(${opts.wait});`] : null;
-  const test = [EVAL, ...`scw.run(${JSON.stringify({ name, ...spec }, null, 2)});`.split("\n")];
+  const check = `scw.run(${JSON.stringify({ name, ...spec }, null, 2)})`;
+  const test = [EVAL, ...(opts.expiredCacheKey
+    ? `if (${check}) {\n  console.log('SCW_EXPIRED_CACHE_KEY=' + pm.variables.replaceIn(${JSON.stringify(opts.expiredCacheKey.namespace)}) + ':' + pm.collectionVariables.get(${JSON.stringify("cid_" + opts.expiredCacheKey.id)}));\n}`
+    : `${check};`).split("\n")];
   const id = `scw-${String(++itemCounter).padStart(3, "0")}`;
   return item(id, name, req, events(pre, test));
 }
@@ -706,6 +709,14 @@ function folderH() {
   }
   ttlRows.forEach(([id, ttl, after], i) => {
     const v = id.toLowerCase();
+    if (id === "H1") {
+      // H1 was observed to hit before expiry. Never match it again: the Redis
+      // runner must prove physical deletion, not trigger expiry-on-read cleanup.
+      items.push(api("H1 expiry without another cache lookup", "GET", ["health"], null,
+        { status: 200, fields: [{ path: "status", eq: "ok" }] },
+        { wait: 5, expiredCacheKey: { namespace: NS.direct, id: v } }));
+      return;
+    }
     const label = after === "miss" ? `${id} ttl ${ttl} has expired` : `${id} ttl ${ttl} falls back to the plugin ttl`;
     const spec = after === "miss" ? { same: v } : { same: v, poll: false };
     const fnFor = after === "miss" ? miss : hit;

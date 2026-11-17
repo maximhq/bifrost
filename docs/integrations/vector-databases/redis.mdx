@@ -157,6 +157,42 @@ if err != nil {
 
 ### Redis-Specific Features
 
+#### Native cache expiration
+
+`RedisStore.Add` treats a non-null `expires_at` metadata value as an absolute Unix-second deadline. It atomically writes the hash and applies `EXPIREAT`, using a single-key Lua script. The script checks expiry permission before writing and does not modify a wrong-type key when `HSET` fails. Entries whose deadline has already passed are deleted immediately, including streams that finish after their first-chunk deadline. Rewrites update the deadline; reads do not extend it.
+
+The deadline accepts integer Go values (`int`, `int64`), integer-valued `float64`, or decimal integer strings. Invalid or out-of-range deadlines fail before any write. Generic vector entries with missing/null `expires_at` retain the existing `HSET` behavior: new keys have no expiry and an existing key's TTL is left untouched. This does not add retention to Warp's log index, which has its own log-retention cleanup.
+
+The cache writer needs `EVAL`, `EVALSHA`, `HSET`, and `EXPIREAT` permission on its namespace keys. Legacy Redis without the Lua ACL helper also needs `COMMAND INFO` to check that `EXPIREAT` is available before writing; its server's scripting permission model applies. A cold server or script-cache eviction uses `EVAL` after `EVALSHA` returns `NOSCRIPT`. Expiry failures are logged as cache-write failures; Bifrost does not fall back to an immortal hash or fail the successful LLM response. Keep the Redis/Valkey host clock synchronized, since the deadline is computed by Bifrost and enforced by the store.
+
+#### Repairing existing cache entries
+
+Upgrading fixes new writes, not hashes left by older writers. Keep any expiry-repair CronJob until every writer has upgraded and existing entries have been repaired. Use a bounded `SCAN` over explicitly selected cache namespaces, including previously used namespaces; do not wipe a shared database or scan unrelated tenants' data.
+
+The following example reads each hash's **current** deadline and attaches expiry atomically. A concurrent rewrite therefore cannot be expired using a stale timestamp previously read by the repair client. Already-past deadlines delete the hash immediately. Missing/malformed deadlines, non-hashes, and entries without the cache marker are skipped. Inspect the reported replies for errors, and repeat the scan if interrupted.
+
+```bash
+export REDIS_URL=redis://localhost:6379/0
+export CACHE_NAMESPACE=BifrostSemanticCachePlugin
+# For authentication, use REDISCLI_AUTH and your service's username/TLS options.
+repair="$(cat <<'LUA'
+if redis.call('TYPE', KEYS[1]).ok ~= 'hash' then return 0 end
+local marker = redis.call('HGET', KEYS[1], 'from_bifrost_semantic_cache_plugin')
+if marker ~= 'true' and marker ~= '74727565' then return 0 end
+local at = redis.call('HGET', KEYS[1], 'expires_at')
+if not at or not string.match(at, '^%-?%d+$') then return 0 end
+return redis.call('EXPIREAT', KEYS[1], at)
+LUA
+)"
+redis-cli -u "$REDIS_URL" --scan --pattern "$CACHE_NAMESPACE:*" |
+  while IFS= read -r key; do
+    printf '%s: ' "$key"
+    redis-cli -c -u "$REDIS_URL" --raw EVAL "$repair" 1 "$key"
+  done
+```
+
+Run this for each selected namespace and, on a cluster, each primary's connection URL: `SCAN` on one seed node does not enumerate the whole cluster. `0` means skipped/already absent; `1` means expiry applied. Out-of-range deadlines or denied commands return errors without changing the hash. Verify that retained entries have a positive `PTTL` and that expired hashes disappear. Index garbage collection and allocator memory reclamation may lag key deletion; TTL is not a fixed memory-size limit.
+
 **Vector Search Algorithm:**
 Redis uses the **HNSW (Hierarchical Navigable Small World)** algorithm for vector similarity search, which provides:
 
