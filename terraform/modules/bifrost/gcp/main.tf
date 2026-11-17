@@ -140,6 +140,7 @@ module "gke" {
   image             = var.image
   container_port    = var.container_port
   health_check_path = var.health_check_path
+  ingress_path      = var.ingress_path
 
   # GCP
   project_id      = var.project_id

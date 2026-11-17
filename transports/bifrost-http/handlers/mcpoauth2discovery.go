@@ -123,6 +123,10 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		doc["scopes_supported"] = []string{"mcp"}
 		// RFC 9207: we include iss in authorization responses.
 		doc["authorization_response_iss_parameter_supported"] = true
+		// MCP 2025-11-25+: CIMD URLs are accepted as client_id, unless /mcp is capped below that.
+		if clientMetadataDocumentsAllowed(h.store) {
+			doc["client_id_metadata_document_supported"] = true
+		}
 	}
 	if extension {
 		h.extensions.ExtendASMetadata(ctx, doc)

@@ -84,6 +84,26 @@ func (p *OAuth2Provider) TokenExchangeAvailable() bool {
 	return r != nil && r.Available()
 }
 
+// TokenExchangeConfigValidator is optionally implemented by a
+// TokenExchangeIdPResolver to check an MCP client's token_exchange settings
+// when the client is created or edited, without exchanging a token. An error
+// refuses the save, and its text is returned to the editor.
+type TokenExchangeConfigValidator interface {
+	ValidateTokenExchangeConfig(ctx context.Context, cfg *schemas.MCPTokenExchangeConfig) error
+}
+
+// ValidateTokenExchangeConfig checks cfg with the installed resolver when it
+// implements TokenExchangeConfigValidator, so the create and edit paths can
+// refuse settings before they are saved. With no resolver, or one that does
+// not validate, it returns nil.
+func (p *OAuth2Provider) ValidateTokenExchangeConfig(ctx context.Context, cfg *schemas.MCPTokenExchangeConfig) error {
+	v, ok := p.tokenExchangeIdPResolver().(TokenExchangeConfigValidator)
+	if !ok {
+		return nil
+	}
+	return v.ValidateTokenExchangeConfig(ctx, cfg)
+}
+
 // GetExchangedAccessToken returns an upstream access token for a
 // token_exchange client, exchanging the caller's identity-provider token for
 // one scoped to the client's audience. A request that carried no such token

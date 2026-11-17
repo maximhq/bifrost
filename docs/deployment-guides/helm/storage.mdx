@@ -1,6 +1,6 @@
 ---
 title: "Storage"
-description: "Configure Bifrost storage backends in Helm - SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS object storage for logs"
+description: "Configure Bifrost storage backends in Helm - SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS/Azure Blob object storage for logs"
 icon: "database"
 ---
 
@@ -518,7 +518,7 @@ With ClickHouse, the table **TTL** comes from `logs_store.retention_days`, which
 
 ## Object Storage for Logs
 
-Offload large request/response payloads from the database to S3 or GCS. The DB retains only lightweight index records; payloads are fetched on demand.
+Offload large request/response payloads from the database to S3, GCS, or Azure Blob Storage. The DB retains only lightweight index records; payloads are fetched on demand.
 
 ### AWS S3
 
@@ -639,6 +639,42 @@ bifrost:
       envVar: "GCS_CREDENTIALS_JSON"
 ```
 
+### Azure Blob Storage
+
+Create the container first; `bucket` is its name. `endpoint` uses `DefaultAzureCredential` with managed identity, workload identity, or environment service-principal credentials, separate from Azure model-provider credentials.
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: "bifrost-logs"  # existing container
+      endpoint: "https://myaccount.blob.core.windows.net"
+      prefix: "bifrost"
+      compress: true
+```
+
+For connection-string authentication, omit `endpoint` and reference a Kubernetes Secret whose `connection-string` key contains the connection string:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: "bifrost-logs"
+      existingSecret: "azure-storage-credentials"
+      prefix: "bifrost"
+      compress: true
+```
+
+Use only one of `endpoint`, `connectionString`, or `existingSecret`. Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete access. Blob index-tag permissions are not needed.
+
+For Parquet logs, set `format: parquet`; `compression` accepts `snappy` (default), `none`, `gzip`, or `zstd`. JSON accepts `none` or `gzip`. Explicit `compression` overrides `compress`.
+
+Restart after configuration or credential changes; identity tokens refresh automatically. For lifecycle rules and migration precautions, see [Azure operations](/enterprise/log-exports#azure-operations).
+
 ### MinIO (Self-Hosted)
 
 ```yaml
@@ -727,6 +763,43 @@ vectorStore:
       persistence:
         size: 8Gi
 ```
+
+**Extra environment variables:** `master.extraEnv` (Kubernetes `EnvVar` entries) and `master.envFrom` (`secretRef` / `configMapRef`) are added to the embedded Redis container after the chart's own `REDIS_PASSWORD` and `REDISCLI_AUTH`. Use `REDIS_ARGS` for server flags and module arguments such as `REDISEARCH_ARGS` for `redis-stack-server`:
+
+```yaml
+vectorStore:
+  redis:
+    master:
+      extraEnv:
+        - name: REDIS_ARGS
+          value: "--maxmemory 400mb --maxmemory-policy allkeys-lru"
+      envFrom:
+        - configMapRef:
+            name: redis-tuning
+```
+
+With `auth.enabled: true` (the default) the chart starts Redis with its own `--requirepass` command, which bypasses the image entrypoint that normally reads `REDIS_ARGS`. So when `extraEnv` or `envFrom` is set, the chart starts the server through `sh -c 'exec redis-stack-server --dir /data --requirepass "$REDIS_PASSWORD" $REDIS_ARGS'` instead (`redis-server`, without `--dir`, for a plain Redis image). `REDIS_ARGS` is split on whitespace, as the image entrypoint does, so values cannot contain spaces.
+
+**Data directory:** with auth enabled the chart passes `--dir /data` to `redis-stack-server`, so snapshots land on the `master.persistence` volume. Chart versions before 2.1.49 left it out, and `redis-stack-server` saved to `/var/lib/redis-stack` on the container filesystem, so the embedded Redis lost its data whenever the pod was replaced.
+
+**Prometheus metrics:** `metrics.enabled: true` runs an [`oliver006/redis_exporter`](https://github.com/oliver006/redis_exporter) sidecar in the Redis pod. It authenticates with the Redis password when `auth.enabled` is true. Its `/scrape` endpoint is turned off, since it sends the Redis password to any target it is given; set `REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT: "false"` in `metrics.extraEnv` to turn it back on. If you protect the exporter with `REDIS_EXPORTER_BASIC_AUTH_USERNAME` and `REDIS_EXPORTER_BASIC_AUTH_PASSWORD`, set `metrics.serviceMonitor.basicAuth` (`enabled`, `existingSecret`, optional `usernameKey` / `passwordKey`) so Prometheus sends the same credentials. The chart also adds a `metrics` port (9121) to the `<fullname>-redis-master` Service (`bifrost-redis-master` for `helm install bifrost`) and `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` annotations to the pod. With the Prometheus Operator, also enable the ServiceMonitor:
+
+```yaml
+vectorStore:
+  redis:
+    metrics:
+      enabled: true
+      # extraEnv:                 # exporter flags, e.g. REDIS_EXPORTER_CHECK_KEYS
+      #   - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+      #     value: "true"
+      serviceMonitor:
+        enabled: true             # requires the monitoring.coreos.com/v1 CRDs
+        interval: 30s
+        labels:
+          release: kube-prometheus-stack   # match your Prometheus serviceMonitorSelector
+```
+
+These settings apply only to the embedded Redis. An external Redis is not changed: run the exporter next to it instead.
 
 **External Redis / AWS MemoryDB:**
 

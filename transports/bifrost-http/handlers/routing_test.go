@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -184,6 +185,40 @@ func TestRetryComplexitySemanticWarmup(t *testing.T) {
 	})
 }
 
+// Phrase suggestions are a model router's. A suggestions block stored on the
+// complexity config before they moved to routers is not served, so a client
+// that saves back what it read is not refused; one sent is refused, and
+// nothing is saved or reloaded.
+func TestComplexityAnalyzerConfigSuggestionsAreRoutersOnly(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	stored := complexity.DefaultAnalyzerConfig()
+	stored.Semantic = &complexity.SemanticConfig{Provider: "openai", EmbeddingModel: "text-embedding-3-small"}
+	stored.Suggestions = &configstore.ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-5"}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(context.Background(), &stored))
+
+	get := newTestRequestCtx("")
+	handler.getComplexityAnalyzerConfig(get)
+	require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+	var served map[string]any
+	require.NoError(t, json.Unmarshal(get.Response.Body(), &served))
+	assert.NotContains(t, served, "suggestions")
+	assert.Contains(t, served, "semantic", "the rest of the stored config is served")
+
+	for _, suggestions := range []*configstore.ComplexitySuggestionsConfig{{Enabled: true, Provider: "openai", Model: "gpt-5"}, {Enabled: false}} {
+		body := stored
+		body.Suggestions = suggestions
+		put := newTestRequestCtx(testComplexityAnalyzerPayload(t, body))
+		handler.updateComplexityAnalyzerConfig(put)
+		assert.Equal(t, fasthttp.StatusBadRequest, put.Response.StatusCode(), string(put.Response.Body()))
+		assert.Contains(t, string(put.Response.Body()), "per model router")
+	}
+	assert.Zero(t, manager.reloadCalls, "a refused save reloads nothing")
+}
+
 func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
@@ -242,7 +277,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond, MinConfidence: 0.7}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -255,6 +290,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	require.NotNil(t, stored.Decision.PreviousMessageCount)
 	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
 	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 0.7, stored.Decision.MinConfidence)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 
@@ -294,6 +330,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 
 	for _, tt := range tests {

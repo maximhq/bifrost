@@ -8,7 +8,7 @@
 # --store both the two newman runs go concurrently and the runner fails if either does.
 #
 # Live and paid: the collection calls OpenAI (chat, responses, embeddings, speech, whisper,
-# gpt-image-1), Anthropic, Gemini, Cohere, OpenRouter and Bedrock. Keys are never written into the
+# gpt-image-1.5), Anthropic, Gemini, Cohere, OpenRouter and Bedrock. Keys are never written into the
 # collection: every provider key is env.<NAME>, resolved from this process's environment by the
 # server it boots. The collection is generated - edit runners/build-semantic-cache-wiring.mjs,
 # not the JSON.

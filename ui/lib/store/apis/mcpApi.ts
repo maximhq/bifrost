@@ -208,11 +208,14 @@ export const mcpApi = baseApi.injectEndpoints({
 									// Merge the updated fields into the existing client
 									if (data.name !== undefined) draft.clients[index].config.name = data.name;
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
+									if (data.server_type_on_slug !== undefined) draft.clients[index].config.server_type_on_slug = data.server_type_on_slug;
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
 									if (data.per_user_header_keys !== undefined) draft.clients[index].config.per_user_header_keys = data.per_user_header_keys;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
+									if (data.prompts_to_expose !== undefined) draft.clients[index].config.prompts_to_expose = data.prompts_to_expose;
+									if (data.resources_to_expose !== undefined) draft.clients[index].config.resources_to_expose = data.resources_to_expose;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.needs_session_stickiness !== undefined)
 										draft.clients[index].config.needs_session_stickiness = data.needs_session_stickiness;

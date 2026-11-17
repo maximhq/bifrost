@@ -187,6 +187,14 @@ func (s *reauthStore) ClaimOauthUserSessionByState(_ context.Context, state stri
 	return flow, nil
 }
 
+// ExecuteTransaction skips the admin completion's writes, which these tests do not observe.
+func (s *reauthStore) ExecuteTransaction(context.Context, func(tx *gorm.DB) error) error { return nil }
+
+// ClaimOauthFlowByState claims the admin flow the same way.
+func (s *reauthStore) ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return s.ClaimOauthUserSessionByState(ctx, state)
+}
+
 func (s *reauthStore) DeleteOauthUserSession(context.Context, string) error {
 	return nil
 }
@@ -202,6 +210,12 @@ func (s *reauthStore) CreateOauthToken(_ context.Context, token *tables.TableMCP
 	}
 	s.oauthTokens[token.ID] = bifrost.Ptr(*token)
 	return nil
+}
+
+// CompleteOauthUserSession stores the token of the flow the claim handed out;
+// nothing here revokes flows, so the row is always still there.
+func (s *reauthStore) CompleteOauthUserSession(ctx context.Context, _ string, token *tables.TableMCPOauthToken) error {
+	return s.CreateOauthToken(ctx, token)
 }
 
 // TestOnTokenWrittenReachesAnotherProcessAfterReauthorization: re-authorizing

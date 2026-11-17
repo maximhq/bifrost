@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -51,7 +51,7 @@ jobs:
   test-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -78,7 +78,7 @@ jobs:
   release-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -120,7 +120,7 @@ jobs:
   push-mintlify-changelog:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.release-cli.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     steps:

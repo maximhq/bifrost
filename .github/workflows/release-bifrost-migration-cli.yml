@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -52,7 +52,7 @@ jobs:
   test-bifrost-migration-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -81,7 +81,7 @@ jobs:
   release-bifrost-migration-cli:
     needs: [check-version, test-bifrost-migration-cli]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:

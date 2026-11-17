@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -793,6 +794,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 			copyRefusal := *original.ChatAssistantMessage.Refusal
 			copy.ChatAssistantMessage.Refusal = &copyRefusal
 		}
+		if len(original.ChatAssistantMessage.Context) > 0 {
+			copy.ChatAssistantMessage.Context = append(json.RawMessage(nil), original.ChatAssistantMessage.Context...)
+		}
 
 		// Deep copy Annotations
 		if original.ChatAssistantMessage.Annotations != nil {
@@ -847,6 +851,13 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 				if toolCall.Function.Name != nil {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
+				}
+				if toolCall.Custom != nil {
+					copyCustom := *toolCall.Custom
+					if toolCall.Custom.Name != nil {
+						copyCustom.Name = Ptr(*toolCall.Custom.Name)
+					}
+					copyToolCall.Custom = &copyCustom
 				}
 				if len(toolCall.ExtraContent) > 0 {
 					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
@@ -959,6 +970,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
 		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
+		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
 
@@ -1033,9 +1048,23 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		copyTool.Annotations = copyAnnotations
 	}
 
+	if original.MCP != nil {
+		copyTool.MCP = &MCPToolMetadata{
+			Title:         original.MCP.Title,
+			Icons:         slices.Clone(original.MCP.Icons),
+			OutputSchema:  slices.Clone(original.MCP.OutputSchema),
+			Meta:          slices.Clone(original.MCP.Meta),
+			UIResourceURI: original.MCP.UIResourceURI,
+			Visibility:    slices.Clone(original.MCP.Visibility),
+		}
+	}
+
 	// Deep copy Custom if present
 	if original.Custom != nil {
-		copyTool.Custom = &ChatToolCustom{}
+		copyTool.Custom = &ChatToolCustom{Name: original.Custom.Name}
+		if original.Custom.Description != nil {
+			copyTool.Custom.Description = Ptr(*original.Custom.Description)
+		}
 
 		if original.Custom.Format != nil {
 			copyFormat := &ChatToolCustomFormat{
@@ -2004,6 +2033,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
 		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
+		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
 
@@ -2440,6 +2473,20 @@ func IsClefModel(model string) bool {
 // snapshots share the prefix.
 func IsPerplexityDeciderModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
+// IsBasetenDecisionModel checks if the model is one of Baseten's decision models
+// ("decision-models/baseten-joey-2b-latest"), served on Model APIs' /v1/systemone
+// rather than chat. Baseten namespaces all of them under decision-models/.
+func IsBasetenDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "decision-models/")
+}
+
+// IsGeminiDecisionModel checks if the model is a Gemini Decision model
+// ("gemini-decision-1"), served on the Gemini API's /v1beta/decisions rather
+// than generateContent. The API's "models/" resource prefix is accepted.
+func IsGeminiDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "models/"), "gemini-decision-")
 }
 
 // ollamaDecisionModelPrefixes are the System One model families in Ollama's

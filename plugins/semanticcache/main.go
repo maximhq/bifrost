@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -809,7 +808,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// below must never dereference res: it gets only these owned bytes.
 	// Serialization failure is nonfatal — skip the write, keep the response
 	// flowing (issue #7233).
-	responseData, err := sonic.Marshal(res)
+	responseData, err := marshalCachedResponse(res)
 	if err != nil {
 		switch {
 		case !isStream:

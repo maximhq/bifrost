@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -54,6 +55,10 @@ func (ct *ChatTool) ToResponsesTool() *ResponsesTool {
 
 	// Convert custom tools
 	if ct.Type == ChatToolTypeCustom && ct.Custom != nil {
+		if ct.Custom.Name != "" {
+			rt.Name = &ct.Custom.Name
+		}
+		rt.Description = ct.Custom.Description
 		if ct.Custom.Format != nil {
 			rt.ResponsesToolCustom = &ResponsesToolCustom{
 				Format: &ResponsesToolCustomFormat{
@@ -81,7 +86,7 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	}
 
 	// Convert function tools
-	if rt.Type == "function" {
+	if rt.Type == ResponsesToolTypeFunction {
 		ct.Function = &ChatToolFunction{}
 
 		if rt.Name != nil {
@@ -97,8 +102,13 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	}
 
 	// Convert custom tools
-	if rt.Type == "custom" && rt.ResponsesToolCustom != nil {
-		ct.Custom = &ChatToolCustom{}
+	if rt.Type == ResponsesToolTypeCustom {
+		ct.Custom = &ChatToolCustom{Description: rt.Description}
+		if rt.Name != nil {
+			ct.Custom.Name = *rt.Name
+		}
+	}
+	if rt.Type == ResponsesToolTypeCustom && rt.ResponsesToolCustom != nil {
 		if rt.ResponsesToolCustom.Format != nil {
 			ct.Custom.Format = &ChatToolCustomFormat{
 				Type: rt.ResponsesToolCustom.Format.Type,
@@ -196,6 +206,10 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 		ResponsesToolMessage: &ResponsesToolMessage{
 			CallID: cm.ChatToolMessage.ToolCallID,
 		},
+	}
+	// A failed tool result is marked the way ToResponsesMessages marks it.
+	if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+		respMsg.Status = Ptr("incomplete")
 	}
 
 	// Extract output from content
@@ -300,8 +314,11 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 					tools[i] = ResponsesToolChoiceAllowedToolDef{
 						Type: tool.Type,
 					}
-					if tool.Function.Name != "" {
-						name := tool.Function.Name
+					name := tool.Function.Name
+					if tool.Type == string(ChatToolChoiceTypeCustom) && tool.Custom != nil {
+						name = tool.Custom.Name
+					}
+					if name != "" {
 						tools[i].Name = &name
 					}
 				}
@@ -379,7 +396,11 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 					Type: tool.Type,
 				}
 				if tool.Name != nil {
-					tools[i].Function = ChatToolChoiceFunction{Name: *tool.Name}
+					if tool.Type == string(ChatToolChoiceTypeCustom) {
+						tools[i].Custom = &ChatToolChoiceCustom{Name: *tool.Name}
+					} else {
+						tools[i].Function = ChatToolChoiceFunction{Name: *tool.Name}
+					}
 				}
 			}
 			// Copy the mode if present, otherwise default to "auto"
@@ -513,6 +534,11 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 	// Check if this is an assistant message with multiple tool calls that need expansion
 	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
+		// Text sent alongside the calls becomes its own message item ahead of them.
+		if cm.Content != nil && ((cm.Content.ContentStr != nil && *cm.Content.ContentStr != "") || len(cm.Content.ContentBlocks) > 0) {
+			textOnly := ChatMessage{Role: cm.Role, Content: cm.Content}
+			messages = append(messages, textOnly.ToResponsesMessages()...)
+		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
 			messageType := ResponsesMessageTypeFunctionCall
@@ -520,6 +546,21 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			var callID *string
 			if tc.ID != nil && *tc.ID != "" {
 				callID = tc.ID
+			}
+
+			if tc.Custom != nil {
+				messages = append(messages, ResponsesMessage{
+					ID:     Ptr("ctc_" + GetRandomString(50)),
+					Type:   Ptr(ResponsesMessageTypeCustomToolCall),
+					Role:   Ptr(ResponsesInputMessageRoleAssistant),
+					Status: Ptr("completed"),
+					ResponsesToolMessage: &ResponsesToolMessage{
+						CallID:                  callID,
+						Name:                    tc.Custom.Name,
+						ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: tc.Custom.Input},
+					},
+				})
+				continue
 			}
 
 			var namePtr *string
@@ -651,11 +692,18 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				}
 
 				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
-					Type:         blockType,
-					Text:         block.Text,
-					GuardContent: block.GuardContent,
+					Type:                  blockType,
+					Text:                  block.Text,
+					GuardContent:          block.GuardContent,
+					PromptCacheBreakpoint: block.PromptCacheBreakpoint, // egress decides whether the target takes it
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
+				if blockType == ResponsesOutputMessageContentTypeText {
+					rb.ResponsesOutputMessageContentText = &ResponsesOutputMessageContentText{
+						LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+					}
+				}
 
 				// Convert specific block types
 				if block.ImageURLStruct != nil {
@@ -686,6 +734,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			}
 			rm.Content = &ResponsesMessageContent{
 				ContentBlocks: responseBlocks,
+			}
+			if cm.Role == ChatMessageRoleAssistant {
+				rm.Status = new("completed")
 			}
 		}
 	}
@@ -792,7 +843,20 @@ func responsesBlocksWithoutToolChanges(blocks []ResponsesMessageContentBlock) []
 	return kept
 }
 
-func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
+// chatConvertibleRolelessItem reports whether ToChatMessages has a chat rendering for a
+// Responses item that arrives without a role.
+func chatConvertibleRolelessItem(t ResponsesMessageType) bool {
+	switch t {
+	case ResponsesMessageTypeMessage, ResponsesMessageTypeFunctionCall,
+		ResponsesMessageTypeFunctionCallOutput, ResponsesMessageTypeReasoning,
+		ResponsesMessageTypeRefusal, ResponsesMessageTypeCustomToolCall,
+		ResponsesMessageTypeCustomToolCallOutput:
+		return true
+	}
+	return false
+}
+
+func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
 	}
@@ -818,10 +882,51 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		pendingReasoningDetails = nil
 	}
 
-	for _, rm := range rms {
+	// textTurn is the index of an assistant text turn that the calls right after it belong to, or -1.
+	textTurn := -1
+	flushToolCalls := func() {
+		if len(currentToolCalls) == 0 {
+			return
+		}
+		// Copy to avoid shared slice header issues
+		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+		currentToolCalls = nil
+		if textTurn >= 0 && textTurn == len(chatMessages)-1 {
+			assistant := chatMessages[textTurn].ChatAssistantMessage
+			if assistant == nil {
+				assistant = &ChatAssistantMessage{}
+				chatMessages[textTurn].ChatAssistantMessage = assistant
+			}
+			assistant.ToolCalls = toolCallsCopy
+			attachPendingReasoning(assistant)
+			textTurn = -1
+			return
+		}
+		assistant := &ChatAssistantMessage{ToolCalls: toolCallsCopy}
+		attachPendingReasoning(assistant)
+		chatMessages = append(chatMessages, ChatMessage{
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
+		})
+		if sources != nil {
+			*sources = append(*sources, -1)
+		}
+		textTurn = -1
+	}
+
+	for idx, rm := range rms {
 		// Chat Completions has no mid-conversation effort item; emitting it would produce a
 		// roleless, contentless chat message.
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
+			continue
+		}
+		// Typed items Chat Completions has no equivalent for (mcp_call, mcp_list_tools,
+		// web_search_call, advisor_call, item_reference, ...) carry no role, and a roleless
+		// chat message is rejected with a 400 by every OpenAI-compatible upstream, so they
+		// are dropped. For an mcp_call standing for an Anthropic mcp_tool_result this drops
+		// the tool output too, on purpose: a function-call rendering would need a matching
+		// assistant tool_calls entry, which an orphan result does not have.
+		if rm.Role == nil && rm.Type != nil && !chatConvertibleRolelessItem(*rm.Type) {
 			continue
 		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
@@ -888,21 +993,23 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			}
 			continue
 		}
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeCustomToolCall {
+			if rm.ResponsesToolMessage != nil {
+				tc := ChatAssistantMessageToolCall{
+					Type:   Ptr(string(ChatToolTypeCustom)),
+					ID:     rm.ResponsesToolMessage.CallID,
+					Custom: &ChatAssistantMessageToolCallCustom{Name: rm.ResponsesToolMessage.Name},
+				}
+				if rm.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+					tc.Custom.Input = rm.ResponsesToolMessage.ResponsesCustomToolCall.Input
+				}
+				currentToolCalls = append(currentToolCalls, tc)
+			}
+			continue
+		}
 
 		// If we have collected tool calls, create an assistant message with them
-		if len(currentToolCalls) > 0 {
-			// Create a copy of the slice to avoid shared slice header issues
-			toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
-			assistant := &ChatAssistantMessage{
-				ToolCalls: toolCallsCopy,
-			}
-			attachPendingReasoning(assistant)
-			chatMessages = append(chatMessages, ChatMessage{
-				Role:                 ChatMessageRoleAssistant,
-				ChatAssistantMessage: assistant,
-			})
-			currentToolCalls = nil // Reset for next batch
-		}
+		flushToolCalls()
 
 		// Convert regular message
 		cm := ChatMessage{}
@@ -924,7 +1031,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		// Handle special message types
 		if rm.Type != nil {
 			switch *rm.Type {
-			case ResponsesMessageTypeFunctionCallOutput:
+			case ResponsesMessageTypeFunctionCallOutput, ResponsesMessageTypeCustomToolCallOutput:
 				cm.Role = ChatMessageRoleTool
 				if rm.ResponsesToolMessage != nil && rm.ResponsesToolMessage.CallID != nil {
 					cm.ChatToolMessage = &ChatToolMessage{
@@ -1094,21 +1201,17 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		}
 
 		chatMessages = append(chatMessages, cm)
+		if sources != nil {
+			*sources = append(*sources, idx)
+		}
+		textTurn = -1
+		if cm.Role == ChatMessageRoleAssistant && (cm.ChatAssistantMessage == nil || cm.ChatAssistantMessage.Refusal == nil) {
+			textTurn = len(chatMessages) - 1
+		}
 	}
 
 	// Handle any remaining tool calls at the end
-	if len(currentToolCalls) > 0 {
-		// Create a copy of the slice to avoid shared slice header issues
-		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
-		assistant := &ChatAssistantMessage{
-			ToolCalls: toolCallsCopy,
-		}
-		attachPendingReasoning(assistant)
-		chatMessages = append(chatMessages, ChatMessage{
-			Role:                 ChatMessageRoleAssistant,
-			ChatAssistantMessage: assistant,
-		})
-	}
+	flushToolCalls()
 
 	return chatMessages
 }
@@ -1119,11 +1222,15 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	}
 
 	usage := &ResponsesResponseUsage{
+		Estimation:     cu.Estimation,
 		InputTokens:    cu.PromptTokens,
 		OutputTokens:   cu.CompletionTokens,
 		TotalTokens:    cu.TotalTokens,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
+
+		InputTokensExplicitZero:  cu.PromptTokensExplicitZero,
+		OutputTokensExplicitZero: cu.CompletionTokensExplicitZero,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1134,6 +1241,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: cu.PromptTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.PromptTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -1145,9 +1255,13 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: cu.CompletionTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.CompletionTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(cu.Iterations)
 
 	return usage
 }
@@ -1158,11 +1272,15 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 	}
 
 	usage := &BifrostLLMUsage{
+		Estimation:       ru.Estimation,
 		PromptTokens:     ru.InputTokens,
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
+
+		PromptTokensExplicitZero:     ru.InputTokensExplicitZero,
+		CompletionTokensExplicitZero: ru.OutputTokensExplicitZero,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -1173,6 +1291,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: ru.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -1185,9 +1306,13 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: ru.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(ru.Iterations) // advisor passes are priced from these, so they survive the round trip
 
 	return usage
 }
@@ -1291,8 +1416,32 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
+	var customCallIDs map[string]struct{}
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		msg := &chatMsg
+		if chatMsg.Role == ChatMessageRoleTool {
+			// A function_call_output carries only the media every Responses provider reads.
+			msg = ToolResultForResponses(msg)
+		}
+		responsesMessages := msg.ToResponsesMessages()
+		for i := range responsesMessages {
+			item := &responsesMessages[i]
+			if item.Type == nil || item.ResponsesToolMessage == nil || item.CallID == nil {
+				continue
+			}
+			switch *item.Type {
+			case ResponsesMessageTypeCustomToolCall:
+				if customCallIDs == nil {
+					customCallIDs = make(map[string]struct{})
+				}
+				customCallIDs[*item.CallID] = struct{}{}
+			case ResponsesMessageTypeFunctionCallOutput:
+				// OpenAI pairs a custom_tool_call only with a custom_tool_call_output.
+				if _, ok := customCallIDs[*item.CallID]; ok {
+					item.Type = Ptr(ResponsesMessageTypeCustomToolCallOutput)
+				}
+			}
+		}
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
@@ -1316,6 +1465,10 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			// Map specific fields
 			MaxOutputTokens: cr.Params.MaxCompletionTokens, // max_completion_tokens -> max_output_tokens
 			Metadata:        cr.Params.Metadata,
+		}
+
+		if cr.Params.LogProbs != nil && *cr.Params.LogProbs {
+			brr.Params.Include = []string{ResponsesIncludeOutputTextLogProbs}
 		}
 
 		// Convert StreamOptions
@@ -1386,7 +1539,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	}
 
 	// Convert Input messages using existing ToChatMessages()
-	bcr.Input = ToChatMessages(brr.Input)
+	bcr.Input = ToChatMessages(brr.Input, nil)
 
 	// The Responses API carries its system prompt in the top-level `instructions` field rather than
 	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
@@ -1624,7 +1777,7 @@ func chatFinishReasonFromResponses(status *string, incompleteDetails *ResponsesR
 
 	if status != nil && *status == ResponsesResponseStatusCompleted {
 		for _, item := range output {
-			if item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall {
+			if item.Type != nil && (*item.Type == ResponsesMessageTypeFunctionCall || *item.Type == ResponsesMessageTypeCustomToolCall) {
 				return Ptr(string(BifrostFinishReasonToolCalls))
 			}
 		}
@@ -1707,6 +1860,41 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	return responsesResp
 }
 
+// ResponsesIncludeOutputTextLogProbs is the Responses include entry that returns token logprobs.
+const ResponsesIncludeOutputTextLogProbs = "message.output_text.logprobs"
+
+// chatLogProbsFromResponsesMessage collects one output message's output_text token logprobs.
+func chatLogProbsFromResponsesMessage(msg *ResponsesMessage) *BifrostLogProbs {
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeMessage || msg.Content == nil {
+		return nil
+	}
+	var content []ContentLogProb
+	for _, block := range msg.Content.ContentBlocks {
+		if block.ResponsesOutputMessageContentText == nil {
+			continue
+		}
+		for _, lp := range block.ResponsesOutputMessageContentText.LogProbs {
+			content = append(content, ContentLogProb(lp))
+		}
+	}
+	if len(content) == 0 {
+		return nil
+	}
+	return &BifrostLogProbs{Content: content}
+}
+
+// chatLogProbsFromTextLogProbs converts one output_text block's logprobs; empty yields nil.
+func chatLogProbsFromTextLogProbs(logprobs []ResponsesOutputMessageContentTextLogProb) *BifrostLogProbs {
+	if len(logprobs) == 0 {
+		return nil
+	}
+	content := make([]ContentLogProb, len(logprobs))
+	for i, lp := range logprobs {
+		content[i] = ContentLogProb(lp)
+	}
+	return &BifrostLogProbs{Content: content}
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesResponse to BifrostChatResponse format
 // This converts Responses API format to Chat-style fields (Choices)
 func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostChatResponse {
@@ -1734,7 +1922,8 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	// Create Choices from ResponsesResponse
 	if len(responsesResp.Output) > 0 {
 		// Convert ResponsesMessages back to ChatMessages
-		chatMessages := ToChatMessages(responsesResp.Output)
+		var sources []int
+		chatMessages := ToChatMessages(responsesResp.Output, &sources)
 
 		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
 
@@ -1748,6 +1937,9 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 					Message: &chatMsg,
 				},
 			}
+			if src := sources[i]; src >= 0 {
+				choice.LogProbs = chatLogProbsFromResponsesMessage(&responsesResp.Output[src])
+			}
 			choices = append(choices, choice)
 		}
 
@@ -1758,6 +1950,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
 		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
+		chatResp.Usage.ToolUsage = chatResp.Usage.ToolUsage.withoutZeroImageGen()
 	}
 
 	// Copy other relevant fields
@@ -2637,6 +2830,15 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	return responses
 }
 
+// chatToolCallIndex maps a Responses output index to a chat tool call index, the way the
+// function call events do: a leading reasoning item takes output index 0.
+func chatToolCallIndex(outputIndex *int) uint16 {
+	if outputIndex != nil && *outputIndex > 0 {
+		return uint16(*outputIndex - 1)
+	}
+	return 0
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
 func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
 	if rsr == nil {
@@ -2669,7 +2871,8 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 	case ResponsesStreamResponseTypeOutputTextDelta:
 		resp.Choices = []BifrostResponseChoice{
 			{
-				Index: 0,
+				Index:    0,
+				LogProbs: chatLogProbsFromTextLogProbs(rsr.LogProbs),
 				ChatStreamResponseChoice: &ChatStreamResponseChoice{
 					Delta: &ChatStreamResponseChoiceDelta{
 						Content: rsr.Delta,
@@ -2732,10 +2935,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				return resp
 			}
 			funcType := "function"
-			var idx uint16
-			if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-				idx = uint16(*rsr.OutputIndex - 1)
-			}
+			idx := chatToolCallIndex(rsr.OutputIndex)
 			resp.Choices = []BifrostResponseChoice{
 				{
 					Index: 0,
@@ -2755,6 +2955,24 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 					},
 				},
 			}
+			return resp
+
+		case ResponsesMessageTypeCustomToolCall:
+			if rsr.Item.ResponsesToolMessage == nil {
+				resp.Choices = []BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{}}}}
+				return resp
+			}
+			resp.Choices = []BifrostResponseChoice{{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{
+					ToolCalls: []ChatAssistantMessageToolCall{{
+						Index:  chatToolCallIndex(rsr.OutputIndex),
+						Type:   Ptr(string(ChatToolTypeCustom)),
+						ID:     rsr.Item.ResponsesToolMessage.CallID,
+						Custom: &ChatAssistantMessageToolCallCustom{Name: rsr.Item.ResponsesToolMessage.Name},
+					}},
+				}},
+			}}
 			return resp
 
 		case ResponsesMessageTypeMessage:
@@ -2797,10 +3015,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			}
 			return resp
 		}
-		var idx uint16
-		if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-			idx = uint16(*rsr.OutputIndex - 1)
-		}
+		idx := chatToolCallIndex(rsr.OutputIndex)
 
 		resp.Choices = []BifrostResponseChoice{
 			{
@@ -2819,6 +3034,17 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				},
 			},
 		}
+		return resp
+
+	case ResponsesStreamResponseTypeCustomToolCallInputDelta:
+		delta := &ChatStreamResponseChoiceDelta{}
+		if rsr.Delta != nil {
+			delta.ToolCalls = []ChatAssistantMessageToolCall{{
+				Index:  chatToolCallIndex(rsr.OutputIndex),
+				Custom: &ChatAssistantMessageToolCallCustom{Input: *rsr.Delta},
+			}}
+		}
+		resp.Choices = []BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta}}}
 		return resp
 
 	case ResponsesStreamResponseTypeCompleted, ResponsesStreamResponseTypeIncomplete:
@@ -2840,6 +3066,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			output = rsr.Response.Output
 			if rsr.Response.Usage != nil {
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+				resp.Usage.ToolUsage = resp.Usage.ToolUsage.withoutZeroImageGen()
 			}
 		}
 
@@ -2899,6 +3126,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2934,6 +3162,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2985,6 +3214,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3007,6 +3237,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
+			RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
 			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,

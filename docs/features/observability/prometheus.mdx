@@ -19,7 +19,7 @@ Bifrost exposes Prometheus metrics via two methods:
 
 ## Pull-based Scraping
 
-Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
+Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed. Under a path prefix (`server.base_path`) a scraper that goes through the proxy targets `/<prefix>/metrics`, for example `metrics_path: /bifrost/metrics`; the dashboard's Prometheus connector shows the exact URL.
 
 <Info>
   When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires credentials. You can authenticate the scraper with either the admin **Basic auth** credentials (`admin_username` / `admin_password` from your `auth_config`) or, on Enterprise, a **Bifrost API key** with the Metrics permission. Without valid credentials, Prometheus receives `401 Unauthorized` responses and scraping silently fails.
@@ -230,7 +230,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | Metric | Type | Description |
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
-| `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and reading the provider's stream, retries included. Excludes provider queue wait. WebSocket and realtime turns are timed from the pre-hook to the post-hook |
+| `bifrost_provider_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue |
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |

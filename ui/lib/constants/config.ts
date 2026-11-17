@@ -40,6 +40,7 @@ export const ModelPlaceholders = {
 	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
 	bedrock_mantle: "e.g. anthropic.claude-opus-4-8, openai.gpt-oss-120b",
+	sagemaker: "e.g. my-qwen-endpoint, us-west-2/my-endpoint/my-inference-component",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
 	deepseek: "e.g. deepseek-v4-flash, deepseek-v4-pro",
@@ -64,14 +65,18 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
-	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	sarvam: "e.g. sarvam-105b, glm5.3-flash, gemma4",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
+	machgen: "e.g. MiniMax-H3, Kling-v3, FLUX.2-dev",
+	baseten: "e.g. zai-org/GLM-5.3, openai/gpt-oss-120b",
+	kimchi: "e.g. deepseek-v4.1-flash, glm-5.3-flash, minimax-m3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
+	soniox: "e.g. stt-async-v6, stt-rt-v6, tts-rt-v2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -79,6 +84,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	azure: true,
 	bedrock: true,
 	bedrock_mantle: true,
+	sagemaker: true,
 	cerebras: true,
 	cohere: true,
 	deepseek: true,
@@ -107,10 +113,14 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	minimax: true,
 	byteplus: true,
+	machgen: true,
+	baseten: true,
+	kimchi: true,
 	databricks: false,
 	cloudflare: true,
 	"github-copilot": true,
 	typesafe: true,
+	soniox: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -146,7 +156,8 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// pending_verification, deliberately distinct from needs_reauth's red
 	// ("action required").
 	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
-	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
+	pending_verification:
+		"bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
 	disabled: "bg-orange-100 text-orange-800 border-orange-200 dark:border-orange-800/40 dark:bg-orange-950/40 dark:text-orange-300",
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment

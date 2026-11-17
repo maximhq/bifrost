@@ -594,14 +594,63 @@ func logInstructions(entry *logstore.Log) string {
 // thing the person typed, and the same ones in every request.
 var agentReminder = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
 
-// userTurnText is one user turn as it is read for embedding and naming: what
-// the person wrote, on one line, with the agent's envelopes taken out.
+// codexEnvelope matches the context Codex sends as user turns of its own
+// before the person's task: the project's AGENTS.md, the environment, loaded
+// skills, and its notices about aborted turns and subagents. The pairs mirror
+// the complexity router's codexContextTags. Only Codex traffic is matched
+// against them, since a bare <skill> in anyone else's message is their text.
+var codexEnvelope = regexp.MustCompile(`(?s)# AGENTS\.md instructions.*?</INSTRUCTIONS>` +
+	`|<environment_context>.*?</environment_context>` +
+	`|<skill>.*?</skill>` +
+	`|<turn_aborted>.*?</turn_aborted>` +
+	`|<subagent_notification>.*?</subagent_notification>` +
+	`|<codex_internal_context.*?</codex_internal_context>` +
+	`|<goal_context>.*?</goal_context>` +
+	`|<recommended_plugins>.*?</recommended_plugins>`)
+
+// codexEnvelopeOpen matches the tags codexEnvelope opens with. One still in
+// the text once codexEnvelope has run has no closing tag after it.
+var codexEnvelopeOpen = regexp.MustCompile(`# AGENTS\.md instructions|<environment_context>|<skill>|<turn_aborted>` +
+	`|<subagent_notification>|<codex_internal_context|<goal_context>|<recommended_plugins>`)
+
+// isCodexLog reports whether a request came from Codex, by the same user
+// agents the complexity router recognises it by.
+func isCodexLog(entry *logstore.Log) bool {
+	userAgent := stringValue(entry.UserAgent)
+	return schemas.CodexCLI.Matches(userAgent) || schemas.CodexDesktop.Matches(userAgent)
+}
+
+// userTurnText is one user turn as it is read for embedding, naming and
+// previews: what the person wrote, on one line, with the agent's envelopes
+// taken out.
 //
 // Without this, every Claude Code request opened with the same contents of
 // AGENTS.md, so they embedded alike whatever was asked and clustered into one
-// topic about the project's instructions.
-func userTurnText(text string) string {
-	return strings.Join(strings.Fields(agentReminder.ReplaceAllString(text, " ")), " ")
+// topic about the project's instructions. Codex does the same with envelopes
+// of its own, which codexEnvelope takes out.
+func userTurnText(text string, codex bool) string {
+	text = agentReminder.ReplaceAllString(text, " ")
+	if codex {
+		text = codexEnvelope.ReplaceAllString(text, " ")
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// summaryTurnText reads a stored ContentSummary as userTurnText reads a turn.
+//
+// The summary is capped at logstore.MaxContentSummaryBytes, so one the cap
+// shortened can end inside a Codex envelope, before its closing tag, and
+// everything from that tag on is the envelope. Only a summary long enough to
+// have been cut is read that way. In a whole message an unmatched tag is the
+// person's own text - a Codex user asking why <skill> shows up - and is kept.
+func summaryTurnText(summary string, codex bool) string {
+	text := userTurnText(summary, codex)
+	if codex && len(summary) > logstore.MaxContentSummaryBytes-utf8.UTFMax {
+		if cut := codexEnvelopeOpen.FindStringIndex(text); cut != nil {
+			text = strings.TrimSpace(text[:cut[0]])
+		}
+	}
+	return text
 }
 
 // conversationUserTexts returns what a conversation opened with and the
@@ -613,12 +662,15 @@ func userTurnText(text string) string {
 // history was not kept and only the last message is known. A turn that was
 // nothing but an agent's envelope is not a turn.
 func conversationUserTexts(entry *logstore.Log) (opening, last string) {
+	codex := isCodexLog(entry)
 	var turns []string
+	sawUser := false
 	for index := range entry.InputHistoryParsed {
 		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
 			continue
 		}
-		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content)); text != "" {
+		sawUser = true
+		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content), codex); text != "" {
 			turns = append(turns, text)
 		}
 	}
@@ -627,16 +679,23 @@ func conversationUserTexts(entry *logstore.Log) (opening, last string) {
 		if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
 			continue
 		}
-		if text := userTurnText(responsesContentText(message.Content)); text != "" {
+		sawUser = true
+		if text := userTurnText(responsesContentText(message.Content), codex); text != "" {
 			turns = append(turns, text)
 		}
 	}
 	if len(turns) == 0 {
-		// The history was not kept, or held nothing of the person's: the
-		// stored preview is all there is.
-		last = userTurnText(entry.BuildInputContentSummary())
+		// User turns that were all setup have nothing to give: the stored
+		// preview is that same setup, capped short enough to cut an envelope
+		// before it closes. Only when the history was not kept, or a list row
+		// kept just its last element and that was not a user turn, is the
+		// preview all there is.
+		if sawUser {
+			return "", ""
+		}
+		last = userTurnText(entry.BuildInputContentSummary(), codex)
 		if last == "" {
-			last = userTurnText(entry.ContentSummary)
+			last = summaryTurnText(entry.ContentSummary, codex)
 		}
 		return "", last
 	}

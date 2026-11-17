@@ -3,6 +3,8 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2372,9 +2374,426 @@ func TestResolveAccessStampsVirtualKeyMetadata(t *testing.T) {
 	}
 }
 
+// dimensionRecorder records the trace dimensions governance writes and backs the root span with a
+// real span, starting from the attributes the transport would have set.
+type dimensionRecorder struct {
+	schemas.NoOpTracer
+	traceID   string
+	traceDims map[string]string
+	root      *schemas.Span
+}
+
+type rootHandle struct{}
+
+func newDimensionRecorder(rootAttrs map[string]any) *dimensionRecorder {
+	return &dimensionRecorder{root: &schemas.Span{SpanID: "root", Attributes: maps.Clone(rootAttrs)}}
+}
+
+func (r *dimensionRecorder) MergeTraceDimensions(traceID string, dims map[string]string) {
+	r.traceID = traceID
+	r.traceDims = dims
+}
+
+func (r *dimensionRecorder) GetSpanHandleByID(_ string, spanID *string) schemas.SpanHandle {
+	if spanID != nil {
+		return nil
+	}
+	return rootHandle{}
+}
+
+func (r *dimensionRecorder) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
+	if _, ok := handle.(rootHandle); ok {
+		return r.root
+	}
+	return nil
+}
+
+func (r *dimensionRecorder) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	r.SpanFromHandle(handle).SetAttribute(key, value)
+}
+
+// TestResolveAccessStampsVirtualKeyMetadataIntoDimensions checks that the key's metadata reaches
+// the dimensions on the context, the trace and the root span, overriding a header dimension of the
+// same name, without touching the header map. "path" and "method" stay out, as for headers. On the
+// root span a key never replaces an attribute Bifrost set: metadata named after the content-logging
+// flag must not turn content back on for connectors.
+func TestResolveAccessStampsVirtualKeyMetadataIntoDimensions(t *testing.T) {
+	headerRoot := map[string]any{"team": "header", "region": "eu", "http.request.method": "POST"}
+	for _, tc := range []struct {
+		name           string
+		metadata       map[string]string
+		disableContent bool
+		wantCtx        map[string]string
+		wantAdded      map[string]string
+		wantRoot       map[string]any
+	}{
+		{
+			name:     "no metadata leaves the dimensions alone",
+			metadata: nil,
+			wantCtx:  map[string]string{"team": "header", "region": "eu"},
+			wantRoot: headerRoot,
+		},
+		{
+			name:      "metadata is added and wins over a header",
+			metadata:  map[string]string{"team": "vk", "cost_center": "cc-42", "path": "/vk", "method": "PUT"},
+			wantCtx:   map[string]string{"team": "vk", "region": "eu", "cost_center": "cc-42"},
+			wantAdded: map[string]string{"team": "vk", "cost_center": "cc-42"},
+			wantRoot:  map[string]any{"team": "vk", "region": "eu", "http.request.method": "POST", "cost_center": "cc-42"},
+		},
+		{
+			name:           "metadata never replaces an attribute bifrost set on the root span",
+			metadata:       map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			disableContent: true,
+			wantCtx:        map[string]string{"team": "header", "region": "eu", schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantAdded:      map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantRoot:       map[string]any{"team": "header", "region": "eu", "http.request.method": "POST", schemas.AttrBifrostContentLoggingDisabled: true, "cost_center": "cc-42"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.Metadata = tc.metadata
+			if tc.disableContent {
+				vk.DisableContentLogging = boolPtr(true)
+			}
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			recorder := newDimensionRecorder(headerRoot)
+			headerDims := map[string]string{"team": "header", "region": "eu"}
+			ctx := emptyCtx()
+			ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+			ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantCtx, ctx.Value(schemas.BifrostContextKeyDimensions))
+			assert.Equal(t, map[string]string{"team": "header", "region": "eu"}, headerDims, "the header map must not be changed in place")
+			assert.Equal(t, tc.wantRoot, recorder.root.Attributes)
+			assert.Equal(t, tc.disableContent, schemas.ContentLoggingDisabledForTrace(&schemas.Trace{RootSpan: recorder.root}), "content logging decision connectors read")
+			if tc.wantAdded == nil {
+				assert.Nil(t, recorder.traceDims, "nothing merged into the trace")
+				return
+			}
+			assert.Equal(t, "trace-1", recorder.traceID)
+			assert.Equal(t, tc.wantAdded, recorder.traceDims)
+		})
+	}
+}
+
 // TestVirtualKeyMetadataContextKeyValue pins the context key's wire string. The logging plugin and
 // the HTTP transport declare their own copy of it, so changing it here alone would silently stop
 // virtual key metadata from reaching the logs.
 func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
 	assert.Equal(t, schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata"), VirtualKeyMetadataContextKey)
+}
+
+// BenchmarkStampVirtualKeyMetadata measures stamping a key's metadata on a traced request, with
+// and without metadata (the common case, which must stay free).
+func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{name: "no_metadata", metadata: nil},
+		{name: "two_entries", metadata: map[string]string{"cost_center": "cc-42", "owner": "platform"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			vk := &configstoreTables.TableVirtualKey{Metadata: bc.metadata}
+			recorder := newDimensionRecorder(nil)
+			headerDims := map[string]string{"team": "header"}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+				ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+				stampVirtualKeyMetadata(ctx, vk)
+			}
+		})
+	}
+}
+
+// TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer checks a team's keys charge and log its new
+// customer as soon as the team changes, and none once it is cleared.
+func TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer(t *testing.T) {
+	ctx := context.Background()
+	budgetA := buildBudgetWithUsage("budget-a", 1000.0, 0.0, "1d")
+	budgetB := buildBudgetWithUsage("budget-b", 1000.0, 0.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", budgetA)
+	customerB := buildCustomer("customer-b", "Customer B", budgetB)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk", "sk-bf-team", "Team key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	vk.TeamID = &team.ID
+	vk.Team = team
+
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budgetA, *budgetB},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// chargedAndStamped reports the customer budgets charged and the customer logged.
+	chargedAndStamped := func() (charged []string, stamped string) {
+		key, ok := store.GetVirtualKey(ctx, "sk-bf-team")
+		require.True(t, ok)
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk")
+		require.True(t, ok)
+		require.Same(t, key, byID, "both lookups serve the same refreshed key")
+		reqCtx := emptyCtx()
+		budgets, _ := store.HolderLimits(reqCtx, store.permitForVirtualKey(reqCtx, key))
+		for _, b := range budgets {
+			if b.ID == "budget-a" || b.ID == "budget-b" {
+				charged = append(charged, b.ID)
+			}
+		}
+		reqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-team"), nil, nil, nil, nil, nil, nil))
+		StampVirtualKeyScope(reqCtx, key)
+		if identity := reqCtx.Grant().Identity(); identity != nil && len(identity.Customers()) > 0 {
+			stamped = identity.Customers()[0].ID
+		}
+		return charged, stamped
+	}
+
+	charged, stamped := chargedAndStamped()
+	require.Equal(t, []string{"budget-a"}, charged)
+	require.Equal(t, "customer-a", stamped)
+
+	moved := *team
+	moved.CustomerID = &customerB.ID
+	moved.Customer = customerB
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	charged, stamped = chargedAndStamped()
+	require.Equal(t, []string{"budget-b"}, charged, "the new customer is charged, the old one is not")
+	require.Equal(t, "customer-b", stamped)
+
+	cleared := *team
+	cleared.CustomerID = nil
+	cleared.Customer = nil
+	store.UpdateTeamInMemory(ctx, &cleared, nil)
+	charged, stamped = chargedAndStamped()
+	require.Empty(t, charged, "a team with no customer charges none")
+	require.Empty(t, stamped)
+}
+
+// TestGovernanceStore_TeamChangesReachGracePeriodAlias checks a team update and delete reach a
+// key's rotated-out value as well as its current one.
+func TestGovernanceStore_TeamChangesReachGracePeriodAlias(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+
+	moved := *team
+	moved.CustomerID = &customer.ID
+	moved.Customer = customer
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		require.NotNil(t, key.Team, value)
+		assert.Equal(t, "customer-b", *key.Team.CustomerID, value)
+	}
+
+	store.DeleteTeamInMemory(ctx, "team")
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		assert.Nil(t, key.Team, value)
+		assert.Nil(t, key.TeamID, value)
+	}
+}
+
+// TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh races key deletes against team refreshes and
+// checks a deleted key never survives in either lookup.
+func TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh(t *testing.T) {
+	ctx := context.Background()
+	team := buildTeam("team", "Team", nil)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Teams: []configstoreTables.TableTeam{*team},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+		vk.TeamID = &team.ID
+		vk.Team = team
+		store.CreateVirtualKeyInMemory(ctx, vk)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			renamed := *team
+			store.UpdateTeamInMemory(ctx, &renamed, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			store.DeleteVirtualKeyInMemory(ctx, "vk1")
+		}()
+		wg.Wait()
+
+		_, found := store.GetVirtualKey(ctx, "sk-bf-key")
+		require.False(t, found, "iteration %d: deleted key still authenticates", i)
+		_, found = store.GetVirtualKeyByID(ctx, "vk1")
+		require.False(t, found, "iteration %d: deleted key still in the ID index", i)
+	}
+}
+
+// TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent races team updates, key edits and key
+// rotations, then checks a key's value, ID and grace-period entries agree and follow the last team.
+func TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent(t *testing.T) {
+	ctx := context.Background()
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk1", "sk-bf-v0", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	for round := 0; round < 200; round++ {
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			moved := *team
+			moved.CustomerID = &customerB.ID
+			moved.Customer = customerB
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			moved := *team
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func(round int) {
+			defer wg.Done()
+			current, ok := store.GetVirtualKeyByID(ctx, "vk1")
+			if !ok {
+				return
+			}
+			rotated := *current
+			rotated.PreviousValue = current.Value
+			rotated.PreviousValueExpiresAt = &exp
+			rotated.Value = *schemas.NewSecretVar(fmt.Sprintf("sk-bf-v%d", round+1))
+			store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+		}(round)
+		wg.Wait()
+
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk1")
+		require.True(t, ok)
+		byValue, ok := store.GetVirtualKey(ctx, byID.Value.GetValue())
+		require.True(t, ok, "round %d: current value resolves", round)
+		require.Same(t, byID, byValue, "round %d: ID and value entries agree", round)
+		if prev := byID.PreviousValue.GetValue(); prev != "" {
+			alias, ok := store.GetVirtualKey(ctx, prev)
+			require.True(t, ok, "round %d: grace alias resolves", round)
+			require.Same(t, byID, alias, "round %d: grace alias agrees", round)
+		}
+		cachedTeam, _ := store.teams.Load("team")
+		require.Same(t, cachedTeam, byID.Team, "round %d: the key follows the cached team", round)
+	}
+}
+
+// TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst checks a key cached before its
+// team picks up the team's customer once the team lands.
+func TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-a", "Customer A", nil)
+	stale := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+	vk.TeamID = &stale.ID
+	vk.Team = stale
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customer.ID
+	team.Customer = customer
+	store.CreateTeamInMemory(ctx, team)
+
+	key, ok := store.GetVirtualKey(ctx, "sk-bf-key")
+	require.True(t, ok)
+	require.NotNil(t, key.Team)
+	require.NotNil(t, key.Team.CustomerID)
+	assert.Equal(t, "customer-a", *key.Team.CustomerID)
+}
+
+// TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit checks a budget reset that read a team
+// before a team edit applies its reset to the edited team instead of putting the old one back.
+func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
+	ctx := context.Background()
+	budget := buildBudgetWithUsage("team-budget", 100.0, 40.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", budget)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Budgets:   []configstoreTables.TableBudget{*budget},
+		Teams:     []configstoreTables.TableTeam{*team},
+		Customers: []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// The reset reads the team, then a team edit moves it to customer B before the reset writes.
+	readByReset, ok := store.teams.Load("team")
+	require.True(t, ok)
+	edited := *readByReset.(*configstoreTables.TableTeam)
+	edited.CustomerID = &customerB.ID
+	edited.Customer = customerB
+	store.teams.Store("team", &edited)
+
+	patchCached(&store.teams, "team", readByReset, func(cur *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+		clone := *cur
+		clone.Budgets = append([]configstoreTables.TableBudget(nil), cur.Budgets...)
+		clone.Budgets[0].CurrentUsage = 0
+		return &clone
+	})
+
+	got, _ := store.teams.Load("team")
+	final := got.(*configstoreTables.TableTeam)
+	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
+	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
 }

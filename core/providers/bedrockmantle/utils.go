@@ -5,6 +5,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -74,4 +77,18 @@ func (provider *BedrockMantleProvider) resolveRegion(ctx *schemas.BifrostContext
 		return key.BedrockMantleKeyConfig.Region.GetValue()
 	}
 	return defaultMantleRegion
+}
+
+// dsmlChunkDecoder decodes a chat stream chunk and runs it through f; nil when f is nil.
+func dsmlChunkDecoder(f *bedrock.DSMLStreamFilter) func([]byte, *schemas.BifrostChatResponse, []byte, bool, bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if f == nil {
+		return nil
+	}
+	return func(body []byte, resp *schemas.BifrostChatResponse, _ []byte, _, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
+		if err := sonic.Unmarshal(body, resp); err != nil {
+			return nil, nil, providerUtils.NewBifrostOperationError("failed to parse stream response", err)
+		}
+		f.FilterChatChunk(resp)
+		return nil, nil, nil
+	}
 }

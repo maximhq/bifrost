@@ -24,6 +24,38 @@ interface UseColumnConfigOptions {
 	defaultHidden?: string[];
 }
 
+/**
+ * A saved config merged with the table's current columns: saved columns keep their order and flags,
+ * removed ones are dropped, and a column added since the config was saved goes right after the
+ * column that precedes it in the default order, so it lands where a fresh table shows it rather
+ * than at the far end.
+ */
+export function mergeColumnEntries(
+	saved: ColumnConfigEntry[],
+	configurableIds: string[],
+	defaultHidden: ReadonlySet<string>,
+): ColumnConfigEntry[] {
+	const result: ColumnConfigEntry[] = [];
+	const seen = new Set<string>();
+	for (const entry of saved) {
+		if (configurableIds.includes(entry.id) && !seen.has(entry.id)) {
+			result.push(entry);
+			seen.add(entry.id);
+		}
+	}
+	configurableIds.forEach((id, i) => {
+		if (seen.has(id)) return;
+		const before = configurableIds
+			.slice(0, i)
+			.reverse()
+			.find((prev) => seen.has(prev));
+		const at = before === undefined ? 0 : result.findIndex((e) => e.id === before) + 1;
+		result.splice(at, 0, { id, visible: !defaultHidden.has(id), pinned: false });
+		seen.add(id);
+	});
+	return result;
+}
+
 // URL format: col1,col2:h,col3:l,col4:r
 // no suffix = visible & unpinned, :h = hidden, :l = pinned left, :r = pinned right
 function serialize(entries: ColumnConfigEntry[]): string {
@@ -96,28 +128,10 @@ export function useColumnConfig({ columnIds, paramName = "cols", fixedColumns, s
 	}, []);
 
 	// Merge URL config with available columns (handles added/removed columns)
-	const entries = useMemo(() => {
-		const parsed = deserialize(raw);
-		const result: ColumnConfigEntry[] = [];
-		const seen = new Set<string>();
-
-		// Columns present in URL config that still exist
-		for (const entry of parsed) {
-			if (configurableIds.includes(entry.id) && !seen.has(entry.id)) {
-				result.push(entry);
-				seen.add(entry.id);
-			}
-		}
-
-		// New columns not yet in URL config
-		for (const id of configurableIds) {
-			if (!seen.has(id)) {
-				result.push({ id, visible: !defaultHiddenSet.has(id), pinned: false });
-			}
-		}
-
-		return result;
-	}, [raw, configurableIds, defaultHiddenSet]);
+	const entries = useMemo(
+		() => mergeColumnEntries(deserialize(raw), configurableIds, defaultHiddenSet),
+		[raw, configurableIds, defaultHiddenSet],
+	);
 
 	// TanStack table state
 	const columnOrder = useMemo(() => [...fixedLeft, ...entries.map((e) => e.id), ...fixedRight], [entries, fixedLeft, fixedRight]);

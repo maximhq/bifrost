@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -210,6 +211,14 @@ type badRequestError struct{ err error }
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
 
+// IsBadRequestError reports whether err is a validation failure the caller should answer with 400,
+// as opposed to a store failure. Exported so builds that reuse this package's reconcilers can map
+// their errors the same way its own handlers do.
+func IsBadRequestError(err error) bool {
+	var bad *badRequestError
+	return errors.As(err, &bad)
+}
+
 // IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
 func IsUniqueConstraintError(err error, identifiers ...string) bool {
 	if err == nil {
@@ -277,6 +286,13 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	sendBifrostErrorWithContext(ctx, nil, bifrostErr)
+}
+
+// sendBifrostErrorWithContext is SendBifrostError for a caller that holds the request's Bifrost
+// context, so the error headers are written once, the context-only ones (fallback index, upstream
+// latency) included, as GenericRouter.sendError writes them.
+func sendBifrostErrorWithContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
 	// Before sanitizing: the span keeps the unredacted detail core already stamps.
 	stampRootSpanError(ctx, bifrostErr)
 	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
@@ -289,10 +305,10 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 
 	// Routed-identity headers from the error itself (provider/model/request-type +
 	// routing_info incl. is-fallback). Callers forward provider headers before this,
-	// so bifrost identity wins. No bifrostCtx here, so the ctx-only fallback-index /
+	// so bifrost identity wins. Without a bifrostCtx the ctx-only fallback-index /
 	// upstream-latency headers are omitted on native errors — the routing_info-*
 	// headers still carry which provider ran and whether a fallback fired.
-	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
 	if lib.ExtraFieldsInHeaders(ctx) {

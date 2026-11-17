@@ -21,7 +21,8 @@ import (
 // resolves nothing; tests of the admission step install a fakeAdmitter.
 func newTestMCPHandler(cfg *lib.Config) *MCPServerHandler {
 	h := &MCPServerHandler{config: cfg}
-	h.mcpServer.Store(server.NewMCPServer("test", "v0", server.WithToolCapabilities(true)))
+	h.mcpServer = server.NewMCPServer("test", "v0", server.WithToolCapabilities(true))
+	h.transport = newMCPTransport(h.mcpServer)
 	return h
 }
 
@@ -62,7 +63,7 @@ func stringFromCtx(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) s
 func restrictedAccess(client string, tools ...string) schemas.Access {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-1", "Caller Key", true, false, nil,
 		[]schemas.MCPPermit{{Client: client + "-id", ClientName: client, Tools: tools}})
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // TestGetVKFromRequest verifies the VK value is extracted from each supported
@@ -95,6 +96,11 @@ func TestGetVKFromRequest(t *testing.T) {
 		{
 			name:   "x-goog-api-key header",
 			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("x-goog-api-key", vk) },
+			wantVK: vk,
+		},
+		{
+			name:   "xi-api-key header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("xi-api-key", vk) },
 			wantVK: vk,
 		},
 		{
@@ -562,6 +568,57 @@ func TestAdmit(t *testing.T) {
 		require.NotNil(t, refusal)
 		assert.Equal(t, fasthttp.StatusUnauthorized, refusal.status)
 		assert.Nil(t, admitter.seen)
+	})
+}
+
+// TestMCPRefusals checks what a refused /mcp request is answered with: every 401 in a mode that
+// accepts Bifrost-issued tokens points at the authorization server, and a governance refusal keeps
+// the error type that execute and chat return for it.
+func TestMCPRefusals(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	goneVKToken := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+		c["bf_mode"] = string(schemas.MCPAuthModeVK)
+		c["sub"] = "deleted-vk"
+	})
+
+	t.Run("a token whose virtual key is gone gets a 401 with WWW-Authenticate", func(t *testing.T) {
+		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
+			store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{}}
+			h := newTestMCPHandler(newTestOAuth2Config(store, mode, false))
+			ctx, bifrostCtx := newRequestCtx()
+			ctx.Request.Header.Set("Authorization", "Bearer "+goneVKToken)
+
+			refusal := h.admit(ctx, bifrostCtx)
+			require.NotNil(t, refusal, mode)
+			assert.Equal(t, fasthttp.StatusUnauthorized, refusal.status, mode)
+			assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"), mode)
+		}
+	})
+
+	t.Run("a governance refusal keeps its error type on the wire", func(t *testing.T) {
+		h := newTestMCPHandler(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeHeaders, false))
+		h.admitter = &fakeAdmitter{refusal: &schemas.BifrostError{
+			Type:       new("access_blocked"),
+			StatusCode: new(fasthttp.StatusForbidden),
+			Error:      &schemas.ErrorField{Message: "virtual key is inactive"},
+		}}
+		ctx, _ := newRequestCtx()
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+		h.handleMCPServer(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+		var body struct {
+			Type  *string `json:"type"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body), string(ctx.Response.Body()))
+		require.NotNil(t, body.Type, string(ctx.Response.Body()))
+		assert.Equal(t, "access_blocked", *body.Type)
+		assert.Equal(t, "virtual key is inactive", body.Error.Message)
 	})
 }
 

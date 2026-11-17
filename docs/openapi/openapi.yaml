@@ -61,7 +61,7 @@ servers:
     variables:
       baseUrl:
         default: http://localhost:8080
-        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
+        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com, or https://mycompany.com/bifrost when served under server.base_path)
 
 # Fallback only. Every operation MUST declare its own `security` (use `security: []`
 # for genuinely public endpoints) - `spec_invariants_test.py` enforces this. This
@@ -168,6 +168,8 @@ tags:
     description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
     description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
+  - name: Relays
+    description: Relays to non-LLM HTTP APIs - endpoint management, usage preview, Relay Logs and the /relay data plane
 
 paths:
   # ==================== Unified Inference API ====================
@@ -747,10 +749,16 @@ paths:
   # Configuration
   /api/config:
     $ref: "./paths/management/config.yaml#/config"
+  /api/config/metadata:
+    $ref: "./paths/management/config.yaml#/config-metadata"
   /api/version:
     $ref: "./paths/management/config.yaml#/version"
   /api/proxy-config:
     $ref: "./paths/management/config.yaml#/proxy-config"
+  /api/feature-flags:
+    $ref: "./paths/management/featureflags.yaml#/feature-flags"
+  /api/feature-flags/{id}:
+    $ref: "./paths/management/featureflags.yaml#/feature-flag-by-id"
   /api/pricing/force-sync:
     $ref: "./paths/management/config.yaml#/force-sync-pricing"
 
@@ -759,6 +767,10 @@ paths:
     $ref: "./paths/management/users.yaml#/users"
   /api/governance/users/{user_id}:
     $ref: "./paths/management/users.yaml#/users-by-id"
+  /api/governance/users/me/limits:
+    $ref: "./paths/management/users.yaml#/users-me-limits"
+  /api/governance/users/{user_id}/limits:
+    $ref: "./paths/management/users.yaml#/users-limits-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
   /api/governance/users/me/vk-creation-policy:
@@ -767,8 +779,6 @@ paths:
     $ref: "./paths/management/users.yaml#/users-role"
   /api/governance/users/{user_id}/teams:
     $ref: "./paths/management/users.yaml#/users-teams"
-  /api/governance/users/{user_id}/governance:
-    $ref: "./paths/management/users.yaml#/users-governance"
   /api/governance/users/{user_id}/virtual-keys:
     $ref: "./paths/management/governanceextensions.yaml#/user-virtual-keys"
   /api/governance/users/email/{email}/virtual-keys:
@@ -787,6 +797,8 @@ paths:
     $ref: "./paths/management/session.yaml#/login"
   /api/session/logout:
     $ref: "./paths/management/session.yaml#/logout"
+  /api/session/me:
+    $ref: "./paths/management/session.yaml#/session-me"
   /api/session/is-auth-enabled:
     $ref: "./paths/management/session.yaml#/is-auth-enabled"
   /api/session/ws-ticket:
@@ -799,10 +811,14 @@ paths:
     $ref: "./paths/management/providers.yaml#/providers"
   /api/providers/{provider}:
     $ref: "./paths/management/providers.yaml#/providers-by-name"
+  /api/providers/{provider}/refresh-models:
+    $ref: "./paths/management/providers.yaml#/provider-refresh-models"
   /api/providers/{provider}/keys:
     $ref: "./paths/management/providers.yaml#/provider-keys"
   /api/providers/{provider}/keys/{key_id}:
     $ref: "./paths/management/providers.yaml#/provider-key-by-id"
+  /api/providers/{provider}/keys/{key_id}/refresh-models:
+    $ref: "./paths/management/providers.yaml#/provider-key-refresh-models"
   /api/keys:
     $ref: "./paths/management/providers.yaml#/keys"
   /api/models:
@@ -811,14 +827,28 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-details"
   /api/models/parameters:
     $ref: "./paths/management/providers.yaml#/models-parameters"
+  /api/models/datasheet:
+    $ref: "./paths/management/providers.yaml#/models-datasheet"
+  /api/models/datasheet/entry:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-entry"
+  /api/models/datasheet/overrides:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-overrides"
+  /api/models/datasheet/overrides/{id}:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-override-by-id"
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
+  /api/models/newest:
+    $ref: "./paths/management/providers.yaml#/models-newest"
+  /api/models/catalog:
+    $ref: "./paths/management/providers.yaml#/models-catalog"
 
   # Plugins
   /api/plugins:
     $ref: "./paths/management/plugins.yaml#/plugins"
   /api/plugins/builtins:
     $ref: "./paths/management/plugins.yaml#/plugins-builtins"
+  /api/plugins/loaded:
+    $ref: "./paths/management/plugins.yaml#/plugins-loaded"
   /api/plugins/{name}:
     $ref: "./paths/management/plugins.yaml#/~1plugins~1{name}"
 
@@ -859,6 +889,16 @@ paths:
     $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:
     $ref: "./paths/management/mcp.yaml#/session-reauth"
+  /api/mcp/sessions/{id}/refresh:
+    $ref: "./paths/management/mcp.yaml#/session-refresh"
+  /api/mcp/library:
+    $ref: "./paths/management/mcp.yaml#/library"
+  /api/mcp/library/filterdata:
+    $ref: "./paths/management/mcp.yaml#/library-filterdata"
+  /api/mcp/library/force-sync:
+    $ref: "./paths/management/mcp.yaml#/library-force-sync"
+  /api/mcp/library/{id}:
+    $ref: "./paths/management/mcp.yaml#/library-by-id"
 
   # MCP — per-user-headers submission flow
   /api/mcp/per-user-headers/flows/{id}:
@@ -879,6 +919,12 @@ paths:
     $ref: "./paths/management/oauth.yaml#/oauth-config-status"
   /api/oauth/config/{id}:
     $ref: "./paths/management/oauth.yaml#/oauth-config-by-id"
+  /api/oauth2/sessions:
+    $ref: "./paths/management/oauth.yaml#/oauth2-sessions"
+  /api/oauth2/sessions/{id}:
+    $ref: "./paths/management/oauth.yaml#/oauth2-session-by-id"
+  /api/oauth2/consent/flows/{id}:
+    $ref: "./paths/management/oauth.yaml#/oauth2-consent-flow"
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
@@ -897,8 +943,6 @@ paths:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
   /api/governance/virtual-keys/rotate:
     $ref: "./paths/management/governance.yaml#/virtual-keys-rotate"
-  /api/governance/virtual-keys/{vk_id}/rotate:
-    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id-rotate"
 
   # Governance - Teams
   /api/governance/teams:
@@ -1178,6 +1222,42 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity-generations"
   /api/routing/complexity-analyzer-generations/{namespace}:
     $ref: "./paths/management/routing.yaml#/complexity-generation-delete"
+  /api/routing/model-routers/{router_id}/suggestions:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestions"
+  /api/routing/model-routers/{router_id}/suggestions/test:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-test"
+  /api/routing/model-routers/{router_id}/suggestions/runs:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-runs"
+  /api/routing/model-routers/{router_id}/suggestions/runs/estimate:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-run-estimate"
+  /api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-run-cancel"
+  /api/routing/model-routers/{router_id}/suggestions/impact:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-impact"
+  /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion"
+  /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}/status:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-status"
+  /api/routing/model-routers/{router_id}/phrases:
+    $ref: "./paths/management/routing.yaml#/model-router-phrases"
+  /api/routing/model-routers:
+    $ref: "./paths/management/routing.yaml#/model-routers"
+  /api/routing/model-routers/defaults:
+    $ref: "./paths/management/routing.yaml#/model-router-defaults"
+  /api/routing/model-routers/{router_id}:
+    $ref: "./paths/management/routing.yaml#/model-routers-by-id"
+  /api/routing/model-routers/{router_id}/reset:
+    $ref: "./paths/management/routing.yaml#/model-router-reset"
+  /api/routing/model-routers/{router_id}/targets:
+    $ref: "./paths/management/routing.yaml#/model-router-targets"
+  /api/routing/model-routers/{router_id}/routing:
+    $ref: "./paths/management/routing.yaml#/model-router-routing"
+  /api/routing/model-routers/{router_id}/status:
+    $ref: "./paths/management/routing.yaml#/model-router-status"
+  /api/routing/model-routers/{router_id}/status/retry:
+    $ref: "./paths/management/routing.yaml#/model-router-status-retry"
+  /api/routing/model-routers/{router_id}/classify:
+    $ref: "./paths/management/routing.yaml#/model-router-classify"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:
@@ -1192,8 +1272,12 @@ paths:
   # Logging
   /api/logs:
     $ref: "./paths/management/logging.yaml#/logs"
+  /api/logs/search:
+    $ref: "./paths/management/logging.yaml#/logs-search"
   /api/logs/{id}:
     $ref: "./paths/management/logging.yaml#/logs-by-id"
+  /api/logs/{id}/trace:
+    $ref: "./paths/management/logging.yaml#/logs-trace-by-id"
   /api/logs/sessions/{session_id}:
     $ref: "./paths/management/logging.yaml#/logs-sessions-by-id"
   /api/logs/sessions/{session_id}/summary:
@@ -1244,6 +1328,10 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-status"
   /api/logs/recalculate-cost/cancel:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-cancel"
+  /api/logs/user-agent-mappings:
+    $ref: "./paths/management/logging.yaml#/logs-user-agent-mappings"
+  /api/logs/user-agent-mappings/{id}:
+    $ref: "./paths/management/logging.yaml#/logs-user-agent-mappings-by-id"
 
   # MCP Logs
   /api/mcp-logs:
@@ -1258,6 +1346,8 @@ paths:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram"
   /api/mcp-logs/histogram/cost:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-cost"
+  /api/mcp-logs/histogram/latency:
+    $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-latency"
   /api/mcp-logs/histogram/top-tools:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-top-tools"
 
@@ -1324,6 +1414,8 @@ paths:
     $ref: "./paths/management/infrastructure.yaml#/websocket"
   /mcp:
     $ref: "./paths/management/infrastructure.yaml#/mcp-server"
+  /v1/mcp:
+    $ref: "./paths/management/infrastructure.yaml#/bifrost-mcp"
   /metrics:
     $ref: "./paths/management/infrastructure.yaml#/metrics"
   /inspect:
@@ -1442,6 +1534,32 @@ paths:
     $ref: "./paths/management/agents.yaml#/agent-rest-extendedAgentCard"
   /agents/a2a/{name}/push/callback:
     $ref: "./paths/management/agents.yaml#/agent-push-callback"
+
+  # Relays
+  /api/relays:
+    $ref: "./paths/management/relays.yaml#/relays"
+  /api/relays/{name}:
+    $ref: "./paths/management/relays.yaml#/relay-by-name"
+  /api/relays/usage-preview:
+    $ref: "./paths/management/relays.yaml#/relays-usage-preview"
+  /api/relays/openapi-spec:
+    $ref: "./paths/management/relays.yaml#/relays-openapi-spec"
+  /api/relays/{name}/access-profiles:
+    $ref: "./paths/management/relays.yaml#/relay-access-profiles"
+  /api/relay-logs:
+    $ref: "./paths/management/relays.yaml#/relay-logs"
+  /api/relay-logs/{id}:
+    $ref: "./paths/management/relays.yaml#/relay-logs-by-id"
+  /api/relay-logs/stats:
+    $ref: "./paths/management/relays.yaml#/relay-logs-stats"
+  /api/relay-logs/filterdata:
+    $ref: "./paths/management/relays.yaml#/relay-logs-filterdata"
+  /api/relay-logs/histogram:
+    $ref: "./paths/management/relays.yaml#/relay-logs-histogram"
+  /api/relay-logs/top-endpoints:
+    $ref: "./paths/management/relays.yaml#/relay-logs-top-endpoints"
+  /relay/{endpoint}/{path}:
+    $ref: "./paths/management/relays.yaml#/relay-call"
 
 components:
   securitySchemes:
@@ -1908,6 +2026,32 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
     DecisionInputImageAsset:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
+    DecisionInputFile:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputFile"
+    DecisionInputItem:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputItem"
+    DecisionFunctionCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCall"
+    DecisionFunctionCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCallOutput"
+    DecisionCustomToolCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCall"
+    DecisionCustomToolCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCallOutput"
+    DecisionToolOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionToolOutput"
+    DecisionInputJSON:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputJSON"
+    DecisionOutputText:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionOutputText"
+    DecisionRefusal:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRefusal"
+    DecisionInstructionPart:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInstructionPart"
+    DecisionPromptCacheOptions:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheOptions"
+    DecisionPromptCacheBreakpoint:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheBreakpoint"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:
@@ -2141,6 +2285,8 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse"
     MCPConnectionFailure:
       $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPIcon:
+      $ref: "./schemas/management/mcp.yaml#/MCPIcon"
     MCPInstanceState:
       $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
@@ -2259,6 +2405,22 @@ components:
       $ref: "./schemas/management/governance.yaml#/CreateRoutingRuleRequest"
     UpdateRoutingRuleRequest:
       $ref: "./schemas/management/governance.yaml#/UpdateRoutingRuleRequest"
+
+    # Routing - Model Routers
+    ModelRouter:
+      $ref: "./schemas/management/governance.yaml#/ModelRouter"
+    ModelRouterUpdate:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterUpdate"
+    ModelRouterList:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterList"
+    ModelRouterTarget:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterTarget"
+    ModelRouterTargetsRequest:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterTargetsRequest"
+    ModelRouterRouting:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterRouting"
+    ModelRouterDefaults:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterDefaults"
     TableKey:
       $ref: "./schemas/management/governance.yaml#/TableKey"
 
@@ -2514,3 +2676,63 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
     WarpStoredQuestion:
       $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"
+
+    # Relays
+    RelayAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAuthConfig"
+    RelayAWSAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSAuthConfig"
+    RelayCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayCredential"
+    RelayAWSCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSCredential"
+    RelayNetworkConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayNetworkConfig"
+    RelayUsageConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayUsageConfig"
+    RelayStreamingConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayStreamingConfig"
+    RelayRouteConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayRouteConfig"
+    RelayConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayConfig"
+    Relay:
+      $ref: "./schemas/management/relays.yaml#/Relay"
+    RelayListResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayListResponse"
+    RelayUsagePreviewSample:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewSample"
+    RelayUsagePreviewRequest:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewRequest"
+    RelayPreviewTokens:
+      $ref: "./schemas/management/relays.yaml#/RelayPreviewTokens"
+    RelayUsagePreview:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreview"
+    RelayOverheadBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayOverheadBucket"
+    RelayLog:
+      $ref: "./schemas/management/relays.yaml#/RelayLog"
+    RelayLogSearchResult:
+      $ref: "./schemas/management/relays.yaml#/RelayLogSearchResult"
+    RelayLogStats:
+      $ref: "./schemas/management/relays.yaml#/RelayLogStats"
+    RelayHistogramBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramBucket"
+    RelayHistogramResult:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramResult"
+    RelayTopEndpoint:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpoint"
+    RelayTopEndpointsResult:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpointsResult"
+    RelayFilterOption:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterOption"
+    RelayFilterData:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterData"
+    DeleteRelayLogsRequest:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsRequest"
+    DeleteRelayLogsResponse:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsResponse"
+    RelayAccessProfileUsage:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfileUsage"
+    RelayAccessProfilesResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfilesResponse"

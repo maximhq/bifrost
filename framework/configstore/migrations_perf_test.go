@@ -173,6 +173,7 @@ func seedSyntheticMCPClients(t *testing.T, db *gorm.DB, count int) {
 			clients = append(clients, tables.TableMCPClient{
 				ClientID:       fmt.Sprintf("perf-mcp-client-%d", i),
 				Name:           fmt.Sprintf("perf-mcp-client-%d", i),
+				EndpointSlug:   fmt.Sprintf("perf-mcp-client-%d", i),
 				ConnectionType: "streamable_http",
 				AuthType:       "per_user_oauth",
 				CreatedAt:      now,
@@ -270,6 +271,7 @@ func bulkInsertOauthTokens(t *testing.T, db *gorm.DB, count int) {
 			clientBatch = append(clientBatch, tables.TableMCPClient{
 				ClientID:       fmt.Sprintf("perf-shared-mcp-client-%d", i),
 				Name:           fmt.Sprintf("perf-shared-mcp-client-%d", i),
+				EndpointSlug:   fmt.Sprintf("perf-shared-mcp-client-%d", i),
 				ConnectionType: "streamable_http",
 				AuthType:       "oauth",
 				OauthConfigID:  &configID,

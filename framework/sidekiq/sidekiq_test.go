@@ -236,6 +236,17 @@ func testRunnerWithID(store Store, runnerID string) *Runner {
 	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, runnerID)
 }
 
+// Kinds marked quiet are reported sorted and once, however often marked.
+func TestQuietOnSuccessKinds(t *testing.T) {
+	r := testRunner(newFakeStore())
+	defer r.Shutdown()
+	require.Empty(t, r.QuietOnSuccessKinds())
+	r.RegisterQuietOnSuccess("upkeep")
+	r.RegisterQuietOnSuccess("cleanup")
+	r.RegisterQuietOnSuccess("upkeep")
+	require.Equal(t, []string{"cleanup", "upkeep"}, r.QuietOnSuccessKinds())
+}
+
 func TestEnqueueRunsHandlerAndCompletes(t *testing.T) {
 	store := newFakeStore()
 	r := testRunner(store)

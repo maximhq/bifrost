@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -10,10 +11,10 @@ import (
 )
 
 const (
-	cleanupInterval      = 24 * time.Hour
-	minJitter            = 15 * time.Minute
-	maxJitter            = 30 * time.Minute
-	defaultRetentionDays = 365
+	cleanupInterval = 24 * time.Hour
+	// postgresCleanupInterval is shorter because only the replica holding a table's retention lock does any work.
+	postgresCleanupInterval = time.Hour
+	defaultRetentionDays    = 365
 
 	// batchSize is how many expired rows one retention statement deletes. At
 	// ~5.6M expired rows per day, 100-row batches under a 30-minute cap could
@@ -25,7 +26,7 @@ const (
 	// cleanupRunCeiling bounds one retention pass. The pass normally runs until
 	// no expired rows remain; the ceiling only stops a pathological backlog
 	// (for example after retention was shortened) from holding a connection
-	// indefinitely. The next daily run continues where this one stopped.
+	// indefinitely. The next run continues where this one stopped.
 	cleanupRunCeiling = 6 * time.Hour
 
 	// cleanupLogsShareNum/cleanupLogsShareDen is the share of a pass's remaining
@@ -37,6 +38,9 @@ const (
 
 	// cleanupProgressEvery is how many batches pass between Debug progress lines.
 	cleanupProgressEvery = 100
+
+	// cleanupGrowAfter is how many batches in a row must succeed before a shrunk batch size doubles again.
+	cleanupGrowAfter = 20
 )
 
 // LogRetentionManager defines the interface for managing log retention and deletion
@@ -52,6 +56,12 @@ type MCPToolLogRetentionManager interface {
 	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
+// RelayLogRetentionManager is implemented by stores that can expire
+// relay_logs rows. Optional for the same reason MCPToolLogRetentionManager is.
+type RelayLogRetentionManager interface {
+	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
 // WarpTopicRetentionManager is implemented by stores that keep Warp's topic
 // rows. Optional for the same reason MCPToolLogRetentionManager is. Both tables
 // hold rows about individual logs, and expire on the log's own created time so
@@ -59,6 +69,11 @@ type MCPToolLogRetentionManager interface {
 type WarpTopicRetentionManager interface {
 	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
+// RetentionScheduler is how the cleaner reads a store's retention interval; every LogStore implements it.
+type RetentionScheduler interface {
+	RetentionInterval() time.Duration
 }
 
 // CleanerConfig holds configuration for the log cleaner
@@ -73,6 +88,8 @@ type LogsCleaner struct {
 	logger      schemas.Logger
 	stopCleanup chan struct{}
 	mu          sync.Mutex
+	// batchSizes keeps each table's batch size after a statement timeout shrank it, so later passes start there.
+	batchSizes map[string]int
 }
 
 // NewLogsCleaner creates a new LogsCleaner instance
@@ -117,7 +134,7 @@ func (c *LogsCleaner) StartCleanupRoutine() {
 		// At the beginning, we will cleanup the logs
 		c.runCleanupPass(stopCh)
 		// Calculate initial delay with jitter
-		timer := time.NewTimer(calculateNextRunDuration())
+		timer := time.NewTimer(c.nextRunDuration())
 		defer timer.Stop()
 		for {
 			select {
@@ -126,7 +143,7 @@ func (c *LogsCleaner) StartCleanupRoutine() {
 				c.runCleanupPass(stopCh)
 
 				// Reset timer with new jitter for next run
-				timer.Reset(calculateNextRunDuration())
+				timer.Reset(c.nextRunDuration())
 
 			case <-stopCh:
 				c.logger.Info("log cleanup routine stopped")
@@ -213,6 +230,9 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	if hasMCP {
 		rest = append(rest, expiringTable{"MCP tool logs", mcp.DeleteMCPToolLogsBatch})
 	}
+	if endpoints, ok := c.manager.(RelayLogRetentionManager); ok {
+		rest = append(rest, expiringTable{"relay logs", endpoints.DeleteRelayLogsBatch})
+	}
 	if hasTopics {
 		rest = append(rest,
 			expiringTable{"Warp topic assignments", topics.DeleteWarpTopicAssignmentsBatch},
@@ -231,12 +251,13 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	}
 }
 
-// drainExpired calls deleteBatch until it reports a short batch, logging
-// progress at Debug. It returns false when the table stopped early
-// (cancellation or an error).
+// drainExpired calls deleteBatch until it deletes nothing, another replica holds the table, or ctx ends.
+// It returns false when the table stopped early (cancellation or an error).
 func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff time.Time, deleteBatch func(context.Context, time.Time, int) (int64, error)) bool {
 	totalDeleted := int64(0)
 	batchCount := 0
+	size := c.batchSizeFor(label)
+	streak := 0
 
 	for {
 		// Check if context is cancelled
@@ -254,7 +275,19 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 			return false
 		}
 
-		deleted, err := deleteBatch(ctx, cutoff, batchSize)
+		deleted, err := deleteBatch(ctx, cutoff, size)
+		if errors.Is(err, ErrRetentionBusy) {
+			c.logger.Debug("%s cleanup yielded to another replica after %d rows in %d batches", label, totalDeleted, batchCount)
+			return true
+		}
+		// A timed-out batch rolls back whole and the next pass picks the same rows, so retry those rows in a smaller batch.
+		if err != nil && ctx.Err() == nil && size > 1 && IsPostgresStatementTimeoutError(err) {
+			size = max(size/2, 1)
+			streak = 0
+			c.setBatchSize(label, size)
+			c.logger.Warn("%s cleanup batch hit the statement timeout; retrying with %d rows per batch", label, size)
+			continue
+		}
 		if err != nil {
 			c.logger.Error("failed to delete old %s: %v", label, err)
 			return false
@@ -271,13 +304,18 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 			c.logger.Debug("%s cleanup progress: %d rows deleted in %d batches", label, totalDeleted, batchCount)
 		}
 
-		// A full batch means more rows may remain; anything else means the
-		// store is done. The SQL stores return at most batchSize. ClickHouse
-		// deletes the whole expired range in one lightweight statement and
-		// returns that count, so a count above batchSize must end the loop
-		// too instead of re-issuing the delete (#7098).
-		if deleted != int64(batchSize) {
+		// A short batch can mean another session took some of the picked rows, so only an empty batch ends the drain.
+		// ClickHouse deletes the whole expired range in one statement and returns a count above batchSize (#7098).
+		if deleted > int64(size) {
 			break
+		}
+
+		if size < batchSize {
+			if streak++; streak >= cleanupGrowAfter {
+				size = min(size*2, batchSize)
+				streak = 0
+				c.setBatchSize(label, size)
+			}
 		}
 	}
 
@@ -287,6 +325,25 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 		c.logger.Debug("%s cleanup completed: nothing older than the cutoff", label)
 	}
 	return true
+}
+
+// batchSizeFor is label's batch size: batchSize unless a statement timeout shrank it.
+func (c *LogsCleaner) batchSizeFor(label string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if size, ok := c.batchSizes[label]; ok {
+		return size
+	}
+	return batchSize
+}
+
+func (c *LogsCleaner) setBatchSize(label string, size int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.batchSizes == nil {
+		c.batchSizes = make(map[string]int)
+	}
+	c.batchSizes[label] = size
 }
 
 // cleanupMigrationPollInterval is how often a paused retention pass re-checks
@@ -318,8 +375,17 @@ func (c *LogsCleaner) waitForMigrationWindow(ctx context.Context) bool {
 	}
 }
 
-// calculateNextRunDuration returns 24 hours plus a random jitter between 15-30 minutes
-func calculateNextRunDuration() time.Duration {
-	jitter := minJitter + time.Duration(rand.Int63n(int64(maxJitter-minJitter)))
-	return cleanupInterval + jitter
+// nextRunDuration is the store's retention interval plus a jitter of 1/96 to 1/48 of it (15-30 minutes on a day).
+func (c *LogsCleaner) nextRunDuration() time.Duration {
+	interval := cleanupInterval
+	if scheduler, ok := c.manager.(RetentionScheduler); ok && scheduler.RetentionInterval() > 0 {
+		interval = scheduler.RetentionInterval()
+	}
+	return calculateNextRunDuration(interval)
+}
+
+// calculateNextRunDuration returns interval plus a random jitter between interval/96 and interval/48.
+func calculateNextRunDuration(interval time.Duration) time.Duration {
+	minJitter := interval / 96
+	return interval + minJitter + time.Duration(rand.Int63n(int64(minJitter)+1))
 }

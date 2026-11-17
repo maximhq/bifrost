@@ -5,6 +5,7 @@ import {
 	decisionProviderIconKey,
 	defaultDecisionModel,
 	isDecisionProvider,
+	isGeminiDecisionProvider,
 	isOpenAIDecisionProvider,
 	listsDecisionModels,
 	selfHostedModelGroups,
@@ -64,12 +65,29 @@ describe("decision model provider helpers", () => {
 	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
 	const azure = provider({ name: "azure" } as Partial<ModelProvider>);
 	const databricks = provider({ name: "databricks" } as Partial<ModelProvider>);
+	const vllm = provider({ name: "vllm" } as Partial<ModelProvider>);
+	const sgl = provider({ name: "sgl" } as Partial<ModelProvider>);
+	const gemini = provider({ name: "gemini" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, azure, databricks, laya, clef])
+		for (const candidate of [
+			typesafe,
+			openrouter,
+			openai,
+			gemini,
+			cloudflare,
+			perplexity,
+			ollama,
+			azure,
+			databricks,
+			vllm,
+			sgl,
+			laya,
+			clef,
+		])
 			expect(isDecisionProvider(candidate)).toBe(true);
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
@@ -91,6 +109,19 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(customOpenAI("laya-gateway"))).toBe("");
 	});
 
+	test("treats a custom Gemini-based provider like Gemini", () => {
+		const customGemini = (name: string) =>
+			provider({ name, custom_provider_config: { base_provider_type: "gemini" } } as Partial<ModelProvider>);
+		expect(isDecisionProvider(customGemini("my-gemini"))).toBe(true);
+		expect(isGeminiDecisionProvider(customGemini("my-gemini"))).toBe(true);
+		expect(isGeminiDecisionProvider(gemini)).toBe(true);
+		expect(isGeminiDecisionProvider(openai)).toBe(false);
+		expect(listsDecisionModels(customGemini("my-gemini"), "my-gemini")).toBe(true);
+		// Only its listing says which decision models it serves, whatever it is named.
+		expect(defaultDecisionModel(customGemini("my-gemini"))).toBe("");
+		expect(defaultDecisionModel(customGemini("laya-gateway"))).toBe("");
+	});
+
 	test("reads the Clef model from the provider's Cloudflare URL", () => {
 		expect(clefModelFromProvider(clef)).toBe("clef");
 		expect(clefModelFromProvider(clefFlash)).toBe("clef-flash");
@@ -109,10 +140,14 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
+		expect(defaultDecisionModel(gemini)).toBe("gemini-decision-1");
 		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
 		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-latest");
 		// Only Ollama's listing says which System One models are pulled locally.
 		expect(defaultDecisionModel(ollama)).toBe("");
+		// Only a vLLM or SGLang server's listing says what it loaded.
+		expect(defaultDecisionModel(vllm)).toBe("");
+		expect(defaultDecisionModel(sgl)).toBe("");
 		// The model name a key alias maps to the user's deployment.
 		expect(defaultDecisionModel(azure)).toBe("Microsoft-Decision-1");
 		// The ai_decide AI Function; the picker also lists the System One models.
@@ -124,7 +159,7 @@ describe("decision model provider helpers", () => {
 	});
 
 	test("lists only decision models for providers whose catalog mixes in chat models", () => {
-		for (const candidate of [openai, openrouter, cloudflare, perplexity, ollama, azure, databricks])
+		for (const candidate of [openai, gemini, openrouter, cloudflare, perplexity, ollama, azure, databricks, vllm, sgl])
 			expect(listsDecisionModels(candidate, candidate.name)).toBe(true);
 		expect(
 			listsDecisionModels(
@@ -133,6 +168,7 @@ describe("decision model provider helpers", () => {
 			),
 		).toBe(true);
 		expect(listsDecisionModels(undefined, "openai")).toBe(true);
+		expect(listsDecisionModels(undefined, "gemini")).toBe(true);
 		for (const candidate of [typesafe, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
 	});
 

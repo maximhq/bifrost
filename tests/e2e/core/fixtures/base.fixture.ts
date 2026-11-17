@@ -13,14 +13,18 @@ import { LogsPage } from "../../features/logs/pages/logs.page";
 import { MCPLogsPage } from "../../features/mcp-logs/pages/mcp-logs.page";
 import { RoutingRulesPage } from "../../features/routing-rules/pages/routing-rules.page";
 import { MCPRegistryPage } from "../../features/mcp-registry/pages/mcp-registry.page";
+import { RelaysPage } from "../../features/relays/pages/relays.page";
+import { RelayLogsPage } from "../../features/relay-logs/pages/relay-logs.page";
 import { PluginsPage } from "../../features/plugins/pages/plugins.page";
 import { ObservabilityPage } from "../../features/observability/pages/observability.page";
 import { ConfigSettingsPage } from "../../features/config/pages/config-settings.page";
 import { GovernancePage } from "../../features/governance/pages/governance.page";
 import { MCPAuthConfigPage } from "../../features/mcp-auth-config/pages/mcp-auth-config.page";
 import { MCPSettingsPage } from "../../features/mcp-settings/pages/mcp-settings.page";
+import { ClaudeCodeGatewayPage } from "../../features/claude-code-gateway/pages/claude-code-gateway.page";
 import { MCPToolGroupsPage } from "../../features/mcp-tool-groups/pages/mcp-tool-groups.page";
 import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.page";
+import { DatasheetPage } from "../../features/datasheet/pages/datasheet.page";
 
 /**
  * Custom test fixtures type
@@ -41,11 +45,15 @@ type BifrostFixtures = {
 	routingRulesPage: RoutingRulesPage;
 	mcpRegistryPage: MCPRegistryPage;
 	pluginsPage: PluginsPage;
+	relaysPage: RelaysPage;
+	relayLogsPage: RelayLogsPage;
 	observabilityPage: ObservabilityPage;
 	configSettingsPage: ConfigSettingsPage;
 	governancePage: GovernancePage;
 	modelLimitsPage: ModelLimitsPage;
+	datasheetPage: DatasheetPage;
 	mcpSettingsPage: MCPSettingsPage;
+	claudeCodeGatewayPage: ClaudeCodeGatewayPage;
 	mcpToolGroupsPage: MCPToolGroupsPage;
 	mcpAuthConfigPage: MCPAuthConfigPage;
 };
@@ -208,6 +216,14 @@ export const test = base.extend<BifrostFixtures>({
 		await use(new PluginsPage(page));
 	},
 
+	relaysPage: async ({ page }, use) => {
+		await use(new RelaysPage(page));
+	},
+
+	relayLogsPage: async ({ page }, use) => {
+		await use(new RelayLogsPage(page));
+	},
+
 	observabilityPage: async ({ page }, use) => {
 		await use(new ObservabilityPage(page));
 	},
@@ -224,8 +240,16 @@ export const test = base.extend<BifrostFixtures>({
 		await use(new ModelLimitsPage(page));
 	},
 
+	datasheetPage: async ({ page }, use) => {
+		await use(new DatasheetPage(page));
+	},
+
 	mcpSettingsPage: async ({ page }, use) => {
 		await use(new MCPSettingsPage(page));
+	},
+
+	claudeCodeGatewayPage: async ({ page }, use) => {
+		await use(new ClaudeCodeGatewayPage(page));
 	},
 
 	mcpToolGroupsPage: async ({ page }, use) => {

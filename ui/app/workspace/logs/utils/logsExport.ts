@@ -2,6 +2,9 @@
  * Utilities for exporting filtered logs to CSV.
  */
 
+import type { ParseKeys } from "i18next";
+
+import i18n from "@/lib/i18n";
 import { logAppDisplayName, mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
 import type { LogEntry, LogFilters } from "@/lib/types/logs";
 import { buildCSV } from "@/lib/utils/csv";
@@ -17,6 +20,8 @@ export const LOGS_CSV_HEADERS = [
 	"Canonical Model",
 	"App",
 	"Latency (ms)",
+	"Upstream Latency (ms)",
+	"Overhead (ms)",
 	"Prompt Tokens",
 	"Completion Tokens",
 	"Total Tokens",
@@ -31,6 +36,8 @@ export const LOGS_CSV_HEADERS = [
 	"Business Unit",
 	"Project",
 	"Stop Reason",
+	"Client IP",
+	"User Email",
 ];
 
 /**
@@ -158,6 +165,8 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		log.canonical_model_name || "",
 		app,
 		log.latency != null ? log.latency : "",
+		log.upstream_latency != null ? log.upstream_latency : "",
+		log.overhead_latency != null ? log.overhead_latency : "",
 		promptTokens,
 		completionTokens,
 		totalTokens,
@@ -172,6 +181,8 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		businessUnit,
 		project,
 		log.stop_reason || "",
+		log.client_ip || "",
+		log.user_email || "",
 	];
 }
 
@@ -199,16 +210,20 @@ export function calculateExportTargetCount(totalLogs: number, userCap?: number, 
  */
 export function formatActiveFiltersSummary(filters: LogFilters): string[] {
 	const summary: string[] = [];
-	if (filters.content_search) summary.push(`search "${filters.content_search}"`);
-	if (filters.request_id) summary.push(`request "${filters.request_id}"`);
-	if (filters.providers && filters.providers.length > 0) summary.push(`providers (${filters.providers.length})`);
-	if (filters.models && filters.models.length > 0) summary.push(`models (${filters.models.length})`);
-	if (filters.status && filters.status.length > 0) summary.push(`status: ${filters.status.join(", ")}`);
-	if (filters.session_id) summary.push(`session "${filters.session_id}"`);
-	if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) summary.push(`virtual keys (${filters.virtual_key_ids.length})`);
-	if (filters.team_ids && filters.team_ids.length > 0) summary.push(`teams (${filters.team_ids.length})`);
-	if (filters.customer_ids && filters.customer_ids.length > 0) summary.push(`customers (${filters.customer_ids.length})`);
-	if (filters.period) summary.push(`period ${filters.period}`);
+	const t = (key: ParseKeys<"observability">, options?: Record<string, unknown>) => i18n.t(key, { ns: "observability", ...options });
+	if (filters.content_search) summary.push(t("logs.export.summary.search", { value: filters.content_search }));
+	if (filters.request_id) summary.push(t("logs.export.summary.request", { value: filters.request_id }));
+	if (filters.providers && filters.providers.length > 0)
+		summary.push(t("logs.export.summary.providers", { total: filters.providers.length }));
+	if (filters.models && filters.models.length > 0) summary.push(t("logs.export.summary.models", { total: filters.models.length }));
+	if (filters.status && filters.status.length > 0) summary.push(t("logs.export.summary.status", { value: filters.status.join(", ") }));
+	if (filters.session_id) summary.push(t("logs.export.summary.session", { value: filters.session_id }));
+	if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0)
+		summary.push(t("logs.export.summary.virtualKeys", { total: filters.virtual_key_ids.length }));
+	if (filters.team_ids && filters.team_ids.length > 0) summary.push(t("logs.export.summary.teams", { total: filters.team_ids.length }));
+	if (filters.customer_ids && filters.customer_ids.length > 0)
+		summary.push(t("logs.export.summary.customers", { total: filters.customer_ids.length }));
+	if (filters.period) summary.push(t("logs.export.summary.period", { value: filters.period }));
 	return summary;
 }
 
@@ -247,10 +262,10 @@ export function normalizeExportFilters(filters: LogFilters, timezone?: string): 
 /**
  * Options for batch log collection.
  */
-export interface CollectLogsOptions {
+export interface CollectLogsOptions<T extends { id?: string } = LogEntry> {
 	targetTotal: number;
 	batchSize?: number;
-	fetchBatch: (offset: number, limit: number) => Promise<LogEntry[]>;
+	fetchBatch: (offset: number, limit: number) => Promise<T[]>;
 	onProgress?: (collectedCount: number, targetTotal: number) => void;
 	isCancelled?: () => boolean;
 }
@@ -258,13 +273,15 @@ export interface CollectLogsOptions {
 /**
  * Collect logs across multiple paginated requests until the target count or end of logs is reached.
  * Deduplicates log records across batch boundaries by ID as a backstop against shifting offsets.
+ * Generic over the row type so the relay export (relay-logs/views/relayLogsExportDialog.utils.ts)
+ * shares the batching; it defaults to LogEntry for the LLM page.
  *
  * @param options Batch collection configuration including fetch function and cancellation check.
  * @returns Array of collected LogEntry items.
  */
-export async function collectLogsInBatches(options: CollectLogsOptions): Promise<LogEntry[]> {
+export async function collectLogsInBatches<T extends { id?: string } = LogEntry>(options: CollectLogsOptions<T>): Promise<T[]> {
 	const { targetTotal, batchSize = BATCH_PAGE_SIZE, fetchBatch, onProgress, isCancelled } = options;
-	const collected: LogEntry[] = [];
+	const collected: T[] = [];
 	const seenIds = new Set<string>();
 	let offset = 0;
 

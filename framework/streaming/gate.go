@@ -316,7 +316,8 @@ func (a *Accumulator) IsStreamPaused(traceID string) bool {
 // Note: ExtraFields.Provider / OriginalModelRequested / ResolvedModelUsed are
 // not preserved on the StreamAccumulator (they're per-chunk, not per-stream),
 // so the returned response will have empty values for those fields. The body
-// of the response (Choices/Message/etc.) is fully populated.
+// of the response (Choices/Message/etc.) is fully populated; a passthrough
+// stream returns the raw body received so far.
 func (a *Accumulator) GetAccumulatedResponse(traceID string) *schemas.BifrostResponse {
 	if traceID == "" {
 		return nil
@@ -355,6 +356,10 @@ func (a *Accumulator) GetAccumulatedResponse(traceID string) *schemas.BifrostRes
 		streamType = StreamTypeImage
 		populated++
 	}
+	if len(sa.PassthroughChunks) > 0 {
+		streamType = StreamTypePassthrough
+		populated++
+	}
 	requestID := sa.RequestID
 	sa.mu.Unlock()
 
@@ -375,6 +380,8 @@ func (a *Accumulator) GetAccumulatedResponse(traceID string) *schemas.BifrostRes
 		data, err = a.processAccumulatedTranscriptionStreamingChunks(requestID, nil, false)
 	case StreamTypeImage:
 		data, err = a.processAccumulatedImageStreamingChunks(requestID, nil, false)
+	case StreamTypePassthrough:
+		return sa.passthroughSnapshot()
 	default:
 		return nil
 	}

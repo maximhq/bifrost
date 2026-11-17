@@ -34,11 +34,15 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		}
 
 		// Convert content
-		if msg.Content != nil && msg.Content.ContentStr != nil {
-			cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
-		} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
+		content := msg.Content
+		if msg.Role == schemas.ChatMessageRoleTool {
+			content = schemas.FlattenToolResultMedia(content, nil)
+		}
+		if content != nil && content.ContentStr != nil {
+			cohereMsg.Content = NewStringContent(*content.ContentStr)
+		} else if content != nil && content.ContentBlocks != nil {
 			var contentBlocks []CohereContentBlock
-			for _, block := range msg.Content.ContentBlocks {
+			for _, block := range content.ContentBlocks {
 				if block.Text != nil {
 					contentBlocks = append(contentBlocks, CohereContentBlock{
 						Type: CohereContentBlockTypeText,

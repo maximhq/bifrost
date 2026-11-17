@@ -12,18 +12,28 @@ virtual-mcps:
     parameters:
       - name: limit
         in: query
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.
         schema:
           type: integer
-          default: 25
+          minimum: 0
           maximum: 100
+          default: 25
       - name: offset
         in: query
         schema:
           type: integer
+          minimum: 0
           default: 0
       - name: search
         in: query
         description: Search by name.
+        schema:
+          type: string
+      - name: mcp_client_id
+        in: query
+        description: >-
+          Only Virtual MCPs with a tool spec for this MCP client (exact `client_id` match). `total_count` counts only the matches, so this answers which Virtual MCPs bundle a server without paging through every Virtual MCP.
         schema:
           type: string
     security:

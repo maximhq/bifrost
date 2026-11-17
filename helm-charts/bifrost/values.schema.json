@@ -107,6 +107,120 @@
         }
       }
     },
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create a Prometheus Operator ServiceMonitor for the /metrics endpoint"
+        },
+        "additionalLabels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra labels on the ServiceMonitor (match your Prometheus serviceMonitorSelector)"
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace for the ServiceMonitor; defaults to the release namespace"
+        },
+        "path": {
+          "type": "string",
+          "description": "Metrics path to scrape"
+        },
+        "interval": {
+          "type": "string",
+          "description": "Scrape interval (e.g. 30s); empty uses the Prometheus default"
+        },
+        "scrapeTimeout": {
+          "type": "string",
+          "description": "Per-scrape timeout (e.g. 10s); empty uses the Prometheus default"
+        },
+        "scheme": {
+          "type": "string",
+          "enum": ["", "http", "https"],
+          "description": "Scrape scheme"
+        },
+        "tlsConfig": {
+          "type": "object",
+          "description": "TLS settings for the scrape endpoint"
+        },
+        "basicAuth": {
+          "type": "object",
+          "description": "Authenticate the scrape with Bifrost's admin credentials. Needed when auth is enabled: /metrics sits behind the global auth middleware, so an unauthenticated scrape gets a 401 and the target stays at up=0.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Send HTTP basic auth credentials with each scrape"
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Secret holding the admin credentials; in the Helm release namespace, defaults to the existingSecret from the active governance.authConfig or authConfig. Required explicitly when the ServiceMonitor uses another namespace."
+            },
+            "usernameKey": {
+              "type": "string",
+              "description": "Key holding the admin username; defaults to the resolved authConfig's usernameKey, then 'username'"
+            },
+            "passwordKey": {
+              "type": "string",
+              "description": "Key holding the admin password; defaults to the resolved authConfig's passwordKey, then 'password'"
+            }
+          },
+          "additionalProperties": false
+        },
+        "authorization": {
+          "type": "object",
+          "description": "Bearer-token auth for the scrape, as an alternative to basicAuth (mutually exclusive with it). Requires credentials when set.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Authentication scheme; defaults to Bearer"
+            },
+            "credentials": {
+              "type": "object",
+              "description": "Secret key holding the credentials. Must be in the ServiceMonitor's namespace.",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Name of the secret holding the credentials"
+                },
+                "key": {
+                  "type": "string",
+                  "description": "Key within that secret"
+                },
+                "optional": {
+                  "type": "boolean",
+                  "description": "Whether the secret or its key must be defined"
+                }
+              },
+              "required": ["name", "key"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "honorLabels": {
+          "type": "boolean",
+          "description": "Preserve scraped target labels on collision"
+        },
+        "relabelings": {
+          "type": "array",
+          "description": "relabel_configs applied before scraping",
+          "items": {
+            "$ref": "#/$defs/relabelConfig"
+          }
+        },
+        "metricRelabelings": {
+          "type": "array",
+          "description": "metric_relabel_configs applied to scraped samples",
+          "items": {
+            "$ref": "#/$defs/relabelConfig"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "ingress": {
       "description": "Ingress configuration. Either a single ingress (legacy, with top-level 'enabled') or a map of named ingresses (new format, each key becomes a separate Ingress resource named <release>-<key>).",
       "oneOf": [
@@ -422,9 +536,9 @@
             },
             "type": {
               "type": "string",
-              "enum": ["http"],
+              "enum": ["http", "socks5"],
               "default": "http",
-              "description": "Proxy type. Only http is supported."
+              "description": "Proxy type: http (an http:// or https:// proxy URL) or socks5 (a socks5:// or socks5h:// proxy URL). A bare host:port takes its scheme from the type."
             },
             "url": {
               "type": "string",
@@ -467,6 +581,172 @@
               "default": false,
               "description": "Route API requests through the proxy"
             }
+          },
+          "additionalProperties": false
+        },
+        "warp": {
+          "type": "object",
+          "description": "Warp, the dashboard's log-analysis agent (Settings > Warp): its models, limits, log search and topics. Renders into config.json's top-level warp and goes through the same validation as PUT /api/warp/config. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additionalModels is replaced whole. Also needs the warp feature flag (featureFlags.warp) and a vector store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Show Warp in the dashboard. Requires a connected vector store, provider, model, embeddingProvider, embeddingModel and embeddingDimension."
+            },
+            "provider": {
+              "type": "string",
+              "description": "Provider of the default model that runs Warp's agent loop. Required when enabled."
+            },
+            "model": {
+              "type": "string",
+              "description": "Default model that runs Warp's agent loop. Required when enabled."
+            },
+            "apiKeyId": {
+              "type": "string",
+              "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys."
+            },
+            "additionalModels": {
+              "type": "array",
+              "maxItems": 20,
+              "description": "Other models people can switch to in the chat panel. Replaced whole: omitting it removes every additional model.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "apiKeyId": {
+                    "type": "string",
+                    "description": "ID of one of the provider's configured keys to pin this model to"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "maxIterations": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "not": {
+                "const": 1
+              },
+              "default": 8,
+              "description": "Tool-call rounds Warp may run before it must answer. 0 means the default; 1 is rejected because the last round is reserved for answering."
+            },
+            "requestTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 120,
+              "description": "Deadline for each call to Warp's model. 0 means the default."
+            },
+            "historyRetentionDays": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 30,
+              "description": "How long a saved chat is kept after its last turn. 0 means the default."
+            },
+            "systemPromptSuffix": {
+              "type": "string",
+              "description": "Text appended to Warp's built-in system prompt"
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2,
+              "description": "Sampling temperature. Omit to use the provider's default; 0 is fully deterministic."
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "Effort level for reasoning models. Omit for models that are not reasoning models."
+            },
+            "embeddingProvider": {
+              "type": "string",
+              "description": "Provider of the model used to index and search logs. Required when enabled."
+            },
+            "embeddingModel": {
+              "type": "string",
+              "description": "Model used to index and search logs. Required when enabled."
+            },
+            "embeddingApiKeyId": {
+              "type": "string",
+              "description": "ID of one of the embedding provider's configured keys to pin embedding calls to"
+            },
+            "embeddingDimension": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Vector size the embedding model returns, e.g. 1536 for text-embedding-3-small. Required when enabled."
+            },
+            "logVectorStoreNamespace": {
+              "type": "string",
+              "default": "BifrostWarpLogs",
+              "description": "Vector store namespace holding Warp's log index. Must change whenever embeddingProvider, embeddingModel or embeddingDimension changes."
+            },
+            "semanticSearchThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5,
+              "description": "Minimum similarity for a semantic log search match. 0 resets it to the default; omitting it keeps the stored value."
+            },
+            "semanticSearchLimit": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 25,
+              "default": 10,
+              "description": "Most matches one semantic log search returns. 0 resets it to the default; omitting it keeps the stored value."
+            },
+            "topicDiscoveryMinRequests": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20000,
+              "not": {
+                "minimum": 1,
+                "maximum": 9
+              },
+              "default": 100,
+              "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
+            },
+            "managementWrites": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["create", "update", "delete", "action"]
+              },
+              "uniqueItems": true,
+              "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs). Reads are always offered. [] is reads only; omitting it keeps the stored value. client.bifrostMcpAllowWrites is the ceiling. Maps to warp.management_writes."
+            }
+          },
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "provider",
+              "model"
+            ]
           },
           "additionalProperties": false
         },
@@ -672,6 +952,15 @@
               },
               "description": "Additional allowed headers for CORS and WebSocket"
             },
+            "usageEstimationTokenizers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+              },
+              "uniqueItems": true,
+              "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. Empty counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+            },
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
@@ -741,6 +1030,11 @@
               "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
+            "entityAccessProfileMode": {
+              "type": "string",
+              "enum": ["union", "intersect"],
+              "description": "Enterprise only. How team, business unit and customer access profiles combine with a user's own access, using the same values as a project's access rule. 'union' (default) lets each of them add to it; 'intersect' makes each level holding an active profile cap it instead, and ignores the x-bf-customer-id / x-bf-customer-name scope headers. Maps to client.entity_access_profile_mode."
+            },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
@@ -772,6 +1066,86 @@
             "mcpExternalClientUrl": {
               "type": "string",
               "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
+            },
+            "mcpClientMetadataUrl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ]
+                    },
+                    "env_var": {
+                      "type": "string"
+                    },
+                    "from_env": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Publish the document Bifrost serves at /api/oauth/client-metadata.json there unchanged. Unset, the document is served under mcpExternalClientUrl. Supports env var and vault references. Maps to client.mcp_client_metadata_url."
+            },
+            "bifrostUrl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ]
+                    },
+                    "env_var": {
+                      "type": "string"
+                    },
+                    "from_env": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "The gateway's public base URL (scheme, host and any base path) as clients reach it through your proxy. Required for /v1/mcp and Warp: tool calls take their host and scheme from it, never from the client's Host header. Unset, /v1/mcp answers 503 and Warp does not answer. Must include server.basePath when set. Supports env var and vault references. Maps to client.bifrost_url."
+            },
+            "bifrostMcpAllowWrites": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way, and every call is authorized by the caller's own credential. Also the ceiling for warp.managementWrites. Maps to client.bifrost_mcp_allow_writes."
+            },
+            "mcpOpenapiMaxSpecMb": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256,
+              "default": 0,
+              "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, specFile or fetched from specUrl). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory. Maps to client.mcp_openapi_max_spec_mb."
             },
             "skillsExternalClientUrl": {
               "anyOf": [
@@ -855,11 +1229,11 @@
             },
             "oauth2ServerConfig": {
               "type": "object",
-              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "description": "OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is 'both' or 'oauth') and for client gateways (gateways.<client>.enabled). Maps to client.oauth2_server_config.",
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or any client gateway is enabled: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -894,6 +1268,82 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "gateways": {
+                  "type": "object",
+                  "description": "Client gateways, one block per coding client, each served at <issuerUrl>/gateway/<client>. Independent of mcpServerAuthMode. Maps to client.oauth2_server_config.gateways.",
+                  "properties": {
+                    "claudeCode": {
+                      "type": "object",
+                      "description": "Claude Code gateway at <issuerUrl>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in. Requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.gateways.claude_code.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Serve the Claude Code gateway protocol under /gateway/claude-code.",
+                          "default": false
+                        },
+                        "managedSettings": {
+                          "type": "object",
+                          "description": "Claude Code managed-settings.json document served to every signed-in client. Omit for no managed policy."
+                        },
+                        "telemetry": {
+                          "type": "object",
+                          "description": "Forward Claude Code's OTLP telemetry (metrics, logs, traces), stamped with the Bifrost identity, to OTLP/HTTP collectors instead of discarding it. Maps to client.oauth2_server_config.gateways.claude_code.telemetry.",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean",
+                              "default": false,
+                              "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                            },
+                            "destinations": {
+                              "type": "array",
+                              "description": "OTLP/HTTP collectors; each signal is posted to <endpoint>/v1/{metrics|logs|traces}. At least one is required when enabled.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "endpoint": {
+                                    "type": "string",
+                                    "description": "Collector base URL (http or https). Supports env.VAR_NAME."
+                                  },
+                                  "headers": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "string",
+                                      "pattern": "\\S"
+                                    },
+                                    "description": "Headers sent with every export. Values can be plain or env./vault. references, like provider keys, and must not be empty."
+                                  }
+                                },
+                                "required": [
+                                  "endpoint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "dropAttributes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": "Attribute keys removed at every level before forwarding, e.g. prompt."
+                            }
+                          },
+                          "if": {
+                            "properties": { "enabled": { "const": true } },
+                            "required": ["enabled"]
+                          },
+                          "then": {
+                            "required": ["destinations"],
+                            "properties": { "destinations": { "minItems": 1 } }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -909,6 +1359,11 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "basePath": {
+              "type": "string",
+              "pattern": "^(/([A-Za-z0-9._~-]*[A-Za-z0-9_~-][A-Za-z0-9._~-]*|\\.{3,}))*/?$",
+              "description": "URL path prefix Bifrost is served under behind an ingress or reverse proxy, e.g. \"/bifrost\". Requests are accepted with or without the prefix. Segments may not be \".\" or \"..\", and surrounding whitespace is not allowed. The first segment must not match a Bifrost route (such as api, v1, or openai) or a top-level UI path (such as assets or images). Renders into server.base_path."
             },
             "bodyBufferPoolLimitBytes": {
               "type": "integer",
@@ -976,6 +1431,11 @@
                   "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
                   "default": 3600,
                   "anyOf": [{ "const": 0 }, { "minimum": 60 }]
+                },
+                "openapiUrl": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "description": "OpenAPI spec /v1/mcp and Warp build their tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Supports env var syntax (env.MY_VAR). Empty reads the published spec. Maps to framework.pricing.openapi_url."
                 }
               },
               "additionalProperties": false
@@ -1119,6 +1579,10 @@
                   "type": "integer"
                 }
               ]
+            },
+            "maxProtocolVersion": {
+              "$ref": "#/$defs/mcpMaxProtocolVersion",
+              "description": "Newest MCP protocol version Bifrost offers to MCP servers. 'auto' uses the newest version Bifrost supports. Unset keeps the stored value. Renders into mcp.max_protocol_version."
             },
             "virtualMcps": {
               "type": "array",
@@ -1340,7 +1804,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -2438,6 +2904,13 @@
                       "$ref": "#/$defs/virtualKeyProviderConfig"
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays this key may call, one by one. When the key is synced from config.json this is its whole list: omitted or [] leaves it with none. Renders into relay_grants.",
+                    "items": {
+                      "$ref": "#/$defs/virtual_key_relay_grant"
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -2630,7 +3103,7 @@
                     ]
                   }
                 },
-                "required": ["id", "name", "targets"]
+                "required": ["name", "targets"]
               }
             },
             "authConfig": {
@@ -2813,13 +3286,13 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Select semantic or a decision model as the primary classifier; semantic may fall back to LLM or the decision model. Session state reuses the effective tier on tool continuations and can optionally retain the highest tier across turns.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Select semantic, a decision model or an LLM as the primary classifier; semantic may fall back to LLM or the decision model. Session state reuses the effective tier on tool continuations and can optionally retain the highest tier across turns.",
               "properties": {
                 "classifier": {
                   "type": "string",
-                  "enum": ["semantic", "decision"],
+                  "enum": ["semantic", "decision", "llm"],
                   "default": "semantic",
-                  "description": "Primary complexity classifier; defaults to semantic. The decision model uses its provider's credentials."
+                  "description": "Primary complexity classifier; defaults to semantic. The decision model uses its provider's credentials; llm classifies with the model in the llm block."
                 },
                 "decision": {
                   "type": "object",
@@ -2829,6 +3302,7 @@
                     "model": {"type": "string", "description": "Decision model on that provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."},
                     "previous_message_count": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."},
                     "timeout": {"description": "Maximum decision-model classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"},
+                    "min_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."},
                     "criteria": {
                       "type": "object",
                       "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -2913,7 +3387,7 @@
                 },
                 "llm": {
                   "type": "object",
-                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when semantic.fallback selects 'llm', where it runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
                   "properties": {
                     "provider": {
                       "type": "string",
@@ -2923,7 +3397,7 @@
                     "model": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                      "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                     },
                     "timeout": {
                       "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
@@ -3086,7 +3560,7 @@
                       }
                     },
                     "required": ["session"],
-                    "not": {"required": ["classifier"], "properties": {"classifier": {"const": "decision"}}}
+                    "not": {"required": ["classifier"], "properties": {"classifier": {"enum": ["decision", "llm"]}}}
                   },
                   "then": {
                     "required": ["semantic"]
@@ -3105,6 +3579,37 @@
                       }
                     },
                     "required": ["semantic"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {"classifier": {"const": "llm"}},
+                    "required": ["classifier"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                },
+                {
+                  "$comment": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise. The type guard keeps the 'not' below from rejecting a null config.",
+                  "if": {
+                    "type": "object",
+                    "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}},
+                    "required": ["suggestions"]
+                  },
+                  "then": {
+                    "required": ["semantic"],
+                    "not": {"required": ["classifier"], "properties": {"classifier": {"enum": ["decision", "llm"]}}}
+                  }
+                },
+                {
+                  "$comment": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
+                  "if": {
+                    "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"], "not": {"required": ["provider", "model"]}}},
+                    "required": ["suggestions"]
                   },
                   "then": {
                     "required": ["llm"]
@@ -3494,6 +3999,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3583,6 +4092,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3661,6 +4174,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3737,6 +4254,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3828,6 +4349,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3936,6 +4461,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4023,6 +4552,10 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4588,6 +5121,13 @@
                   "$ref": "#/$defs/access_profile_virtual_mcp"
                 }
               },
+              "relay_grants": {
+                "type": "array",
+                "description": "Relays keys governed by this profile may call, one by one. Renders into access_profiles[].relay_grants.",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_relay_grant"
+                }
+              },
               "mcp_configs": {
                 "type": "array",
                 "description": "Per-MCP-client tool allowlists this profile grants. Canonical key; supersedes the deprecated mcp_servers and mcp_tool_overrides aliases.",
@@ -5097,6 +5637,27 @@
             "additionalProperties": false
           }
         },
+        "relays": {
+          "type": "array",
+          "description": "Relays: raw HTTP relays to non-LLM APIs served at /relay/{name}/{path}, with the relay's credential injected and each counted call priced and charged to the caller's budgets. Rendered directly as top-level relays in config.json and reconciled by name with hash-based change detection. With config.json as the source of truth, an explicit list (including []) prunes stored relays it does not name; omit the key to leave them alone. Virtual keys, access profiles and projects reach a relay through relay_grants.",
+          "items": {
+            "$ref": "#/$defs/relay"
+          }
+        },
+        "modelRouters": {
+          "type": "array",
+          "description": "Named model routers, each a complexity classifier with the settings of governance.complexityAnalyzerConfig, the model each tier gets, and the routing that decides which requests it takes after the routing rules. Rendered as top-level model_routers in config.json whenever declared. With config.json as the source of truth, an explicit list (including []) removes stored routers it does not name; omit the key to leave them alone. Routers are separate from governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.",
+          "items": {
+            "$ref": "#/$defs/modelRouter"
+          }
+        },
+        "datasheetOverrides": {
+          "type": "array",
+          "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Rendered directly as top-level datasheet_overrides in config.json and matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so UI edits stand until the entry itself changes. With config.json as the source of truth, an explicit list (including []) removes stored overrides it does not name; omit the key to leave them alone.",
+          "items": {
+            "$ref": "#/$defs/datasheetOverride"
+          }
+        },
         "agents": {
           "type": "array",
           "description": "Declarative A2A agent registrations synced into the database at startup, reconciled by name with hash-based change detection. Rendered directly as top-level agents in config.json. In config.json source-of-truth mode, stored registrations absent from this list are pruned.",
@@ -5286,16 +5847,19 @@
             },
             "objectStorage": {
               "type": "object",
-              "description": "Optional object storage for archiving audit events to S3/GCS. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
+              "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"],
+                  "enum": ["s3", "gcs", "azure"],
                   "description": "Object storage backend type"
                 },
                 "bucket": {
-                  "type": "string",
-                  "description": "Bucket name"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string",
@@ -5312,8 +5876,15 @@
                   "description": "AWS region (S3 only)"
                 },
                 "endpoint": {
-                  "type": "string",
-                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint. Supports env var and structured secret references"
                 },
                 "accessKeyId": {
                   "type": "string",
@@ -5345,7 +5916,37 @@
                   "description": "GCP service account credentials JSON or file path; omit for Application Default Credentials (GCS only)"
                 }
               },
-              "required": ["type", "bucket"]
+              "required": ["type", "bucket"],
+              "allOf": [
+                {
+                  "if": { "properties": { "type": { "const": "azure" } }, "required": ["type"] },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "required": ["connectionString"] } },
+                      { "required": ["connectionString"], "not": { "required": ["endpoint"] } }
+                    ]
+                  },
+                  "else": {
+                    "properties": {
+                      "bucket": { "type": "string" },
+                      "endpoint": { "type": "string" },
+                      "connectionString": false
+                    }
+                  }
+                }
+              ]
             }
           }
         },
@@ -5951,10 +6552,15 @@
             },
             "objectStorageExcludeRequestTypes": {
               "type": "array",
-              "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
+              "description": "Request types (log object type, e.g. list_models, embedding; relay for Relay Logs rows) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
               "items": {
                 "type": "string"
               }
+            },
+            "captureClientIp": {
+              "type": "boolean",
+              "default": false,
+              "description": "Record the caller's IP as client_ip on LLM, MCP and relay logs: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer. The headers are caller-supplied and not verified, so run behind a proxy that overwrites them. Off by default; turning it off does not clear values already recorded. Takes effect on restart. Maps to logs_store.capture_client_ip."
             },
             "objectStorage": {
               "type": "object",
@@ -5964,10 +6570,14 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"]
+                  "enum": ["s3", "gcs", "azure"]
                 },
                 "bucket": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string"
@@ -5975,11 +6585,35 @@
                 "compress": {
                   "type": "boolean"
                 },
+                "format": {
+                  "type": "string",
+                  "enum": ["json", "parquet"],
+                  "default": "json",
+                  "description": "Encoding of offloaded log payload objects; parquet is supported on s3 and azure"
+                },
+                "compression": {
+                  "type": "string",
+                  "enum": ["none", "gzip", "snappy", "zstd"],
+                  "description": "JSON whole-object compression (none/gzip), or Parquet page codec (none/gzip/snappy/zstd); defaults to none for JSON (gzip when compress is true), snappy for Parquet"
+                },
                 "region": {
                   "type": "string"
                 },
                 "endpoint": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint and existingSecret"
+                },
+                "connectionStringKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Kubernetes Secret key containing the Azure Storage connection string (default: connection-string)"
                 },
                 "accessKeyId": {
                   "type": "string"
@@ -6021,6 +6655,53 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "type": { "const": "azure" }, "enabled": { "const": true } },
+                    "required": ["type", "enabled"]
+                  },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "anyOf": [{ "required": ["connectionString"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["connectionString"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["existingSecret"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["connectionString"] }] } }
+                    ]
+                  }
+                },
+                {
+                  "if": { "properties": { "type": { "enum": ["s3", "gcs"] } }, "required": ["type"] },
+                  "then": {
+                    "properties": { "bucket": { "type": "string" }, "endpoint": { "type": "string" }, "connectionString": false, "connectionStringKey": false }
+                  }
+                },
+                {
+                  "if": {
+                    "anyOf": [
+                      { "not": { "required": ["format"] } },
+                      { "properties": { "format": { "const": "json" } }, "required": ["format"] }
+                    ]
+                  },
+                  "then": { "properties": { "compression": { "enum": ["none", "gzip"] } } }
+                },
+                {
+                  "if": { "properties": { "type": { "const": "gcs" } }, "required": ["type"] },
+                  "then": { "properties": { "format": { "const": "json" } } }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -6201,11 +6882,29 @@
                 },
                 "size": {
                   "type": "string"
+                },
+                "annotations": {
+                  "type": "object",
+                  "description": "Annotations for the bundled PostgreSQL PVC",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "volumeAttributesClassName": {
+                  "type": "string",
+                  "description": "VolumeAttributesClass for the bundled PostgreSQL PVC; requires cluster and CSI driver support"
                 }
               }
             },
             "resources": {
               "type": "object"
+            },
+            "extraArgs": {
+              "type": "array",
+              "description": "Arguments passed to the bundled PostgreSQL image entrypoint",
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -6457,11 +7156,99 @@
                 "affinity": {
                   "type": "object",
                   "description": "Affinity rules for the Redis pod assignment"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the Redis container, appended after REDIS_PASSWORD / REDISCLI_AUTH (e.g. REDIS_ARGS, REDISEARCH_ARGS for redis-stack-server). With auth enabled, setting extraEnv or envFrom starts Redis through sh -c so REDIS_ARGS is appended after --requirepass.",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "envFrom": {
+                  "type": "array",
+                  "description": "Kubernetes EnvFromSource entries (secretRef / configMapRef) for the Redis container",
+                  "items": {
+                    "type": "object"
+                  }
                 }
               }
             },
             "metrics": {
-              "type": "object"
+              "type": "object",
+              "description": "Prometheus metrics for the bundled Redis via an oliver006/redis_exporter sidecar",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Run the redis_exporter sidecar, add a metrics port to the Redis Service and prometheus.io/* scrape annotations to the pod"
+                },
+                "image": {
+                  "type": "object",
+                  "properties": {
+                    "repository": { "type": "string" },
+                    "tag": { "type": "string" },
+                    "pullPolicy": {
+                      "type": "string",
+                      "enum": ["Always", "IfNotPresent", "Never"]
+                    }
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Port the exporter serves /metrics on (default: 9121)"
+                },
+                "resources": {
+                  "type": "object",
+                  "description": "Resource requests and limits for the exporter container"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the exporter container (e.g. REDIS_EXPORTER_CHECK_KEYS)",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "serviceMonitor": {
+                  "type": "object",
+                  "description": "Prometheus Operator ServiceMonitor for the exporter (requires the monitoring.coreos.com/v1 CRDs)",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "namespace": {
+                      "type": "string",
+                      "description": "Namespace for the ServiceMonitor (default: release namespace)"
+                    },
+                    "interval": {
+                      "type": "string",
+                      "description": "Scrape interval, e.g. 30s (default: Prometheus global)"
+                    },
+                    "scrapeTimeout": {
+                      "type": "string",
+                      "description": "Scrape timeout, e.g. 10s"
+                    },
+                    "labels": {
+                      "type": "object",
+                      "description": "Extra labels on the ServiceMonitor, e.g. the release label your Prometheus selects on",
+                      "additionalProperties": { "type": "string" }
+                    },
+                    "basicAuth": {
+                      "type": "object",
+                      "description": "Credentials Prometheus sends when the exporter has basic auth (REDIS_EXPORTER_BASIC_AUTH_USERNAME / _PASSWORD in metrics.extraEnv). The Secret must be in the ServiceMonitor's namespace.",
+                      "properties": {
+                        "enabled": { "type": "boolean", "description": "Send HTTP basic auth credentials with each scrape" },
+                        "existingSecret": { "type": "string", "minLength": 1, "description": "Secret holding the exporter username and password" },
+                        "usernameKey": { "type": "string", "description": "Key holding the username (default: username)" },
+                        "passwordKey": { "type": "string", "description": "Key holding the password (default: password)" }
+                      },
+                      "additionalProperties": false,
+                      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+                      "then": { "required": ["existingSecret"] }
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -6641,6 +7428,758 @@
     }
   },
   "$defs": {
+    "modelRouter": {
+      "type": "object",
+      "description": "One model router: an id, a name and a description beside the settings of governance.complexityAnalyzerConfig, whose definitions these properties reuse; the model each tier gets; and the routing that decides which requests it takes.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "not": {"const": "defaults"},
+          "description": "Stable router id. `defaults` is reserved: it names the endpoint that serves a new router's defaults."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
+          "description": "Display name, unique across routers. Must contain a non-whitespace character."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the router is for."
+        },
+        "classifier": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/classifier"},
+        "decision": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/decision"},
+        "semantic": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/semantic"},
+        "llm": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/llm"},
+        "session": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/session"},
+        "suggestions": {"$ref": "#/$defs/complexitySuggestionsConfig"},
+        "tier_boundaries": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/tier_boundaries"},
+        "keywords": {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/properties/keywords"},
+        "targets": {
+          "type": "array",
+          "description": "The model each tier gets. A tier with no target keeps the request's model; weights within a tier sum to 1. Omit to keep the targets set in the dashboard; an empty list clears them.",
+          "items": {"$ref": "#/$defs/modelRouterTarget"}
+        },
+        "routing": {"$ref": "#/$defs/modelRouterRouting"}
+      },
+      "required": ["id", "name", "keywords"],
+      "$comment": "The same cross-field rules as complexityAnalyzerConfig: session.enabled needs semantic unless the decision model or the llm is primary, semantic.fallback llm needs llm, classifier llm needs llm, and enabled suggestions need semantic as the primary classifier and a model.",
+      "allOf": [
+        {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/0"},
+        {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/1"},
+        {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/2"},
+        {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/3"},
+        {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/4"}
+      ],
+      "additionalProperties": false
+    },
+    "complexitySuggestionsConfig": {
+      "type": "object",
+      "description": "Phrase suggestions for the semantic router: a sample of the vectors the semantic classifier computes is kept under each request's log ID so suggestions can cluster real traffic. Request text stays in the logs.",
+      "properties": {
+        "enabled": {"type": "boolean", "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."},
+        "sample_rate": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Share of classified requests captured; default 0.1."},
+        "lookback_days": {"type": "integer", "minimum": 1, "maximum": 90, "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (never longer than the logs); default 7."},
+        "schedule": {
+          "type": "object",
+          "description": "When suggestion runs start: at start_at and every interval after it. Default: daily at 03:00 UTC.",
+          "properties": {
+            "every": {"type": "string", "pattern": "^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$", "description": "Interval: 1h-23h, 1d-30d or 1w-4w, as a fixed duration. Default 1d."},
+            "start_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$", "description": "The first run, an RFC 3339 time such as 2026-11-12T03:00:00Z; runs repeat every interval from it. Default 1970-01-01T03:00:00Z."}
+          },
+          "additionalProperties": false
+        },
+        "max_clustered_requests": {"type": "integer", "minimum": 1000, "maximum": 100000, "description": "Most captured requests one run clusters; default 20000."},
+        "min_cluster_requests": {"type": "integer", "minimum": 2, "maximum": 1000, "description": "Smallest cluster, in requests, a suggestion is written for; default 6."},
+        "provider": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Provider of the chat model that writes suggested phrases. Set together with model; both omitted take the llm block's model when saved."},
+        "model": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Chat model that writes suggested phrases. Set together with provider; both omitted take the llm block's model when saved."},
+        "instructions": {"type": "string", "maxLength": 8000, "description": "Replaces the shipped phrase-writing instructions; empty uses them."},
+        "tier": {
+          "type": "object",
+          "description": "How each suggestion's tier is decided. Omitted: the llm classifier on the phrase model.",
+          "properties": {
+            "classifier": {"type": "string", "enum": ["llm", "decision"], "description": "llm: a chat model with the tier prompt, definitions and the router's own phrases as examples. decision: a decision model asked one choice question. Shipped default phrases are never used as examples."},
+            "provider": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Provider of the tier model. Set together with model; both omitted take the phrase model (llm) or the decision model (decision) when saved."},
+            "model": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Tier model. Set together with provider."},
+            "prompt": {"type": "string", "maxLength": 16000, "description": "llm only: the whole tier prompt (instructions, tier definitions and examples), sent as written followed by the fixed output and safety rules. Empty: generated by each run from the router's tier definitions and its own phrases."},
+            "instructions": {"type": "string", "maxLength": 8000, "description": "decision only: the choice question's instructions, sent as written. Empty: the shipped instructions."},
+            "criteria": {"type": "object", "description": "decision only: each tier's definition, signals and examples, sent as written as that tier's choice. A tier left out is generated from the router (its decision definitions and signals, its own phrases as examples).", "properties": {"SIMPLE": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}, "MEDIUM": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}, "COMPLEX": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}}, "additionalProperties": false}
+          },
+          "dependentRequired": {"provider": ["model"], "model": ["provider"]},
+          "additionalProperties": false
+        }
+      },
+      "dependentRequired": {"provider": ["model"], "model": ["provider"]},
+      "required": ["enabled"],
+      "additionalProperties": false
+    },
+    "modelRouterTarget": {
+      "type": "object",
+      "description": "One model for one tier of a model router. Omitting provider or model keeps the request's value, but a target sets at least one.",
+      "properties": {
+        "tier": {"type": "string", "enum": ["SIMPLE", "MEDIUM", "COMPLEX"]},
+        "provider": {"type": "string", "minLength": 1, "description": "Target provider name. Omit to keep the request's provider."},
+        "model": {"type": "string", "minLength": 1, "description": "Target model name. Omit to keep the request's model."},
+        "key_id": {"type": "string", "minLength": 1, "description": "Optional provider key ID to pin for this target. Requires provider."},
+        "weight": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Probability weight within the tier (must be > 0). All weights in a tier must sum to 1."},
+        "fallbacks": {
+          "$ref": "#/properties/bifrost/properties/governance/properties/routingRules/items/properties/fallbacks",
+          "description": "Fallback chain used when this target is chosen. A non-empty list replaces the request's chain; omit it or send [] to keep the chain the routing rules set."
+        }
+      },
+      "required": ["tier", "weight"],
+      "$comment": "A blank provider or model is no value: the loader trims both and skips a router whose target then sets neither.",
+      "anyOf": [{"required": ["provider"], "properties": {"provider": {"pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"}}}, {"required": ["model"], "properties": {"model": {"pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"}}}],
+      "dependentRequired": {"key_id": ["provider"]},
+      "additionalProperties": false
+    },
+    "modelRouterRouting": {
+      "type": "object",
+      "description": "Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), by priority within a scope, and the first enabled router whose condition holds classifies the request. Omit to keep the routing set in the dashboard; a router created without it starts off, global, after the other global routers.",
+      "properties": {
+        "enabled": {"type": "boolean", "default": false, "description": "Whether the router takes requests."},
+        "scope": {
+          "type": "string",
+          "enum": ["global", "team", "customer", "virtual_key"],
+          "default": "global",
+          "description": "Scope level. User-scoped routing can be set through the API only. Routing whose scope_id does not resolve is skipped at load with a warning."
+        },
+        "scope_id": {
+          "type": ["string", "null"],
+          "description": "ID (not name) of the team, customer or virtual key. Required for non-global scopes; ignored for global."
+        },
+        "cel_expression": {
+          "type": "string",
+          "description": "Optional CEL condition over the request as the routing rules left it. Empty takes every request in the scope. A condition of model == \"<name>\" lets apps ask for the router by that model name. It cannot use complexity_tier: the router decides the tier once it takes the request."
+        },
+        "query": {"$ref": "#/properties/bifrost/properties/governance/properties/routingRules/items/properties/query"},
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Order within the scope; lower is tried first. Unique within the scope among model routers, separate from routing rule priorities."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["scope"], "properties": {"scope": {"not": {"const": "global"}}}},
+          "then": {"required": ["scope_id"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "identity_source": {
+      "type": "object",
+      "description": "Where a federated key gets the OIDC identity token it exchanges. Shared by every provider that supports workload identity federation.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["file", "inline"],
+          "description": "file: read the token from path on every exchange, so a token the platform rotates on disk is picked up. inline: use token as given"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the identity token, for type file (can use env. prefix). Must be under /var/run/secrets or /run/secrets, or a directory listed in the BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS environment variable"
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The identity token itself, for type inline (can use env. prefix)"
+        }
+      },
+      "required": ["type"],
+      "oneOf": [
+        {
+          "properties": {"type": {"const": "file"}},
+          "required": ["path"],
+          "not": {"required": ["token"]}
+        },
+        {
+          "properties": {"type": {"const": "inline"}},
+          "required": ["token"],
+          "not": {"required": ["path"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "datasheetOverride": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "not": { "required": ["provider"] },
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": {
+        "required": ["mode"],
+        "properties": { "mode": { "pattern": "\\S" } }
+      },
+      "additionalProperties": false
+    },
+    "relay": {
+      "type": "object",
+      "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Served at /relay/{name}; immutable"
+        },
+        "description": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Absolute http(s) upstream origin and base path every request is pinned under"
+        },
+        "auth": {
+          "$ref": "#/$defs/relay_auth_config"
+        },
+        "credential": {
+          "type": "object",
+          "description": "The one secret the endpoint signs in with: value for bearer, header, query and basic auth; aws for aws_sigv4. Omit for auth none.",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/relay_secret"
+            },
+            "aws": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "secret_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_token": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "region": {
+                  "$ref": "#/$defs/relay_secret",
+                  "description": "SigV4 signing region"
+                },
+                "role_arn": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "external_id": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_name": {
+                  "$ref": "#/$defs/relay_secret"
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "extra_headers": {
+          "type": "object",
+          "description": "Operator headers sent on every request; a caller cannot replace them",
+          "additionalProperties": {
+            "$ref": "#/$defs/relay_secret"
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Whole-response timeout for buffered calls (default 60)"
+            },
+            "stream_idle_timeout_in_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Max silence between stream chunks (default 60)"
+            },
+            "max_conns_per_host": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Default 5000"
+            },
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config",
+          "description": "Outbound proxy; omit to inherit the global proxy when it is enabled for inference"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        },
+        "streaming": {
+          "$ref": "#/$defs/relay_streaming_config"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relay_route_config"
+          },
+          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+        },
+        "skip_route_check": {
+          "type": "boolean",
+          "description": "Relay requests that match no route instead of refusing them with 404"
+        },
+        "ignore_upstream_cost": {
+          "type": "boolean",
+          "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        }
+      },
+      "required": [
+        "name",
+        "base_url"
+      ],
+      "additionalProperties": false
+    },
+    "relay_auth_config": {
+      "type": "object",
+      "description": "How the endpoint's credential is presented to the upstream",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "header",
+            "query",
+            "basic",
+            "aws_sigv4",
+            "none"
+          ],
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the endpoint's credential.aws; none: nothing injected (default bearer)"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "Header that carries the key (auth.type header)"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter that carries the key (auth.type query)"
+        },
+        "value_prefix": {
+          "type": "string",
+          "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate. Requests are signed for credential.aws.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_route_config": {
+      "type": "object",
+      "description": "Overrides for one upstream operation",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "false refuses requests matching this route with 404, even when skip_route_check is on. Defaults to true"
+        },
+        "billable": {
+          "type": "boolean",
+          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "Forces the streaming or buffered relay for this route"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "relay_secret": {
+      "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "plain_text",
+                "env",
+                "vault"
+              ]
+            },
+            "env_var": {
+              "type": "string"
+            },
+            "from_env": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "value": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "ref": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "anyOf": [
+                {
+                  "required": [
+                    "type"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            },
+            {
+              "properties": {
+                "env_var": {
+                  "minLength": 1
+                },
+                "from_env": {
+                  "const": true
+                }
+              },
+              "required": [
+                "env_var",
+                "from_env"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relay_streaming_config": {
+      "type": "object",
+      "description": "Paths that are always relayed as streams. Otherwise a route's stream flag wins, and without one the upstream's reply decides: text/event-stream is streamed, anything else is read and priced. Nothing the caller sends selects streaming",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Rooted segment globs that always stream, e.g. /v1/stream/**",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_usage_config": {
+      "type": "object",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read. On the endpoint, a field left empty reads nothing; on a route, an empty field inherits the endpoint's value and reads nothing only when it is still empty after that (a route cannot switch an endpoint path off by leaving it blank). Negative numbers are ignored",
+      "properties": {
+        "model_path": {
+          "type": "string",
+          "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Stored on the log row and checked against virtual-key model restrictions. Unset reads no model"
+        },
+        "model_source": {
+          "type": "string",
+          "enum": [
+            "body",
+            "query"
+          ],
+          "description": "Where model_path points: body (default), a JSON field of the request body; or query, a query parameter (Deepgram's ?model=nova-3)"
+        },
+        "input_tokens_path": {
+          "type": "string",
+          "description": "Response body path for input tokens"
+        },
+        "output_tokens_path": {
+          "type": "string",
+          "description": "Response body path for output tokens"
+        },
+        "total_tokens_path": {
+          "type": "string",
+          "description": "Response body path for total tokens"
+        },
+        "cost_path": {
+          "type": "string",
+          "description": "Response body path for an endpoint-reported USD cost; an array of numbers is summed"
+        },
+        "cost_per_request": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat USD fee added to every billable call; on a route, 0 waives the endpoint fee"
+        },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes",
+            "body_chars"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relabelConfig": {
+      "type": "object",
+      "description": "A Prometheus Operator RelabelConfig entry (monitoring.coreos.com/v1)",
+      "properties": {
+        "sourceLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels whose values are concatenated and matched against regex"
+        },
+        "separator": {
+          "type": "string",
+          "description": "Separator placed between concatenated source label values"
+        },
+        "targetLabel": {
+          "type": "string",
+          "description": "Label written by the replace and hashmod actions"
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression matched against the concatenated source labels"
+        },
+        "modulus": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Modulus for the hashmod action"
+        },
+        "replacement": {
+          "type": "string",
+          "description": "Replacement value written to the target label on a regex match"
+        },
+        "action": {
+          "type": "string",
+          "description": "Relabeling action, e.g. replace, keep, drop, labelmap, labeldrop, labelkeep, hashmod"
+        }
+      },
+      "additionalProperties": false
+    },
+    "proxy_config": {
+      "type": "object",
+      "description": "Proxy configuration for provider connections",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "http",
+            "socks5",
+            "environment"
+          ],
+          "description": "Type of proxy to use"
+        },
+        "url": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            {
+              "type": "string",
+              "format": "uri"
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME or a literal URI)"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_relay_grant": {
+      "type": "object",
+      "properties": {
+        "relay_name": {
+          "type": "string",
+          "description": "Name of a relay this key may call"
+        }
+      },
+      "required": [
+        "relay_name"
+      ],
+      "additionalProperties": false
+    },
+    "azureStorageSecret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "mcpMaxProtocolVersion": {
+      "type": "string",
+      "enum": ["auto", "2026-07-28", "2025-11-25", "2025-06-18"],
+      "description": "An MCP protocol version cap: 'auto' (newest supported) or a revision."
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
@@ -6778,7 +8317,12 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
-"excluded_attributes": {
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Span attributes win on conflict. The suffixes path and method, and keys in reserved attribute namespaces (gen_ai., llm., bifrost., http., url., session., service., k8s., langfuse., openinference., otel.), are skipped. Default false.",
+          "default": false
+        },
+        "excluded_attributes": {
           "type": "array",
           "items": { "type": "string" },
           "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
@@ -6789,7 +8333,7 @@
           "description": "Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage on the provider and is ignored when content logging is disabled.",
           "default": false
         },
-                "request_headers": {
+        "request_headers": {
           "type": "array",
           "items": {
             "type": "string"
@@ -6956,6 +8500,19 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure apply_trace_dimensions_to_child_spans per profile instead."
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Deprecated in the profiles wrapper; configure excluded_attributes per profile instead."
+        },
+        "export_raw_payloads": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure export_raw_payloads per profile instead."
         },
         "request_headers": {
           "type": "array",
@@ -7247,6 +8804,16 @@
             "api_version": {
               "type": "string",
               "description": "Azure API version"
+            },
+            "use_speech_endpoints": {
+              "type": "boolean",
+              "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+              "default": false
+            },
+            "use_voice_live_endpoints": {
+              "type": "boolean",
+              "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+              "default": false
             }
           },
           "required": ["endpoint"],
@@ -7490,6 +9057,54 @@
           "required": ["region"],
           "additionalProperties": false
         },
+        "sagemaker_key_config": {
+          "type": "object",
+          "description": "AWS credentials and routing for SageMaker real-time endpoints. Leave access_key and secret_key empty to use the default AWS credential chain.",
+          "properties": {
+            "access_key": {
+              "type": "string",
+              "description": "AWS access key used to mint bearer tokens (can use env. prefix)"
+            },
+            "secret_key": {
+              "type": "string",
+              "description": "AWS secret key (can use env. prefix)"
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token for temporary credentials (can use env. prefix)"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region of the endpoints; a model id may override it with a region prefix"
+            },
+            "role_arn": {
+              "type": "string",
+              "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for AssumeRole (can use env. prefix)"
+            },
+            "session_name": {
+              "type": "string",
+              "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Runtime host override, e.g. an interface VPC endpoint, FIPS or dual-stack host. Region is still required.",
+              "properties": {
+                "runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the SageMaker runtime (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["region"],
+          "additionalProperties": false
+        },
         "vllm_key_config": {
           "type": "object",
           "properties": {
@@ -7531,6 +9146,11 @@
               "type": "boolean",
               "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution.",
               "default": false
+            },
+            "scopes": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+              "description": "OAuth M2M scopes requested when minting a token (default: [\"all-apis\"]). Set this when the service principal's OAuth secret was created with scopes. Databricks rejects a token request that names any scope the secret does not have. Model Serving needs model-serving, Unity AI Gateway needs ai-gateway, and /v1/decisions needs ai-functions."
             }
           },
           "required": ["workspace_url"],
@@ -7693,6 +9313,42 @@
           ],
           "additionalProperties": false
         },
+        "anthropic_key_config": {
+          "type": "object",
+          "description": "Anthropic key configuration, for anthropic and custom providers built on the anthropic base.",
+          "properties": {
+            "workload_identity": {
+              "type": "object",
+              "description": "Workload Identity Federation. Set this and leave value empty: Bifrost exchanges an OIDC identity token for a short-lived Anthropic access token. A non-empty value always wins.",
+              "properties": {
+                "federation_rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Federation rule ID, fdrl_... (can use env. prefix)"
+                },
+                "organization_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Anthropic organization UUID (can use env. prefix)"
+                },
+                "service_account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Service account the minted token acts as, svac_... (can use env. prefix)"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Workspace ID, wrkspc_...; required when the rule spans several workspaces (can use env. prefix)"
+                },
+                "identity_source": {"$ref": "#/$defs/identity_source"}
+              },
+              "required": ["federation_rule_id", "organization_id", "service_account_id", "identity_source"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "aliases": {
           "type": "object",
           "additionalProperties": {
@@ -7738,6 +9394,14 @@
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
                   },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_voice_live_endpoints: send this alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
+                  },
                   "project_id": {
                     "type": "string",
                     "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
@@ -7753,6 +9417,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment. Requests for this alias go there instead of Model APIs, and model_id is the served model name (Engine-Builder and BEI deployments ignore it). Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
@@ -8050,13 +9718,80 @@
           "type": "boolean",
           "description": "Whether this client is a code mode client"
         },
+        "serverTypeOnSlug": {
+          "type": "string",
+          "enum": ["inherit", "enabled", "disabled"],
+          "description": "Code mode for this client on its own /mcp/<slug> endpoint. 'inherit' follows isCodeModeClient; 'enabled' or 'disabled' overrides it there only. /mcp, Virtual MCPs and LLM requests always follow isCodeModeClient. Renders into server_type_on_slug."
+        },
         "connectionType": {
           "type": "string",
-          "enum": ["stdio", "websocket", "http", "sse"]
+          "enum": ["stdio", "websocket", "http", "sse", "openapi"],
+          "description": "Connection type. 'openapi' synthesizes an in-process MCP server from an OpenAPI/Swagger document (see openapiConfig); its tools proxy HTTP calls to the described API."
         },
         "connectionString": {
           "type": "string",
           "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "openapiConfig": {
+          "type": "object",
+          "description": "Configuration for connectionType 'openapi'. At least one of spec, specFile or specUrl supplies the document, in that order of precedence. Supports Swagger 2.0 and OpenAPI 3.0, 3.1 and 3.2. Renders into openapi_config.",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "description": "Inline OpenAPI/Swagger document (JSON or YAML text). Renders into spec."
+            },
+            "specFile": {
+              "type": "string",
+              "description": "Path to the document, relative to the config.json directory (bifrost.appDir) or absolute. Mount the file into the pod with volumes/volumeMounts. Read once at load. Renders into spec_file."
+            },
+            "specUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "http(s) URL of the document, fetched at connect time when spec and specFile are not given. Renders into spec_url."
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "Upstream API base URL. Defaults to the document's first server entry; required when the document declares none or only relative ones. Renders into base_url."
+            },
+            "securityCredentials": {
+              "type": "object",
+              "description": "Credentials keyed by the document's securitySchemes name. apiKey and http-bearer schemes take value; http-basic takes username and password. Values support env.VAR and vault.path references. Renders into security_credentials.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "includeDeprecated": {
+              "type": "boolean",
+              "default": false,
+              "description": "Expose operations the document marks deprecated. Renders into include_deprecated."
+            },
+            "maxResponseBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Cap on the upstream response body returned to the model (0 = default 64 KiB). Renders into max_response_bytes."
+            }
+          },
+          "anyOf": [
+            { "required": ["spec"] },
+            { "required": ["specFile"] },
+            { "required": ["specUrl"] }
+          ],
+          "additionalProperties": false
         },
         "secretRef": {
           "type": "object",
@@ -8114,9 +9849,25 @@
                 "type": "string"
               },
               "description": "OAuth scopes to request."
+            },
+            "resource": {
+              "type": "string",
+              "description": "OAuth resource indicator, RFC 8707 (optional — discovered from the MCP server's protected resource metadata when omitted). Renders into resource."
+            },
+            "useClientMetadataDocument": {
+              "type": "boolean",
+              "default": false,
+              "description": "Register with Bifrost's Client ID Metadata Document even if the authorization server does not advertise support. Requires Bifrost on a public HTTPS address; cannot be combined with clientId. When off, the document is still used automatically wherever the server advertises support. Renders into use_client_metadata_document."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "if": {
+            "properties": { "useClientMetadataDocument": { "const": true } },
+            "required": ["useClientMetadataDocument"]
+          },
+          "then": {
+            "not": { "required": ["clientId"] }
+          }
         },
         "tokenExchange": {
           "type": "object",
@@ -8196,6 +9947,21 @@
           },
           "required": ["audience"],
           "allOf": [
+            {
+              "$comment": "clientId is required unless useIdpCredentials is true or profile is id_jag, mirroring token_exchange in config.schema.json. A blank clientId is not rendered, so it counts as unset.",
+              "if": {
+                "not": {
+                  "anyOf": [
+                    { "properties": { "useIdpCredentials": { "const": true } }, "required": ["useIdpCredentials"] },
+                    { "properties": { "profile": { "const": "id_jag" } }, "required": ["profile"] }
+                  ]
+                }
+              },
+              "then": {
+                "properties": { "clientId": { "pattern": "\\S" } },
+                "required": ["clientId"]
+              }
+            },
             {
               "$comment": "A client secret or a private key, not both; a blank value counts as unset, as at runtime.",
               "not": {
@@ -8307,9 +10073,27 @@
           },
           "description": "Auto-execute list of tools"
         },
+        "promptsToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts served through the MCP gateway: ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list. Renders into prompts_to_expose."
+        },
+        "resourcesToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through the MCP gateway: ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list. Renders into resources_to_expose."
+        },
         "toolSyncInterval": {
           "type": "string",
           "description": "Per-client override for tool sync interval"
+        },
+        "maxProtocolVersion": {
+          "$ref": "#/$defs/mcpMaxProtocolVersion",
+          "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.maxProtocolVersion; 'auto' uses the newest version Bifrost supports. Renders into max_protocol_version."
         },
         "toolExecutionTimeout": {
           "type": ["string", "integer"],
@@ -8332,6 +10116,11 @@
         "needsSessionStickiness": {
           "type": "boolean",
           "description": "Only meaningful for connectionType 'http': true keeps one persistent connection reused across every caller; false (the default for new clients) connects fresh per call. SSE and STDIO always behave as sticky regardless. Renders into needs_session_stickiness."
+        },
+        "perUserDiscovery": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's tools, prompts, resources and server instructions are discovered with that caller's own credential, and the client stores no admin credential. When false, every caller is served the discovery made with the admin credential. Renders into per_user_discovery."
         },
         "toolPricing": {
           "type": "object",
@@ -8442,6 +10231,28 @@
         {
           "if": {
             "properties": {
+              "connectionType": {
+                "const": "openapi"
+              }
+            }
+          },
+          "then": {
+            "required": ["openapiConfig"],
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "per_user_headers"]
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": ["openapiConfig"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
               "authType": {
                 "const": "per_user_headers"
               }
@@ -8453,6 +10264,48 @@
             "properties": {
               "perUserHeaderKeys": {
                 "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Per-user auth types open a connection per call, which SSE and STDIO cannot serve. websocket renders as sse.",
+          "if": {
+            "properties": {
+              "connectionType": {
+                "enum": ["sse", "stdio", "websocket"]
+              }
+            },
+            "required": ["connectionType"]
+          },
+          "then": {
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "oauth"]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "perUserDiscovery needs a per-user auth type, and openapi clients take their tools from the document.",
+          "if": {
+            "properties": {
+              "perUserDiscovery": {
+                "const": true
+              }
+            },
+            "required": ["perUserDiscovery"]
+          },
+          "then": {
+            "required": ["authType"],
+            "properties": {
+              "authType": {
+                "enum": ["per_user_oauth", "per_user_headers", "token_exchange"]
+              },
+              "connectionType": {
+                "not": {
+                  "const": "openapi"
+                }
               }
             }
           }
@@ -8752,6 +10605,16 @@
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                    "default": false
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+                    "default": false
                   }
                 },
                 "dependentRequired": {
@@ -9070,6 +10933,208 @@
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
+    "scim_access_profile_resolution_strategy": {
+      "type": "string",
+      "enum": [
+        "all",
+        "order"
+      ],
+      "default": "all",
+      "description": "How many attribute-access-profile grants a user receives when several attributeAccessProfileMappings match: 'all' (default) grants every matching rule's profile; 'order' grants only the profiles of the first rule, in list order, that the user matches. Profiles granted through roles are unaffected."
+    },
+    "scim_token_exchange_hosts": {
+      "type": "array",
+      "description": "Hosts besides the issuer's own that an MCP client's token exchange may be sent to through its authorization_server_url (for example an Okta custom authorization server on another domain). The exchange carries the caller's identity-provider token, so only these hosts may be named. Each entry is a bare host name, with a port only when it needs one; entries are lowercased and deduplicated.",
+      "items": {
+        "type": "string",
+        "pattern": "^\\s*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[1-9][0-9]{0,4})?\\s*$"
+      }
+    },
+    "scim_workload_identity": {
+      "type": "object",
+      "description": "Workload identity on this SSO provider: token issuers, besides the provider itself, whose workload tokens can be mapped to service accounts.",
+      "properties": {
+        "additionalTrustedIssuers": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/scim_trusted_issuer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scim_trusted_issuer": {
+      "type": "object",
+      "description": "A token issuer whose workload tokens, addressed to one of its audiences, can authenticate the service accounts they are mapped to. Workloads are mapped to service accounts in the dashboard or through the API, not in this file.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
+          "description": "Name of the issuer, unique among the provider's issuers ignoring case, e.g. 'AWS prod'. Mappings refer to the issuer by this name: renaming or removing it leaves them without an issuer until one with the name is back."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "aws",
+            "generic"
+          ],
+          "description": "'aws' trusts AWS STS outbound identity federation tokens, named by IAM role ARN. 'generic' trusts any OIDC issuer and takes identityClaim and machineCheck from this entry; with machineCheck 'any' it takes only tokens whose identity claim is mapped; a rule is required to map the SSO app's own client ID, which people's tokens also carry."
+        },
+        "issuerUrl": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^(https://[^/?#@\\s]+|http://(localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[::1\\])(:\\d+)?)(/[^?#\\s]*)?$",
+          "description": "The issuer exactly as tokens carry it in iss: https, or http only on localhost for local testing, with no user info, query or fragment. Signing keys are found through its OIDC discovery document. A mapping made on this issuer stops working if the URL changes."
+        },
+        "audiences": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S"
+          },
+          "description": "Audiences a workload token must be addressed to, typically this Bifrost's URL."
+        },
+        "identityClaim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "\\S",
+          "description": "For 'generic', required: the claim whose value names the workload, e.g. client_id or sub. Values are matched exactly. A mapping made on this issuer stops working if the claim changes."
+        },
+        "machineCheck": {
+          "type": "object",
+          "description": "For 'generic', required: how a workload's token is told from a person's. 'any' when the issuer only issues to workloads, or when only mapped workload IDs should be taken; otherwise a rule only workload tokens pass, e.g. Okta sub_equals_claim cid, Auth0 claim_equals gty client-credentials, Keycloak claim_prefix preferred_username service-account-.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "any",
+                "sub_equals_claim",
+                "claim_equals",
+                "claim_prefix"
+              ]
+            },
+            "claim": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The claim the rule reads. Required for every kind but 'any'."
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The value, or prefix, the claim must have. Required for claim_equals and claim_prefix; an empty one would match every token."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "sub_equals_claim"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "claim_equals",
+                      "claim_prefix"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim",
+                  "value"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "minimum": 300,
+          "maximum": 172800,
+          "description": "Longest total token lifetime accepted. Defaults to 24 hours."
+        },
+        "disabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set to true to keep the issuer and its mappings but refuse its tokens."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "issuerUrl",
+        "audiences"
+      ],
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "generic"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "identityClaim",
+          "machineCheck"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "scim_cross_app_access": {
+      "type": "object",
+      "description": "Cross App Access (XAA, the ID-JAG profile), inbound: AI clients this identity provider admits for a user exchange a provider-signed ID-JAG at Bifrost's /oauth2/token for a Bifrost token that acts as that user. Needs the governance plugin and client.oauth2_server_config.issuer_url. Client IDs are registered in the dashboard.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn Cross App Access on for this provider."
+        },
+        "accessTokenTtl": {
+          "type": "integer",
+          "anyOf": [{ "const": 0 }, { "minimum": 60, "maximum": 86400 }],
+          "description": "Lifetime in seconds of the Bifrost tokens issued for an ID-JAG, 60 to 86400. 0 or omitted uses the default of 86400 (one day), since Okta caps ID-JAGs per user per resource app per month."
+        },
+        "provisionUsers": {
+          "type": "boolean",
+          "description": "Create a Bifrost user for an assertion that names someone who has none, instead of refusing the grant. Off by default: an ID-JAG carries only an ID and email, so most new users would resolve no role."
+        }
+      },
+      "additionalProperties": false
+    },
     "scim_claims_sync_mode": {
       "type": "string",
       "enum": ["both", "scim"],
@@ -9192,6 +11257,13 @@
           "description": "Per-provider access and accounting, one entry per provider",
           "items": {
             "$ref": "#/$defs/project_provider_config"
+          }
+        },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays requests scoped to this project may call, one by one. Renders into governance.projects[].relay_grants.",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
           }
         },
         "mcp_configs": {

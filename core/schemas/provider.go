@@ -718,9 +718,9 @@ type InjectedTool struct {
 // InjectedToolNameWebSearch is the injected tool name that replaces native web search.
 const InjectedToolNameWebSearch = "web_search"
 
-// OpenAIConfig holds OpenAI-specific provider configuration.
+// OpenAIConfig holds OpenAI Responses API configuration, honoured by the OpenAI and Fireworks providers.
 type OpenAIConfig struct {
-	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	DisableStore bool `json:"disable_store"` // When true, forces store=false on outgoing OpenAI and Fireworks Responses requests (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

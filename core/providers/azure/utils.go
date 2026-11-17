@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"net/url"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -64,6 +65,26 @@ func resolveAzureEndpoint(ctx *schemas.BifrostContext, key schemas.Key) string {
 		return key.AzureKeyConfig.Endpoint.GetValue()
 	}
 	return ""
+}
+
+// azureChatCompletionURL returns the URL for an OpenAI-family chat completion. The v1 surface
+// does not implement On Your Data and silently ignores data_sources, so a request carrying it
+// goes to the classic deployments route, which runs the data source and reports its failures.
+// That route takes an api-version: the one the caller sent on the Azure SDK route, since it picks
+// the API contract the caller's code expects, else the alias's, else Bifrost's default.
+func azureChatCompletionURL(ctx *schemas.BifrostContext, endpoint string, request *schemas.BifrostChatRequest) string {
+	if request.Params != nil {
+		if _, ok := request.Params.ExtraParams["data_sources"]; ok {
+			version := resolveAPIVersion(ctx, DefaultAzureAPIVersion)
+			if ctx != nil {
+				if callerVersion, _ := ctx.Value(schemas.BifrostContextKeyAzureDeploymentAPIVersion).(string); callerVersion != "" {
+					version = callerVersion
+				}
+			}
+			return endpoint + "/openai/deployments/" + request.Model + "/chat/completions?api-version=" + url.QueryEscape(version)
+		}
+	}
+	return endpoint + "/openai/v1/chat/completions"
 }
 
 // isAzureChatStreamPreamble identifies chat chunks safe to withhold

@@ -21,7 +21,7 @@ Bifrost supports four connection types:
 | **OpenAPI** (beta) | Synthesizes an MCP server from an OpenAPI/Swagger document; each supported operation becomes a tool. In the UI this is the **Generate from an OpenAPI spec** server source | REST APIs that have no MCP server |
 
 <Info>
-Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP and SSE support five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. See [Authentication →](./auth/overview).
+Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP supports five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. SSE supports `none`, `headers` and `oauth`: the per-user modes open a new connection for each call, which an SSE stream does not allow. See [Authentication →](./auth/overview).
 </Info>
 
 ### STDIO Connections
@@ -82,10 +82,10 @@ Only meaningful for `connection_type: "http"` — `sse` and `stdio` connections 
 <Tabs>
 <Tab title="Web UI">
 
-Toggle **Session Stickiness** in the client's create/edit sheet (HTTP connections only):
+Toggle **Maintain Persistent Connection** under **Server Behavior** in the client's create/edit sheet (HTTP connections only):
 
 <Frame>
-  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Session Stickiness toggle" />
+  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Maintain Persistent Connection toggle" />
 </Frame>
 
 </Tab>
@@ -129,7 +129,7 @@ Omit the field to get the default (per-call). Existing clients can flip it via `
 
 ### SSE Connections
 
-Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports the same auth options as HTTP.
+Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports `none`, `headers` and `oauth`; the per-user modes are refused, because each of their calls opens its own connection.
 
 ```json
 {
@@ -509,7 +509,7 @@ Tool-manager behaviour is configured once and applies to every MCP server. Three
 <Tabs>
 <Tab title="Web UI">
 
-The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides live on each client's own sheet, under **Sync & Timeouts**:
+The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides are set on each server's edit sheet (**Edit** in its actions menu), under **Sync & Timeouts**:
 
 <Frame>
   <img src="/media/ui-mcp-config.png" alt="MCP Gateway configuration panel showing tool execution timeout, agent depth, code mode binding level, tool sync interval, and auto tool inject toggle" />
@@ -577,6 +577,109 @@ mcpConfig := &schemas.MCPConfig{
 </Tabs>
 
 The matching `client.mcp_tool_execution_timeout`, `client.mcp_agent_depth`, `client.mcp_code_mode_binding_level`, and `client.mcp_disable_auto_tool_inject` fields are deprecated aliases kept for backward compatibility — prefer `mcp.tool_manager_config.*` in new `config.json` and Go SDK setups. The Web UI panel and `/api/config` continue to use the aliases because they edit the live `client_config` row directly.
+
+### Max Protocol Version
+
+Bifrost and each MCP server agree on an MCP protocol version when they connect. The max protocol version caps that negotiation: Bifrost never offers a server a version newer than the cap, and the server can still pick an older one. If a server answers with a version newer than the cap, the connection fails with an error.
+
+Use it to keep a server on an older protocol revision when it misbehaves on the latest one.
+
+| Value        | Meaning                                                           |
+| ------------ | ----------------------------------------------------------------- |
+| `auto`       | Newest version Bifrost supports (currently `2026-07-28`)          |
+| `2026-07-28` | Cap at the 2026-07-28 revision                                    |
+| `2025-11-25` | Cap at the 2025-11-25 revision                                    |
+| `2025-06-18` | Cap at the 2025-06-18 revision, the version earlier releases used |
+
+There is one global setting and an optional override on each server. A server's own value wins; a server set to "use the global setting" (`""` on the API) follows the global value.
+
+Defaults:
+
+- **Fresh install**: the global setting is `auto`.
+- **Upgrade with existing MCP servers**: the global setting starts at `2025-06-18`, so existing servers keep the version they used before. Switch the global setting to `auto` to move every server that follows it at once.
+- **No config store**: there is no stored value, so the global setting starts at `auto`. Set `mcp.max_protocol_version` to `"2025-06-18"` in `config.json` to keep the old behaviour.
+- **New server** (Web UI, API or `config.json`): follows the global setting unless you pick a version.
+
+Changing either setting in the Web UI or through the API reconnects the affected servers at the new version, with no restart. A change to `config.json` applies at the next startup. If `config.json` sets `mcp.max_protocol_version`, that value is applied at every startup and replaces one set in the Web UI or API; remove it from the file to manage the setting live. OpenAPI servers run inside Bifrost and do not negotiate a protocol version, so the setting does not apply to them.
+
+<Tabs>
+<Tab title="Web UI">
+
+**Global:** open **MCP Servers → MCP Settings**, pick a value in **Max Protocol Version** (**Auto (latest)**, `2026-07-28`, `2025-11-25`, or `2025-06-18`), and save.
+
+**Per server:**
+- When adding a server, **Max Protocol Version** is under **Server Behavior**. It defaults to **Use global setting**.
+- On an existing server's edit sheet (**Edit** in its actions menu), it is under **Sync & Timeouts**. **Use global setting** shows the current global value in brackets.
+
+</Tab>
+<Tab title="API">
+
+Global, through the client config. Omitting `mcp_max_protocol_version` keeps the stored value; `"auto"` removes the cap:
+
+```bash
+curl -s http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {mcp_max_protocol_version: "auto"})}' \
+  | curl -X PUT http://localhost:8080/api/config -H "Content-Type: application/json" -d @-
+```
+
+Per server, with `max_protocol_version` on create or update:
+
+```bash
+# Create a server capped at 2025-11-25 (omit the field to follow the global setting)
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web_search",
+    "connection_type": "http",
+    "connection_string": "https://mcp.example.com/mcp",
+    "tools_to_execute": ["*"],
+    "max_protocol_version": "2025-11-25"
+  }'
+
+# Make an existing server follow the global setting
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"max_protocol_version": ""}'
+```
+
+On update, omitting `max_protocol_version` keeps the server's current value.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "max_protocol_version": "auto",
+    "client_configs": [
+      {
+        "name": "legacy_tools",
+        "connection_type": "http",
+        "connection_string": "https://legacy-mcp.example.com/mcp",
+        "tools_to_execute": ["*"],
+        "max_protocol_version": "2025-06-18"
+      }
+    ]
+  }
+}
+```
+
+Omitting `mcp.max_protocol_version` keeps the stored value; it never clears it. A `client_configs[]` entry without `max_protocol_version` follows the global setting, unless a version was set for that server in the Web UI or API; that override stays until you choose **Use global setting** (or send `"max_protocol_version": ""`).
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    MaxProtocolVersion: "auto",
+    ClientConfigs: []*schemas.MCPClientConfig{
+        { Name: "legacy_tools", MaxProtocolVersion: "2025-06-18", /* ... */ },
+    },
+}
+```
+
+</Tab>
+</Tabs>
 
 ---
 
@@ -989,6 +1092,8 @@ Bifrost automatically implements **exponential backoff retry logic** to handle t
 **Important:** Bifrost only retries on transient errors (network failures, timeouts, temporary service unavailability). Permanent errors like authentication failures, configuration errors, and missing commands fail immediately without retry.
 </Warning>
 
+Clients defined in `config.json` connect in the background at startup. Bifrost starts serving at once, each client's tools become available as soon as it connects, and a client that cannot be reached is marked `unstable` and retried every 10 seconds without delaying the others.
+
 ### Automatic Retry Strategy
 
 Bifrost retries failed operations using the following strategy, as implemented by `ExecuteWithRetry` and `DefaultRetryConfig` in the MCP layer:
@@ -1030,6 +1135,11 @@ Bifrost intelligently classifies errors as either **transient** (retryable) or *
 - Bad request errors (400, 405, 422)
 - Command execution permission denied
 - Invalid credentials
+- A server that supports none of the MCP protocol versions Bifrost speaks
+- A server certificate that fails verification (for example, signed by an authority the client does not trust)
+- A STDIO environment variable listed in `envs` that is not set, or an in-process client without a server
+
+A `tls_config.ca_cert_pem` that does not parse as a PEM certificate is refused when the client is created or edited, before any connection is attempted.
 
 ### What Operations Are Retried
 
@@ -1148,9 +1258,11 @@ You can temporarily disable an MCP client without removing it. When disabled, Bi
 <Tabs>
 <Tab title="Web UI">
 
-Use the **Enabled** toggle in the MCP Server Catalog table to disable or re-enable a client with a single click. The toggle shows a loading spinner while the API call is in flight and automatically reflects the updated state.
+Use the **Status** toggle in the MCP Server Catalog table to disable or re-enable a client with a single click. The toggle shows a loading spinner while the API call is in flight and automatically reflects the updated state.
 
-![MCP client enable/disable toggle in the server catalog table](/images/placeholder-mcp-disable-toggle.png)
+<Frame>
+  <img src="/media/ui-mcp-disable-toggle.png" alt="MCP Server Catalog table with the Status toggle for each client" />
+</Frame>
 
 </Tab>
 <Tab title="Gateway API">
@@ -1176,6 +1288,8 @@ The `disabled` field is a runtime API state and **cannot** be set in `config.jso
 </Tabs>
 
 The `disabled` state persists across restarts — a disabled client is loaded into memory on boot but its connection is not established until it is explicitly re-enabled. Config changes (name, tools, headers) sent in the same PUT request as a `disabled` change are applied before the connection is shut down or re-established.
+
+If the server cannot be reached when you re-enable a client, the request still enables it and answers with `"status": "partial_success"`. The client shows `unstable` while its connection checker keeps retrying, and turns `healthy` once the server is back, with no second enable needed. You can disable it again at any point.
 
 ---
 

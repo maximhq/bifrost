@@ -14,7 +14,7 @@ permissions:
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 45
     permissions:
       contents: read
@@ -37,7 +37,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Set up Docker Compose
         run: |

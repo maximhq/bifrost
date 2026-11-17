@@ -154,6 +154,156 @@ mcp-server:
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
 
+bifrost-mcp:
+  post:
+    operationId: bifrostMCPMessage
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - each `tools/call` is authorized by the permission its route requires |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Bifrost MCP message
+    description: |
+      Receives a JSON-RPC 2.0 message for the Bifrost MCP, which serves this gateway's own
+      HTTP API as MCP tools: every operation in this spec except the deprecated ones, the
+      routes that cannot be a request/response tool (session and credential endpoints,
+      browser OAuth steps, streams and WebSocket upgrades, binary downloads, and the two MCP
+      servers themselves) and any route this gateway does not serve. Tools are named after
+      their `operationId`. With `client.bifrost_mcp_allow_writes` off, non-GET `/api`
+      operations are left out; inference, batch and file routes are served either way.
+
+      The server is stateless Streamable HTTP: every message is a POST, there is no session,
+      and `notifications/cancelled` is accepted and ignored. A tool call never streams: the
+      `stream` argument is dropped, so the route answers once.
+
+      It takes the same credentials as the management API: the admin login, or a management
+      API key. On OSS, while dashboard auth is not active (no admin account, or auth disabled),
+      it takes the setup token instead, in the `X-Bifrost-Setup-Token` header only: sent as
+      `Authorization: Bearer` it is refused with `401`, and once dashboard auth is enabled the
+      setup token is no longer accepted. A virtual key alone is refused with `401`; to use one
+      with inference tools, send it in `x-bf-vk` alongside a management credential. Each tool
+      call is authorized again by the route it reaches, with the caller's credential.
+    tags:
+      - Infrastructure
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            description: JSON-RPC 2.0 request or notification
+            properties:
+              jsonrpc:
+                type: string
+                enum: ["2.0"]
+              method:
+                type: string
+                description: MCP method, such as `initialize`, `tools/list` or `tools/call`
+              params:
+                type: object
+              id:
+                oneOf:
+                  - type: string
+                  - type: integer
+    responses:
+      "200":
+        description: JSON-RPC 2.0 response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                result:
+                  type: object
+                error:
+                  type: object
+                  properties:
+                    code:
+                      type: integer
+                    message:
+                      type: string
+                id:
+                  description: The request's id; null on a parse error, when the id could not be read
+                  oneOf:
+                    - type: string
+                    - type: integer
+                    - type: "null"
+      "202":
+        description: Notification accepted; no response body
+      "401":
+        description: |
+          No management credential, or only a virtual key. A virtual-key-only request is
+          answered with a message saying to send a management credential alongside it. While
+          the OSS setup lock is on, a request without the `X-Bifrost-Setup-Token` header is
+          answered with a message asking for it.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "503":
+        description: |
+          The Bifrost MCP is not loaded: `client.bifrost_url` is unset ("the Bifrost MCP needs
+          bifrost_url set"), or the spec named by `framework.pricing.openapi_url` could not be
+          loaded yet ("the Bifrost MCP spec is unavailable"; retried in the background).
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+  get:
+    operationId: bifrostMCPStream
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Bifrost MCP SSE stream (not offered)
+    description: |
+      The Bifrost MCP has no server-to-client SSE stream, which Streamable HTTP lets a server
+      decline. A GET runs the same authentication as POST first: a management credential, or
+      the setup token in `X-Bifrost-Setup-Token` while the OSS setup lock is on. Once it is
+      admitted, it is answered `405` with `Allow: POST`.
+    tags:
+      - Infrastructure
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "401":
+        description: |
+          No management credential, or only a virtual key, refused before the `405`. A
+          virtual-key-only request is answered with a message saying to send a management
+          credential alongside it. While the OSS setup lock is on, a request without the
+          `X-Bifrost-Setup-Token` header is answered with a message asking for it.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "405":
+        description: The Bifrost MCP serves JSON-RPC over POST only
+        headers:
+          Allow:
+            schema:
+              type: string
+              enum: ["POST"]
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
 metrics:
   get:
     operationId: getMetrics
@@ -183,17 +333,3 @@ metrics:
           text/plain:
             schema:
               type: string
-
-websocket-responses:
-  get:
-    operationId: websocketResponses
-    summary: WebSocket Responses API
-    description: |
-      Upgrades to a WebSocket connection for the streaming Responses API.
-      Clients send `response.create` events and receive streaming response events.
-      Supports authentication via Bearer token, x-api-key, or x-bf-vk headers.
-    tags:
-      - Infrastructure
-    responses:
-      "101":
-        description: WebSocket upgrade successful

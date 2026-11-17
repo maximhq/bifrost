@@ -189,6 +189,13 @@ func ToBifrostImageGenerationResponse(resp *BytePlusImageGenerationResponse, mod
 		Model:   model,
 		Data:    data,
 	}
+	// The produced size, not the requested tier ("2K"), decides Seedream's pixel-tiered price.
+	for _, image := range resp.Data {
+		if image.Size != "" && (image.URL != "" || image.B64JSON != "") {
+			bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{Size: image.Size}
+			break
+		}
+	}
 	bifrostResp.Usage = ToBifrostImageUsage(resp.Usage)
 	return bifrostResp, nil
 }

@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "Enterprise-grade content safety and security validation with Prompt Guardrails, native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Check Point's AI Agent Security, Repello Argus, and Singulr AI."
+description: "Enterprise-grade content safety and security validation with Prompt Guardrails, native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, and Noma Security."
 icon: "road-barrier"
 ---
 
@@ -57,6 +57,9 @@ icon: "road-barrier"
   <Card title="Singulr AI" icon="/media/singulr-logo-card.svg" href="/integrations/guardrails/singulr-ai">
     Policy-driven prompt-injection, PII, and PHI enforcement with allow, block, and span-based redaction decisions.
   </Card>
+  <Card title="Noma Security" icon="/media/noma-logo-card-v2.svg" href="/integrations/guardrails/noma-security">
+    AI-DR runtime protection profiles that allow, alert on, mask, or block prompts, responses, and tool activity.
+  </Card>
   <Card title="A10 Guardrails" icon="/media/a10-logo-card.svg" href="/integrations/guardrails/a10">
     Firewall-enforced policies that block or rewrite prompts and completions.
   </Card>
@@ -69,7 +72,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine which LLM requests or MCP tool executions to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, and A10 Guardrails). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, Noma Security, and A10 Guardrails). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -81,7 +84,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, and A10 Guardrails integrations |
+| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, Noma Security, and A10 Guardrails integrations |
 | **Dual-Stage Validation** | Guard LLM prompts and responses or MCP tool arguments and results |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -235,6 +238,10 @@ Input guardrails still check the request before Bifrost sends it to the LLM prov
 
 <Note>
   If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. Gray Swan's text-only behavior only skips the Gray Swan call; it does not bypass the other profile.
+</Note>
+
+<Note>
+  Noma Security is a block-capable exception. When the only enforced output rule matching a request has Noma as its only profile, Bifrost releases text progressively as Noma clears it instead of holding the complete stream. See [Noma Security](/integrations/guardrails/noma-security#streaming-responses) for the conditions.
 </Note>
 
 ---
@@ -574,7 +581,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, or `a10` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, `noma-security`, or `a10` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -608,7 +615,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
-Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, or `a10`. The API assigns the configuration ID after creation.
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, `noma-security`, or `a10`. The API assigns the configuration ID after creation.
 
 **Create a Profile:**
 ```bash
@@ -1013,106 +1020,25 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Guardrail Response Handling
 
-**Successful Validation (200):**
-```json
-{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "I'd be happy to help you with your task..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "extra_fields": {
-    "guardrails": {
-      "input_validation": {
-        "guardrail_id": "bedrock-prod-guardrail",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 245
-      },
-      "output_validation": {
-        "guardrail_id": "patronus-ai-001",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 312
-      }
-    }
-  }
-}
-```
+An allowed request returns the model's response, with any masking your rules apply.
 
-**Validation Failure - Blocked (446):**
+When a guardrail blocks, Bifrost returns HTTP `400` with `type: "guardrail_intervention"`. The message carries the guardrail's reason. For an input rule, the request is not sent to the model; for an output rule, the model's response is replaced by the error. A blocked stream ends with the same `guardrail_intervention` error.
+
+Trimmed example:
+
 ```json
 {
+  "type": "guardrail_intervention",
+  "is_bifrost_error": false,
+  "status_code": 400,
   "error": {
-    "message": "Request blocked by guardrails",
-    "type": "guardrail_violation",
-    "code": 446,
-    "details": {
-      "guardrail_id": "bedrock-prod-guardrail",
-      "validation_stage": "input",
-      "violations": [
-        {
-          "type": "PII",
-          "category": "SSN",
-          "severity": "HIGH",
-          "action": "block",
-          "text_excerpt": "My SSN is ***-**-****"
-        },
-        {
-          "type": "prompt_injection",
-          "severity": "CRITICAL",
-          "action": "block",
-          "confidence": 0.95
-        }
-      ],
-      "processing_time_ms": 198
-    }
+    "type": "guardrail_intervention",
+    "message": "Blocked by Noma AI-DR policy: Email detected in the user prompt"
+  },
+  "extra_fields": {
+    "request_type": "chat_completion"
   }
 }
 ```
 
-**Validation Warning - Logged (246):**
-```json
-{
-  "id": "chatcmpl-def456",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Response with redacted content..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "bifrost_metadata": {
-    "guardrails": {
-      "output_validation": {
-        "guardrail_id": "azure-content-safety-001",
-        "status": "warning",
-        "violations": [
-          {
-            "type": "profanity",
-            "severity": "LOW",
-            "action": "redact",
-            "modifications": 2
-          }
-        ],
-        "processing_time_ms": 187
-      }
-    }
-  }
-}
-```
+Use `type` (or `error.type`) equal to `guardrail_intervention` to tell guardrail blocks apart from other `400` errors.

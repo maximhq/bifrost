@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +31,7 @@ import (
 // at all: attemptCallFailureRecovery fails closed on missing hints (MCP's own
 // defaults are destructiveHint=true, idempotentHint=false), so an unannotated
 // tool is never retried automatically. Reuses sessionInvalidator from
-// connectionchecker_reconnect_test.go.
+// connectionchecker_reconnect_test.go. Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httptest.Server, *sessionInvalidator) {
 	t.Helper()
 
@@ -41,7 +43,7 @@ func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httpte
 		},
 	)
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	invalidator := &sessionInvalidator{dead: map[string]bool{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if invalidator.reject(w, r) {
@@ -255,6 +257,58 @@ func TestExecuteTool_DeadSession_RecoveryHonoursTheToolExecutionTimeout(t *testi
 	}, 30*time.Second, 250*time.Millisecond, "the background reconnect must still heal the client")
 }
 
+// TestExecuteTool_TimeoutNamesTheDeadlineThatApplied checks that a call stopped by the caller's own
+// deadline, shorter than the client's tool_execution_timeout, reports how long it actually had
+// rather than the client's timeout, and still reads as a timeout. A deadline that has already
+// passed when the call starts reports a budget of zero, never a negative one.
+func TestExecuteTool_TimeoutNamesTheDeadlineThatApplied(t *testing.T) {
+	s := server.NewMCPServer("test-timeout-message", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("slow", mcpgo.WithDescription("Slow tool")), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+		return mcpgo.NewToolResultText("late"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newRecoveryClientConfig("client-timeout-message", "timeoutclient", ts.URL)
+	config.ToolExecutionTimeout = 30 * time.Second
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	toolName := config.Name + "-slow"
+
+	// call runs the slow tool under a caller deadline at the given offset from now.
+	call := func(t *testing.T, offset time.Duration) string {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(offset))
+		defer cancel()
+		_, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"},
+		})
+		require.NotNil(t, bErr)
+		require.NotNil(t, bErr.Error)
+		assert.Equal(t, "timeout", mcpErrorType(bErr))
+		assert.NotContains(t, bErr.Error.Message, "30s", "the client's timeout is not what stopped the call")
+		return bErr.Error.Message
+	}
+
+	t.Run("shorter caller deadline", func(t *testing.T) {
+		msg := call(t, 500*time.Millisecond)
+		match := regexp.MustCompile(`timed out after (\d+)ms`).FindStringSubmatch(msg)
+		require.NotNil(t, match, "the message names the caller's deadline: %s", msg)
+		waited, err := strconv.Atoi(match[1])
+		require.NoError(t, err)
+		assert.LessOrEqual(t, waited, 500)
+	})
+
+	t.Run("caller deadline already passed", func(t *testing.T) {
+		msg := call(t, -2*time.Second)
+		assert.Contains(t, msg, "timed out after 0s:", "an expired deadline left no budget: %s", msg)
+	})
+}
+
 // TestIsDeadSessionError_TypedSentinelAndTextFallback pins both halves of the
 // dead-session check and, more importantly, why both have to exist and where
 // the text half is allowed to look.
@@ -412,4 +466,54 @@ func TestExecuteTool_ToolErrorMentioningSession_DoesNotTriggerRecovery(t *testin
 	assert.Equal(t, before.ConnGeneration, after.ConnGeneration, "a tool error is not a dead session: the connection must not be swapped")
 	assert.Same(t, before.Conn, after.Conn)
 	assert.Equal(t, int32(1), calls.Load(), "a tool error is not a dead session: the call must not be replayed")
+}
+
+// TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery pins that dead-session
+// recovery is a 2025-era remedy. mcp-go reports any 404 as ErrSessionTerminated, but 2026-07-28
+// has no sessions: a 404 there (an unknown method, a moved endpoint) is not cured by reconnecting,
+// and replaying the call only repeats it.
+func TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery(t *testing.T) {
+	s := server.NewMCPServer("test-modern-404", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("echo", mcpgo.WithDescription("Echo tool"), mcpgo.WithReadOnlyHintAnnotation(true)),
+		func(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("ok"), nil
+		})
+	streamable := server.NewStreamableHTTPServer(s)
+	var calls, discovers atomic.Int32
+	var refuseCalls atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Mcp-Method") {
+		case "tools/call":
+			calls.Add(1)
+			if refuseCalls.Load() {
+				http.NotFound(w, r)
+				return
+			}
+		case "server/discover":
+			discovers.Add(1)
+		}
+		streamable.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newRecoveryClientConfig("client-modern-404", "modern-404-client", ts.URL)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	toolName := config.Name + "-echo"
+
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.Equal(t, mcpgo.ProtocolVersion20260728, before.Conn.ProtocolVersion())
+	discoversBefore := discovers.Load()
+
+	refuseCalls.Store(true)
+	_, bErr := executeEchoTool(m, toolName)
+	require.NotNil(t, bErr, "the 404 must reach the caller")
+	assert.Equal(t, int32(1), calls.Load(), "a 404 on 2026-07-28 is not a dead session: the call must not be replayed")
+
+	require.Never(t, func() bool {
+		after, exists := snapshotClientState(m, config.ID)
+		return !exists || after.ConnGeneration != before.ConnGeneration || discovers.Load() != discoversBefore
+	}, time.Second, 50*time.Millisecond, "a 404 on 2026-07-28 is not a dead session: the connection must not be swapped")
 }

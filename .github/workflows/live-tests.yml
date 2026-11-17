@@ -20,7 +20,7 @@ jobs:
   live-fake:
     name: GPT Live (fake upstream)
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 15
     permissions:
       contents: read
@@ -63,7 +63,7 @@ jobs:
 
   live-long:
     name: GPT Live (long sessions, fake upstream)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 45
     permissions:
       contents: read
