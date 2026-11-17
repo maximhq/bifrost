@@ -722,6 +722,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "log_retention_days must be at least 1")
 		return
 	}
+	if payload.ClientConfig.VectorRetentionDays < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "vector_retention_days must not be negative (0 keeps vectors as long as logs)")
+		return
+	}
 	if limits := payload.ClientConfig.MCPCodeModeLimits; limits != nil {
 		if err := limits.Validate(); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -1071,6 +1075,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	updatedConfig.LogRetentionDays = payload.ClientConfig.LogRetentionDays
+	// Copied only when sent, so a partial save keeps the stored vector retention;
+	// 0 (or null) means "same as logs". The sweeps read it live, so no reload is needed.
+	if _, present := clientConfigFields["vector_retention_days"]; present {
+		updatedConfig.VectorRetentionDays = payload.ClientConfig.VectorRetentionDays
+	}
 
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)

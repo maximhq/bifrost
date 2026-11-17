@@ -3205,6 +3205,37 @@ func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	assert.NotEqual(t, baseHash, cooldownHash)
 }
 
+func TestGenerateClientConfigHash_VectorRetentionDays(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// Unset must not change the hash: existing deployments see no config drift
+	// after upgrade.
+	zeroHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VectorRetentionDays: 0}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, zeroHash)
+
+	setHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VectorRetentionDays: 7}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+}
+
+func TestUpdateClientConfig_VectorRetentionDaysRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30, VectorRetentionDays: 7}))
+	cfg, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.VectorRetentionDays)
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30}))
+	cfg, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, cfg.VectorRetentionDays, "0 is stored as 0, meaning same as logs")
+}
+
 func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()

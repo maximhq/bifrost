@@ -57,6 +57,7 @@ export default function LoggingView() {
 			localConfig.allow_per_request_content_storage_override !== config.allow_per_request_content_storage_override ||
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
+			(localConfig.vector_retention_days ?? 0) !== (config.vector_retention_days ?? 0) ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || []) ||
 			!sameRequestTypes(localConfig.hidden_request_types, config.hidden_request_types)
@@ -272,6 +273,28 @@ export default function LoggingView() {
 						/>
 					</div>
 				)}
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<Label htmlFor="vector-retention-days" className="text-sm font-medium">
+							{t("logging.vectorRetentionDays")}
+						</Label>
+						<p className="text-muted-foreground text-sm">{t("logging.vectorRetentionDaysHelp")}</p>
+					</div>
+					<Input
+						id="vector-retention-days"
+						data-testid="workspace-vector-retention-days-input"
+						type="number"
+						min="1"
+						placeholder={String(localConfig.log_retention_days)}
+						value={localConfig.vector_retention_days ? localConfig.vector_retention_days : ""}
+						onChange={(e) => {
+							const value = parseInt(e.target.value);
+							handleConfigChange("vector_retention_days", Number.isFinite(value) && value > 0 ? value : 0);
+						}}
+						className="w-24"
+					/>
+				</div>
 
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">

@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "When enabled, individual requests can send raw provider request/response bytes back to the caller using the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. Does not affect log storage; raw-byte persistence in logs is controlled by {{setting}}.",
 		"logRetentionDays": "Log Retention Days",
 		"logRetentionDaysHelp": "Number of days to retain logs, including Relay Logs, in the database. Minimum is 1 day. Older logs will be automatically deleted.",
+		"vectorRetentionDays": "Vector Retention Days",
+		"vectorRetentionDaysHelp": "Days to keep vectors built from logs. Leave blank to match log retention; it can't be longer.",
 		"hideDeletedVks": "Do Not Show Deleted VirtualKeys In Filters",
 		"hideDeletedVksHelp": "When enabled, deleted virtual keys are excluded from Virtual Keys filter options in Logs, Dashboard, MCP Logs, and Relay Logs.",
 		"loggingHeaders": "Logging Headers",

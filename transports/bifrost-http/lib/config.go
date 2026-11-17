@@ -1617,6 +1617,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// but config.json and pre-existing DB rows reach the runtime through here.
 	// An out-of-range cooldown would keep a retired virtual key authenticating
 	// past the ceiling the API promises.
+	if cc.VectorRetentionDays < 0 {
+		return fmt.Errorf("vector_retention_days %d must not be negative", cc.VectorRetentionDays)
+	}
 	if cd := cc.VKRotationCooldown.D(); cd < 0 {
 		return fmt.Errorf("vk_rotation_cooldown %s must not be negative", cd)
 	} else if cd > configstore.MaxVKRotationCooldown {

@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "有効時、個別リクエストは x-bf-send-back-raw-request / x-bf-send-back-raw-response で生のプロバイダー要求/応答バイトを呼び出し元へ返せます。ログ保存には影響しません。ログ内の生バイト永続化は {{setting}} が制御します。",
 		"logRetentionDays": "ログ保持日数",
 		"logRetentionDaysHelp": "DB にログ（リレーログを含む）を保持する日数。最小 1 日。古いログは自動削除されます。",
+		"vectorRetentionDays": "ベクトル保持日数",
+		"vectorRetentionDaysHelp": "ログから作成したベクトルを保持する日数。空欄にするとログの保持期間と同じになります。それより長くはできません。",
 		"hideDeletedVks": "フィルターに削除済み仮想キーを表示しない",
 		"hideDeletedVksHelp": "有効時、削除済み仮想キーはログ、ダッシュボード、MCP ログ、リレーログの仮想キーフィルターから除外されます。",
 		"loggingHeaders": "ログ用ヘッダー",

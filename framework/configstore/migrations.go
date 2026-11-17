@@ -558,6 +558,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_provider_objects_object_id_index"}, run: migrationAddProviderObjectsObjectIDIndex},
 	{IDs: []string{"add_client_config_enforce_vk_object_ownership_column"}, run: migrationAddClientConfigEnforceVKObjectOwnershipColumn},
 	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
+	{IDs: []string{"add_client_config_vector_retention_days_column"}, run: migrationAddClientConfigVectorRetentionDaysColumn},
 	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
 	{IDs: []string{"add_client_config_extra_fields_placement_column"}, run: migrationAddClientConfigExtraFieldsPlacementColumn},
 	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
@@ -17716,4 +17717,26 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 			return nil
 		},
 	}
+}
+
+// migrationAddClientConfigVectorRetentionDaysColumn adds vector_retention_days to
+// config_client. It defaults to 0, which reads as "same as the logs' retention",
+// so existing rows need no backfill and a rolled-back binary ignores the column.
+func migrationAddClientConfigVectorRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_vector_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "vector_retention_days")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "vector_retention_days")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

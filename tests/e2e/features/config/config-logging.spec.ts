@@ -147,4 +147,24 @@ test.describe('Logging Settings', () => {
       expect(savedValue).toBe(newValue)
     }
   })
+
+  test('should save, persist and clear vector retention days', async ({ configSettingsPage }) => {
+    const vectorInput = configSettingsPage.vectorRetentionDaysInput
+    await expect(vectorInput).toBeVisible()
+
+    const newValue = (await vectorInput.inputValue()) === '7' ? '14' : '7'
+    await vectorInput.fill(newValue)
+    expect(await configSettingsPage.hasPendingChanges()).toBe(true)
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(vectorInput).toHaveValue(newValue)
+
+    // A blank field means "same as logs" and is stored as 0, which renders blank again.
+    await vectorInput.fill('')
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(vectorInput).toHaveValue('')
+  })
 })

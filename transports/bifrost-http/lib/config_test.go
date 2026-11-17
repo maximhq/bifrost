@@ -3126,6 +3126,16 @@ func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_VectorRetentionDays: PUT /api/config refuses a
+// negative vector_retention_days, and config.json reaches the runtime through
+// validateClientConfig, so the same bound holds there. 0 follows the logs.
+func TestValidateClientConfig_VectorRetentionDays(t *testing.T) {
+	for _, days := range []int{0, 1, 30, 365} {
+		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: days}), "days=%d", days)
+	}
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: -1}), "vector_retention_days")
+}
+
 // TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
 // mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
 // 1 GiB spec through (or a negative value fall back silently).

@@ -346506,6 +346506,93 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Vector store retention setting over the API (vector retention)",
+      "description": "client_config.vector_retention_days bounds how long log-derived vector store entries (Warp's log index, the complexity router's captured requests) are kept: 0 follows the logs' retention, and a larger value is capped at log_retention_days by the hourly sweeps. GET /api/config always reports it, and PUT /api/config refuses a negative value with 400 before any state is touched. The openai keyword is only a harness filter label; no provider calls are made and nothing is persisted.",
+      "item": [
+        {
+          "name": "openai vector retention: GET /api/config reports client_config.vector_retention_days",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('vector retention: GET /api/config answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('vector retention: client_config carries a non-negative integer vector_retention_days', function () {",
+                  "  var cc = (pm.response.json() || {}).client_config || {};",
+                  "  pm.expect(cc, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.have.property('vector_retention_days');",
+                  "  pm.expect(Number.isInteger(cc.vector_retention_days) && cc.vector_retention_days >= 0, 'got ' + cc.vector_retention_days).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai vector retention: PUT /api/config rejects a negative vector_retention_days",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// vector_retention_days is validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('vector retention: PUT /api/config answers 400 for -1', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('vector retention: the error names the field', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('vector_retention_days');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7, \"vector_retention_days\": -1}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
