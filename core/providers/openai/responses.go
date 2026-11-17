@@ -1096,13 +1096,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
 		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
 			cachePromptProvider == schemas.OpenRouter {
-			if opts.TTL == nil {
+			optsCopy := *opts
+			optsCopy.Mode = nil
+			if optsCopy == (schemas.PromptCacheOptions{}) {
 				req.PromptCacheOptions = nil
 			} else {
-				optsCopy := *opts
-				optsCopy.Mode = nil
 				req.PromptCacheOptions = &optsCopy
 			}
+		}
+		if req.BackgroundOptions != nil && caps.FieldUnsupported(schemas.FieldBackgroundOptions, false) {
+			req.BackgroundOptions = nil
 		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {

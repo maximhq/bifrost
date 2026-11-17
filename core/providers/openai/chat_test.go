@@ -1199,6 +1199,17 @@ func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
 		t.Fatalf("unexpected options: %#v", openai.ChatParameters.PromptCacheOptions)
 	}
 
+	// prewarm and comparison_response_id ride along untouched.
+	warm := mkReq(schemas.OpenAI, "gpt-6.2-sol")
+	warm.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Prewarm: new(true), ComparisonResponseID: new("resp_1")}
+	warmBody, err := sonic.MarshalString(ToOpenAIChatRequest(ctx, warm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.Get(warmBody, "prompt_cache_options").Raw; got != `{"prewarm":true,"comparison_response_id":"resp_1"}` {
+		t.Fatalf("prompt_cache_options = %s", got)
+	}
+
 	// A non-OpenAI OpenAI-compatible provider strips it.
 	fw := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2"))
 	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {

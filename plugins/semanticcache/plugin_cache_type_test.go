@@ -606,6 +606,80 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 	}
 }
 
+// A prewarm request returns no output, so it must not share a cache entry with the
+// real request that follows it on the same input.
+func TestPrewarmChangesParamsHash(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	hashOf := func(reqType schemas.RequestType, options string) string {
+		req := &schemas.BifrostRequest{RequestType: reqType}
+		body := []byte(`{"prompt_cache_options":` + options + `}`)
+		switch reqType {
+		case schemas.ResponsesRequest:
+			params := &schemas.ResponsesParameters{}
+			if err := schemas.Unmarshal(body, params); err != nil {
+				t.Fatal(err)
+			}
+			req.ResponsesRequest = &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6.2-sol", Params: params}
+		default:
+			params := &schemas.ChatParameters{}
+			if err := schemas.Unmarshal(body, params); err != nil {
+				t.Fatal(err)
+			}
+			req.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-6.2-sol", Params: params}
+		}
+		metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash, err := hashMap(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	for _, reqType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ChatCompletionRequest} {
+		if hashOf(reqType, `{"ttl":"30m","prewarm":true}`) == hashOf(reqType, `{"ttl":"30m"}`) {
+			t.Errorf("%s: prewarm and real request share a params hash", reqType)
+		}
+		if hashOf(reqType, `{"ttl":"30m","prewarm":false}`) != hashOf(reqType, `{"ttl":"30m"}`) {
+			t.Errorf("%s: prewarm=false must hash like an omitted prewarm", reqType)
+		}
+		if hashOf(reqType, `{"comparison_response_id":"resp_a"}`) == hashOf(reqType, `{"comparison_response_id":"resp_b"}`) {
+			t.Errorf("%s: different comparison_response_id values share a params hash", reqType)
+		}
+		if hashOf(reqType, `{"comparison_response_id":"resp_a"}`) == hashOf(reqType, `{}`) {
+			t.Errorf("%s: comparison_response_id must change the params hash", reqType)
+		}
+	}
+}
+
+// A prewarm exists to warm the provider's cache, so it must never be answered
+// from (or written to) the semantic cache.
+func TestPreLLMHookSkipsCacheForPrewarm(t *testing.T) {
+	plugin := &Plugin{
+		config: getDefaultTestConfig(),
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+		store:  newDirectFastPathStore(),
+	}
+	responsesReq := CreateBasicResponsesRequest("Explain cache invalidation", 0.2, 200)
+	responsesReq.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Prewarm: schemas.Ptr(true)}
+	chatReq := CreateBasicChatRequest("Explain cache invalidation", 0.2, 200)
+	chatReq.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Prewarm: schemas.Ptr(true)}
+	for _, req := range []*schemas.BifrostRequest{
+		{RequestType: schemas.ResponsesRequest, ResponsesRequest: responsesReq},
+		{RequestType: schemas.ChatCompletionRequest, ChatRequest: chatReq},
+	} {
+		ctx := CreateContextWithCacheKeyAndType(t, "prewarm-"+string(req.RequestType), CacheTypeDirect)
+		if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil || shortCircuit != nil {
+			t.Fatalf("%s: PreLLMHook shortCircuit=%v err=%v", req.RequestType, shortCircuit, err)
+		}
+		requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+		if state := plugin.getCacheState(requestID); state != nil {
+			t.Errorf("%s: prewarm must skip caching, got state with ParamsHash=%q", req.RequestType, state.ParamsHash)
+		}
+	}
+}
+
 // runDirectSearchForTest is a small helper for the unit tests that directly
 // exercise performDirectSearch. It builds the metadata + paramsHash + state
 // the way PreLLMHook would and then calls the search.
