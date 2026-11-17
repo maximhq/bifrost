@@ -185,6 +185,9 @@ func (h *MCPHandler) refuseTakenMCPClientNameOrSlug(ctx *fasthttp.RequestCtx, na
 // caller's concern.
 func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuthConfigRequest, serverURL string, requirePublicTarget bool) (*schemas.OAuth2FlowInitiation, error) {
 	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if base == "" {
+		return nil, fmt.Errorf("cannot determine a trusted public base URL; configure client.mcp_external_client_url or server.trusted_forwarded_host")
+	}
 	redirectURI := base + oauthCallbackPath
 	return h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
 		ClientID:        oauthCfg.ClientID,
@@ -316,7 +319,12 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 	// it: the provider checks the authorize request's redirect_uri against
 	// what THAT client was registered with, so the two must be the same value,
 	// not two values that happen to agree until the external URL changes.
-	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if base == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Cannot determine a trusted public base URL; configure client.mcp_external_client_url or server.trusted_forwarded_host")
+		return
+	}
+	redirectURI := base + oauthCallbackPath
 
 	var previousClientID, newClientID string
 	rotated := false
@@ -555,7 +563,12 @@ func (h *MCPHandler) initiateVerificationOnRegistration(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
 		return
 	}
-	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if base == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Cannot determine a trusted public base URL; configure client.mcp_external_client_url or server.trusted_forwarded_host")
+		return
+	}
+	redirectURI := base + oauthCallbackPath
 	response, failed, err := h.startAdminSignIn(ctx, clientConfig, redirectURI, "Failed to initiate OAuth flow", "activate")
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("%s: %v", failed, err))

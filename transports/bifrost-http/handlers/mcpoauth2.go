@@ -59,6 +59,10 @@ const (
 // hosted document configured, it is the content to publish there.
 func (h *OAuthHandler) handleClientMetadataDocument(ctx *fasthttp.RequestCtx) {
 	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if base == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Cannot determine a trusted public base URL; configure client.mcp_external_client_url or server.trusted_forwarded_host")
+		return
+	}
 	redirectURI := base + oauthCallbackPath
 	ctx.Response.Header.Add("Vary", "X-Forwarded-Host")
 	ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")

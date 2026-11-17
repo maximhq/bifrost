@@ -1120,7 +1120,7 @@ func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *tes
 
 	server := newLoopbackOAuthMCPServer(t)
 	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-	mcpCfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	mcpCfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar("http://bifrost.example.com")}, OAuthProvider: provider}
 	mh := &MCPHandler{store: mcpCfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, mcpCfg, nil)}
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodPost)

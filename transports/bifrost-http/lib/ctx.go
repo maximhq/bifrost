@@ -975,8 +975,8 @@ func validateTrustedForwardedHost(authority string) error {
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
-// Otherwise it uses the request's scheme and Host, preferring the first
-// X-Forwarded-Host value only if it matches server.trusted_forwarded_host.
+// Otherwise the first trimmed X-Forwarded-Host value or Host must match
+// server.trusted_forwarded_host. No configured or matching authority yields "".
 // The inferred URL includes server.base_path even when the proxy strips it.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
@@ -984,24 +984,20 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 			return override
 		}
 	}
+	trusted := trustedForwardedHost.Load()
+	if trusted == nil || *trusted == "" {
+		return ""
+	}
+	forwarded, _, _ := bytes.Cut(ctx.Request.Header.Peek("X-Forwarded-Host"), []byte(","))
+	if !bytes.EqualFold(bytes.TrimSpace(forwarded), []byte(*trusted)) &&
+		!bytes.EqualFold(ctx.Host(), []byte(*trusted)) {
+		return ""
+	}
 	scheme := "http"
 	if RequestIsHTTPS(ctx) {
 		scheme = "https"
 	}
-	var host string
-	if trusted := trustedForwardedHost.Load(); trusted != nil && *trusted != "" {
-		forwarded, _, _ := bytes.Cut(ctx.Request.Header.Peek("X-Forwarded-Host"), []byte(","))
-		if bytes.EqualFold(bytes.TrimSpace(forwarded), []byte(*trusted)) {
-			host = *trusted
-		}
-	}
-	if host == "" {
-		host = string(ctx.Host())
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host + BasePath()
+	return scheme + "://" + *trusted + BasePath()
 }
 
 // RequestIsHTTPS reports whether the client reached Bifrost over HTTPS: directly

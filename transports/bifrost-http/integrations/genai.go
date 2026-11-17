@@ -424,7 +424,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 
 			baseURL := lib.BuildBaseURL(ctx, "")
 			if baseURL == "" {
-				return true, errors.New("cannot determine base URL for upload (empty Host)")
+				return true, errors.New("cannot determine a trusted base URL for upload; configure server.trusted_forwarded_host")
 			}
 			uploadURL := baseURL + pathPrefix + "/upload/v1beta/files?upload_id=" + uploadID
 

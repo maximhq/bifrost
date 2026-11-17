@@ -1019,9 +1019,8 @@ func TestBifrostMCPRequiresBifrostURL(t *testing.T) {
 	}
 }
 
-// With a Bifrost URL configured, a tool call arrives as if through it: the route
-// sees that URL's host and scheme, whatever Host and forwarded proto the caller sent,
-// so the self URLs it builds come from configuration.
+// The configured execution URL controls routing headers, but does not implicitly
+// authorize request-derived public URLs.
 func TestBifrostMCPEndpoint_BifrostURLSetsHostAndScheme(t *testing.T) {
 	SetLogger(&mockLogger{})
 	spec, err := filepath.Abs(repoOpenAPISpec)
@@ -1052,8 +1051,8 @@ func TestBifrostMCPEndpoint_BifrostURLSetsHostAndScheme(t *testing.T) {
 	if seenHost != "gw.example.com" || seenProto != "https" {
 		t.Errorf("/api saw Host %q and x-bf-forwarded-proto %q, want gw.example.com and https", seenHost, seenProto)
 	}
-	if seenBase != "https://gw.example.com" {
-		t.Errorf("a self URL built by the route is %q, want https://gw.example.com", seenBase)
+	if seenBase != "" {
+		t.Errorf("a self URL without a configured trusted authority is %q, want empty", seenBase)
 	}
 }
 
