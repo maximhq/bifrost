@@ -1538,11 +1538,7 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		// scientific notation in the hash.
 		switch rawExpiry.(type) {
 		case string, float64:
-			value := strconv.FormatInt(expiresAt, 10)
-			if isFilterableTag("expires_at", fieldProps) {
-				value = encodeTagValue(value)
-			}
-			fields["expires_at"] = value
+			fields["expires_at"] = strconv.FormatInt(expiresAt, 10)
 		}
 		args := make([]interface{}, 1, 1+2*len(fields))
 		args[0] = expiresAt

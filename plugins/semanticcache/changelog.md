@@ -1,1 +1,2 @@
 - chore: upgraded core to v1.15.2 and framework to v1.12.2
+- fix: cache entries are treated as expired at their deadline second instead of one second later; requires a framework release with Redis native expiry for Redis/Valkey entries to be removed without another lookup
