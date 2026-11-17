@@ -2661,6 +2661,7 @@
 		"upstreamValue": "데이터시트: {{value}}",
 		"upstreamChanged": "편집 이후 데이터시트 값이 변경되었습니다(이전 값 {{value}})",
 		"followUpstream": "데이터시트 따르기({{value}})",
+		"followUpstreamNoValue": "데이터시트 따르기",
 		"on": "켜기",
 		"off": "끄기",
 		"customModelPlaceholder": "예: ft:gpt-4o:acme",

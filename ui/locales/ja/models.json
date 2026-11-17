@@ -2661,6 +2661,7 @@
 		"upstreamValue": "データシート: {{value}}",
 		"upstreamChanged": "編集後にデータシートの値が変わりました（以前は {{value}}）",
 		"followUpstream": "データシートに従う（{{value}}）",
+		"followUpstreamNoValue": "データシートに従う",
 		"on": "オン",
 		"off": "オフ",
 		"customModelPlaceholder": "例: ft:gpt-4o:acme",

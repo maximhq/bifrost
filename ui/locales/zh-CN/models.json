@@ -2661,6 +2661,7 @@
 		"upstreamValue": "数据表：{{value}}",
 		"upstreamChanged": "自你编辑以来数据表值已变更（原为 {{value}}）",
 		"followUpstream": "沿用数据表（{{value}}）",
+		"followUpstreamNoValue": "沿用数据表",
 		"on": "开",
 		"off": "关",
 		"customModelPlaceholder": "例如 ft:gpt-4o:acme",
