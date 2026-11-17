@@ -9,6 +9,7 @@
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
+- **Budget Update on config.json Virtual Keys** - Updating the budget of a virtual key provisioned from config.json no longer fails with a 500 `invalid reset duration format: ` when its standalone budget is adopted into the key's model config
 - **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
 - **Streaming Panic Recovery** - A panic in a provider stream, a stream chunk converter, a plugin post-hook or chunk hook, or stream teardown no longer takes down the gateway. The client gets a terminal error frame in the route's own format, and logging and billing record the failure
 

@@ -339116,7 +339116,487 @@
       ]
     },
     {
-      "name": "362. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
+      "name": "362. Anthropic passthrough stream usage counts cached prompt tokens once (passthrough stream cache usage)",
+      "description": "Streaming /v1/messages passthrough usage is assembled per SSE event by AnthropicPassthroughStreamUsage (core/providers/anthropic/passthrough_usage.go). It used to max-merge every usage field across message_start and message_delta, so an upstream that put a prompt-scale input_tokens on message_start and the cache-aware split only on message_delta (QwenCloud, Moonshot/Kimi; issue #5510, PR #6378) was logged with the cached prefix counted twice. The merge now takes the prompt split from message_delta once it reports a non-zero prompt counter, keeping message_start values for counters the delta omits. Neither deviating upstream is in the harness profile, so these cases pin the compliant Anthropic side of the same rule on a cold write and a warm read: the logged prompt_tokens, cached_read_tokens and cached_write_tokens must equal the split the stream itself reported, counted once. Each case resolves that split from the SSE body with the same rule the gateway uses, then polls /api/logs for the row.",
+      "item": [
+        {
+          "name": "362.1 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream cold prefix logs the cache write once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream cold prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream cold prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream cold prefix: stream reported a cache write', function () { pm.expect(writeTokens, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream cold prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream cold prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream cold prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream cold prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "362.2 anthropic claude-sonnet-4-6 /anthropic_passthrough/v1/messages stream warm prefix logs the cache read once (passthrough stream cache usage)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic stream warm prefix: upstream stream succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var start = null, delta = null, events = 0;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim(); if (!payload || payload === '[DONE]') { return; }",
+                  "  var e; try { e = JSON.parse(payload); } catch (err) { return; }",
+                  "  events++;",
+                  "  if (e.type === 'message_start' && e.message && e.message.usage) { start = e.message.usage; }",
+                  "  if (e.type === 'message_delta' && e.usage) { delta = e.usage; }",
+                  "});",
+                  "pm.test('anthropic stream warm prefix: stream carried message_start usage', function () { pm.expect(start, 'events=' + events + ' body=' + pm.response.text().slice(0, 2000)).to.be.an('object'); });",
+                  "if (!start) { return; }",
+                  "function n(v) { return typeof v === 'number' ? v : 0; }",
+                  "function cw(u) { var c = u.cache_creation || {}; return { total: n(u.cache_creation_input_tokens), split: n(c.ephemeral_5m_input_tokens) + n(c.ephemeral_1h_input_tokens) }; }",
+                  "var input = n(start.input_tokens), read = n(start.cache_read_input_tokens), write = cw(start);",
+                  "if (delta) {",
+                  "  var dw = cw(delta);",
+                  "  var final = n(delta.input_tokens) || n(delta.cache_read_input_tokens) || dw.total || dw.split;",
+                  "  if (final) {",
+                  "    if (delta.input_tokens != null) { input = n(delta.input_tokens); }",
+                  "    if (delta.cache_read_input_tokens != null) { read = n(delta.cache_read_input_tokens); }",
+                  "    if (delta.cache_creation_input_tokens != null) { write.total = dw.total; }",
+                  "    if (delta.cache_creation != null) { write.split = dw.split; if (delta.cache_creation_input_tokens == null) { write.total = 0; } }",
+                  "  }",
+                  "}",
+                  "var writeTokens = write.total || write.split;",
+                  "var expectedPrompt = input + read + writeTokens;",
+                  "pm.test('anthropic stream warm prefix: stream reported a cache read', function () { pm.expect(read, JSON.stringify({ start: start, delta: delta })).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic stream warm prefix: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (!reqId) { return; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.token_usage && j.token_usage.prompt_tokens) {",
+                  "      var tu = j.token_usage, d = tu.prompt_tokens_details || {};",
+                  "      pm.test('anthropic stream warm prefix: logged prompt_tokens equals the stream split counted once', function () { pm.expect(tu.prompt_tokens, 'expected input ' + input + ' + cache_read ' + read + ' + cache_write ' + writeTokens + '; log usage ' + JSON.stringify(tu)).to.eql(expectedPrompt); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_read_tokens matches the stream', function () { pm.expect(n(d.cached_read_tokens), JSON.stringify(tu)).to.eql(read); });",
+                  "      pm.test('anthropic stream warm prefix: logged cached_write_tokens matches the stream', function () { pm.expect(n(d.cached_write_tokens), JSON.stringify(tu)).to.eql(writeTokens); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic stream warm prefix: log row carries token_usage', function () { pm.expect.fail('log ' + reqId + ' has no token_usage.prompt_tokens after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [h362 {{pcNonce}}]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "364. Bedrock synthetic structured-output tool streams as one text block (bedrock synthetic structured output stream) (#10128 / PR #10138)",
+      "description": "When a Bedrock model keeps the synthetic bf_so_* tool for structured output (older Claude, Fable 5.1+, or a schema Claude rejects natively, here a nullable enum on Claude Sonnet 4.5), the streamed tool input used to go out as bare output_text.delta events with no item id. /anthropic/v1/messages then emitted content_block_delta with a fresh index per delta and no content_block_start/stop, so Anthropic SDK clients assembled nothing (#10128, #8158 shape 1). When the tool is unpinned (thinking on), the model may answer in plain text instead, and every text event was dropped, leaving only message_delta with billed output tokens (#8158 shape 2). Cases pin one well-formed text block on the /anthropic stream, one announced output_text item on the /v1/responses stream, and streamed content on /v1/chat/completions under reasoning. The two unpinned cases are red before the fix only on turns where the model answers in prose.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format on the synthetic tool arrives as one text block (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('one text block: content_block_start, deltas on its index, content_block_stop', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"stream\":true,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format with thinking (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('the answer streams as one text block whether the model used the tool or plain text', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses stream text.format on the synthetic tool streams one output_text item (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('output_text deltas belong to one announced message item', function () {",
+                  "  var added = {}, parts = {}, text = '', itemIds = {}, done = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'response.output_item.added' && ev.item) { added[ev.item.id] = ev.item.type; }",
+                  "    if (ev.type === 'response.content_part.added') { parts[ev.item_id] = true; }",
+                  "    if (ev.type === 'response.output_text.delta') {",
+                  "      pm.expect(ev.item_id, 'delta without item_id: ' + body).to.be.a('string').and.not.empty;",
+                  "      pm.expect(added[ev.item_id], 'delta before output_item.added for ' + ev.item_id + ': ' + body).to.equal('message');",
+                  "      pm.expect(parts[ev.item_id], 'delta before content_part.added for ' + ev.item_id + ': ' + body).to.equal(true);",
+                  "      itemIds[ev.item_id] = true;",
+                  "      text += ev.delta;",
+                  "    }",
+                  "    if (ev.type === 'response.output_item.added' && ev.item && ev.item.type === 'function_call') {",
+                  "      pm.expect.fail('the synthetic tool leaked as a function_call: ' + body);",
+                  "    }",
+                  "    if (ev.type === 'response.completed') { done = true; }",
+                  "  });",
+                  "  pm.expect(Object.keys(itemIds).length, 'items carrying text: ' + body).to.equal(1);",
+                  "  pm.expect(done, 'no response.completed: ' + body).to.equal(true);",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_output_tokens\":400,\"stream\":true,\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"input\":\"The ticket is open. Report its status.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream response_format with reasoning (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('content deltas concatenate to schema JSON, finish_reason stop, no tool_calls', function () {",
+                  "  var text = '', finish = null, toolCalls = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.error, 'error event: ' + body).to.be.undefined;",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.delta && c.delta.tool_calls) { toolCalls = true; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(toolCalls, 'unexpected tool_calls: ' + body).to.equal(false);",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "  pm.expect(text, 'no content streamed: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"reasoning\":{\"max_tokens\":1024},\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "365. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
       "description": "convertBifrostMessagesToGemini recovered a replayed tool call's thought signature only from the \"<id>_ts_<sig>\" id suffix and from reasoning_details, and wrote skip_thought_signature_validator otherwise. A client that sends the signature back as extra_content.google.thought_signature, the field Google's OpenAI-compatible endpoint uses, got its real signature replaced by the sentinel. The signature is captured from a live turn (Gemini validates what it is given, so a made-up blob would fail for an unrelated reason), moved by the replay row into extra_content on a bare id with no reasoning_details, and the case reads the request Bifrost sent upstream (x-bf-send-back-raw-request) to pin that the same signature, not the sentinel, is on the wire. The capture row fails when no signature came back, and the replay row fails when the capture stored nothing, so a run cannot pass having tested nothing.",
       "item": [
         {
