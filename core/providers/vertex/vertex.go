@@ -274,8 +274,9 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 		var meta struct {
 			Type string `json:"type"`
 		}
+		// sonic's syntax error quotes the input, so it must not reach the error text.
 		if err := sonic.Unmarshal(jsonData, &meta); err != nil {
-			return nil, fmt.Errorf("failed to parse auth credentials JSON: %w", err)
+			return nil, fmt.Errorf("failed to parse auth credentials JSON: invalid JSON")
 		}
 
 		// Map string to google.CredentialsType with a security whitelist
@@ -315,8 +316,26 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 
 	// Cache the token source. If another goroutine raced and stored first, use
 	// that one — both are equally valid, but sharing maximises token reuse.
-	actual, _ := provider.tokenSources.LoadOrStore(clientKey, tokenSource)
+	actual, _ := provider.tokenSources.LoadOrStore(clientKey, &sanitizedTokenSource{tokenSource})
 	return actual.(oauth2.TokenSource), nil
+}
+
+// sanitizedTokenSource strips raw token responses from oauth2 errors, which reach messages, logs and
+// nested causes: the "\nResponse: <body>" suffix and an executable's own failure message (the code is
+// kept). The error is always rebuilt so no RetrieveError body survives in the chain.
+type sanitizedTokenSource struct{ oauth2.TokenSource }
+
+func (s *sanitizedTokenSource) Token() (*oauth2.Token, error) {
+	token, err := s.TokenSource.Token()
+	if err == nil {
+		return token, nil
+	}
+	msg, _, _ := strings.Cut(err.Error(), "\nResponse:")
+	if prefix, rest, found := strings.Cut(msg, "unsuccessful response: ("); found {
+		code, _, _ := strings.Cut(rest, ")")
+		msg = prefix + "unsuccessful response: (" + code + ")"
+	}
+	return nil, errors.New(msg)
 }
 
 // GetProviderKey returns the provider identifier for Vertex.
@@ -353,7 +372,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// No deployments configured - fetch from Model Garden API
-	host := getVertexModelListingAPIHost(region)
+	host := getVertexAPIHost(region)
 
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel
@@ -362,13 +381,18 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	pageToken := ""
 
 	// Getting oauth2 token
+	// An API-key-only key gets here only on an unfiltered listing; "not supported" keeps ListAllModels treating it as expected.
+	authHint := " for list models"
+	if vertexKeyUsesAPIKeyOnly(key) {
+		authHint = " (api key auth not supported for list models)"
+	}
 	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error creating auth token source%s: %v", authHint, err), err)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error getting auth token%s: %v", authHint, err), err)
 	}
 
 	// Iterate over all supported Vertex publishers to include Google, Anthropic, and Mistral models
@@ -718,7 +742,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*VertexRawRequestBody, error) {
 				// Format messages for Vertex API, preserving key order for prompt caching
 				var rawBody []byte
 				var extraParams map[string]interface{}
@@ -869,11 +893,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 	}
 
 	// If auth query is set, add it to the URL
@@ -1123,7 +1143,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
@@ -1327,12 +1347,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
-
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 
 		// Getting oauth2 token
 		tokenSource, err := provider.getAuthTokenSource(key)
@@ -1418,7 +1433,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
@@ -1673,7 +1688,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
@@ -1794,19 +1809,23 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
 	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isGeminiEmbedding2Request {
-				return ToVertexGeminiEmbeddingRequest(request)
-			}
-			if isNativeMultimodalRequest {
-				return ToVertexMultimodalEmbeddingRequest(request)
-			}
+	// Branch before the call so each converter keeps its concrete body type.
+	var jsonBody []byte
+	var bifrostErr *schemas.BifrostError
+	switch {
+	case isGeminiEmbedding2Request:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexGeminiEmbeddingRequest, error) {
+			return ToVertexGeminiEmbeddingRequest(request)
+		})
+	case isNativeMultimodalRequest:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexEmbeddingRequest, error) {
+			return ToVertexMultimodalEmbeddingRequest(request)
+		})
+	default:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexEmbeddingRequest, error) {
 			return ToVertexEmbeddingRequest(request)
-		},
-	)
+		})
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1986,7 +2005,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexSpeechRequest, error) {
 			return ToVertexSpeechRequest(request)
 		},
 	)
@@ -2072,7 +2091,7 @@ func (provider *VertexProvider) geminiSpeech(ctx *schemas.BifrostContext, key sc
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*gemini.GeminiGenerationRequest, error) {
 			return toVertexGeminiSpeechRequest(request)
 		},
 	)
@@ -2181,7 +2200,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRankRequest, error) {
 			return ToVertexRankRequest(request, options)
 		},
 	)
@@ -2319,13 +2338,15 @@ func (provider *VertexProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key
 // so every other model is unsupported.
 func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) {
-		return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+		unsupported := providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+		unsupported.Error.Message = fmt.Sprintf("%s is not supported for model %s on the %s provider; only Gemini TTS models can stream there", schemas.SpeechStreamRequest, request.Model, provider.GetProviderKey())
+		return nil, unsupported
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*gemini.GeminiGenerationRequest, error) {
 			return toVertexGeminiSpeechRequest(request)
 		},
 	)
@@ -2399,7 +2420,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRawRequestBody, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
 			var err error
@@ -2619,7 +2640,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRawRequestBody, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
 			var err error
@@ -2835,7 +2856,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*gemini.GeminiVideoGenerationRequest, error) {
 			return gemini.ToGeminiVideoGenerationRequest(bifrostReq)
 		},
 	)
@@ -3180,6 +3201,9 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 	requestBody.ServiceTier = ""
 	for _, content := range requestBody.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Remove id from function_call
 			if part.FunctionCall != nil {
 				part.FunctionCall.ID = ""
@@ -3347,7 +3371,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	jsonData, bodyErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexBatchCreateRequest, error) {
 			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI), nil
 		},
 	)
@@ -4659,6 +4683,15 @@ func stripVertexCountTokensUnsupportedFields(jsonBody []byte) []byte {
 	return out
 }
 
+// setAnthropicBetaHeader sends the filtered betas as anthropic-beta, the only place Vertex reads them.
+func (provider *VertexProvider) setAnthropicBetaHeader(ctx *schemas.BifrostContext, req *fasthttp.Request) {
+	if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+}
+
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
@@ -4692,7 +4725,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 			},
 		)
@@ -4760,6 +4793,9 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		provider.setAnthropicBetaHeader(ctx, req)
+	}
 
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -66,7 +65,7 @@ func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
 		ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
 	// Keep CDNs from caching API responses; handlers may override.
-	if strings.HasPrefix(string(ctx.Path()), apiPathPrefix) {
+	if strings.HasPrefix(string(ctx.Request.URI().PathOriginal()), apiPathPrefix) {
 		ctx.Response.Header.Set("Cache-Control", "no-store")
 	}
 }
@@ -87,7 +86,7 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 			defer func() {
 				if r := recover(); r != nil {
 					// Never format r with %v: a panic value can wrap request content or secrets.
-					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", panicSummary(r), debug.Stack()))
+					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", lib.PanicSummary(r), debug.Stack()))
 					// Reset drops partial handler output, including the headers the outer
 					// SecurityHeaders and CORS middlewares set before the panic, so re-apply them.
 					ctx.Response.Reset()
@@ -166,16 +165,6 @@ func webSocketPeer(conn *ws.Conn) (remote string) {
 		return ""
 	}
 	return conn.RemoteAddr().String()
-}
-
-// panicSummary describes a recovered panic value without echoing arbitrary content.
-// Runtime errors keep their message (runtime-generated, no request data); any other
-// value is reduced to its type.
-func panicSummary(r any) string {
-	if rerr, ok := r.(runtime.Error); ok {
-		return rerr.Error()
-	}
-	return fmt.Sprintf("%T", r)
 }
 
 // ServerRootHandler wraps the router with the server-level middlewares. The
@@ -1216,9 +1205,11 @@ func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostCon
 }
 
 // fasthttpToHTTPRequest populates a pooled HTTPRequest from fasthttp context.
+// Path is the raw request path (PathOriginal), the one fasthttp/router dispatched
+// on, so a plugin that decides by path sees the route that will actually run.
 func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
@@ -1277,8 +1268,8 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 // failed with 409 and the caller must stop.
 func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) bool {
 	// If path/method is different, throw error
-	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
-		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
+	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Request.URI().PathOriginal()) {
+		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return false
 	}
@@ -1387,6 +1378,9 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
 // standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
 func isInferenceWSEndpoint(path string) bool {
+	if path == integrations.ChatGPTCodexResponsesRoute {
+		return true
+	}
 	for strings.HasPrefix(path, "/openai/") {
 		path = strings.TrimPrefix(path, "/openai")
 	}
@@ -1395,7 +1389,9 @@ func isInferenceWSEndpoint(path string) bool {
 	case "/v1/responses",
 		"/responses",
 		"/v1/realtime",
-		"/realtime":
+		"/realtime",
+		"/v1/audio/speech/stream",
+		elevenlabsDialoguePath:
 		return true
 	default:
 		return false
@@ -1419,6 +1415,10 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
+	for _, path := range integrations.GenAIVertexRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
+	paths[elevenlabsScribePath] = struct{}{}
 	return paths
 }
 
@@ -1449,7 +1449,7 @@ func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 
-	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key", "xi-api-key"} {
 		if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek(header))); apiKey != "" {
 			if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
 				return apiKey
@@ -2110,7 +2110,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					path := string(ctx.Path())
+					path := url
 					if isInferenceWSEndpoint(path) {
 						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
 						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
@@ -2204,7 +2204,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 					return
 				}
-				// Continue with the next handler
+				// Basic authenticates the caller but does not mark the local admin: admin-only
+				// handlers need a session or the Bearer-encoded credentials.
 				next(ctx)
 				return
 			}

@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -242,7 +244,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 			Ephemeral5mInputTokens: 3146,
 		},
 	}
-	accumulateAnthropicResponsesUsage(usage, billed, start)
+	accumulateResponsesUsageFromStruct(usage, billed, start)
 
 	delta := &AnthropicUsage{
 		InputTokens:              2,
@@ -276,7 +278,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 			},
 		},
 	}
-	accumulateAnthropicResponsesUsage(usage, billed, delta)
+	accumulateResponsesUsageFromStruct(usage, billed, delta)
 
 	if usage.OutputTokens != 386 {
 		t.Fatalf("response OutputTokens = %d, want 386", usage.OutputTokens)
@@ -304,7 +306,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 	}
 
 	// A later usage event without iterations must not erase the breakdown.
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 74})
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 74})
 	if len(usage.Iterations) != 2 {
 		t.Fatalf("Iterations after iteration-less event = %d, want 2", len(usage.Iterations))
 	}
@@ -377,12 +379,12 @@ func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *test
 	t.Run("write turn reports no cached_tokens", func(t *testing.T) {
 		usage := &schemas.ResponsesResponseUsage{}
 		billed := &schemas.BifrostLLMUsage{}
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 			InputTokens:              14,
 			CacheCreationInputTokens: 4759,
 			CacheCreation:            AnthropicUsageCacheCreation{Ephemeral5mInputTokens: 4759},
 		})
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 5})
 
 		if got := usage.InputTokensDetails.CachedWriteTokens; got != 4759 {
 			t.Fatalf("CachedWriteTokens = %d, want 4759", got)
@@ -404,11 +406,11 @@ func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *test
 	t.Run("read turn surfaces cached_tokens", func(t *testing.T) {
 		usage := &schemas.ResponsesResponseUsage{}
 		billed := &schemas.BifrostLLMUsage{}
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 			InputTokens:          14,
 			CacheReadInputTokens: 4759,
 		})
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 5})
 
 		if got := usage.InputTokensDetails.CachedReadTokens; got != 4759 {
 			t.Fatalf("CachedReadTokens = %d, want 4759", got)
@@ -442,14 +444,14 @@ func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) 
 
 	usage := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 		InputTokens:  1000,
 		OutputTokens: 200,
 		Iterations: []AnthropicUsage{
 			{Type: schemas.Ptr("message"), InputTokens: 1000, OutputTokens: 120},
 		},
 	})
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 		InputTokens:  1000,
 		OutputTokens: 500,
 		Iterations: []AnthropicUsage{
@@ -458,7 +460,7 @@ func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) 
 			{Type: schemas.Ptr("message"), InputTokens: 1100, OutputTokens: 380},
 		},
 	})
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{InputTokens: 1000, OutputTokens: 500})
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{InputTokens: 1000, OutputTokens: 500})
 
 	if len(usage.Iterations) != 3 {
 		t.Fatalf("Iterations = %d, want the latest cumulative list of 3", len(usage.Iterations))
@@ -482,4 +484,118 @@ func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) 
 	if b := billed.Iterations[1]; b.Type == nil || *b.Type != "advisor_message" || b.Model == nil || *b.Model != "claude-opus-4-8" || b.InputTokens != 2000 || b.OutputTokens != 900 {
 		t.Fatalf("billed advisor pass = %+v, want advisor_message claude-opus-4-8 2000/900", b)
 	}
+}
+
+// cache_creation is the 5m/1h split OF cache_creation_input_tokens. An upstream that reports only the
+// split must bill those writes once, and the same usage object must bill the same on every route:
+// non-streaming Responses and chat, the native Responses and chat streams, and the Responses
+// message_start frame. (Passthrough is pinned in passthrough_usage_test.go.)
+func TestBreakdownOnlyCacheCreationBillsTheSameOnEveryRoute(t *testing.T) {
+	t.Parallel()
+
+	const fresh, writes = 1000, 49000
+	breakdownOnly := func() *AnthropicUsage {
+		u := &AnthropicUsage{InputTokens: fresh, OutputTokens: 20}
+		u.CacheCreation.Ephemeral5mInputTokens = writes
+		return u
+	}
+
+	t.Run("helper", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			u    *AnthropicUsage
+			want int
+		}{
+			{"nil", nil, 0},
+			{"none", &AnthropicUsage{InputTokens: 5}, 0},
+			{"breakdown only", breakdownOnly(), writes},
+			{"top-level wins over the split it breaks down", func() *AnthropicUsage {
+				u := breakdownOnly()
+				u.CacheCreationInputTokens = writes
+				u.CacheCreation.Ephemeral1hInputTokens = writes // inconsistent split must not be added
+				return u
+			}(), writes},
+		} {
+			if got := anthropicCacheCreationTotal(tc.u); got != tc.want {
+				t.Errorf("%s: anthropicCacheCreationTotal = %d, want %d", tc.name, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("responses non-stream", func(t *testing.T) {
+		got := ConvertAnthropicUsageToBifrostUsage(breakdownOnly())
+		if got.InputTokens != fresh+writes || got.InputTokensDetails == nil || got.InputTokensDetails.CachedWriteTokens != writes {
+			t.Fatalf("usage = %+v (details %+v), want input %d with %d cached writes", got, got.InputTokensDetails, fresh+writes, writes)
+		}
+	})
+
+	t.Run("chat non-stream", func(t *testing.T) {
+		got := (&AnthropicMessageResponse{Usage: breakdownOnly()}).ToBifrostChatResponse(nil)
+		if got.Usage.PromptTokens != fresh+writes || got.Usage.PromptTokensDetails.CachedWriteTokens != writes {
+			t.Fatalf("usage = %+v (details %+v), want prompt %d with %d cached writes", got.Usage, got.Usage.PromptTokensDetails, fresh+writes, writes)
+		}
+	})
+
+	t.Run("responses stream accumulator", func(t *testing.T) {
+		usage, billed := &schemas.ResponsesResponseUsage{}, &schemas.BifrostLLMUsage{}
+		accumulateResponsesUsageFromStruct(usage, billed, breakdownOnly())
+		if usage.InputTokensDetails == nil || usage.InputTokensDetails.CachedWriteTokens != writes {
+			t.Fatalf("responses details = %+v, want %d cached writes", usage.InputTokensDetails, writes)
+		}
+		if billed.PromptTokensDetails == nil || billed.PromptTokensDetails.CachedWriteTokens != writes {
+			t.Fatalf("billed details = %+v, want %d cached writes", billed.PromptTokensDetails, writes)
+		}
+	})
+
+	t.Run("responses stream message_start", func(t *testing.T) {
+		raw := `{"type":"message_start","message":{"id":"msg_b","type":"message","role":"assistant","model":"claude-repro",` +
+			`"content":[],"usage":{"input_tokens":1000,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":49000}}}}`
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("unmarshal message_start: %v", err)
+		}
+		state := AcquireAnthropicResponsesStreamState()
+		defer ReleaseAnthropicResponsesStreamState(state)
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(schemas.NewBifrostContext(nil, time.Time{}), 0, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream: %v", bErr)
+		}
+		for _, r := range responses {
+			if r.Type != schemas.ResponsesStreamResponseTypeCreated {
+				continue
+			}
+			u := r.Response.Usage
+			if u == nil || u.InputTokens != fresh+writes || u.InputTokensDetails == nil || u.InputTokensDetails.CachedWriteTokens != writes {
+				t.Fatalf("response.created usage = %+v, want input %d with %d cached writes", u, fresh+writes, writes)
+			}
+			return
+		}
+		t.Fatal("no response.created emitted for message_start")
+	})
+
+	t.Run("chat stream", func(t *testing.T) {
+		body := "event: message_start\n" +
+			`data: {"type":"message_start","message":{"id":"msg_b","type":"message","role":"assistant","model":"claude-repro","content":[],` +
+			`"usage":{"input_tokens":1000,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":49000}}}}` + "\n\n" +
+			"event: message_delta\n" +
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}` + "\n\n" +
+			"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+		server := anthropicSSEServer(t, body, false)
+		defer server.Close()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+		stream, bErr := newTruncationTestProvider(server.URL).ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest())
+		if bErr != nil {
+			t.Fatalf("stream setup: %v", bErr)
+		}
+		var final *schemas.BifrostLLMUsage
+		for _, c := range collectTruncationChunks(t, stream) {
+			if c.BifrostChatResponse != nil && c.BifrostChatResponse.Usage != nil {
+				final = c.BifrostChatResponse.Usage
+			}
+		}
+		if final == nil || final.PromptTokensDetails == nil || final.PromptTokensDetails.CachedWriteTokens != writes || final.PromptTokens != fresh+writes {
+			t.Fatalf("final chat usage = %+v, want prompt %d with %d cached writes", final, fresh+writes, writes)
+		}
+	})
 }

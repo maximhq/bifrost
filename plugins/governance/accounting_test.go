@@ -871,3 +871,31 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
 	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }
+
+// TestPostHookWorkerBillsEstimatedCancelledStream: a cancelled stream whose usage
+// core estimated is billed like provider-reported partial usage, at catalog rates.
+func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
+	fixture := newAccountingFixture(t)
+	plugin := &GovernancePlugin{
+		ctx:          context.Background(),
+		tracker:      fixture.tracker,
+		modelCatalog: newOfflinePricingCatalog(t),
+	}
+	cancelled := &schemas.BifrostError{
+		Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled), Message: "request cancelled"},
+		ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{
+			PromptTokens: 120, CompletionTokens: 40, TotalTokens: 160,
+			Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+		}},
+	}
+
+	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
+	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+
+	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
+	want := float64(120)*2.5e-6 + float64(40)*1e-5
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.InDelta(c, want, fixture.cost(), 1e-12)
+		assert.Equal(c, int64(160), fixture.tokens())
+	}, time.Second, 10*time.Millisecond)
+}

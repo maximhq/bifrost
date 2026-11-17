@@ -1,20 +1,5 @@
-- feat: configstore - per-user MCP discovery stores, pending_verification flag, Anthropic workload identity column, and 12h cache write pricing columns
-- feat: logstore - client_ip (opt-in via `logs_store.capture_client_ip`) and user_email columns, exported to object storage
-- feat: logstore - relay log store parity with LLM logs: session and correlation ids, large payload previews
-- feat: logstore - multiple values per metadata filter key
-- feat: logstore - MCP round_trip_id column and MCP Apps use
-- feat: bill containers started through server tools at the `container` rate and OpenAI image generation tool tokens at image rates, including on stored logs
-- feat: bill each Gemini Interactions run once and count it as one request
-- feat: support OpenAI prompt cache breakpoint TTL and 12h cache write pricing
-- feat: config.json routing rule id is optional
-- feat: complexity router confidence thresholds
-- fix: ClickHouse log store looks single logs up by id without scanning the whole table, using bloom-filter skip indexes backfilled once in the background (thanks [@17jmumford](https://github.com/17jmumford)!)
-- fix: Postgres retention runs hourly, keeps draining past a short batch, and lets one replica drain each table; ClickHouse dedupes deletes per cutoff
-- fix: model catalog matches pricing model names case-insensitively
-- fix: azure - bill the served model's tokens for a Model Router deployment behind a key alias
-- fix: mcp - OAuth server revokes a replayed authorization code's grant, checks client names and slugs at create, and returns 400 when endpoint discovery fails
-- fix: mcp - skip invalid library catalog entries and let a custom entry reuse a deleted entry's name
-- fix: mcp - a revoke is not undone by a concurrent per-user sign-in
-- fix: show dashboard and MCP logs in config-file-only mode
-- fix: OAuth bootstrap URLs, webhook result_url and discovery carry server.base_path
-- chore: upgraded core to v1.15.0
+[fix]: include stop reason in log list and session queries [@Constantine3](https://github.com/Constantine3)
+- chore: upgraded core to v1.15.2
+- [test]: regression tests pin advisor-pass billing on the Anthropic passthrough stream, with no repeated per-request fee, fast mode and US data residency carried to the advisor pass, and no advisor billing on semantic-cache hits (from #8783) [@tomatomptt](https://github.com/tomatomptt)
+- feat: oauth2_server_config.gateways.claude_code setting and device-code columns on oauth2_authorize_requests for Claude Code gateway sign-in (#7963) [@jimseiwert](https://github.com/jimseiwert)
+- [feat]: MachGen video jobs are settled and priced by the video job sweeper

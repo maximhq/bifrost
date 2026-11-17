@@ -290,6 +290,9 @@ func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDeci
 	if r.Input.Structured != nil {
 		return nil, fmt.Errorf("input must be a string or a list of messages, as in OpenAI's Decisions request")
 	}
+	if r.Input.HasFileParts() {
+		return nil, fmt.Errorf("input_file parts are not part of OpenAI's Decisions request; send files on /v1/decisions")
+	}
 	if _, ok := r.ExtraParams["state"]; ok {
 		return nil, fmt.Errorf("state is not part of OpenAI's Decisions request; send input")
 	}
@@ -407,7 +410,7 @@ func HandleOpenAIDecisionRequest(
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIDecisionRequest, error) {
 			return ToOpenAIDecisionRequest(request)
 		},
 	)

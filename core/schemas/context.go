@@ -18,6 +18,7 @@ var NoDeadline time.Time
 // assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
 // and indexing a map with a non-comparable key (slice, map, func) would panic.
 var reservedKeys = map[BifrostContextKey]struct{}{
+	BifrostContextKeyStreamUsageProvisional:      {},
 	BifrostContextKeyVirtualKey:              {},
 	BifrostContextKeyAPIKeyName:              {},
 	BifrostContextKeyAPIKeyID:                {},
@@ -64,6 +65,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
 	BifrostContextKeyClientIP:                {},
+
+	BifrostContextKeyPassthroughModelListFilter: {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are

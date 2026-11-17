@@ -89,12 +89,14 @@ func (c ModelCaps) Model() string { return c.model }
 // Record returns the underlying datasheet record, or nil when none was found.
 func (c ModelCaps) Record() *ModelCapabilities { return c.record }
 
-// SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7, Opus 4.8, and Opus 5; requests
-// carrying speed:"fast" to any other model are rejected with 400.
-// Beta header: fast-mode-2026-02-01.
+// SupportsFastMode returns true if the model supports speed:"fast". On the
+// Claude API that is Opus 4.6, 4.7, 4.8 and 5 (beta header fast-mode-2026-02-01);
+// on Vertex it is Claude Fable 5.2 with no beta header. Requests carrying
+// speed:"fast" to any other model are rejected with 400.
 //
-// Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
+// Sources:
+//   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
+//   - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
 //
 // Prefers the datasheet's supports_speed boolean when set, falling back to
 // name detection when no record is registered.
@@ -447,6 +449,16 @@ func (c ModelCaps) FieldCondition(field string) string {
 func (c ModelCaps) SupportsMultimodalToolOutput(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMultimodalToolOutput != nil {
 		return *c.record.SupportsMultimodalToolOutput
+	}
+	return fallback
+}
+
+// SupportsNativeStructuredOutput reports whether the model takes a JSON schema
+// natively (Bedrock Converse outputConfig.textFormat) rather than through the
+// synthetic bf_so_* tool.
+func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeStructuredOutput != nil {
+		return *c.record.SupportsNativeStructuredOutput
 	}
 	return fallback
 }
@@ -832,6 +844,16 @@ func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
 func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
 	if c.record != nil && c.record.SupportsConverseToolResultImages != nil {
 		return *c.record.SupportsConverseToolResultImages
+	}
+	return fallback
+}
+
+// StripsUserTurnTrailingWhitespace reports whether the model drops trailing whitespace from the
+// text that ends a user turn while keeping it mid-turn, which decides whether a block an inlined
+// reminder joins is trimmed. Falls back to the caller's name-based answer when the row says nothing.
+func (c ModelCaps) StripsUserTurnTrailingWhitespace(fallback bool) bool {
+	if c.record != nil && c.record.StripsUserTurnTrailingWhitespace != nil {
+		return *c.record.StripsUserTurnTrailingWhitespace
 	}
 	return fallback
 }

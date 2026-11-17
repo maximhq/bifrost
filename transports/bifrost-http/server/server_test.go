@@ -7,9 +7,11 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,21 +19,29 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
@@ -2335,4 +2345,474 @@ func TestApplyBasePath(t *testing.T) {
 
 	s = &BifrostHTTPServer{BasePath: "no-slash", Config: &lib.Config{}}
 	assert.Error(t, s.ApplyBasePath())
+}
+
+// clientConfigOnlyStore serves a fixed client config to ReloadClientConfigFromConfigStore.
+type clientConfigOnlyStore struct {
+	configstore.ConfigStore
+	clientConfig configstore.ClientConfig
+}
+
+func (s *clientConfigOnlyStore) GetClientConfig(context.Context) (*configstore.ClientConfig, error) {
+	cc := s.clientConfig
+	return &cc, nil
+}
+
+// reloadSnapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type reloadSnapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *reloadSnapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse {
+	return s.snapshot
+}
+
+// PUT /api/config no longer applies usage_estimation_tokenizers itself: the reload that
+// follows a successful save is the only path that hands the stored list to the client.
+// This pins that the reload does, for enabling a family and for clearing the list.
+func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	t.Cleanup(func() { streamusage.Configure(nil) })
+
+	store := &clientConfigOnlyStore{}
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	server := &BifrostHTTPServer{Config: cfg, Client: client}
+
+	const model = "claude-opus-4-5"
+	tokenizer := func() string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&reloadSnapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+			}}}},
+		}}}))
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-reload-tokenizers")
+		failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+		streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+		}}, model, failure)
+		require.NotNil(t, failure.ExtraFields.BilledUsage)
+		require.NotNil(t, failure.ExtraFields.BilledUsage.Estimation)
+		return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+	}
+	require.Equal(t, "cl100k_base", tokenizer(), "no family is enabled before the first reload")
+
+	store.clientConfig.UsageEstimationTokenizers = []string{"anthropic", "llama3"}
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.Equal(t, []string{"anthropic", "llama3"}, cfg.ClientConfig.UsageEstimationTokenizers, "the live config holds the stored list")
+	assert.Equal(t, "anthropic", tokenizer(), "the client estimates with the stored families")
+
+	store.clientConfig.UsageEstimationTokenizers = nil
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
+	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
+}
+
+// The routing plugin bounds captured request vectors by the logs' retention;
+// if it stopped satisfying the setter, bootstrap and reload would both skip
+// it without a word.
+var _ logRetentionSetter = (*routing.RoutingPlugin)(nil)
+
+type retentionRecorder struct{ days func() int }
+
+func (r *retentionRecorder) SetLogRetention(days func() int) { r.days = days }
+
+// A reload builds a fresh routing plugin, which must get the same log
+// retention as the one bootstrap wired, or its captured vectors outlive their
+// logs. The retention is read at each sweep: 0 while there is no cleaner (logs
+// kept forever), then whatever the cleaner holds now.
+func TestApplyRoutingLogRetentionReadsTheLiveCleaner(t *testing.T) {
+	s := &BifrostHTTPServer{}
+	rec := &retentionRecorder{}
+	s.applyRoutingLogRetention(rec)
+	require.NotNil(t, rec.days)
+	assert.Equal(t, 0, rec.days(), "no cleaner: logs are kept forever")
+
+	s.LogsCleaner = logstore.NewLogsCleaner(nil, logstore.CleanerConfig{RetentionDays: 5}, bifrost.NewNoOpLogger())
+	assert.Equal(t, 5, rec.days(), "a cleaner built after wiring is still read")
+	s.LogsCleaner.UpdateRetentionDays(2)
+	assert.Equal(t, 2, rec.days(), "a retention changed at runtime is read at the next sweep")
+
+	s.applyRoutingLogRetention(struct{}{}) // a plugin without the setter is left alone
+}
+
+// sharedVectorStore stands in for a vector store shared across nodes
+// (Weaviate, Qdrant, ...): request capture is off on a bare Chromem store,
+// which lives in one node's memory.
+type sharedVectorStore struct{ vectorstore.VectorStore }
+
+// unusedGovernance satisfies the routing engine's required governance for
+// tests that never route a request; any call would panic on the nil embed.
+type unusedGovernance struct{ routing.Governance }
+
+// Captured request vectors follow their logs through the real log-delete
+// subscription: deleting a log removes its vector, through whichever routing
+// plugin is registered now, so a replaced plugin does not strand the
+// subscription. Removing the routing plugin drops every capture namespace,
+// because no plugin is left to forget or age out what was captured.
+func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	ctx := context.Background()
+	quiet := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	ls, err := logstore.NewLogStore(ctx, &logstore.Config{
+		Enabled: true, Type: logstore.LogStoreTypeSQLite,
+		Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+	}, noopTestLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ls.Close(ctx) })
+	inner, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
+		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
+	}, quiet)
+	require.NoError(t, err)
+	vs := sharedVectorStore{inner} // capture is off on a bare Chromem store
+	loggerPlugin, err := logging.Init(ctx, &logging.Config{}, noopTestLogger{}, ls, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = loggerPlugin.Cleanup() })
+
+	// A captured request: its log, and its vector under the log's ID (a UUID
+	// request ID is its own point ID) in a capture namespace.
+	ns := complexity.CaptureNamespace("support-router", "openai", "m", 2, 1)
+	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
+	capture := func(id string) {
+		t.Helper()
+		require.NoError(t, ls.Create(ctx, &logstore.Log{ID: id, Timestamp: time.Now(), Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success"}))
+		require.NoError(t, vs.Add(ctx, ns, id, []float32{1, 0}, map[string]any{"kind": "request", "timestamp": time.Now().Unix(), "log_id": id}))
+	}
+	captured := func(id string) bool {
+		_, err := vs.GetChunk(ctx, ns, id)
+		return err == nil
+	}
+	newRouting := func() *routing.RoutingPlugin {
+		t.Helper()
+		ruleStore, err := rules.NewLocalStore(ctx, quiet, nil)
+		require.NoError(t, err)
+		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore, unusedGovernance{})
+		require.NoError(t, err)
+		p.SetComplexityWarmupDependencies(vs, nil)
+		return p
+	}
+
+	cfg := &lib.Config{LogsStore: ls, VectorStore: vs}
+	first := newRouting()
+	t.Cleanup(func() { _ = first.Cleanup() })
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{first})
+	s := &BifrostHTTPServer{Config: cfg}
+	s.subscribeCaptureDeletes(loggerPlugin)
+	logs := loggerPlugin.GetPluginLogManager()
+
+	a, b, c := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	capture(a)
+	capture(b)
+	require.NoError(t, logs.DeleteLog(ctx, a))
+	assert.False(t, captured(a), "deleting a log removes its captured vector")
+	assert.True(t, captured(b), "other logs keep theirs")
+
+	// A reload replaces the plugin: the subscription reaches the new one.
+	second := newRouting()
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{second})
+	require.NoError(t, logs.DeleteLogs(ctx, []string{b}))
+	assert.False(t, captured(b), "deletes reach the plugin registered now")
+
+	// Removing routing drops what was captured: nothing is left to own it.
+	capture(c)
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg), Logger: quiet, LLMPlugins: []schemas.LLMPlugin{second},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	s.Client = client
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusActive, nil, []schemas.PluginType{schemas.PluginTypeLLM})
+	require.NoError(t, s.RemovePlugin(ctx, routing.PluginName))
+	namespaces, err := vs.ListNamespaces(ctx, complexity.CaptureNamespacePrefix+"_")
+	require.NoError(t, err)
+	assert.Empty(t, namespaces, "the routing plugin's captures go with it")
+	assert.False(t, captured(c))
+
+	// A log deleted with no routing plugin has nothing left to forget.
+	require.NoError(t, logs.DeleteLog(ctx, c))
+}
+
+// At startup without a routing plugin, captures from an earlier run are
+// dropped only when routing is disabled by config; a plugin that failed to
+// start keeps them for its next start.
+func TestDropCapturesOfDisabledRouting(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	ctx := context.Background()
+	vs, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
+		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	ns := complexity.CaptureNamespace("support-router", "openai", "m", 2, 1)
+	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
+	cfg := &lib.Config{VectorStore: vs}
+	s := &BifrostHTTPServer{Config: cfg}
+	namespaces := func() []string {
+		names, err := vs.ListNamespaces(ctx, complexity.CaptureNamespacePrefix+"_")
+		require.NoError(t, err)
+		return names
+	}
+
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Equal(t, []string{ns}, namespaces(), "no status: nothing says routing is gone")
+
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusError, nil, nil)
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Equal(t, []string{ns}, namespaces(), "a plugin that failed to start keeps its captures")
+
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusDisabled, nil, nil)
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Empty(t, namespaces(), "a disabled plugin's captures are dropped")
+
+	(&BifrostHTTPServer{Config: &lib.Config{}}).dropCapturesOfDisabledRouting(ctx) // no vector store: nothing to do
+}
+
+// setOpenAPIURL sets the framework config's openapi_url the way a config save
+// publishes it: a whole new FrameworkConfig.
+func setOpenAPIURL(cfg *lib.Config, value string) {
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+}
+
+// The Bifrost MCP's settings come from the config: the spec (the framework config's
+// openapi_url, else the build's default), the writes switch (on unless turned off),
+// and the base its calls address, which is bifrost_url's origin, and nothing
+// without it: never the listen address or a request's Host.
+func TestBifrostMCPOptionsFollowClientConfig(t *testing.T) {
+	server := &BifrostHTTPServer{
+		Host: "0.0.0.0", Port: "8080", defaultOpenAPIURL: handlers.DefaultOpenAPIURL,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	opts := server.bifrostMCPOptions(handlers.BifrostMCPOptions{AppDir: "/app"})
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL)
+	assert.True(t, opts.AllowWrites)
+	assert.Empty(t, opts.BaseURL, "no bifrost_url, no base: the Bifrost MCP does not load")
+	assert.False(t, opts.BaseIsEdge)
+	assert.Equal(t, "/app", opts.AppDir, "options outside the settings are kept")
+
+	setOpenAPIURL(server.Config, "specs/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.Config.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com/bifrost/")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "specs/openapi.json", opts.SpecURL)
+	assert.False(t, opts.AllowWrites)
+	assert.Equal(t, "https://gw.example.com", opts.BaseURL, "the origin only: the in-process router accepts paths without the base path")
+	assert.True(t, opts.BaseIsEdge)
+
+	setOpenAPIURL(server.Config, "  ")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL, "a blank openapi_url falls back to the build's default")
+
+	server.defaultOpenAPIURL = "https://example.com/other-build/openapi.json"
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "https://example.com/other-build/openapi.json", opts.SpecURL, "a build's own default replaces DefaultOpenAPIURL")
+}
+
+// Without -app-dir the gateway loads config from the OS default directory, and a
+// relative openapi_url resolves against that directory: the one config
+// was loaded from, not the empty -app-dir.
+func TestStartBifrostMCPResolvesRelativeSpecAgainstConfigDir(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	lib.SetLogger(noopTestLogger{})
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	spec, err := os.ReadFile("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openapi.json"), spec, 0o600))
+	cfg, err := lib.LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	setOpenAPIURL(cfg, "openapi.json")
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com")
+
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {}) // a routed operation, so the server has a tool to serve
+	server := &BifrostHTTPServer{AppDir: "", Config: cfg, Router: r}
+	server.StartBifrostMCP(ctx, handlers.DefaultOpenAPIURL, func(*fasthttp.RequestCtx) {}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = server.bifrostMCPExec.Close() })
+	assert.Equal(t, dir, server.BifrostMCP.Options().AppDir, "the spec resolves against the directory config was loaded from")
+
+	deadline := time.Now().Add(10 * time.Second)
+	var loadErr error
+	for time.Now().Before(deadline) {
+		if _, loadErr = server.BifrostMCP.Server(ctx); loadErr == nil {
+			return
+		}
+		if !strings.Contains(loadErr.Error(), "still loading") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the relative spec did not load: %v", loadErr)
+}
+
+// A config save that changes a Bifrost MCP setting rebuilds it; one that does not
+// leaves the loaded server alone; a rebuild that fails keeps the previous server.
+func TestReloadBifrostMCPOnSettingsChange(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	before, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served := before.ListTools()["createVirtualKey"]
+	require.True(t, served, "writes are on by default")
+
+	server.reloadBifrostMCP(context.Background())
+	unchanged, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, before, unchanged, "a save that changed nothing must not rebuild")
+
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	after, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = after.ListTools()["createVirtualKey"]
+	assert.False(t, served, "turning writes off rebuilt the server without them")
+
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	kept, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, after, kept, "a failed rebuild keeps the previous server")
+
+	// One save that turns writes back on and points at the missing spec restricts
+	// nothing, so the server stays; one that then turns writes off again cannot
+	// keep a server built with them on, and unloads it.
+	setOpenAPIURL(server.Config, "")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = nil
+	server.reloadBifrostMCP(context.Background())
+	withWrites, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = withWrites.ListTools()["createVirtualKey"]
+	require.True(t, served)
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "writes off with a spec that does not load must not keep the write-capable server")
+}
+
+// Clearing bifrost_url while the spec is unavailable cannot leave the server
+// built for the old URL serving.
+func TestReloadBifrostMCPClearedBifrostURLUnloads(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	_, err = server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+
+	server.Config.ClientConfig.BifrostURL = nil
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "the server built for the cleared bifrost_url must not keep serving")
+}
+
+// fixedUserGovernance answers for any user with an empty limits projection.
+type fixedUserGovernance struct{}
+
+func (fixedUserGovernance) DescribeUserGovernance(_ context.Context, userID string) (*warp.UserGovernance, error) {
+	return &warp.UserGovernance{UserID: userID}, nil
+}
+
+// TestRegisterUserLimitsRoutes: without a user governance reader (the OSS build)
+// the user limits routes are not registered; with one they are, behind the
+// middleware chain RegisterAPIRoutes passes.
+func TestRegisterUserLimitsRoutes(t *testing.T) {
+	paths := []string{"/api/governance/users/me/limits", "/api/governance/users/u-1/limits"}
+	serve := func(s *BifrostHTTPServer, path string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(path)
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		s.Router.Handler(&ctx)
+		return &ctx
+	}
+
+	without := &BifrostHTTPServer{Router: router.New()}
+	without.registerUserLimitsRoutes()
+	for _, path := range paths {
+		ctx := serve(without, path)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s is registered without a reader", path)
+	}
+
+	ran := 0
+	mark := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ran++
+			ctx.Response.Header.Set("X-Test-Middleware", "ran")
+			next(ctx)
+		}
+	})
+	with := &BifrostHTTPServer{Router: router.New(), WarpUserGovernanceReader: fixedUserGovernance{}}
+	with.registerUserLimitsRoutes(mark)
+	for _, path := range paths {
+		ctx := serve(with, path)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s: %s", path, ctx.Response.Body())
+		require.Equal(t, "ran", string(ctx.Response.Header.Peek("X-Test-Middleware")), "%s skipped the middleware chain", path)
+	}
+	require.Equal(t, len(paths), ran)
+}
+
+// callerMarkerKey stands in for the caller identity a request context carries.
+type callerMarkerKey struct{}
+
+// reloadModelConfigConfigStore answers a model config read and records whether the read carried
+// the caller marker, the way a scoped store would narrow a read for that caller.
+type reloadModelConfigConfigStore struct {
+	configstore.ConfigStore
+	sawCaller bool
+}
+
+// GetModelConfigByID records whether ctx carries the caller marker and returns the row.
+func (s *reloadModelConfigConfigStore) GetModelConfigByID(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	s.sawCaller = ctx.Value(callerMarkerKey{}) != nil
+	return &configstoreTables.TableModelConfig{ID: id, ModelName: "gpt-4o", Scope: "global"}, nil
+}
+
+// TestReloadModelConfigReadsWithoutTheCallersContext checks that the reload's store read does not
+// carry the caller's context, so a caller's row-visibility scope cannot hide the config it just
+// wrote from the in-memory reload.
+func TestReloadModelConfigReadsWithoutTheCallersContext(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	store := &reloadModelConfigConfigStore{}
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: &lib.Config{ConfigStore: store}}
+
+	callerCtx := context.WithValue(context.Background(), callerMarkerKey{}, "alice")
+	_, _ = server.ReloadModelConfig(callerCtx, "mc-1") // no governance plugin: only the read matters here
+	if store.sawCaller {
+		t.Fatal("the reload read the model config on the caller's context")
+	}
 }

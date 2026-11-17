@@ -134,16 +134,17 @@ func (p *OAuth2Provider) bindAuthorizationServerOnce(ctx context.Context, oauthC
 	}
 	previousIssuer := config.Issuer
 	fields := configstore.MCPOAuthConfigFields{
-		ClientID:              config.ClientID,
-		ClientSecret:          config.ClientSecret,
-		AuthorizeURL:          metadata.AuthorizationURL,
-		TokenURL:              metadata.TokenURL,
-		Resource:              config.Resource,
-		Scopes:                scopes,
-		Issuer:                metadata.Issuer,
-		IssParameterSupported: metadata.IssParameterSupported,
-		DynamicallyRegistered: config.DynamicallyRegistered,
-		ExpectedIssuer:        &previousIssuer,
+		ClientID:               config.ClientID,
+		ClientSecret:           config.ClientSecret,
+		AuthorizeURL:           metadata.AuthorizationURL,
+		TokenURL:               metadata.TokenURL,
+		Resource:               config.Resource,
+		Scopes:                 scopes,
+		Issuer:                 metadata.Issuer,
+		IssParameterSupported:  metadata.IssParameterSupported,
+		DynamicallyRegistered:  config.DynamicallyRegistered,
+		ClientMetadataDocument: config.ClientMetadataDocument,
+		ExpectedIssuer:         &previousIssuer,
 	}
 	if metadata.RegistrationURL != nil {
 		fields.RegistrationURL = *metadata.RegistrationURL
@@ -161,6 +162,7 @@ func (p *OAuth2Provider) bindAuthorizationServerOnce(ctx context.Context, oauthC
 			return false, fmt.Errorf("%w from %q to %q, and registering with it failed: %w", ErrAuthorizationServerChanged, config.Issuer, metadata.Issuer, err)
 		}
 		fields.DynamicallyRegistered = true
+		fields.ClientMetadataDocument = false
 	default:
 		return false, fmt.Errorf("%w from %q to %q, and its client credentials were registered with %q: enter credentials registered with %q", ErrAuthorizationServerChanged, config.Issuer, metadata.Issuer, config.Issuer, metadata.Issuer)
 	}

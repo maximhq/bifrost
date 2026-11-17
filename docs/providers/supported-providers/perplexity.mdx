@@ -428,4 +428,4 @@ Bifrost calls Perplexity's `POST /v1/decisions`, which uses TypeSafe's System On
 - **Score questions take 1-10 levels** (TypeSafe needs at least 2).
 - **The response `id`** comes from Perplexity's `x-request-id` header.
 
-A model Perplexity does not serve returns Perplexity's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use these models as its classifier; it starts on `pplx-decider-v1.1-27b`.
+A model Perplexity does not serve returns Perplexity's own error. A [router](/features/routers#choosing-the-decision-model) can use these models as its classifier; it starts on `pplx-decider-latest`.

@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -209,6 +210,14 @@ type badRequestError struct{ err error }
 
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
+
+// IsBadRequestError reports whether err is a validation failure the caller should answer with 400,
+// as opposed to a store failure. Exported so builds that reuse this package's reconcilers can map
+// their errors the same way its own handlers do.
+func IsBadRequestError(err error) bool {
+	var bad *badRequestError
+	return errors.As(err, &bad)
+}
 
 // IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
 func IsUniqueConstraintError(err error, identifiers ...string) bool {

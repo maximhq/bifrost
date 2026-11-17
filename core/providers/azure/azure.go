@@ -904,7 +904,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*openai.OpenAISpeechRequest, error) {
 			reqBody := openai.ToOpenAISpeechRequest(request)
 			if reqBody != nil {
 				reqBody.StreamFormat = schemas.Ptr("sse")
@@ -970,6 +970,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 

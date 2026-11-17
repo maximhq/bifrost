@@ -111,7 +111,7 @@ func TestToCohereEmbeddingRequestBodyIncludesModelForDirectCohere(t *testing.T) 
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		context.Background(),
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereEmbeddingRequest, error) {
 			return ToCohereEmbeddingRequest(bifrostReq)
 		},
 	)

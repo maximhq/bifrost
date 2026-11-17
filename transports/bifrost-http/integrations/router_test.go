@@ -136,6 +136,7 @@ func TestChatGPTPassthroughRouterRegistersOnlyCodexRoutes(t *testing.T) {
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0", fasthttp.StatusNoContent},
 		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusNoContent},
 		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/models", fasthttp.StatusMethodNotAllowed},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusMethodNotAllowed}, // the upgrade is the Codex WebSocket relay's route, not this router's
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/conversations", fasthttp.StatusNotFound},
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models/gpt-5.5", fasthttp.StatusNotFound},
 	}
@@ -1131,6 +1132,107 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	// lib.TestClientDisconnectWatcher_RetentionNoGoroutineLeak against a real socket.
 }
 
+// Test_handleStreaming_ConverterPanicIsRecovered pins that a panic inside a stream chunk
+// converter does not end the process. The producer goroutine runs after the handler has
+// returned, outside RecoveryMiddleware, so without its own recover an unrecovered panic
+// there crashes the server (and this test binary). It must instead cancel upstream, drain
+// the remaining chunks so the provider goroutine is not left blocked on a send, and close
+// the client stream.
+func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			var resp *schemas.BifrostChatResponse
+			return "", resp.ID, nil // nil dereference, as a converter bug would
+		},
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		b, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- readResult{b, err}
+	}()
+
+	// Unbuffered: every send after the panicking one only completes if the recover drains.
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for i := 0; i < 3; i++ {
+			stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+		}
+		close(stream)
+	}()
+
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider side stayed blocked on send: the stream was not drained after the panic")
+	}
+	select {
+	case res := <-readDone:
+		require.NoError(t, res.err)
+		// The route has no error converter, so the default internal_error body is framed.
+		require.Contains(t, string(res.body), `"internal_error"`, "a stream cut short by a panic must end with an error frame, got %q", res.body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after the panic")
+	}
+	rec.requireCancelled(t, "upstream was not cancelled after the converter panicked")
+}
+
+// Test_handleStreaming_TeardownPanicsAreRecovered pins that the producer's deferred
+// teardown survives a panicking step. The teardown runs after the producer's recover, so a
+// panic in it (an integration's stream Cleanup, the trace completer that runs observability
+// plugins) is a new panic nothing else catches. Each step is contained, the steps after it
+// still run, and the client stream still closes.
+func Test_handleStreaming_TeardownPanicsAreRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	close(stream)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			return "", map[string]string{"ok": "1"}, nil
+		},
+		Cleanup: func(*schemas.BifrostContext) { panic("cleanup") },
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after a teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trace completer did not run after Cleanup panicked")
+	}
+	rec.requireCancelled(t, "the teardown's cancel did not run after a teardown panic")
+}
+
 // cancelRecorder captures the cancel func handed to handleStreaming.
 //
 // handleStreaming cancels from its producer goroutine's deferred cleanup, which runs after
@@ -1557,6 +1659,39 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 	}
 }
 
+// TestNewChatGPTCodexTurn pins what one Codex websocket turn is built as: the frame forwarded
+// byte for byte, the model read from it, key selection skipped for the caller's ChatGPT token, and
+// the Responses text rewriter registered so a redacting plugin can rewrite the turn. A frame that
+// is not valid JSON is refused, as the HTTP route refuses the same body.
+func TestNewChatGPTCodexTurn(t *testing.T) {
+	frame := []byte(`{"type":"response.create","model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"mail alice@example.com"}]}]}`)
+	headers := map[string]string{"chatgpt-account-id": "acct"}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req, err := NewChatGPTCodexTurn(ctx, frame, headers)
+	require.NoError(t, err)
+	require.Equal(t, string(frame), string(req.Body))
+	require.Equal(t, "gpt-5-codex", req.Model)
+	require.Equal(t, fasthttp.MethodPost, req.Method)
+	require.Equal(t, chatGPTCodexResponsesPath, req.Path)
+	require.Equal(t, chatGPTUpstreamURL, req.UpstreamURL)
+	require.Equal(t, schemas.OpenAI, req.Provider)
+	require.Equal(t, headers, req.SafeHeaders)
+
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	require.True(t, skip, "the caller's ChatGPT token is the upstream credential, so key selection must be skipped")
+
+	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	require.NotNil(t, rewriter, "a Codex turn must carry the Responses text rewriter")
+	rewritten, err := rewriter(bytes.Clone(frame), map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	require.Contains(t, string(rewritten), "mail [EMAIL]")
+	require.Equal(t, string(frame), string(req.Body), "rewriting must not touch the forwarded frame")
+
+	_, err = NewChatGPTCodexTurn(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), []byte(`{"type":"response.create"`), headers)
+	require.Error(t, err)
+}
+
 // passthroughRewriteCustom is a custom provider based on Anthropic that may forward every passthrough route.
 const passthroughRewriteCustom schemas.ModelProvider = "passthrough-claude-proxy"
 
@@ -1948,6 +2083,7 @@ type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
 	skipKeySelection bool
 	skipModelCheck   bool
+	modelListFilter  schemas.PassthroughModelListFilter
 }
 
 // GetName identifies the isolated test plugin.
@@ -1967,6 +2103,7 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	p.request = &snapshot
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
 	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
+	p.modelListFilter, _ = ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
 }
@@ -2001,6 +2138,7 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 			require.Equal(t, schemas.PassthroughStreamRequest, plugin.request.RequestType, "native Codex responses must not use the buffered API path")
 			require.True(t, plugin.skipKeySelection)
 			require.False(t, plugin.skipModelCheck, "a responses turn runs a model, so the model allowlist still applies")
+			require.Nil(t, plugin.modelListFilter, "a responses turn is not a model list")
 			require.Equal(t, "https://chatgpt.com", plugin.request.PassthroughRequest.UpstreamURL)
 			require.Equal(t, "/backend-api/codex/responses", plugin.request.PassthroughRequest.Path)
 			require.Equal(t, body, string(plugin.request.PassthroughRequest.Body))
@@ -2026,12 +2164,14 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	ctx.Request.Header.Set("ChatGPT-Account-ID", "synthetic-workspace")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
 	ctx.Request.Header.Set("Cookie", "session=synthetic; auth-openid=synthetic-gateway-token")
+	ctx.Request.Header.Set("If-None-Match", `"cached-etag"`)
 	r.Handler(&ctx)
 	require.Equal(t, 403, ctx.Response.StatusCode())
 	require.NotNil(t, plugin.request)
 	require.Equal(t, schemas.PassthroughRequest, plugin.request.RequestType)
 	require.True(t, plugin.skipKeySelection)
 	require.True(t, plugin.skipModelCheck, "a model list runs no model, so a restricted model allowlist must not refuse it")
+	require.NotNil(t, plugin.modelListFilter, "governance trims the list with the filter the route registers")
 	req := plugin.request.PassthroughRequest
 	require.Equal(t, fasthttp.MethodGet, req.Method)
 	require.Equal(t, "https://chatgpt.com", req.UpstreamURL)
@@ -2041,6 +2181,7 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	require.Equal(t, "synthetic-workspace", req.SafeHeaders["chatgpt-account-id"])
 	require.NotContains(t, req.SafeHeaders, "x-bf-vk")
 	require.NotContains(t, req.SafeHeaders, "cookie")
+	require.NotContains(t, req.SafeHeaders, "if-none-match", "a 304 would keep a list filtered under an older access")
 }
 
 // geminiPassthroughAccount initializes only Gemini for the synthetic Interactions passthrough tests.
@@ -2180,6 +2321,64 @@ func BenchmarkIsChatGPTBearer(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = isChatGPTBearer(authHeader)
+	}
+}
+
+// TestPassthroughStreamTeardownPanicIsRecovered pins that the passthrough relay goroutine
+// survives a panic in its deferred teardown (the trace completer runs observability
+// plugins after the handler returned, outside RecoveryMiddleware): the relayed body still
+// reaches the client and the stream still closes, instead of the process ending.
+func TestPassthroughStreamTeardownPanicIsRecovered(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(event), event)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(ctx.Response.BodyStream())
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		require.Contains(t, string(b), `"type":"response.completed"`)
+	case <-time.After(10 * time.Second):
+		t.Fatal("relayed stream never closed after the teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace completer never ran")
 	}
 }
 
@@ -2911,6 +3110,37 @@ func TestHeldStreamFirstTokenDeadline(t *testing.T) {
 			require.Equal(t, tc.wantContent, content.String())
 			require.Equal(t, int32(1), primaryHits.Load(), "a first-token miss must not retry the primary")
 			require.Equal(t, tc.wantFallback, fallbackHits.Load())
+		})
+	}
+}
+
+// BenchmarkHandleStreamingSpeech streams 64 speech chunks through the router's chunk loop, as SSE events and as the raw
+// audio of a route that sets RawAudio.
+func BenchmarkHandleStreamingSpeech(b *testing.B) {
+	audio := bytes.Repeat([]byte("a"), 4096)
+	chunks := make([]*schemas.BifrostStreamChunk, 64)
+	for i := range chunks {
+		chunks[i] = &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: audio}}
+	}
+	sse := RouteConfig{StreamConfig: &StreamConfig{
+		SpeechStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+			return "", resp, nil
+		},
+	}}
+	for name, config := range map[string]RouteConfig{"sse": sse, "raw audio": rawAudioConfig()} {
+		b.Run(name, func(b *testing.B) {
+			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			b.ReportAllocs()
+			for b.Loop() {
+				stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
+				for _, chunk := range chunks {
+					stream <- chunk
+				}
+				close(stream)
+				ctx := &fasthttp.RequestCtx{}
+				router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+				_, _ = io.Copy(io.Discard, ctx.Response.BodyStream())
+			}
 		})
 	}
 }

@@ -771,6 +771,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/v1/realtime",
 		"/openai/realtime",
 		"/openai/openai/realtime",
+		"/v1/audio/speech/stream",
+		"/elevenlabs/v1/text-to-dialogue/stream-input",
+		"/chatgpt_passthrough/backend-api/codex/responses",
 	}
 
 	for _, path := range paths {
@@ -784,6 +787,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 	}
 	if isInferenceWSEndpoint("/openai/chat/completions") {
 		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/chatgpt_passthrough/backend-api/codex/models") {
+		t.Fatal("the Codex model list is not a websocket path")
 	}
 }
 
@@ -800,6 +806,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
 		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+		"/elevenlabs/v1/speech-to-text/realtime",
 	}
 
 	for _, path := range paths {
@@ -1816,6 +1823,34 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin pins that the admin's username and
+// password sent as Basic authenticate the request without marking it the local admin, so
+// admin-only handlers (Warp's settings, publishing notifications) and deployments that skip
+// their access checks for the local admin still require a session or the Bearer form.
+func TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hash, err := encrypt.Hash("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := newSetupLockedAuthMiddleware("", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	})
+	encoded := base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	for _, header := range []string{"Basic " + encoded} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.Header.Set("Authorization", header)
+		if !runOSSAPIChain(am, ctx) {
+			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+		assert.False(t, admin, "%s admin credentials should not run as the local admin", strings.Fields(header)[0])
 	}
 }
 
@@ -3676,6 +3711,61 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 }
 
+// TestTracingMiddleware_StoresDimAttributesOnTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on TraceAttrDimensions so
+// observability plugins can propagate them onto child spans when enabled.
+func TestTracingMiddleware_StoresDimAttributesOnTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedDims map[string]string
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok {
+				capturedDims = dims
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedDims == nil {
+		t.Fatal("trace.Attributes[bifrost.dimensions] was missing")
+	}
+	if got := capturedDims["customer_id"]; got != "acme" {
+		t.Errorf("dims[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedDims["environment"]; got != "prod" {
+		t.Errorf("dims[environment] = %v, want %q", got, "prod")
+	}
+	// Reserved suffixes stay in the nested map for connectors; OTEL export
+	// skips them so they never become child-span attributes.
+	if _, ok := capturedDims["method"]; !ok {
+		t.Error("expected reserved dim 'method' to be stored on TraceAttrDimensions")
+	}
+	if _, ok := capturedDims["path"]; !ok {
+		t.Error("expected reserved dim 'path' to be stored on TraceAttrDimensions")
+	}
+}
+
 func TestCollectDimensionHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
@@ -3818,6 +3908,11 @@ type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
 	errors []string
+	debugs []string
+}
+
+func (l *captureLogger) Debug(format string, args ...any) {
+	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) Error(format string, args ...any) {
@@ -5432,6 +5527,20 @@ func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyFromHeadersXiAPIKey pins that an ElevenLabs client's xi-api-key is a virtual key only with the sk-bf- prefix.
+func TestVirtualKeyFromHeadersXiAPIKey(t *testing.T) {
+	for value, want := range map[string]string{"sk-bf-elevenlabs-vk": "sk-bf-elevenlabs-vk", "real-elevenlabs-key": ""} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("xi-api-key", value)
+		if got := virtualKeyFromHeaders(ctx); got != want {
+			t.Errorf("virtualKeyFromHeaders(xi-api-key %q) = %q, want %q", value, got, want)
+		}
+		if got := hasVirtualKeyCredential(ctx); got != (want != "") {
+			t.Errorf("hasVirtualKeyCredential(xi-api-key %q) = %v, want %v", value, got, want != "")
+		}
+	}
+}
+
 // TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
 // the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
 func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
@@ -5803,4 +5912,60 @@ func BenchmarkBasePathMiddleware(b *testing.B) {
 			noop(ctx)
 		}
 	})
+}
+
+// encodedTraversalPath is routed by fasthttp/router as one opaque segment of
+// /api/providers/{provider}, but ctx.Path() decodes it to the whitelisted
+// /api/skills/serve/x.
+const encodedTraversalPath = "/api/providers/..%2Fskills%2Fserve%2Fx"
+
+// TestPluginRequestPathIsRawPath verifies plugins receive the raw path the router
+// dispatched on, not the decoded and normalized ctx.Path(), so a plugin deciding by
+// path cannot be fooled by an encoded traversal.
+func TestPluginRequestPathIsRawPath(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI(encodedTraversalPath)
+	if got := string(ctx.Path()); got == encodedTraversalPath {
+		t.Fatalf("test premise broken: ctx.Path() did not normalize, got %q", got)
+	}
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if req.Path != encodedTraversalPath {
+		t.Errorf("fasthttpToHTTPRequest Path = %q, want raw %q", req.Path, encodedTraversalPath)
+	}
+
+	streamReq := lib.BuildHTTPRequestFromFastHTTP(ctx)
+	defer schemas.ReleaseHTTPRequest(streamReq)
+	if streamReq.Path != encodedTraversalPath {
+		t.Errorf("BuildHTTPRequestFromFastHTTP Path = %q, want raw %q", streamReq.Path, encodedTraversalPath)
+	}
+}
+
+// TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath verifies the plugin rewrite
+// check compares like with like: an encoded path no plugin touched is not mistaken
+// for a rewrite, while a real rewrite is still refused.
+func TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(encodedTraversalPath)
+		return ctx
+	}
+
+	ctx := newCtx()
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if !applyHTTPRequestToCtx(ctx, req) {
+		t.Fatalf("unchanged encoded path was treated as a rewrite, status=%d", ctx.Response.StatusCode())
+	}
+
+	ctx = newCtx()
+	req.Path = "/api/skills/serve/x"
+	if applyHTTPRequestToCtx(ctx, req) {
+		t.Fatal("a plugin rewrite to the normalized path must be refused")
+	}
 }
