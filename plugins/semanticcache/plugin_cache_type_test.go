@@ -606,6 +606,47 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 	}
 }
 
+// A prewarm request returns no output, so it must not share a cache entry with the
+// real request that follows it on the same input.
+func TestPrewarmChangesParamsHash(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	hashOf := func(reqType schemas.RequestType, options string) string {
+		req := &schemas.BifrostRequest{RequestType: reqType}
+		body := []byte(`{"prompt_cache_options":` + options + `}`)
+		switch reqType {
+		case schemas.ResponsesRequest:
+			params := &schemas.ResponsesParameters{}
+			if err := schemas.Unmarshal(body, params); err != nil {
+				t.Fatal(err)
+			}
+			req.ResponsesRequest = &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6.2-sol", Params: params}
+		default:
+			params := &schemas.ChatParameters{}
+			if err := schemas.Unmarshal(body, params); err != nil {
+				t.Fatal(err)
+			}
+			req.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-6.2-sol", Params: params}
+		}
+		metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash, err := hashMap(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	for _, reqType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ChatCompletionRequest} {
+		if hashOf(reqType, `{"ttl":"30m","prewarm":true}`) == hashOf(reqType, `{"ttl":"30m"}`) {
+			t.Errorf("%s: prewarm and real request share a params hash", reqType)
+		}
+		if hashOf(reqType, `{"ttl":"30m","prewarm":false}`) != hashOf(reqType, `{"ttl":"30m"}`) {
+			t.Errorf("%s: prewarm=false must hash like an omitted prewarm", reqType)
+		}
+	}
+}
+
 // runDirectSearchForTest is a small helper for the unit tests that directly
 // exercise performDirectSearch. It builds the metadata + paramsHash + state
 // the way PreLLMHook would and then calls the search.

@@ -144,6 +144,7 @@ const (
 	FieldPromptCacheKey       = "prompt_cache_key"
 	FieldPromptCacheRetention = "prompt_cache_retention"
 	FieldPromptCacheOptions   = "prompt_cache_options"
+	FieldBackgroundOptions    = "background_options"
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"

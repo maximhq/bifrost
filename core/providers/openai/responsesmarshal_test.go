@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -2535,6 +2536,61 @@ func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
 }
 
 // TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions pins that every host
+// A dropped prewarm turns a cache-warming request into a billed generation, and a dropped
+// background_options runs a discounted 2h/8h request at the standard rate.
+func TestToOpenAIResponsesRequest_PrewarmAndBackgroundOptionsReachWire(t *testing.T) {
+	const body = `{"model":"%s","input":"hi","background":true,` +
+		`"background_options":{"completion_window":"2h","continuation_id":"run-1"},` +
+		`"prompt_cache_options":{"prewarm":true,"comparison_response_id":"resp_123","ttl":"30m"}}`
+	for _, model := range []string{"openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "azure/gpt-6.2-sol"} {
+		t.Run(model, func(t *testing.T) {
+			var wire OpenAIResponsesRequest
+			if err := sonic.UnmarshalString(fmt.Sprintf(body, model), &wire); err != nil {
+				t.Fatal(err)
+			}
+			_, raw := marshalResponses(t, wire.ToBifrostResponsesRequest(nil))
+			for path, want := range map[string]string{
+				"prompt_cache_options.prewarm":                "true",
+				"prompt_cache_options.comparison_response_id": "resp_123",
+				"prompt_cache_options.ttl":                    "30m",
+				"background_options.completion_window":        "2h",
+				"background_options.continuation_id":          "run-1",
+			} {
+				if got := gjson.Get(raw, path).String(); got != want {
+					t.Errorf("%s = %q, want %q; raw=%s", path, got, want, raw)
+				}
+			}
+		})
+	}
+
+	t.Run("datasheet can mark background_options unsupported", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-6.2-sol", &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{"background_options": true}})
+		var wire OpenAIResponsesRequest
+		if err := sonic.UnmarshalString(fmt.Sprintf(body, "openai/gpt-6.2-sol"), &wire); err != nil {
+			t.Fatal(err)
+		}
+		bifrostReq := wire.ToBifrostResponsesRequest(nil)
+		_, raw := marshalResponses(t, bifrostReq)
+		if gjson.Get(raw, "background_options").Exists() {
+			t.Errorf("background_options must be dropped; raw=%s", raw)
+		}
+		if caller, _ := sonic.MarshalString(bifrostReq.Params); !gjson.Get(caller, "background_options").Exists() {
+			t.Error("caller params must not be mutated")
+		}
+	})
+
+	t.Run("absent stays absent", func(t *testing.T) {
+		var wire OpenAIResponsesRequest
+		if err := sonic.UnmarshalString(`{"model":"openai/gpt-6.2-sol","input":"hi"}`, &wire); err != nil {
+			t.Fatal(err)
+		}
+		_, raw := marshalResponses(t, wire.ToBifrostResponsesRequest(nil))
+		if gjson.Get(raw, "background_options").Exists() || gjson.Get(raw, "prompt_cache_options").Exists() {
+			t.Errorf("nothing may be synthesized; raw=%s", raw)
+		}
+	})
+}
+
 // drops prompt_cache_options below gpt-5.6, the first generation documented to accept
 // it, and keeps it on any host serving gpt-5.6 or later.
 func TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions(t *testing.T) {
