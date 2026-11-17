@@ -80,6 +80,8 @@ var bifrostMCPDeniedRoutes = bifrostMCPRouteSet(
 	"POST /agents/a2a/{name}/rest/message:stream", "POST /agents/a2a/{name}/rest/tasks/{taskId}:subscribe",
 	// The other MCP server, whose session a stateless tool call cannot hold.
 	"POST /mcp", "GET /mcp",
+	// This server: a tool that calls /v1/mcp would nest MCP inside MCP.
+	"POST /v1/mcp", "GET /v1/mcp",
 	// Binary downloads and installer manifests: a model only sees "[binary response]".
 	"GET /api/skills/serve/all/download.zip", "GET /api/skills/serve/{skill-name}/download.zip",
 	"GET /api/skills/serve/{skill-name}/files/{filepath}",

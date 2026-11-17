@@ -1630,6 +1630,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
+	if requestType == schemas.PassthroughRequest && result != nil && result.PassthroughResponse != nil &&
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
+		p.filterPassthroughModelList(ctx, access, string(provider), result.PassthroughResponse)
+	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))

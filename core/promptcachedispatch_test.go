@@ -83,7 +83,10 @@ func TestPrepareResponsesAdditionalTools(test *testing.T) {
 				},
 			},
 		}}
-		providerUtils.RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, response)
+		passthrough := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return r, e
+		}
+		providerUtils.WrapResponsesToolRestorePostHookRunner(passthrough, prepared)(nil, response, nil)
 		assert.Equal(test, "read", *response.ResponsesStreamResponse.Item.Name)
 		assert.Equal(test, "mcp__local", *response.ResponsesStreamResponse.Item.Namespace)
 		assert.Equal(test, "call_local", *response.ResponsesStreamResponse.Item.CallID)
@@ -254,6 +257,17 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 		assert.Len(test, request.Params.Tools, 1, "the shared request was mutated")
 	})
 
+	test.Run("loaded custom tools are declared once, deferred", func(test *testing.T) {
+		applyPatch := `{"type":"custom","name":"apply_patch","format":{"type":"text"}}`
+		request := build(test, "claude-sonnet-4-6", search, output("call_1", `[`+applyPatch+`]`), output("call_2", `[`+applyPatch+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 2)
+		assert.Equal(test, schemas.ResponsesToolTypeCustom, prepared.Params.Tools[1].Type)
+		assert.Equal(test, "apply_patch", *prepared.Params.Tools[1].Name)
+		assert.True(test, *prepared.Params.Tools[1].DeferLoading)
+	})
+
 	test.Run("members merge into a declared namespace", func(test *testing.T) {
 		declared := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"list_issues","parameters":{"type":"object","properties":{}}}]}`
 		request := build(test, "claude-sonnet-4-6", search+","+declared, output("call_1", `[`+linear+`]`))
@@ -296,6 +310,48 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[0].Name)
 		assert.True(test, *prepared.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading)
 		assert.Nil(test, request.Params, "the shared request was mutated")
+	})
+
+	// A tool loaded both as a member of the functions namespace and at top level is one tool.
+	ns := `{"type":"namespace","name":"functions","tools":[{"type":"function","name":"apply_patch","parameters":{"type":"object","properties":{"patch":{"type":"string"}}}}]}`
+	topCustom := `{"type":"custom","name":"apply_patch"}`
+	topFunction := `{"type":"function","name":"apply_patch","parameters":{"type":"object","properties":{}}}`
+	for _, testCase := range []struct {
+		name, tools string
+		items       []string
+		want        int
+	}{
+		{name: "search loads ns then top-level custom", tools: search, items: []string{output("call_1", `[`+ns+`]`), output("call_2", `[`+topCustom+`]`)}, want: 1},
+		{name: "search loads top-level custom then ns", tools: search, items: []string{output("call_1", `[`+topCustom+`]`), output("call_2", `[`+ns+`]`)}, want: 1},
+		{name: "search loads ns then top-level function", tools: search, items: []string{output("call_1", `[`+ns+`]`), output("call_2", `[`+topFunction+`]`)}, want: 1},
+		{name: "ns declared, search loads top-level custom", tools: search + "," + ns, items: []string{output("call_1", `[`+topCustom+`]`)}, want: 1},
+		{name: "top-level function declared, search loads ns", tools: search + "," + topFunction, items: []string{output("call_1", `[`+ns+`]`)}, want: 1},
+	} {
+		test.Run(testCase.name+" declares apply_patch once", func(test *testing.T) {
+			request := build(test, "claude-sonnet-4-6", testCase.tools, testCase.items...)
+			prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+			require.Nil(test, bifrostErr)
+			unwrapped, bifrostErr := providerUtils.UnwrapDefaultNamespaceTools(prepared)
+			require.Nil(test, bifrostErr)
+			count := 0
+			for _, tool := range unwrapped.Params.Tools {
+				if tool.Name != nil && *tool.Name == "apply_patch" {
+					count++
+				}
+			}
+			assert.Equal(test, testCase.want, count)
+		})
+	}
+
+	test.Run("a member of another namespace and a top-level tool stay separate", func(test *testing.T) {
+		other := `{"type":"namespace","name":"mcp__a","tools":[{"type":"function","name":"search","parameters":{"type":"object","properties":{}}}]}`
+		topSearch := `{"type":"function","name":"search","parameters":{"type":"object","properties":{}}}`
+		request := build(test, "claude-sonnet-4-6", search+","+other, output("call_1", `[`+topSearch+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 3)
+		assert.Equal(test, "search", *prepared.Params.Tools[2].Name)
+		assert.Equal(test, "search", *prepared.Params.Tools[1].ResponsesToolNamespace.Tools[0].Name)
 	})
 
 	test.Run("malformed tools are a 400", func(test *testing.T) {
@@ -853,6 +909,77 @@ func TestPromptCacheChatRequest_CachePointGatedOnModel(t *testing.T) {
 	assert.Len(t, out.Input[0].Content.ContentBlocks, 1, "a datasheet row saying no must win too")
 }
 
+// TestPromptCacheDispatch_InjectsForAliasWithOpaqueModelID covers #10026: a Bedrock
+// application inference profile alias sends an opaque profile ID as the wire model,
+// so the capability gate has to judge the alias's canonical model_name instead.
+func TestPromptCacheDispatch_InjectsForAliasWithOpaqueModelID(t *testing.T) {
+	const profileID = "abc123xyz456"
+	aliasCtx := func(modelName *string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+			Key: "claude-sonnet",
+			Config: &schemas.AliasConfig{
+				ModelID:     profileID,
+				ModelName:   modelName,
+				ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic),
+			},
+		})
+		return ctx
+	}
+	claude := schemas.Ptr("anthropic.claude-sonnet-4-20250514-v1:0")
+
+	t.Run("chat", func(t *testing.T) {
+		req := chatReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		out := promptCacheChatRequest(aliasCtx(claude), promptCacheOn(), schemas.Bedrock, req)
+
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		assert.True(t, chatMessageHasMarker(out.Input[0]))
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.False(t, chatMessageHasMarker(req.Input[0]), "the shared request was mutated")
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		req := responsesReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		out := promptCacheResponsesRequest(aliasCtx(claude), promptCacheOn(), schemas.Bedrock, req)
+
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+	})
+
+	t.Run("anthropic messages route", func(t *testing.T) {
+		// /anthropic/v1/messages converts the body to a Responses request and
+		// dispatches it through prepareResponsesRequest.
+		ctx := aliasCtx(claude)
+		var incoming anthropic.AnthropicMessageRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{
+			"model":"bedrock/`+profileID+`","max_tokens":128,
+			"messages":[{"role":"user","content":[{"type":"text","text":"stable prefix"}]}]
+		}`), &incoming))
+		req := incoming.ToBifrostResponsesRequest(ctx)
+
+		out, bifrostErr := prepareResponsesRequest(ctx, promptCacheOn(), stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+	})
+
+	t.Run("an alias without model_name still judges the opaque ID", func(t *testing.T) {
+		req := chatReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		assert.Same(t, req, promptCacheChatRequest(aliasCtx(nil), promptCacheOn(), schemas.Bedrock, req))
+	})
+}
+
 // TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged proves the two guarantees
 // compose: a caller that set its own marker gets the request through untouched, and
 // nothing extra is added on top of it.
@@ -1013,19 +1140,19 @@ func TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest(t *testing.
 	assert.Nil(t, second.NamespaceToolAliases)
 
 	// Restoring attempt 2's response with attempt 2's (empty) map leaves it untouched.
-	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
 		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")},
-	}}}}
-	providerUtils.RestoreResponsesNamespaceToolCalls(second.NamespaceToolAliases, resp)
-	assert.Equal(t, "namespace_a__js", *resp.ResponsesResponse.Output[0].Name)
-	assert.Nil(t, resp.ResponsesResponse.Output[0].Namespace)
+	}}}
+	providerUtils.RestoreResponsesToolCalls(second, resp)
+	assert.Equal(t, "namespace_a__js", *resp.Output[0].Name)
+	assert.Nil(t, resp.Output[0].Namespace)
 }
 
 // The streaming path restores through a wrapped PostHookRunner built from the prepared
 // request's map, so every chunk reaches the post hooks with the caller's names.
-func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
-	aliases := map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}
+func TestWrapResponsesToolRestorePostHookRunner_Namespace(t *testing.T) {
+	aliases := &schemas.BifrostResponsesRequest{NamespaceToolAliases: map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}}
 	var seen *schemas.BifrostResponse
 	inner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		seen = result
@@ -1038,14 +1165,14 @@ func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
 		}}
 	}
 
-	wrapped := providerUtils.WrapNamespaceRestorePostHookRunner(inner, aliases)
+	wrapped := providerUtils.WrapResponsesToolRestorePostHookRunner(inner, aliases)
 	wrapped(nil, chunk(), nil)
 	require.NotNil(t, seen)
 	assert.Equal(t, "js", *seen.ResponsesStreamResponse.Item.Name)
 	assert.Equal(t, "namespace_a", *seen.ResponsesStreamResponse.Item.Namespace)
 
 	// No aliases: the runner is returned as is and chunks pass through untouched.
-	plain := providerUtils.WrapNamespaceRestorePostHookRunner(inner, nil)
+	plain := providerUtils.WrapResponsesToolRestorePostHookRunner(inner, nil)
 	plain(nil, chunk(), nil)
 	assert.Equal(t, "namespace_a__js", *seen.ResponsesStreamResponse.Item.Name)
 }
@@ -1737,4 +1864,175 @@ func TestChatReasoningModePreservesZeroUsage(t *testing.T) {
 			})
 		}
 	}
+}
+
+// customToolStub answers chat and Responses calls the way a model without custom tool
+// support does: a function call to the rewritten tool, with the input wrapped.
+type customToolStub struct {
+	stubProvider
+	chatReq      *schemas.BifrostChatRequest
+	responsesReq *schemas.BifrostResponsesRequest
+}
+
+func (s *customToolStub) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	s.chatReq = req
+	return &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		FinishReason: new("tool_calls"),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: new("call_1"), Type: new("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: new("code_exec"), Arguments: `{"input":"print(1)"}`},
+			}}},
+		}},
+	}}}, nil
+}
+
+func (s *customToolStub) ChatCompletionStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	s.chatReq = req
+	chunk := func(finish *string, calls ...schemas.ChatAssistantMessageToolCall) {
+		runner(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+			FinishReason:             finish,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: calls}},
+		}}}}, nil)
+	}
+	chunk(nil, schemas.ChatAssistantMessageToolCall{ID: new("call_1"), Type: new("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: new("code_exec")}})
+	chunk(nil, schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"input":"print(1)"}`}})
+	chunk(new("tool_calls"))
+	return nil, nil
+}
+
+func customFunctionCallItem() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		ID:                   new("fc_1"),
+		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+		Status:               new("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Name: new("code_exec"), Arguments: new(`{"input":"print(1)"}`)},
+	}
+}
+
+func (s *customToolStub) Responses(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	s.responsesReq = req
+	return &schemas.BifrostResponsesResponse{Status: new(schemas.ResponsesResponseStatusCompleted), Output: []schemas.ResponsesMessage{customFunctionCallItem()}}, nil
+}
+
+func (s *customToolStub) ResponsesStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	s.responsesReq = req
+	item := customFunctionCallItem()
+	added := item
+	added.ResponsesToolMessage = &schemas.ResponsesToolMessage{CallID: item.CallID, Name: item.Name, Arguments: new("")}
+	for _, event := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: new(0), Item: &added},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: new(0), ItemID: item.ID, Delta: new(`{"input":"print(1)"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: new(0), ItemID: item.ID, Arguments: new(`{"input":"print(1)"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: new(0), Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{item}}},
+	} {
+		runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+	}
+	return nil, nil
+}
+
+func customToolChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("run it")}}},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:   schemas.ChatToolTypeCustom,
+			Custom: &schemas.ChatToolCustom{Name: "code_exec", Format: &schemas.ChatToolCustomFormat{Type: "text"}},
+		}}},
+	}
+}
+
+func requireRestoredCustomCall(t *testing.T, calls []schemas.ChatAssistantMessageToolCall, input string) {
+	t.Helper()
+	require.Len(t, calls, 1)
+	require.Equal(t, "custom", *calls[0].Type)
+	require.NotNil(t, calls[0].Custom)
+	require.Equal(t, "code_exec", *calls[0].Custom.Name)
+	require.Equal(t, input, calls[0].Custom.Input)
+}
+
+// collectChatStream runs a dispatchChatStream attempt against the stub and accumulates the
+// tool calls the caller saw.
+func collectChatStream(t *testing.T, ctx *schemas.BifrostContext, stub *customToolStub, req *schemas.BifrostChatRequest) []schemas.ChatAssistantMessageToolCall {
+	t.Helper()
+	calls := map[uint16]*schemas.ChatAssistantMessageToolCall{}
+	runner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result == nil || result.ChatResponse == nil {
+			return result, err
+		}
+		for _, choice := range result.ChatResponse.Choices {
+			if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
+				continue
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				acc, ok := calls[tc.Index]
+				if !ok {
+					acc = &schemas.ChatAssistantMessageToolCall{Index: tc.Index}
+					calls[tc.Index] = acc
+				}
+				if tc.Type != nil {
+					acc.Type = tc.Type
+				}
+				if tc.Custom != nil {
+					if acc.Custom == nil {
+						acc.Custom = &schemas.ChatAssistantMessageToolCallCustom{}
+					}
+					if tc.Custom.Name != nil {
+						acc.Custom.Name = tc.Custom.Name
+					}
+					acc.Custom.Input += tc.Custom.Input
+				}
+				acc.Function.Arguments += tc.Function.Arguments
+			}
+		}
+		return result, err
+	}
+	_, bifrostErr := (&Bifrost{}).dispatchChatStream(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, runner, nil)
+	require.Nil(t, bifrostErr)
+	var out []schemas.ChatAssistantMessageToolCall
+	for i := uint16(0); int(i) < len(calls); i++ {
+		out = append(out, *calls[i])
+	}
+	return out
+}
+
+// A chat custom tool rewritten to a function for a model without custom tools comes back
+// to the caller as a custom call, on the chat wire and through the Responses conversion.
+func TestDispatchChat_RestoresRewrittenCustomToolCalls(t *testing.T) {
+	t.Run("chat", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.Anthropic}}
+		req := customToolChatRequest(schemas.Anthropic, "claude-sonnet-5-5")
+		resp, bifrostErr := (&Bifrost{}).dispatchChat(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, schemas.ChatToolTypeFunction, stub.chatReq.Params.Tools[0].Type)
+		requireRestoredCustomCall(t, resp.Choices[0].Message.ChatAssistantMessage.ToolCalls, "print(1)")
+	})
+	t.Run("chat via responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.OpenAI}}
+		req := customToolChatRequest(schemas.OpenAI, "gpt-4o")
+		resp, bifrostErr := (&Bifrost{}).dispatchChat(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, schemas.ResponsesToolTypeFunction, stub.responsesReq.Params.Tools[0].Type)
+		requireRestoredCustomCall(t, resp.Choices[0].Message.ChatAssistantMessage.ToolCalls, "print(1)")
+	})
+	t.Run("chat stream", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.Anthropic}}
+		calls := collectChatStream(t, ctx, stub, customToolChatRequest(schemas.Anthropic, "claude-sonnet-5-5"))
+		requireRestoredCustomCall(t, calls, "print(1)")
+		require.Empty(t, calls[0].Function.Arguments)
+	})
+	t.Run("chat stream via responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.OpenAI}}
+		calls := collectChatStream(t, ctx, stub, customToolChatRequest(schemas.OpenAI, "gpt-4o"))
+		requireRestoredCustomCall(t, calls, "print(1)")
+		require.Empty(t, calls[0].Function.Arguments)
+	})
 }

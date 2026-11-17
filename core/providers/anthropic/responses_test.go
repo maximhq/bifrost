@@ -4456,3 +4456,104 @@ func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
 		}
 	}
 }
+
+// allowed_tools on /v1/responses has to reach Anthropic the way the chat path sends it: the
+// declarations narrowed to the allowed names, and the mode mapped onto auto/any. It used to
+// leave tool_choice.type empty, which Anthropic rejects with a 400.
+func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
+	allowed := func(mode string, tools ...schemas.ResponsesToolChoiceAllowedToolDef) *schemas.ResponsesToolChoice {
+		return &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type:  schemas.ResponsesToolChoiceTypeAllowedTools,
+			Mode:  schemas.Ptr(mode),
+			Tools: tools,
+		}}
+	}
+	function := func(name string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "function", Name: schemas.Ptr(name)}
+	}
+	custom := func(name string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "custom", Name: schemas.Ptr(name)}
+	}
+	mcp := func(label string, name *string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "mcp", ServerLabel: schemas.Ptr(label), Name: name}
+	}
+	mcpTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP, ResponsesToolMCP: &schemas.ResponsesToolMCP{
+		ServerLabel: "docs", ServerURL: schemas.Ptr("https://mcp.example.com/sse"),
+	}}
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		model      string
+		text       *schemas.ResponsesTextConfig
+		withMCP    bool
+		toolChoice *schemas.ResponsesToolChoice
+		wantType   string // "" means no tool_choice is sent
+		wantTools  []string
+	}{
+		{name: "required narrows to the allowed function", toolChoice: allowed("required", function("tool_a")), wantType: "any", wantTools: []string{"tool_a"}},
+		{name: "auto does not force a call", toolChoice: allowed("auto", function("tool_a")), wantType: "auto", wantTools: []string{"tool_a"}},
+		{name: "a custom tool is matched by name", toolChoice: allowed("required", custom("code_exec")), wantType: "any", wantTools: []string{"code_exec"}},
+		{name: "unknown names permit nothing", toolChoice: allowed("required", function("not_declared")), wantType: "none", wantTools: []string{}},
+		{name: "a model rejecting forced choices still gets the narrowed tools", model: "claude-fable-5-1",
+			toolChoice: allowed("required", function("tool_a")), wantType: "", wantTools: []string{"tool_a"}},
+		{name: "a model rejecting forced choices still gets none when nothing is allowed", model: "claude-fable-5-1",
+			toolChoice: allowed("required", function("not_declared")), wantType: "none", wantTools: []string{}},
+		{name: "an mcp-only selection drops every function tool", withMCP: true,
+			toolChoice: allowed("required", mcp("docs", nil)), wantType: "any", wantTools: []string{"mcp:docs"}},
+		{name: "an mcp selector naming one of its tools is not read as a function name", withMCP: true,
+			toolChoice: allowed("auto", mcp("docs", schemas.Ptr("search"))), wantType: "auto", wantTools: []string{"mcp:docs"}},
+		{name: "the synthetic structured-output tool survives the narrowing", provider: schemas.Vertex, model: "claude-sonnet-4-6",
+			text: makeResponsesTextFormat("pick"), toolChoice: allowed("required", function("tool_a")), wantType: "any",
+			wantTools: []string{"bf_so_pick", "tool_a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, model := tc.provider, tc.model
+			if provider == "" {
+				provider = schemas.Anthropic
+			}
+			if model == "" {
+				model = "claude-haiku-4-5"
+			}
+			tools := []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("tool_a")},
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("tool_b")},
+				{Type: schemas.ResponsesToolTypeCustom, Name: schemas.Ptr("code_exec")},
+			}
+			if tc.withMCP {
+				tools = append(tools, mcpTool)
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Run the code.")},
+				}},
+				Params: &schemas.ResponsesParameters{ToolChoice: tc.toolChoice, Tools: tools, Text: tc.text},
+			}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotType := ""
+			if result.ToolChoice != nil {
+				gotType = result.ToolChoice.Type
+			}
+			if gotType != tc.wantType {
+				t.Fatalf("tool_choice = %+v, want type %q", result.ToolChoice, tc.wantType)
+			}
+			got := []string{}
+			for _, tool := range result.Tools {
+				if tool.MCPToolset != nil {
+					got = append(got, "mcp:"+tool.MCPToolset.MCPServerName)
+					continue
+				}
+				got = append(got, tool.Name)
+			}
+			if !slices.Equal(got, tc.wantTools) {
+				t.Fatalf("tools = %v, want %v", got, tc.wantTools)
+			}
+		})
+	}
+}

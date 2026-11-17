@@ -300,6 +300,7 @@ func unsupportedSemanticFilters(filters *logstore.SearchFilters) []string {
 	add(filters.GroupSessions, "group_sessions")
 	add(len(filters.SelectedKeyIDs) > 0, "selected_key_ids")
 	add(len(filters.RoutingRuleIDs) > 0, "routing_rule_ids")
+	add(len(filters.ModelRouterIDs) > 0, "model_router_ids")
 	add(len(filters.ComplexityTiers) > 0, "complexity_tiers")
 	add(len(filters.ComplexityMechanisms) > 0, "complexity_mechanisms")
 	add(len(filters.AgentNames) > 0, "agent_names")
