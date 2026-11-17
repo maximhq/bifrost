@@ -14,8 +14,11 @@ test.describe('Logging Settings', () => {
   })
 
   test.afterEach(async ({ configSettingsPage }) => {
-    // Restore original settings
+    // Restore original settings. Reload first, so the restore compares the
+    // snapshot against what is saved, not against edits a failed test left on
+    // the page, and puts back whatever the test did persist.
     if (originalState) {
+      await configSettingsPage.goto('logging')
       await configSettingsPage.restoreSettings(originalState)
     }
   })
@@ -146,5 +149,36 @@ test.describe('Logging Settings', () => {
       const savedValue = await retentionInput.inputValue()
       expect(savedValue).toBe(newValue)
     }
+  })
+
+  test('should save, persist and clear vector retention days', async ({ configSettingsPage }) => {
+    const vectorInput = configSettingsPage.vectorRetentionDaysInput
+    await expect(vectorInput).toBeVisible()
+
+    const newValue = (await vectorInput.inputValue()) === '7' ? '14' : '7'
+    await vectorInput.fill(newValue)
+    expect(await configSettingsPage.hasPendingChanges()).toBe(true)
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(vectorInput).toHaveValue(newValue)
+
+    // A fraction is not a day count: it is not read as its leading integer.
+    await vectorInput.fill('7.5')
+    await expect(vectorInput).toHaveValue('')
+
+    // Longer than the server can hold: an inline error, and no save.
+    await vectorInput.fill('106752')
+    await expect(configSettingsPage.page.getByTestId('workspace-vector-retention-days-error')).toBeVisible()
+    await expect(configSettingsPage.page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+    await vectorInput.fill('106751')
+    await expect(configSettingsPage.page.getByTestId('workspace-vector-retention-days-error')).toHaveCount(0)
+
+    // A blank field means "same as logs" and is stored as 0, which renders blank again.
+    await vectorInput.fill('')
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(vectorInput).toHaveValue('')
   })
 })

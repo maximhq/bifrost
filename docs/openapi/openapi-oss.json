@@ -108172,6 +108172,16 @@
                 "type": "integer",
                 "description": "Number of days to retain logs"
               },
+              "vector_retention_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 106751,
+                "default": 0,
+                "description": "Days to keep vector store entries tied to logs (Warp's log index and the complexity router's captured requests). 0 keeps them as long as the logs, and a value above log_retention_days is capped at it. Where no log retention applies (logs kept forever, with no log store or cleaner), a positive value applies on its own. null on PUT resets it to 0; omitted on PUT keeps the stored value.\n"
+              },
               "delete_expired_virtual_keys": {
                 "type": "boolean",
                 "default": false,
@@ -109066,6 +109076,16 @@
               "log_retention_days": {
                 "type": "integer",
                 "description": "Number of days to retain logs"
+              },
+              "vector_retention_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 106751,
+                "default": 0,
+                "description": "Days to keep vector store entries tied to logs (Warp's log index and the complexity router's captured requests). 0 keeps them as long as the logs, and a value above log_retention_days is capped at it. Where no log retention applies (logs kept forever, with no log store or cleaner), a positive value applies on its own. null on PUT resets it to 0; omitted on PUT keeps the stored value.\n"
               },
               "delete_expired_virtual_keys": {
                 "type": "boolean",

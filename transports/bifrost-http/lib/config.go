@@ -1619,6 +1619,12 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if oc := cc.OAuth2ServerConfig; oc != nil && oc.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
 		return fmt.Errorf("oauth2_server_config.auth_code_ttl %d exceeds the maximum of %d seconds (15 minutes)", oc.AuthCodeTTL, configstoreTables.MaxAuthCodeTTL)
 	}
+	// config.json and pre-existing DB rows reach the runtime through here too:
+	// a retention too long for a time.Duration would wrap the vector sweep's
+	// cutoff into the future.
+	if cc.VectorRetentionDays < 0 || cc.VectorRetentionDays > configstore.MaxVectorRetentionDays {
+		return fmt.Errorf("vector_retention_days %d must be between 0 and %d", cc.VectorRetentionDays, configstore.MaxVectorRetentionDays)
+	}
 	// Same reasoning for the rotation grace period: PUT /api/config bounds it,
 	// but config.json and pre-existing DB rows reach the runtime through here.
 	// An out-of-range cooldown would keep a retired virtual key authenticating

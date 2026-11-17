@@ -372,6 +372,7 @@
 	"validation": {
 		"modeIsRequired": "Режим обязателен",
 		"valueMustBeAPositiveWholeNumber": "Должно быть целым положительным числом",
+		"vectorRetentionDaysAtMost106751": "Срок хранения векторов не может превышать 106751 дня.",
 		"mustBeAJsonObject": "Должен быть объект JSON",
 		"providerCannotBePatched": "provider нельзя изменить: он определяет запись",
 		"customProviderNameIsRequired": "Укажите название пользовательского провайдера",

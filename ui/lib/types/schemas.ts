@@ -52,6 +52,19 @@ z.config({
 // Base Zod schemas matching the TypeScript types
 
 // Known provider schema
+// MAX_VECTOR_RETENTION_DAYS mirrors configstore.MaxVectorRetentionDays: the
+// longest vector_retention_days whose span fits in a Go time.Duration. The
+// server refuses anything longer.
+export const MAX_VECTOR_RETENTION_DAYS = 106751;
+
+// vectorRetentionDaysSchema checks client_config.vector_retention_days, where 0
+// is "same as the logs".
+export const vectorRetentionDaysSchema = z
+	.number()
+	.int()
+	.min(0)
+	.max(MAX_VECTOR_RETENTION_DAYS, msg("validation.vectorRetentionDaysAtMost106751"));
+
 export const knownProviderSchema = z.enum(KnownProvidersNames as unknown as [string, ...string[]]);
 
 // Custom provider name schema (branded type simulation)
