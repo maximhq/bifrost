@@ -564,6 +564,27 @@ describe("turnsFromStoredMessages", () => {
 		// Legacy rows without the stored question still come back as a question.
 		expect(turns[1].question).toEqual({ question: "Which window?", options: [] });
 	});
+
+	it("restores a confirmation card's action, so a reopened thread shows the same card", () => {
+		const [turn] = turnsFromStoredMessages([
+			{
+				role: "assistant",
+				content: "",
+				finish_reason: "question",
+				question: {
+					question: 'Run deleteVirtualKey with {"vk_id":"vk-1"}? This cannot be undone.',
+					options: [
+						{ label: "Confirm", hint: "confirm:abc" },
+						{ label: "Cancel", hint: "cancel" },
+					],
+					kind: "confirm",
+					action: { tool: "deleteVirtualKey", arguments: '{"vk_id":"vk-1"}', destructive: true },
+				},
+				created_at: "2026-11-17T00:00:00Z",
+			},
+		]);
+		expect(turn.question?.action).toEqual({ tool: "deleteVirtualKey", arguments: '{"vk_id":"vk-1"}', destructive: true });
+	});
 });
 
 describe("indexStatusLabel", () => {

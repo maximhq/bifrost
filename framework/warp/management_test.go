@@ -519,6 +519,10 @@ func TestWarpManagementCatalogSizesNarrowingAndCards(t *testing.T) {
 	question, err := confirmationQuestion(remove, `{"vk_id":"vk-1"}`)
 	require.NoError(t, err)
 	require.Equal(t, `Run deleteVirtualKey with {"vk_id":"vk-1"}? This cannot be undone.`, question.Question)
+	require.Equal(t, &schemas.WarpConfirmAction{Tool: "deleteVirtualKey", Arguments: `{"vk_id":"vk-1"}`, Destructive: true}, question.Action)
+	stored, err := sonic.MarshalString(storedQuestionFrom(question))
+	require.NoError(t, err)
+	require.Contains(t, stored, `"action":{"tool":"deleteVirtualKey"`)
 	declarations, err := narrowed.declarations()
 	require.NoError(t, err)
 	for _, declaration := range declarations {
@@ -530,6 +534,7 @@ func TestWarpManagementCatalogSizesNarrowingAndCards(t *testing.T) {
 	question, err = confirmationQuestion(create, `{"name":"a"}`)
 	require.NoError(t, err)
 	require.Equal(t, `Run createVirtualKey with {"name":"a"}?`, question.Question)
+	require.False(t, question.Action.Destructive)
 }
 
 // leasingManagement counts the leases its turns hold and whether it was closed,
