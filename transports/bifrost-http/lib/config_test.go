@@ -3126,6 +3126,39 @@ func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_VectorRetentionDays: PUT /api/config refuses a
+// negative vector_retention_days, and config.json reaches the runtime through
+// validateClientConfig, so the same bound holds there. 0 follows the logs.
+func TestValidateClientConfig_VectorRetentionDays(t *testing.T) {
+	for _, days := range []int{0, 1, 30, 365} {
+		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: days}), "days=%d", days)
+	}
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: -1}), "vector_retention_days")
+	// The longest whose span fits in a time.Duration is accepted; one day more
+	// would wrap the vector sweep's cutoff into the future.
+	require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: configstore.MaxVectorRetentionDays}))
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: configstore.MaxVectorRetentionDays + 1}), "vector_retention_days")
+}
+
+// config.schema.json publishes the same maximum the code enforces.
+func TestVectorRetentionDaysSchemaMaximumMatchesTheCode(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "transports", "config.schema.json"))
+	require.NoError(t, err)
+	var schema struct {
+		Properties struct {
+			Client struct {
+				Properties struct {
+					VectorRetentionDays struct {
+						Maximum int `json:"maximum"`
+					} `json:"vector_retention_days"`
+				} `json:"properties"`
+			} `json:"client"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(data, &schema))
+	require.Equal(t, configstore.MaxVectorRetentionDays, schema.Properties.Client.Properties.VectorRetentionDays.Maximum)
+}
+
 // TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
 // mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
 // 1 GiB spec through (or a negative value fall back silently).
@@ -3141,6 +3174,26 @@ func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
 		}
 		require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", mb)
 	}
+}
+
+// TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot: a file that
+// changes vector_retention_days from 0 to a negative value between restarts is
+// refused, not hashed like 0 and passed over in favour of the stored row.
+func TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorRetentionDays: 0}})
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorRetentionDays: -5}})
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "vector_retention_days")
 }
 
 // TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an

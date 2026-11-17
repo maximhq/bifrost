@@ -95,8 +95,8 @@ type Service struct {
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog     *modelcatalog.ModelCatalog
 	vectorStore vectorstore.VectorStore
-	// logRetention reports the logs' retention in days, for the vector sweep.
-	logRetention func() int
+	// vectorRetention reports the vector retention in days, for the vector sweep.
+	vectorRetention func() int
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher

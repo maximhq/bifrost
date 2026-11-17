@@ -18,7 +18,7 @@ import (
 // captures nothing.
 //
 // The plugin keeps what was stored bounded with an hourly upkeep: each router's
-// vectors are swept past its lookback (or the logs' retention, if that is
+// vectors are swept past its lookback (or the vector retention, if that is
 // shorter), whether this node serves the router or only the config store has
 // it, vectors of deleted routers age out on the default lookback, namespaces
 // from before captures were per router are dropped, and
@@ -40,12 +40,12 @@ const captureDropTimeout = time.Minute
 // capture shares. The cleaner deletes and sweeps across every router's capture
 // namespaces and is never offered a request; the recorder, which keeps failed
 // deletes for the upkeep to retry, is given to every router's capture; and the
-// logs' retention bounds how long any captured vector is kept (0, or no
-// function, means logs are kept forever and only the lookback bounds vectors).
+// vector retention bounds how long any captured vector is kept (0, or no
+// function, means no retention and only the lookback bounds vectors).
 type complexityCapture struct {
-	cleaner      *complexity.RequestCapture                       // sweeps and deletes; never captures
-	recorder     atomic.Pointer[complexity.CaptureDeleteRecorder] // failed deletes, retried by the upkeep
-	logRetention atomic.Pointer[func() int]                       // the logs' retention in days
+	cleaner         *complexity.RequestCapture                       // sweeps and deletes; never captures
+	recorder        atomic.Pointer[complexity.CaptureDeleteRecorder] // failed deletes, retried by the upkeep
+	vectorRetention atomic.Pointer[func() int]                       // the vector retention in days
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -91,17 +91,18 @@ func configureRouterCapture(rt *modelRouterRuntime, resolved *complexity.Analyze
 	rt.capture.Configure(nil)
 }
 
-// SetLogRetention tells capture how long the deployment keeps logs, as a
-// function so a retention changed at runtime is read at each sweep.
-func (p *RoutingPlugin) SetLogRetention(days func() int) {
+// SetVectorRetention tells capture how long the deployment keeps vectors, as a
+// function so a retention changed at runtime is read at each sweep. The server
+// passes the effective vector retention, which never exceeds the logs'.
+func (p *RoutingPlugin) SetVectorRetention(days func() int) {
 	if p.capture == nil {
 		return
 	}
 	if days == nil {
-		p.capture.logRetention.Store(nil)
+		p.capture.vectorRetention.Store(nil)
 		return
 	}
-	p.capture.logRetention.Store(&days)
+	p.capture.vectorRetention.Store(&days)
 }
 
 // SetComplexityCaptureDeleteRecorder supplies where captured-vector deletes
@@ -298,13 +299,14 @@ func routerLookbackDays(rt *modelRouterRuntime) int {
 }
 
 // keepDays is how long captured vectors are kept: the lookback (the default
-// when unset), but never longer than the logs they belong to.
+// when unset), but never longer than the vector retention, which itself never
+// exceeds the logs they belong to.
 func (cc *complexityCapture) keepDays(lookbackDays int) int {
 	keep := lookbackDays
 	if keep <= 0 {
 		keep = complexity.DefaultSuggestionsLookbackDays
 	}
-	if f := cc.logRetention.Load(); f != nil {
+	if f := cc.vectorRetention.Load(); f != nil {
 		if days := (*f)(); days > 0 && days < keep {
 			keep = days
 		}

@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "Quando abilitato, le singole richieste possono restituire al chiamante i byte raw di richiesta/risposta del provider utilizzando gli header x-bf-send-back-raw-request e x-bf-send-back-raw-response. Non influisce sull'archiviazione dei log; la persistenza dei byte raw nei log è controllata da {{setting}}.",
 		"logRetentionDays": "Giorni di conservazione dei log",
 		"logRetentionDaysHelp": "Numero di giorni per conservare i log, compresi i log dei relay, nel database. Il minimo è 1 giorno. I log più vecchi verranno eliminati automaticamente.",
+		"vectorRetentionDays": "Giorni di conservazione dei vettori",
+		"vectorRetentionDaysHelp": "Giorni di conservazione dei vettori creati dai log. Lascia vuoto per seguire la conservazione dei log; non può essere più lunga.",
 		"hideDeletedVks": "Non mostrare le chiavi virtuali eliminate nei filtri",
 		"hideDeletedVksHelp": "Quando abilitato, le chiavi virtuali eliminate vengono escluse dalle opzioni del filtro Chiavi virtuali in Log, Dashboard, Log MCP e Log dei relay.",
 		"loggingHeaders": "Header di log",

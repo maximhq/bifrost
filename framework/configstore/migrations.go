@@ -609,6 +609,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
+	{IDs: []string{"add_client_config_vector_retention_days_column"}, run: migrationAddClientConfigVectorRetentionDaysColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17737,6 +17738,28 @@ func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, 
 		Rollback: func(tx *gorm.DB) error {
 			// Reversible: the column is display-only and rewritten at every config.json load.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
+		},
+	})
+}
+
+// migrationAddClientConfigVectorRetentionDaysColumn adds vector_retention_days to
+// config_client. It defaults to 0, which reads as "same as the logs' retention",
+// so existing rows need no backfill and a rolled-back binary ignores the column.
+func migrationAddClientConfigVectorRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_vector_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "vector_retention_days")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "vector_retention_days")
 		},
 	})
 }

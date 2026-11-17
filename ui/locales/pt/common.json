@@ -354,6 +354,7 @@
 	"validation": {
 		"modeIsRequired": "O modo é obrigatório",
 		"valueMustBeAPositiveWholeNumber": "Deve ser um número inteiro positivo",
+		"vectorRetentionDaysAtMost106751": "A retenção de vetores pode ser de no máximo 106751 dias.",
 		"mustBeAJsonObject": "Deve ser um objeto JSON",
 		"providerCannotBePatched": "provider não pode ser alterado; ele identifica a entrada",
 		"customProviderNameIsRequired": "O nome do fornecedor personalizado é obrigatório",

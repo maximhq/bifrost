@@ -41,6 +41,12 @@ const (
 // MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
 const MaxVKRotationCooldown = 30 * 24 * time.Hour
 
+// MaxVectorRetentionDays is the longest vector_retention_days whose span fits
+// in a time.Duration (about 292 years): a longer one would wrap the sweep's
+// cutoff into the future and delete every vector. Enforced at every config
+// entry point, matching the maximum published in config.schema.json.
+const MaxVectorRetentionDays = int(math.MaxInt64 / int64(24*time.Hour))
+
 // MaxMCPOpenAPISpecMB is the ceiling on mcp_openapi_max_spec_mb: parsing holds several times the
 // spec's size in memory, so the setting may raise the limit but not without bound. Enforced at
 // PUT /api/config and the config.json load path, matching the maximum in config.schema.json.
@@ -110,6 +116,7 @@ type ClientConfig struct {
 	VKRotationCooldown                      schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
 	DisableDBPingsInHealth                  bool                                  `json:"disable_db_pings_in_health"`
 	LogRetentionDays                        int                                   `json:"log_retention_days" validate:"min=1"`           // Number of days to retain logs (minimum 1 day)
+	VectorRetentionDays                     int                                   `json:"vector_retention_days"`                         // Days to keep vector store entries; 0 = same as logs, capped at log retention
 	EnforceAuthOnInference                  bool                                  `json:"enforce_auth_on_inference"`                     // Require auth (VK, API key, or user token) on inference endpoints
 	DualCredentialConflictBehavior          tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"`   // Behavior when both an IDP token and a VK are present on an inference request
 	ExtraFieldsPlacement                    tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`              // Where inference responses carry extra_fields: "body" (default) or "headers"
@@ -363,6 +370,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	// Any value but 0: a negative one must change the hash too, or a file that
+	// sets one matches the stored row's hash and is passed over instead of
+	// reaching validation.
+	if c.VectorRetentionDays != 0 {
+		hash.Write([]byte("vectorRetentionDays:" + strconv.Itoa(c.VectorRetentionDays)))
+	}
+
 	if c.VKRotationCooldown > 0 {
 		hash.Write([]byte("vkRotationCooldown:" + strconv.FormatInt(int64(c.VKRotationCooldown), 10)))
 	}

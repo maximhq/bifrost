@@ -67,7 +67,7 @@ func (s *BifrostHTTPServer) wireRoutingSuggestions(routingPlugin *routing.Routin
 	if routingPlugin == nil {
 		return
 	}
-	s.applyRoutingLogRetention(routingPlugin)
+	s.applyRoutingVectorRetention(routingPlugin)
 	s.applyRoutingCaptureDeleteRecorder(routingPlugin)
 	// The job runner first: a run is started only once the store is set, so
 	// one due at start-up is queued as a job rather than run inline on this

@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.49
+**Latest Version:** 2.1.50
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.client.vectorRetentionDays`, rendered into `client.vector_retention_days`: an upper bound on how long log-derived vectors (Warp's log index, the complexity router's captured requests) are kept. With a logs store, `0` follows `logRetentionDays` and a larger value is capped at it; without one, the value applies on its own.
 
 ### 2.1.49
 

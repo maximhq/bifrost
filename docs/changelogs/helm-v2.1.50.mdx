@@ -1,0 +1,12 @@
+---
+title: "v2.1.50"
+description: "Helm v2.1.50 changelog - 2026-11-22"
+---
+
+<Update label="Bifrost Helm" description="v2.1.50">
+
+## Changelog
+
+- Added `bifrost.client.vectorRetentionDays`, rendered into `client.vector_retention_days`: an upper bound on how long log-derived vectors (Warp's log index, the complexity router's captured requests) are kept. With a logs store, `0` follows `logRetentionDays` and a larger value is capped at it; without one, the value applies on its own.
+
+</Update>

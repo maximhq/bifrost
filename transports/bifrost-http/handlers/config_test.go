@@ -2254,3 +2254,48 @@ func TestUpdateProxyConfig_ErrorsDoNotEchoURLPassword(t *testing.T) {
 		})
 	}
 }
+
+// vector_retention_days is copied only when sent, so a client unaware of it does
+// not reset it; 0 (or null) goes back to following the logs' retention, and a
+// negative value is refused before anything changes.
+func TestUpdateConfig_VectorRetentionDays(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() int {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.VectorRetentionDays
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_retention_days":7}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	assert.Equal(t, 7, cfg.ClientConfig.VectorRetentionDays)
+	assert.Equal(t, 7, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":30}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, 7, cfg.ClientConfig.VectorRetentionDays, "an omitted field keeps the live value")
+	assert.Equal(t, 7, stored(), "an omitted field keeps the stored value")
+
+	for _, bad := range []string{"-1", "106752"} {
+		refused := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_retention_days":` + bad + `}}`)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+		assert.Equal(t, 7, cfg.ClientConfig.VectorRetentionDays, "a refused save leaves the live value (%s)", bad)
+		assert.Equal(t, 7, stored(), "a refused save leaves the stored value (%s)", bad)
+	}
+
+	for _, clear := range []string{"0", "null"} {
+		h.updateConfig(putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_retention_days":7}}`))
+		cleared := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_retention_days":` + clear + `}}`)
+		h.updateConfig(cleared)
+		require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+		assert.Zero(t, cfg.ClientConfig.VectorRetentionDays, "%s follows the logs again", clear)
+		assert.Zero(t, stored(), "%s follows the logs again", clear)
+	}
+}
