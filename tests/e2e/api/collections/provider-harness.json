@@ -19406,7 +19406,7 @@
               }
             },
             {
-              "name": "Bedrock InvokeModel: direct Anthropic shape with document block (Claude Opus 4.7) - #9308",
+              "name": "Bedrock InvokeModel: direct Anthropic shape with document block and normalized long title (Claude Opus 4.7) - #9308",
               "event": [
                 {
                   "listen": "test",
@@ -19428,7 +19428,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"document\",\"title\":\"notes\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"The secret word is PINEAPPLE.\"}},{\"type\":\"text\",\"text\":\"What is the secret word in the attached document? Answer with that one word.\"}]}]}"
+                  "raw": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"document\",\"title\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_report.pdf!\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"The secret word is PINEAPPLE.\"}},{\"type\":\"text\",\"text\":\"What is the secret word in the attached document? Answer with that one word.\"}]}]}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/invoke",

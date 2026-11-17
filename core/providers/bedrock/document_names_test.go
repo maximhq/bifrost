@@ -67,8 +67,8 @@ func TestConvertMessages_UniqueDocumentNames(t *testing.T) {
 // kept verbatim (normalized) and never receive a numeric suffix unless they
 // actually collide.
 func TestConvertMessages_TitledDocumentsKeepTheirNames(t *testing.T) {
-	nameA := "report_pdf" // normalization maps '.' to '_' (existing behavior)
-	nameB := "notes_pdf"
+	nameA := "report-pdf" // already-valid names are preserved
+	nameB := "notes-pdf"
 	mkBlock := func(n string) schemas.ChatContentBlock {
 		return schemas.ChatContentBlock{
 			Type: schemas.ChatContentBlockTypeFile,

@@ -267,14 +267,14 @@ func mapBedrockServiceTierToBifrost(tier BedrockServiceTierType) schemas.Bifrost
 // normalizeBedrockFilename normalizes a filename to meet Bedrock's requirements:
 // - Only alphanumeric characters, whitespace, hyphens, parentheses, and square brackets
 // - No more than one consecutive whitespace character
-// - Trims leading and trailing whitespace
+// - Trims leading and trailing whitespace and limits names to 200 characters
 func normalizeBedrockFilename(filename string) string {
 	if filename == "" {
 		return "document"
 	}
 
-	// Replace invalid characters with underscores
-	normalized := invalidCharRegex.ReplaceAllString(filename, "_")
+	// Replace invalid characters with an allowed hyphen.
+	normalized := invalidCharRegex.ReplaceAllString(filename, "-")
 
 	// Replace multiple consecutive whitespace with a single space
 	normalized = multiSpaceRegex.ReplaceAllString(normalized, " ")
@@ -287,6 +287,9 @@ func normalizeBedrockFilename(filename string) string {
 		return "document"
 	}
 
+	if len(normalized) > bedrockMaxDocumentNameLen {
+		normalized = strings.TrimSpace(normalized[:bedrockMaxDocumentNameLen])
+	}
 	return normalized
 }
 

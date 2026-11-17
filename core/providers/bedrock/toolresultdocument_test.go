@@ -83,7 +83,7 @@ func TestToolResultDocumentInlinePreserved(t *testing.T) {
 		t.Fatalf("expected original text first, got %q", *toolResult.Content[0].Text)
 	}
 	document := toolResult.Content[1].Document
-	if document.Name != "quarterly_report_pdf" || document.Format != "pdf" {
+	if document.Name != "quarterly-report-pdf" || document.Format != "pdf" {
 		t.Fatalf("expected normalized PDF metadata, got %#v", document)
 	}
 	if document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "JVBERi0xLjQ=" {
@@ -289,7 +289,7 @@ func TestToolResultDocumentAnthropicToBedrockRoundTrip(t *testing.T) {
 		t.Fatalf("expected text then document in final tool result, got %#v", toolResult)
 	}
 	document := toolResult.Content[1].Document
-	if document.Name != "report_pdf" || document.Format != "pdf" || document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "JVBERi0xLjQ=" {
+	if document.Name != "report-pdf" || document.Format != "pdf" || document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "JVBERi0xLjQ=" {
 		t.Fatalf("expected normalized PDF with original inline bytes, got %#v", document)
 	}
 }

@@ -3730,7 +3730,7 @@ func TestToBedrockResponsesRequest_InvokeDocumentReachesEgress(t *testing.T) {
 func TestInvokeDocument_TextSourceStartingWithDataPrefix(t *testing.T) {
 	for _, text := range []string{"Data: quarterly numbers", "data:text/plain,not a url", "DATA:x"} {
 		t.Run(text, func(t *testing.T) {
-			rawBlock, err := sonic.Marshal(map[string]any{
+			rawBlock, err := providerUtils.MarshalSorted(map[string]any{
 				"type":   "document",
 				"source": map[string]any{"type": "text", "media_type": "text/plain", "data": text},
 			})
@@ -3767,7 +3767,7 @@ func TestInvokeDocument_TextSourceStartingWithDataPrefix(t *testing.T) {
 			// Anthropic InvokeModel egress (thinking on): the original text source is rebuilt.
 			anthropicReq, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
 			require.NoError(t, err)
-			wire, err := sonic.Marshal(anthropicReq)
+			wire, err := providerUtils.MarshalSorted(anthropicReq)
 			require.NoError(t, err)
 			var source gjson.Result
 			for _, msg := range gjson.GetBytes(wire, "messages").Array() {
@@ -3780,6 +3780,43 @@ func TestInvokeDocument_TextSourceStartingWithDataPrefix(t *testing.T) {
 			require.True(t, source.Exists(), "document block missing from the Anthropic body: %s", wire)
 			assert.Equal(t, "text", source.Get("type").String())
 			assert.Equal(t, text, source.Get("data").String())
+		})
+	}
+}
+
+// TestInvokeDocument_ConverseNames checks that titles survive the full ingress
+// path as valid, unique Converse names, including after truncation.
+func TestInvokeDocument_ConverseNames(t *testing.T) {
+	for _, title := range []string{"Q3_report.pdf!", strings.Repeat("a", 201)} {
+		t.Run(title, func(t *testing.T) {
+			block := map[string]any{"type": "document", "title": title, "source": map[string]any{"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"}}
+			body, err := providerUtils.MarshalSorted(map[string]any{"max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "summarize"}, block, block}}}})
+			require.NoError(t, err)
+			var req BedrockInvokeRequest
+			require.NoError(t, sonic.Unmarshal(body, &req))
+			req.ModelID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			names := map[string]bool{}
+			for _, msg := range out.Messages {
+				for _, content := range msg.Content {
+					if content.Document == nil {
+						continue
+					}
+					doc := content.Document
+					assert.Regexp(t, `^[a-zA-Z0-9 ()\[\]-]+$`, doc.Name)
+					assert.LessOrEqual(t, len(doc.Name), 200)
+					assert.NotEmpty(t, doc.Name)
+					assert.False(t, names[doc.Name], "duplicate name %q", doc.Name)
+					names[doc.Name] = true
+					require.NotNil(t, doc.Source)
+					assert.Equal(t, schemas.Ptr("JVBERi0xLjQK"), doc.Source.Bytes)
+				}
+			}
+			require.Len(t, names, 2)
 		})
 	}
 }
