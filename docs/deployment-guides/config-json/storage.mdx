@@ -308,6 +308,12 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+#### Disk space on PostgreSQL
+
+Retention deletes expired rows every hour. PostgreSQL keeps the space of deleted rows inside the table and reuses it for new logs once autovacuum has processed them, so with retention on, the tables stay near their steady-state size instead of growing. Bifrost sets `autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_threshold = 10000` on `logs`, `mcp_tool_logs`, `relay_logs`, `warp_topic_assignments` and `warp_topic_unmatched`, so autovacuum runs after about 1% of a table is dead rows instead of PostgreSQL's default 20%.
+
+The tables do not shrink on their own. To give space back to the filesystem after lowering `retention_days` or after a large backlog, use [`pg_repack`](https://github.com/reorg/pg_repack), which rewrites a table without blocking reads and writes. Avoid `VACUUM FULL` on a running deployment: it locks the table for the whole rewrite, so log writes and dashboard queries wait until it finishes.
+
 ### Client IP capture
 
 Set `capture_client_ip` to `true` to record the caller's IP on LLM, MCP and relay logs in the `client_ip` field. Bifrost takes the leftmost `X-Forwarded-For` value, then `X-Real-IP`, and falls back to the TCP peer address when neither header is present. This is the same order enterprise audit logs use. The caller sends these headers and Bifrost does not verify them. For an address you can trust, put Bifrost behind a proxy that overwrites both headers, and block direct access to Bifrost so no request can skip the proxy.

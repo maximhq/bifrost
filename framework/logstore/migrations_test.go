@@ -1588,3 +1588,40 @@ func TestModelRoutingColumnsMigration_NonRollbackable(t *testing.T) {
 	require.NoError(t, modelRoutingColumnsMigration(ctx, testLogger{}).Rollback(db), "with nothing recorded the rollback is a genuine reversal")
 	assert.False(t, db.Migrator().HasColumn(&Log{}, "model_router_id"))
 }
+
+// pgRelOptions returns a table's reloptions (storage parameters), or nil when it has none.
+func pgRelOptions(t *testing.T, db *gorm.DB, table string) []string {
+	t.Helper()
+	var opts []string
+	require.NoError(t, db.Raw("SELECT unnest(reloptions) FROM pg_class WHERE oid = to_regclass(?)", table).Scan(&opts).Error)
+	return opts
+}
+
+// Retention deletes rows hourly on Postgres. With the default autovacuum scale
+// factor (20% dead rows) a large logs table bloats between vacuums, so the
+// retention tables get per-table autovacuum settings that run vacuum after a
+// small, bounded share of dead rows.
+func TestMigrationTuneRetentionAutovacuum_Postgres(t *testing.T) {
+	_, db := setupRetentionPostgres(t, 0, 0)
+	for _, table := range retentionAutovacuumTables {
+		var exists bool
+		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error)
+		if !exists {
+			continue
+		}
+		assert.Subset(t, pgRelOptions(t, db, table), retentionAutovacuumOptions, "%s must vacuum after a bounded share of dead rows", table)
+	}
+
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+	require.NoError(t, retentionAutovacuumMigration(context.Background(), testLogger{}).Rollback(tx))
+	assert.Empty(t, pgRelOptions(t, tx, "logs"), "rollback restores the server's autovacuum defaults")
+}
+
+// The settings are Postgres storage parameters; SQLite and MySQL skip the step.
+func TestMigrationTuneRetentionAutovacuum_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, migrationTuneRetentionAutovacuum(context.Background(), db, testLogger{}))
+}
