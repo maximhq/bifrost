@@ -21,6 +21,6 @@
 
 ## 🗄️ Database Migrations
 
-- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. Each key repair commits separately; interrupted backfills resume on the next attempt. The migration is non-rollbackable, and reads normalize NULL values written by older replicas during rolling upgrades.
+- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. The repair runs in a cancellable background task after store initialization, with one transaction per key and retries after failures. Completion is recorded only after all pages succeed; startup never waits for the backfill. The repair is non-rollbackable, and reads normalize NULL values while it is pending and for later writes from older replicas.
 - `add_oauth2_authorize_requests_device_code_columns` - Adds the nullable `device_code_hash` and `user_code_hash` columns to `oauth2_authorize_requests`, with a bounded lock wait on PostgreSQL.
 - `add_oauth2_authorize_requests_device_code_indexes` - Builds their unique indexes concurrently on PostgreSQL, so writes are never blocked.

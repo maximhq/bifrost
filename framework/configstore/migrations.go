@@ -608,7 +608,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
-	{IDs: []string{"normalize_virtual_key_is_active"}, run: migrationNormalizeVirtualKeyIsActive},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17719,9 +17718,10 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 	}
 }
 
-// migrationNormalizeVirtualKeyIsActive repairs NULL values written by config
-// sync. NULL already means active for enforcement and hashing, so neither the
-// config hash nor updated_at should change. Explicitly disabled keys stay false.
+// migrationNormalizeVirtualKeyIsActive is a background data repair, deliberately
+// absent from configstoreMigrationSteps so it never delays schema startup. The
+// existing ledger ID records completion and preserves compatibility with earlier
+// repairs. NULL already means active; hashes, timestamps and false stay intact.
 func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "normalize_virtual_key_is_active"
 	logger.Info("[configstore] starting migration %s", migrationName)

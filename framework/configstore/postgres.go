@@ -134,5 +134,6 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		return nil, fmt.Errorf("failed to encrypt plaintext rows: %w", err)
 	}
 	logger.Info("configstore: postgres config store ready")
+	d.startVirtualKeyRepair()
 	return d, nil
 }

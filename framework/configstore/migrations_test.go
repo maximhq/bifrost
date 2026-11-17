@@ -6072,6 +6072,7 @@ func TestMigrationAddModelRoutersTable(t *testing.T) {
 
 // A failed row must not roll back earlier repairs or mark the migration complete.
 func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
+	expectedHashes := map[string]string{"a": "hash-a", "b": "hash-b", "disabled": "hash-disabled", "": "hash"}
 	db := setupTestDB(t)
 	require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN, config_hash TEXT, updated_at TEXT)`).Error)
 	require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys VALUES ('a', NULL, 'hash-a', 'original'), ('b', NULL, 'hash-b', 'original'), ('disabled', false, 'hash-disabled', 'original')`).Error)
@@ -6087,6 +6088,7 @@ func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
 	require.NoError(t, db.Exec("DROP TRIGGER reject_second_key").Error)
 	// Cross the backfill's page boundary, including an empty ID.
 	for i := 0; i < 300; i++ {
+		expectedHashes[fmt.Sprintf("key-%03d", i)] = "hash"
 		require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES (?, NULL, 'hash', 'original')", fmt.Sprintf("key-%03d", i)).Error)
 	}
 	require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('', NULL, 'hash', 'original')").Error)
@@ -6096,8 +6098,18 @@ func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
 	require.Zero(t, count)
 	require.NoError(t, db.Table("governance_virtual_keys").Where("is_active = false").Count(&count).Error)
 	require.EqualValues(t, 1, count)
-	require.NoError(t, db.Table("governance_virtual_keys").Where("updated_at <> 'original' OR config_hash NOT LIKE 'hash%'").Count(&count).Error)
+	require.NoError(t, db.Table("governance_virtual_keys").Where("updated_at <> 'original'").Count(&count).Error)
 	require.Zero(t, count)
+	var rows []struct {
+		ID         string
+		ConfigHash string
+	}
+	require.NoError(t, db.Table("governance_virtual_keys").Select("id, config_hash").Find(&rows).Error)
+	actualHashes := make(map[string]string, len(rows))
+	for _, row := range rows {
+		actualHashes[row.ID] = row.ConfigHash
+	}
+	require.Equal(t, expectedHashes, actualHashes, "every row must retain its exact original hash, including disabled keys")
 }
 
 func TestNormalizeVirtualKeyIsActiveConcurrentSync(t *testing.T) {

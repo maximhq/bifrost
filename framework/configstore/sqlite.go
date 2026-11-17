@@ -68,5 +68,6 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 	if err := s.EncryptPlaintextRows(ctx); err != nil {
 		return nil, fmt.Errorf("failed to encrypt plaintext rows: %w", err)
 	}
+	s.startVirtualKeyRepair()
 	return s, nil
 }

@@ -373,6 +373,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -10182,7 +10183,7 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 		var row struct{ Active *bool }
 		require.NoError(t, cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Raw(
 			"SELECT is_active AS active FROM governance_virtual_keys WHERE id = ?", keyID).Scan(&row).Error)
-		payload, err := json.Marshal(vk)
+		payload, err := providerUtils.MarshalSorted(vk)
 		require.NoError(t, err)
 		var wire struct {
 			IsActive *bool `json:"is_active"`
@@ -10194,7 +10195,7 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 		requestCtx := schemas.NewBifrostContext(ctx, time.Time{})
 		requestCtx.SetGrant(grant.New())
 		requestCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value.GetValue())
-		permits, _, _ := store.ResolvePermits(requestCtx)
+		permits, _, _, _ := store.ResolvePermits(requestCtx)
 		require.Len(t, permits, 1)
 		t.Logf("%s: SQL NULL=%t, permit active=%t, JSON field present=%t, dashboard disabled=%t",
 			stage, row.Active == nil, permits[0].IsActive(), wire.IsActive != nil, wire.IsActive == nil || !*wire.IsActive)
@@ -10262,6 +10263,12 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "normalize_virtual_key_is_active").Error)
 	cfg.Close(ctx)
 	cfg = load()
+	// Repair is asynchronous; wait for its durable completion before asserting SQL.
+	require.Eventually(t, func() bool {
+		var count int64
+		err := cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&count).Error
+		return err == nil && count == 1
+	}, 5*time.Second, 10*time.Millisecond)
 	repaired := check(cfg, newID, "legacy NULL with unchanged config", true)
 	assert.Equal(t, legacy.ConfigHash, repaired.ConfigHash)
 	assert.True(t, legacy.UpdatedAt.Equal(repaired.UpdatedAt), "repair must not look like a user edit")
