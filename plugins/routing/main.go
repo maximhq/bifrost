@@ -100,6 +100,11 @@ type RoutingPlugin struct {
 	runtimeCtx      context.Context                             // with warmCoordinator and dimensionStore: what routers built later reuse
 	warmCoordinator complexity.WarmCoordinator
 	dimensionStore  complexity.EmbeddingDimensionStore
+	// widths is dimensionStore's concrete store, whose table Cleanup drops; nil without a config
+	// store, like dimensionStore.
+	widths *persistentEmbeddingDimensionStore
+	// live holds the plugin's runtime state tables.
+	live *livestore.Store
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -146,7 +151,7 @@ type RoutingPlugin struct {
 //   - config: plugin flags; may be nil, in which case defaults apply.
 //   - logger: logger used by the engine and the rule store.
 //   - configStore: configuration store model routers are read from; may be nil.
-//   - live: the live store holding the routing rules; must not be nil.
+//   - live: the live store holding the routing rules and the plugin's runtime state; must not be nil.
 //   - governancePlugin: virtual key state and provider materialization; must not be nil.
 func Init(
 	ctx context.Context,
@@ -171,7 +176,8 @@ func Init(
 
 // InitFromStore initializes and returns a routing plugin instance over a rule store the caller
 // built and keeps: the plugin does not close it. Parameters are the same as Init, with the rule
-// store, which must not be nil, in place of the live store.
+// store, which must not be nil, in place of the live store; the plugin keeps its runtime state in
+// the rule store's live store.
 func InitFromStore(
 	ctx context.Context,
 	config *Config,
@@ -187,6 +193,7 @@ func InitFromStore(
 		return nil, fmt.Errorf("rule store cannot be nil")
 	}
 
+	live := ruleStore.LiveStore()
 	chainMaxDepth := config.chainMaxDepthOrDefault()
 
 	engine, err := rules.NewEngine(ruleStore, governancePlugin, logger, chainMaxDepth)
@@ -203,6 +210,7 @@ func InitFromStore(
 		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
 		llmClassifier:      complexity.NewLLMClassifier(logger),
 		runtimeCtx:         ctx,
+		live:               live,
 	}
 	if config != nil {
 		plugin.sessions = config.Sessions
@@ -223,9 +231,15 @@ func InitFromStore(
 	// persisted rather than held in a live-store table because it has to survive every
 	// node restarting at once, which is exactly when nothing is left in memory
 	// to ask.
-	if dimensions := newPersistentEmbeddingDimensionStore(ctx, configStore, logger); dimensions != nil {
+	dimensions, err := newPersistentEmbeddingDimensionStore(ctx, configStore, live, logger)
+	if err != nil {
+		_ = plugin.semanticClassifier.Close()
+		return nil, fmt.Errorf("failed to initialize embedding width memory: %w", err)
+	}
+	if dimensions != nil {
 		plugin.semanticClassifier.SetEmbeddingDimensionStore(dimensions)
 		plugin.dimensionStore = dimensions
+		plugin.widths = dimensions
 	}
 	// Retired generations are reclaimed in the background. A node-local store
 	// drops its own immediately, but on a shared one a peer may still be serving
@@ -249,7 +263,10 @@ func InitFromStore(
 	// Before the first config is stored, so the suggestions block it carries
 	// turns capture on.
 	plugin.startComplexityCapture(ctx, captureUpkeepInterval, captureUpkeepFirstDelay)
-	plugin.startComplexitySuggestions(ctx, suggestionScheduleTick)
+	if err := plugin.startComplexitySuggestions(ctx, suggestionScheduleTick); err != nil {
+		_ = plugin.Cleanup()
+		return nil, fmt.Errorf("failed to start complexity suggestions: %w", err)
+	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
 	if config != nil {
@@ -745,6 +762,7 @@ func (p *RoutingPlugin) Cleanup() error {
 				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)
 			}
 		}
+		p.widths.close()
 		p.logger.Debug("[Routing] plugin cleaned up")
 	})
 	return nil
