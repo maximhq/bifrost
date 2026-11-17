@@ -156,29 +156,96 @@ func TestLiveTranslatorSetsUpFromDefaultsWhenTheClientSpeaksFirst(t *testing.T) 
 	require.Empty(t, ready.Provider, "the item stays buffered until response.create")
 }
 
+const (
+	liveWeatherTool = `{"type":"function","name":"get_weather","description":"Weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}`
+	liveTimeTool    = `{"type":"function","name":"get_time","description":"Time","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}`
+)
+
 func TestLiveTranslatorSessionUpdateAfterSetup(t *testing.T) {
 	t.Parallel()
-	tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief."}`)
 
-	t.Run("a different configuration is refused", func(t *testing.T) {
-		_, err := tr.ToProvider(liveClientEvent(t, `{"type":"session.update","session":{"instructions":"Be verbose."}}`))
-		require.ErrorContains(t, err, "fixes a session's configuration")
-	})
 	t.Run("the same configuration is acknowledged", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief."}`)
 		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be brief."}}`)
 		require.Empty(t, out.Provider)
 		require.Equal(t, []string{"session.updated"}, liveEventTypes(out.Client))
 	})
 	t.Run("what the setup does not hold can change", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief."}`)
 		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be brief.","output_modalities":["text"]}}`)
 		require.Equal(t, `["text"]`, gjson.ParseBytes(out.Client[0]).Get("session.output_modalities").Raw)
+	})
+	t.Run("changed instructions reach Live as a context update", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief."}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose."}}`)
+		require.Len(t, out.Provider, 1)
+		require.JSONEq(t, `{"contextUpdate":{"systemInstruction":{"parts":[{"text":"Be verbose."}]}}}`, string(out.Provider[0]))
+		require.Equal(t, []string{"session.updated"}, liveEventTypes(out.Client))
+		require.Equal(t, "Be verbose.", gjson.ParseBytes(out.Client[0]).Get("session.instructions").String())
+
+		out = liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose."}}`)
+		require.Empty(t, out.Provider, "the new instructions are the baseline, so repeating them sends nothing")
 	})
 	t.Run("a null session names nothing", func(t *testing.T) {
 		tr := newLiveTestTranslator(t)
 		liveSend(t, tr, `{"type":"session.update","session":null}`)
 		liveReceive(t, tr, liveSetupComplete)
-		_, err := tr.ToProvider(liveClientEvent(t, `{"type":"session.update","session":{"instructions":"Be brief."}}`))
-		require.ErrorContains(t, err, "fixes a session's configuration")
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be brief."}}`)
+		require.JSONEq(t, `{"contextUpdate":{"systemInstruction":{"parts":[{"text":"Be brief."}]}}}`, string(out.Provider[0]))
+	})
+	t.Run("cleared instructions send an empty system instruction", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief."}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":""}}`)
+		require.JSONEq(t, `{"contextUpdate":{"systemInstruction":{}}}`, string(out.Provider[0]))
+		require.Empty(t, gjson.ParseBytes(out.Client[0]).Get("session.instructions").String())
+	})
+	t.Run("replaced tools reach Live as a context update", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","tools":[`+liveWeatherTool+`]}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"tools":[`+liveTimeTool+`]}}`)
+		require.Len(t, out.Provider, 1)
+		frame := gjson.ParseBytes(out.Provider[0])
+		require.Equal(t, []string{"contextUpdate"}, gjsonKeys(frame))
+		require.Equal(t, []string{"tools"}, gjsonKeys(frame.Get("contextUpdate")), "only what changed is sent")
+		require.Equal(t, "get_time", frame.Get("contextUpdate.tools.tools.0.functionDeclarations.0.name").String())
+		require.Len(t, frame.Get("contextUpdate.tools.tools").Array(), 1, "the list replaces the old one")
+		require.Equal(t, "get_time", gjson.ParseBytes(out.Client[0]).Get("session.tools.0.name").String())
+	})
+	t.Run("an empty tool list or tool_choice none clears the tools", func(t *testing.T) {
+		for _, update := range []string{`{"tools":[]}`, `{"tool_choice":"none"}`} {
+			tr := readyLiveTranslator(t, `{"type":"realtime","tools":[`+liveWeatherTool+`]}`)
+			out := liveSend(t, tr, `{"type":"session.update","session":`+update+`}`)
+			require.Len(t, out.Provider, 1, update)
+			require.JSONEq(t, `{"contextUpdate":{"tools":{"tools":[]}}}`, string(out.Provider[0]), update)
+		}
+	})
+	t.Run("clearing what was never set sends nothing", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+		for _, update := range []string{`{"tools":[]}`, `{"tool_choice":"none"}`, `{"instructions":""}`, `{"instructions":"   "}`} {
+			out := liveSend(t, tr, `{"type":"session.update","session":`+update+`}`)
+			require.Empty(t, out.Provider, update)
+			require.Equal(t, []string{"session.updated"}, liveEventTypes(out.Client), update)
+		}
+	})
+	t.Run("sending the same tools again sends nothing", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","tools":[`+liveWeatherTool+`]}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"tools":[`+liveWeatherTool+`]}}`)
+		require.Empty(t, out.Provider, "every update that sends a context update costs the prefix cache, so an unchanged one must not")
+	})
+	t.Run("the same tool with its properties in another order sends nothing", func(t *testing.T) {
+		tool := func(properties string) string {
+			return `{"type":"function","name":"get_weather","description":"Weather","parameters":{"type":"object","properties":` + properties + `}}`
+		}
+		tr := readyLiveTranslator(t, `{"type":"realtime","tools":[`+tool(`{"city":{"type":"string"},"unit":{"type":"string"}}`)+`]}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"tools":[`+tool(`{"unit":{"type":"string"},"city":{"type":"string"}}`)+`]}}`)
+		require.Empty(t, out.Provider)
+	})
+	t.Run("instructions and tools travel in one frame", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief.","tools":[`+liveWeatherTool+`]}`)
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose.","tools":[`+liveTimeTool+`]}}`)
+		require.Len(t, out.Provider, 1)
+		frame := gjson.ParseBytes(out.Provider[0])
+		require.Equal(t, "Be verbose.", frame.Get("contextUpdate.systemInstruction.parts.0.text").String())
+		require.Equal(t, "get_time", frame.Get("contextUpdate.tools.tools.0.functionDeclarations.0.name").String())
 	})
 	t.Run("an update only changes what it names", func(t *testing.T) {
 		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief.","audio":{"input":{"turn_detection":null},"output":{"voice":"Kore"}}}`)
@@ -187,19 +254,63 @@ func TestLiveTranslatorSessionUpdateAfterSetup(t *testing.T) {
 		session := gjson.ParseBytes(out.Client[0]).Get("session")
 		require.Equal(t, `["text"]`, session.Get("output_modalities").Raw)
 		require.Equal(t, "Be brief.", session.Get("instructions").String(), "what the update leaves out keeps its value")
+		require.Empty(t, out.Provider, "and nothing is sent to Live")
 
 		out = liveSend(t, tr, `{"type":"session.update","session":{"audio":{"input":{"format":{"type":"audio/pcm","rate":16000}}}}}`)
 		require.Equal(t, "audio/pcm;rate=16000", tr.config.audioMime, "a nested field changes alone")
 		require.True(t, tr.config.manualVAD, "and its siblings stay as they were")
 		require.Equal(t, "Kore", gjson.ParseBytes(out.Client[0]).Get("session.audio.output.voice").String())
-
-		_, err := tr.ToProvider(liveClientEvent(t, `{"type":"session.update","session":{"instructions":"Be verbose."}}`))
-		require.ErrorContains(t, err, "fixes a session's configuration")
-		_, err = tr.ToProvider(liveClientEvent(t, `{"type":"session.update","session":{"audio":{"input":{"turn_detection":{"type":"server_vad"}}}}}`))
-		require.ErrorContains(t, err, "fixes a session's configuration", "a null that is set to a value is a change")
-		out = liveSend(t, tr, `{"type":"session.update","session":{"output_modalities":["audio"]}}`)
-		require.Equal(t, "Be brief.", gjson.ParseBytes(out.Client[0]).Get("session.instructions").String(), "a refused update leaves no trace")
 	})
+	t.Run("settings Live cannot change are ignored and the reply shows what is in effect", func(t *testing.T) {
+		tr := readyLiveTranslator(t, `{"type":"realtime","instructions":"Be brief.","temperature":0.5,"audio":{"input":{"turn_detection":null},"output":{"voice":"Kore"}}}`)
+
+		out := liveSend(t, tr, `{"type":"session.update","session":{"temperature":0.9,"audio":{"input":{"turn_detection":{"type":"server_vad"}},"output":{"voice":"Puck"}}}}`)
+		require.Empty(t, out.Provider, "Live is sent nothing it cannot take")
+		require.Equal(t, []string{"session.updated"}, liveEventTypes(out.Client))
+		session := gjson.ParseBytes(out.Client[0]).Get("session")
+		require.Equal(t, "Kore", session.Get("audio.output.voice").String(), "the voice is still the one Live was set up with")
+		require.Equal(t, "null", session.Get("audio.input.turn_detection").Raw, "so is the turn detection")
+		require.True(t, tr.config.manualVAD)
+		require.InDelta(t, 0.5, *tr.config.setup.GenerationConfig.Temperature, 1e-9)
+
+		out = liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose.","audio":{"output":{"voice":"Puck"}}}}`)
+		require.Len(t, out.Provider, 1, "the settings that can change still do")
+		require.JSONEq(t, `{"contextUpdate":{"systemInstruction":{"parts":[{"text":"Be verbose."}]}}}`, string(out.Provider[0]))
+		require.Equal(t, "Kore", gjson.ParseBytes(out.Client[0]).Get("session.audio.output.voice").String(), "an ignored change leaves no trace")
+	})
+	t.Run("a model that takes no context update ignores instructions and tools", func(t *testing.T) {
+		tr, err := newLiveTranslator("gemini-live-2.5-flash-native-audio")
+		require.NoError(t, err)
+		liveSend(t, tr, `{"type":"session.update","session":{"type":"realtime","instructions":"Be brief.","tools":[`+liveWeatherTool+`]}}`)
+		liveReceive(t, tr, liveSetupComplete)
+
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose.","tools":[`+liveTimeTool+`]}}`)
+		require.Empty(t, out.Provider)
+		session := gjson.ParseBytes(out.Client[0]).Get("session")
+		require.Equal(t, "Be brief.", session.Get("instructions").String())
+		require.Equal(t, "get_weather", session.Get("tools.0.name").String())
+	})
+	t.Run("an update made while Live is still setting up is held until it accepts the setup", func(t *testing.T) {
+		tr := newLiveTestTranslator(t)
+		first := liveSend(t, tr, `{"type":"session.update","session":{"type":"realtime","instructions":"Be brief."}}`)
+		require.Len(t, first.Provider, 1, "the setup")
+
+		out := liveSend(t, tr, `{"type":"session.update","session":{"instructions":"Be verbose."}}`)
+		require.Empty(t, out.Provider, "Live takes nothing before setupComplete")
+
+		ready := liveReceive(t, tr, liveSetupComplete)
+		require.Len(t, ready.Provider, 1)
+		require.JSONEq(t, `{"contextUpdate":{"systemInstruction":{"parts":[{"text":"Be verbose."}]}}}`, string(ready.Provider[0]))
+	})
+}
+
+func gjsonKeys(result gjson.Result) []string {
+	var keys []string
+	result.ForEach(func(key, _ gjson.Result) bool {
+		keys = append(keys, key.String())
+		return true
+	})
+	return keys
 }
 
 func TestLiveTranslatorQueueIsBounded(t *testing.T) {

@@ -2294,7 +2294,7 @@
 			},
 			"routersNotice": {
 				"title": "Der Komplexitäts-Router wird zu Routern weiterentwickelt",
-				"body": "Router können mehrere Klassifikatoren betreiben, jeder mit eigenen Modellen und den Anfragen, die er übernimmt. Diese Seite funktioniert weiter wie bisher; für neue Einrichtungen empfehlen wir, Router auszuprobieren.",
+				"body": "Mit Routern können Sie mehrere Router erstellen, jeweils mit eigenem Klassifikator und eigenen Modellen. Diese Seite funktioniert weiter wie bisher; wir empfehlen, sowohl für bestehende als auch für neue Einrichtungen zu Routern zu wechseln.",
 				"action": "Router öffnen"
 			}
 		},
@@ -2626,7 +2626,7 @@
 		"title": "Datenblatt-Editor",
 		"subtitle": "Bearbeiten Sie beliebige Datenblattwerte oder fügen Sie Modelle hinzu. Ihre Änderungen werden nach jeder Datenblatt-Synchronisierung erneut angewendet, sodass Upstream-Aktualisierungen sie nie rückgängig machen.",
 		"entityName": "Datenblatt",
-		"allProviders": "alle Anbieter",
+		"allProviders": "Alle Anbieter",
 		"searchAria": "Datenblatteinträge durchsuchen",
 		"searchPlaceholder": "Nach Modellname suchen",
 		"overriddenOnly": "Nur bearbeitete",
@@ -2663,6 +2663,7 @@
 		"upstreamValue": "Datenblatt: {{value}}",
 		"upstreamChanged": "Der Datenblattwert hat sich seit Ihrer Änderung geändert (vorher {{value}})",
 		"followUpstream": "Datenblatt folgen ({{value}})",
+		"followUpstreamNoValue": "Datenblatt folgen",
 		"on": "Ein",
 		"off": "Aus",
 		"customModelPlaceholder": "z. B. ft:gpt-4o:acme",

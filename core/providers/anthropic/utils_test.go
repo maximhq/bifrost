@@ -888,6 +888,33 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
 		},
+		// thinking.block_binding tests
+		{
+			name:     "Anthropic gets thinking binding controls header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			expectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
+		{
+			name:     "Vertex skips thinking binding controls header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			unexpectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking binding controls header when thinking is disabled",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "disabled", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			unexpectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
 		// Interleaved thinking tests
 		{
 			name:     "Anthropic gets interleaved thinking header for enabled",
@@ -4794,6 +4821,10 @@ func betaHeaderCorpus() map[string]string {
 		"thinking display updates on enabled":              `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":1024,"display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
 		"thinking display summarized (must NOT trigger)":   `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`,
 		"thinking display updates but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
+
+		// thinking.block_binding is read off the same decoded thinking object.
+		"thinking block binding":                         `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking block binding but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"messages":[{"role":"user","content":"hi"}]}`,
 
 		// --- everything at once, to catch ordering/dedup divergence ---
 		"kitchen sink": `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},` +

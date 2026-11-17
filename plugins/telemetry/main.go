@@ -42,11 +42,21 @@ const (
 	overheadSlotKey schemas.BifrostContextKey = "bf-prom-overhead-slot"
 )
 
-// overheadSlot hands the LLM hooks' labels and upstream counter to HTTPTransportPostHook.
+// overheadSlot hands the LLM hooks' labels and held ActiveRequests slot to HTTPTransportPostHook.
 // The transport and handler run on separate BifrostContexts, so it travels as a shared pointer.
 type overheadSlot struct {
 	start   time.Time
 	capture atomic.Pointer[overheadCapture]
+	active  atomic.Pointer[schemas.RequestType]    // request type holding an ActiveRequests slot
+	owner   atomic.Pointer[schemas.BifrostContext] // root context that claimed active
+}
+
+// ownedBy reports whether root holds the slot's active field, claiming it first when claim is set.
+func (s *overheadSlot) ownedBy(root *schemas.BifrostContext, claim bool) bool {
+	if claim && s.owner.CompareAndSwap(nil, root) {
+		return true
+	}
+	return s.owner.Load() == root
 }
 
 type overheadCapture struct {
@@ -954,13 +964,15 @@ func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // Running here also makes the observation once-per-request rather than
 // once-per-attempt, so a retried request no longer contributes several times.
 func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
-	// Once-per-HTTP-request safety net for ActiveRequests: core skips LLM post hooks
-	// when a client cancels a stream before it reaches the handler, which would
-	// otherwise leave the gauge incremented forever. This runs after a stream drains.
-	p.releaseActiveRequest(ctx)
+	// Once-per-HTTP-request safety net for ActiveRequests, in case no LLM post hook
+	// ended the request. This runs after a stream drains.
 	slot, ok := ctx.Value(overheadSlotKey).(*overheadSlot)
 	if !ok {
+		p.releaseActiveRequest(ctx)
 		return nil
+	}
+	if held := slot.active.Swap(nil); held != nil {
+		p.ActiveRequests.WithLabelValues(string(*held)).Dec()
 	}
 	// Nil when no LLM hook completed; !ok when upstream was never measured, since the full duration would be wrong.
 	c := slot.capture.Load()
@@ -1088,11 +1100,11 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 }
 
 // acquireActiveRequest increments ActiveRequests unless this request already holds a
-// slot. The held request type lives on the shared BifrostContext, so a hook that runs
-// twice for the same in-flight attempt cannot count it twice. If the held type differs,
+// slot. The held request type lives on the request's shared state (see swapActiveRequest),
+// so a hook that runs twice for the same in-flight attempt cannot count it twice. If the held type differs,
 // the slot moves to the new label so release decrements the label that was counted.
 func (p *PrometheusPlugin) acquireActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
-	if heldType, held := ctx.GetAndSetValue(activeRequestTypeKey, requestType).(schemas.RequestType); held {
+	if heldType, held := swapActiveRequest(ctx, requestType, false); held {
 		if heldType != requestType {
 			p.ActiveRequests.WithLabelValues(string(heldType)).Dec()
 			p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
@@ -1111,9 +1123,33 @@ func isDroppedRequest(bifrostErr *schemas.BifrostError) bool {
 // it, so every terminal path can call it and the gauge drops exactly once. A later
 // fallback attempt re-acquires through PreLLMHook, keeping per-attempt inc/dec balanced.
 func (p *PrometheusPlugin) releaseActiveRequest(ctx *schemas.BifrostContext) {
-	if method, held := ctx.GetAndSetValue(activeRequestTypeKey, nil).(schemas.RequestType); held {
+	if method, held := swapActiveRequest(ctx, "", true); held {
 		p.ActiveRequests.WithLabelValues(string(method)).Dec()
 	}
+}
+
+// swapActiveRequest stores requestType (or clears it) as the held slot and returns the
+// previous one. The first root context to acquire on an HTTP request keeps it on the
+// overheadSlot, so HTTPTransportPostHook on the transport context can release it. Other
+// contexts derived from that request (e.g. ListAllModels fan-out) keep their own slot.
+func swapActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType, clear bool) (schemas.RequestType, bool) {
+	if slot, ok := ctx.Value(overheadSlotKey).(*overheadSlot); ok && slot.ownedBy(ctx.Root(), !clear) {
+		var next *schemas.RequestType
+		if !clear {
+			held := requestType // copied here so only the slot path allocates
+			next = &held
+		}
+		if prev := slot.active.Swap(next); prev != nil {
+			return *prev, true
+		}
+		return "", false
+	}
+	var value any
+	if !clear {
+		value = requestType
+	}
+	held, ok := ctx.GetAndSetValue(activeRequestTypeKey, value).(schemas.RequestType)
+	return held, ok
 }
 
 // applyCustomLabels resolves each configured custom label into labelValues.

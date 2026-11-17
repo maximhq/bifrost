@@ -450,6 +450,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
 	}
+	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
+	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
+		req.Thinking.BlockBinding = nil
+	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
 	}
@@ -1040,6 +1046,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.display", "omitted")
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
+		}
+	}
+
+	// thinking.block_binding — mirrors the typed path. Placed here, after the
+	// thinking.type rewrites above, so it sees the type that is actually sent.
+	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)
 		}
 	}
 
@@ -1686,6 +1702,13 @@ func SupportsThinkingDisplayUpdates(caps schemas.ModelCaps) bool {
 	return caps.SupportsThinkingDisplayUpdates(
 		ProviderFeatures[caps.Provider()].ThinkingDisplayUpdates &&
 			DefaultSupportsThinkingDisplayUpdates(caps.Model()))
+}
+
+// thinkingTypeTakesBlockBinding reports whether thinking.block_binding is valid on a
+// thinking mode: it governs signed thinking blocks, so it is a 400 with thinking off
+// ("disabled", "between_tools") and meaningless without a type.
+func thinkingTypeTakesBlockBinding(thinkingType string) bool {
+	return thinkingType == "adaptive" || thinkingType == "enabled"
 }
 
 // DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
@@ -2660,6 +2683,13 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicThinkingDisplayUpdatesBetaHeader)
 		}
 	}
+	// thinking.block_binding is a 400 without its beta, and SDK clients on the neutral
+	// routes cannot set anthropic-beta themselves.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil && thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		if !hasProvider || features.ThinkingBinding {
+			headers = appendUniqueHeader(headers, AnthropicThinkingBindingControlsBetaHeader)
+		}
+	}
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
 	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
@@ -2836,6 +2866,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
+	AnthropicThinkingBindingControlsBetaHeaderPrefix,
 }
 
 // stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
@@ -3446,6 +3477,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.ThinkingDisplayUpdates },
+	AnthropicThinkingBindingControlsBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.ThinkingBinding },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

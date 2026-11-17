@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -36,6 +37,11 @@ func customToolParameters(syntax, definition string) *schemas.ToolFunctionParame
 	}
 }
 
+// customToolsUnsupported reports whether the model needs custom tools sent as function tools.
+func customToolsUnsupported(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+	return !schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, model)).SupportsCustomTools(false)
+}
+
 // wrapCustomToolInput encodes a custom tool input as function call arguments.
 func wrapCustomToolInput(input string) string {
 	encoded, err := MarshalSorted(map[string]string{customToolInputParam: input})
@@ -54,30 +60,72 @@ func unwrapCustomToolInput(arguments string) string {
 	return field.String()
 }
 
-// RewriteChatCustomTools returns a copy of r with custom tools as function tools, or r unchanged.
+// RewriteChatCustomTools returns a copy of r with custom tools and replayed custom calls as
+// functions, or r unchanged. The copy records the rewritten names for RestoreChatCustomToolCalls.
 func RewriteChatCustomTools(ctx *schemas.BifrostContext, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if r == nil || r.Params == nil || !slices.ContainsFunc(r.Params.Tools, isChatCustomTool) {
+	if r == nil {
 		return r
 	}
-	if schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)).SupportsCustomTools(false) {
+	hasTools := r.Params != nil && slices.ContainsFunc(r.Params.Tools, isChatCustomTool)
+	hasCalls := slices.ContainsFunc(r.Input, hasChatCustomToolCall)
+	if !hasTools && !hasCalls {
 		return r
 	}
-	params := *r.Params
-	params.Tools = make([]schemas.ChatTool, len(r.Params.Tools))
-	for i, tool := range r.Params.Tools {
-		if isChatCustomTool(tool) {
-			tool = chatCustomToolAsFunction(tool)
-		}
-		params.Tools[i] = tool
+	if !customToolsUnsupported(ctx, provider, r.Model) {
+		return r
 	}
-	params.ToolChoice = chatCustomToolChoiceAsFunction(params.ToolChoice)
 	cp := *r
-	cp.Params = &params
+	if hasTools {
+		params := *r.Params
+		params.Tools = make([]schemas.ChatTool, len(r.Params.Tools))
+		names := make(map[string]struct{})
+		for i, tool := range r.Params.Tools {
+			if isChatCustomTool(tool) {
+				tool = chatCustomToolAsFunction(tool)
+				names[tool.Function.Name] = struct{}{}
+			}
+			params.Tools[i] = tool
+		}
+		params.ToolChoice = chatCustomToolChoiceAsFunction(params.ToolChoice)
+		cp.Params = &params
+		cp.CustomToolNames = names
+	}
+	if hasCalls {
+		cp.Input = slices.Clone(r.Input)
+		for i := range cp.Input {
+			if hasChatCustomToolCall(cp.Input[i]) {
+				cp.Input[i] = chatCustomToolCallsAsFunctions(cp.Input[i])
+			}
+		}
+	}
 	return &cp
 }
 
+func hasChatCustomToolCall(message schemas.ChatMessage) bool {
+	return message.ChatAssistantMessage != nil &&
+		slices.ContainsFunc(message.ChatAssistantMessage.ToolCalls, func(tc schemas.ChatAssistantMessageToolCall) bool { return tc.Custom != nil })
+}
+
+// chatCustomToolCallsAsFunctions returns message with its custom calls as function calls, copying what it changes.
+func chatCustomToolCallsAsFunctions(message schemas.ChatMessage) schemas.ChatMessage {
+	assistant := *message.ChatAssistantMessage
+	assistant.ToolCalls = slices.Clone(assistant.ToolCalls)
+	for i, tc := range assistant.ToolCalls {
+		if tc.Custom == nil {
+			continue
+		}
+		tc.Type = schemas.Ptr(string(schemas.ChatToolTypeFunction))
+		tc.Function = schemas.ChatAssistantMessageToolCallFunction{Name: tc.Custom.Name, Arguments: wrapCustomToolInput(tc.Custom.Input)}
+		tc.Custom = nil
+		assistant.ToolCalls[i] = tc
+	}
+	message.ChatAssistantMessage = &assistant
+	return message
+}
+
+// isChatCustomTool reports whether tool is a named custom tool; a nameless one is left for the upstream to reject.
 func isChatCustomTool(tool schemas.ChatTool) bool {
-	return tool.Type == schemas.ChatToolTypeCustom
+	return tool.Type == schemas.ChatToolTypeCustom && tool.Custom != nil && tool.Custom.Name != ""
 }
 
 func chatCustomToolAsFunction(tool schemas.ChatTool) schemas.ChatTool {
@@ -104,8 +152,13 @@ func chatCustomToolAsFunction(tool schemas.ChatTool) schemas.ChatTool {
 }
 
 func chatCustomToolChoiceAsFunction(choice *schemas.ChatToolChoice) *schemas.ChatToolChoice {
-	if choice == nil || choice.ChatToolChoiceStruct == nil ||
-		choice.ChatToolChoiceStruct.Type != schemas.ChatToolChoiceTypeCustom {
+	if choice == nil || choice.ChatToolChoiceStruct == nil {
+		return choice
+	}
+	if choice.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeAllowedTools {
+		return chatCustomAllowedToolsAsFunctions(choice)
+	}
+	if choice.ChatToolChoiceStruct.Type != schemas.ChatToolChoiceTypeCustom {
 		return choice
 	}
 	name := ""
@@ -116,6 +169,36 @@ func chatCustomToolChoiceAsFunction(choice *schemas.ChatToolChoice) *schemas.Cha
 		Type:     schemas.ChatToolChoiceTypeFunction,
 		Function: &schemas.ChatToolChoiceFunction{Name: name},
 	}}
+}
+
+// chatCustomAllowedToolsAsFunctions returns choice with its custom allowed_tools entries as function entries.
+func chatCustomAllowedToolsAsFunctions(choice *schemas.ChatToolChoice) *schemas.ChatToolChoice {
+	allowed := choice.ChatToolChoiceStruct.AllowedTools
+	if allowed == nil {
+		return choice
+	}
+	var tools []schemas.ChatToolChoiceAllowedToolsTool
+	for i, tool := range allowed.Tools {
+		if tool.Type != string(schemas.ChatToolChoiceTypeCustom) {
+			continue
+		}
+		if tools == nil {
+			tools = slices.Clone(allowed.Tools)
+		}
+		name := ""
+		if tool.Custom != nil {
+			name = tool.Custom.Name
+		}
+		tools[i] = schemas.ChatToolChoiceAllowedToolsTool{Type: string(schemas.ChatToolChoiceTypeFunction), Function: schemas.ChatToolChoiceFunction{Name: name}}
+	}
+	if tools == nil {
+		return choice
+	}
+	allowedCopy := *allowed
+	allowedCopy.Tools = tools
+	structCopy := *choice.ChatToolChoiceStruct
+	structCopy.AllowedTools = &allowedCopy
+	return &schemas.ChatToolChoice{ChatToolChoiceStruct: &structCopy}
 }
 
 // ResponsesAdditionalToolsNeedHoist reports whether additional_tools may hold a custom tool to rewrite.
@@ -131,7 +214,7 @@ func ResponsesAdditionalToolsNeedHoist(ctx *schemas.BifrostContext, provider sch
 			break
 		}
 	}
-	return found && !schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)).SupportsCustomTools(false)
+	return found && customToolsUnsupported(ctx, provider, r.Model)
 }
 
 // rawToolsHaveCustom reports whether a raw tools array declares a custom tool, namespace members included.
@@ -159,15 +242,14 @@ func RewriteResponsesCustomTools(ctx *schemas.BifrostContext, provider schemas.M
 	if !hasTools && !hasItems {
 		return r
 	}
-	if schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)).SupportsCustomTools(false) {
+	if !customToolsUnsupported(ctx, provider, r.Model) {
 		return r
 	}
 	cp := *r
 	if hasTools {
 		params := *r.Params
 		names := make(map[string]struct{})
-		collectCustomToolNames(params.Tools, "", names)
-		params.Tools = responsesCustomToolsAsFunctions(params.Tools)
+		params.Tools = responsesCustomToolsAsFunctions(params.Tools, "", names)
 		params.ToolChoice = responsesCustomToolChoiceAsFunction(params.ToolChoice)
 		cp.Params = &params
 		cp.CustomToolNames = names
@@ -183,7 +265,8 @@ func isCustomCallItem(message schemas.ResponsesMessage) bool {
 		(*message.Type == schemas.ResponsesMessageTypeCustomToolCall || *message.Type == schemas.ResponsesMessageTypeCustomToolCallOutput)
 }
 
-func responsesCustomToolsAsFunctions(tools []schemas.ResponsesTool) []schemas.ResponsesTool {
+// responsesCustomToolsAsFunctions returns tools with custom tools as functions and records their names.
+func responsesCustomToolsAsFunctions(tools []schemas.ResponsesTool, namespace string, names map[string]struct{}) []schemas.ResponsesTool {
 	if !containsResponsesCustomTool(tools) {
 		return tools
 	}
@@ -191,6 +274,9 @@ func responsesCustomToolsAsFunctions(tools []schemas.ResponsesTool) []schemas.Re
 	for i, tool := range tools {
 		switch {
 		case tool.Type == schemas.ResponsesToolTypeCustom:
+			if tool.Name != nil && names != nil {
+				names[customToolKey(namespace, *tool.Name)] = struct{}{}
+			}
 			var syntax, definition string
 			if tool.ResponsesToolCustom != nil && tool.ResponsesToolCustom.Format != nil {
 				if f := tool.ResponsesToolCustom.Format; f.Definition != nil {
@@ -208,7 +294,12 @@ func responsesCustomToolsAsFunctions(tools []schemas.ResponsesTool) []schemas.Re
 			}
 		case tool.ResponsesToolNamespace != nil && containsResponsesCustomTool(tool.ResponsesToolNamespace.Tools):
 			namespaceCopy := *tool.ResponsesToolNamespace
-			namespaceCopy.Tools = responsesCustomToolsAsFunctions(tool.ResponsesToolNamespace.Tools)
+			var nested map[string]struct{} // an unnamed namespace records nothing
+			nestedName := ""
+			if tool.Name != nil {
+				nested, nestedName = names, *tool.Name
+			}
+			namespaceCopy.Tools = responsesCustomToolsAsFunctions(tool.ResponsesToolNamespace.Tools, nestedName, nested)
 			tool.ResponsesToolNamespace = &namespaceCopy
 		}
 		rewritten[i] = tool
@@ -234,17 +325,6 @@ func customToolKey(namespace, name string) string {
 		return name
 	}
 	return namespace + "\x00" + name
-}
-
-func collectCustomToolNames(tools []schemas.ResponsesTool, namespace string, names map[string]struct{}) {
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeCustom && tool.Name != nil {
-			names[customToolKey(namespace, *tool.Name)] = struct{}{}
-		}
-		if tool.ResponsesToolNamespace != nil && tool.Name != nil {
-			collectCustomToolNames(tool.ResponsesToolNamespace.Tools, *tool.Name, names)
-		}
-	}
 }
 
 func responsesCustomToolChoiceAsFunction(choice *schemas.ResponsesToolChoice) *schemas.ResponsesToolChoice {
@@ -332,8 +412,28 @@ func functionCallAsCustomCall(item *schemas.ResponsesMessage) {
 	item.Type = schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall)
 }
 
-// RestoreResponsesCustomToolCalls turns function calls of rewritten custom tools back into custom_tool_call items.
-func RestoreResponsesCustomToolCalls(names map[string]struct{}, resp *schemas.BifrostResponsesResponse) {
+// RestoreResponsesToolCalls restores namespaced tool names, then custom tool calls.
+func RestoreResponsesToolCalls(prepared *schemas.BifrostResponsesRequest, resp *schemas.BifrostResponsesResponse) {
+	if prepared == nil || resp == nil {
+		return
+	}
+	if len(prepared.NamespaceToolAliases) > 0 {
+		restoreNamespacedItems(resp.Output, prepared.NamespaceToolAliases)
+	}
+	restoreResponsesCustomToolCalls(prepared.CustomToolNames, resp)
+}
+
+// WrapResponsesToolRestorePostHookRunner does the same on every stream chunk.
+func WrapResponsesToolRestorePostHookRunner(runner schemas.PostHookRunner, prepared *schemas.BifrostResponsesRequest) schemas.PostHookRunner {
+	if prepared == nil {
+		return runner
+	}
+	runner = wrapCustomToolRestorePostHookRunner(runner, prepared.CustomToolNames)
+	return wrapNamespaceRestorePostHookRunner(runner, prepared.NamespaceToolAliases)
+}
+
+// restoreResponsesCustomToolCalls turns function calls of rewritten custom tools back into custom_tool_call items.
+func restoreResponsesCustomToolCalls(names map[string]struct{}, resp *schemas.BifrostResponsesResponse) {
 	if resp == nil || len(names) == 0 {
 		return
 	}
@@ -342,8 +442,16 @@ func RestoreResponsesCustomToolCalls(names map[string]struct{}, resp *schemas.Bi
 	}
 }
 
-// CustomToolNamesFromTools rebuilds the rewritten custom tool names from a stored response's tools.
-func CustomToolNamesFromTools(tools []schemas.ResponsesTool) map[string]struct{} {
+// RestoreRetrievedCustomToolCalls restores custom tool calls on a stored response, learning the names from its tools.
+func RestoreRetrievedCustomToolCalls(resp *schemas.BifrostResponsesResponse) {
+	if resp == nil {
+		return
+	}
+	restoreResponsesCustomToolCalls(customToolNamesFromTools(resp.Tools), resp)
+}
+
+// customToolNamesFromTools rebuilds the rewritten custom tool names from a stored response's tools.
+func customToolNamesFromTools(tools []schemas.ResponsesTool) map[string]struct{} {
 	var names map[string]struct{}
 	collectRewrittenCustomToolNames(tools, "", &names)
 	return names
@@ -382,13 +490,13 @@ func isCustomToolParameters(params *schemas.ToolFunctionParameters) bool {
 	return strings.HasPrefix(text, customToolInputDescription)
 }
 
-// RewriteCompactionCustomCalls returns a copy of r with replayed custom calls as function calls, and their call IDs.
-func RewriteCompactionCustomCalls(ctx *schemas.BifrostContext, provider schemas.ModelProvider, r *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionRequest, map[string]struct{}) {
+// RewriteCompactionCustomCalls returns r with replayed custom calls as function calls, and the func that restores the response.
+func RewriteCompactionCustomCalls(ctx *schemas.BifrostContext, provider schemas.ModelProvider, r *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionRequest, func(*schemas.BifrostCompactionResponse)) {
 	if r == nil || !slices.ContainsFunc(r.Input, isCustomCallItem) {
-		return r, nil
+		return r, noCompactionRestore
 	}
-	if schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)).SupportsCustomTools(false) {
-		return r, nil
+	if !customToolsUnsupported(ctx, provider, r.Model) {
+		return r, noCompactionRestore
 	}
 	callIDs := make(map[string]struct{})
 	for _, message := range r.Input {
@@ -398,11 +506,13 @@ func RewriteCompactionCustomCalls(ctx *schemas.BifrostContext, provider schemas.
 	}
 	cp := *r
 	cp.Input = responsesCustomCallItemsAsFunctions(slices.Clone(r.Input))
-	return &cp, callIDs
+	return &cp, func(resp *schemas.BifrostCompactionResponse) { restoreCompactionCustomToolCalls(callIDs, resp) }
 }
 
-// RestoreCompactionCustomToolCalls turns the converted calls kept by compaction, and their outputs, back into custom items.
-func RestoreCompactionCustomToolCalls(callIDs map[string]struct{}, resp *schemas.BifrostCompactionResponse) {
+func noCompactionRestore(*schemas.BifrostCompactionResponse) {}
+
+// restoreCompactionCustomToolCalls turns the converted calls kept by compaction, and their outputs, back into custom items.
+func restoreCompactionCustomToolCalls(callIDs map[string]struct{}, resp *schemas.BifrostCompactionResponse) {
 	if resp == nil || len(callIDs) == 0 {
 		return
 	}
@@ -423,8 +533,8 @@ func RestoreCompactionCustomToolCalls(callIDs map[string]struct{}, resp *schemas
 	}
 }
 
-// WrapCustomToolRestorePostHookRunner restores custom tool call events on each Responses stream chunk.
-func WrapCustomToolRestorePostHookRunner(runner schemas.PostHookRunner, names map[string]struct{}) schemas.PostHookRunner {
+// wrapCustomToolRestorePostHookRunner restores custom tool call events on each Responses stream chunk.
+func wrapCustomToolRestorePostHookRunner(runner schemas.PostHookRunner, names map[string]struct{}) schemas.PostHookRunner {
 	if len(names) == 0 || runner == nil {
 		return runner
 	}
@@ -462,7 +572,7 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 	defer r.mu.Unlock()
 	if r.learn && event.Response != nil {
 		r.learn = false
-		r.names = CustomToolNamesFromTools(event.Response.Tools)
+		r.names = customToolNamesFromTools(event.Response.Tools)
 	}
 	if len(r.names) == 0 {
 		return true
@@ -487,7 +597,7 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 		event.Input = &input
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		if event.Response != nil {
-			RestoreResponsesCustomToolCalls(r.names, event.Response)
+			restoreResponsesCustomToolCalls(r.names, event.Response)
 		}
 	}
 	return true
@@ -499,4 +609,155 @@ func (r *customToolStreamRestorer) tracked(itemID *string) bool {
 	}
 	_, ok := r.calls[*itemID]
 	return ok
+}
+
+// RestoreChatCustomToolCalls turns function calls of rewritten custom tools back into custom calls.
+func RestoreChatCustomToolCalls(prepared *schemas.BifrostChatRequest, resp *schemas.BifrostChatResponse) {
+	if prepared == nil || resp == nil || len(prepared.CustomToolNames) == 0 {
+		return
+	}
+	names := prepared.CustomToolNames
+	for _, choice := range resp.Choices {
+		if choice.ChatNonStreamResponseChoice == nil || choice.Message == nil || choice.Message.ChatAssistantMessage == nil {
+			continue
+		}
+		calls := choice.Message.ChatAssistantMessage.ToolCalls
+		for i := range calls {
+			if isRewrittenChatCall(calls[i], names) {
+				calls[i] = functionCallAsChatCustomCall(calls[i], unwrapCustomToolInput(calls[i].Function.Arguments))
+			}
+		}
+	}
+}
+
+func isRewrittenChatCall(tc schemas.ChatAssistantMessageToolCall, names map[string]struct{}) bool {
+	if tc.Custom != nil || tc.Function.Name == nil {
+		return false
+	}
+	_, ok := names[*tc.Function.Name]
+	return ok
+}
+
+func functionCallAsChatCustomCall(tc schemas.ChatAssistantMessageToolCall, input string) schemas.ChatAssistantMessageToolCall {
+	tc.Type = schemas.Ptr(string(schemas.ChatToolTypeCustom))
+	tc.Custom = &schemas.ChatAssistantMessageToolCallCustom{Name: tc.Function.Name, Input: input}
+	tc.Function = schemas.ChatAssistantMessageToolCallFunction{}
+	return tc
+}
+
+// WrapChatCustomToolRestorePostHookRunner restores custom tool calls on each chat stream chunk.
+// A restored call's argument fragments are held back, since only the whole arguments object
+// unwraps to the input, which is sent with the chunk that carries the finish reason.
+func WrapChatCustomToolRestorePostHookRunner(runner schemas.PostHookRunner, prepared *schemas.BifrostChatRequest) schemas.PostHookRunner {
+	if prepared == nil || len(prepared.CustomToolNames) == 0 || runner == nil {
+		return runner
+	}
+	restorer := &chatCustomToolStreamRestorer{names: prepared.CustomToolNames}
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil && result.ChatResponse != nil && !restorer.restore(result.ChatResponse) {
+			return result, &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: schemas.Ptr(true)}}
+		}
+		return runner(ctx, result, bifrostErr)
+	}
+}
+
+type chatCustomToolStreamRestorer struct {
+	mu    sync.Mutex
+	names map[string]struct{}
+	calls map[chatStreamCallKey]*strings.Builder // arguments of restored calls, by choice and tool index
+	order []chatStreamCallKey
+}
+
+type chatStreamCallKey struct {
+	choice int
+	index  uint16
+}
+
+// restore rewrites a chunk in place and reports whether to send it; a chunk emptied by held-back fragments is not sent.
+func (r *chatCustomToolStreamRestorer) restore(chunk *schemas.BifrostChatResponse) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dropped := false
+	for i := range chunk.Choices {
+		choice := &chunk.Choices[i]
+		if choice.ChatStreamResponseChoice == nil {
+			continue
+		}
+		if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+			kept := r.restoreDeltas(choice.Index, choice.Delta.ToolCalls)
+			if len(kept) < len(choice.Delta.ToolCalls) {
+				dropped = true
+			}
+			if len(kept) == 0 {
+				kept = nil
+			}
+			choice.Delta.ToolCalls = kept
+		}
+		if choice.FinishReason != nil {
+			if inputs := r.flush(choice.Index); len(inputs) > 0 {
+				if choice.Delta == nil {
+					choice.Delta = &schemas.ChatStreamResponseChoiceDelta{}
+				}
+				choice.Delta.ToolCalls = append(choice.Delta.ToolCalls, inputs...)
+			}
+		}
+	}
+	return !dropped || !isEmptyChatChunk(chunk)
+}
+
+// isEmptyChatChunk reports whether a chunk carries no usage and no choice with anything to send.
+func isEmptyChatChunk(chunk *schemas.BifrostChatResponse) bool {
+	if chunk.Usage != nil {
+		return false
+	}
+	for _, choice := range chunk.Choices {
+		if choice.FinishReason != nil || choice.LogProbs != nil {
+			return false
+		}
+		if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && !reflect.ValueOf(*choice.Delta).IsZero() {
+			return false
+		}
+	}
+	return true
+}
+
+// restoreDeltas turns a rewritten call's header into a custom delta and holds back its arguments.
+func (r *chatCustomToolStreamRestorer) restoreDeltas(choice int, deltas []schemas.ChatAssistantMessageToolCall) []schemas.ChatAssistantMessageToolCall {
+	kept := make([]schemas.ChatAssistantMessageToolCall, 0, len(deltas))
+	for _, tc := range deltas {
+		key := chatStreamCallKey{choice: choice, index: tc.Index}
+		if args, tracked := r.calls[key]; tracked {
+			args.WriteString(tc.Function.Arguments)
+			continue
+		}
+		if isRewrittenChatCall(tc, r.names) {
+			if r.calls == nil {
+				r.calls = make(map[chatStreamCallKey]*strings.Builder)
+			}
+			args := &strings.Builder{}
+			args.WriteString(tc.Function.Arguments)
+			r.calls[key] = args
+			r.order = append(r.order, key)
+			tc = functionCallAsChatCustomCall(tc, "")
+		}
+		kept = append(kept, tc)
+	}
+	return kept
+}
+
+// flush returns one custom input delta per restored call of the choice.
+func (r *chatCustomToolStreamRestorer) flush(choice int) []schemas.ChatAssistantMessageToolCall {
+	var deltas []schemas.ChatAssistantMessageToolCall
+	for _, key := range r.order {
+		args, ok := r.calls[key]
+		if key.choice != choice || !ok {
+			continue
+		}
+		deltas = append(deltas, schemas.ChatAssistantMessageToolCall{
+			Index:  key.index,
+			Custom: &schemas.ChatAssistantMessageToolCallCustom{Input: unwrapCustomToolInput(args.String())},
+		})
+		delete(r.calls, key)
+	}
+	return deltas
 }

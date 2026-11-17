@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -264,7 +265,7 @@ func TestRestoreResponsesCustomToolCalls(t *testing.T) {
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("search"), Arguments: schemas.Ptr(`{"q":"x"}`)},
 		},
 	}}
-	RestoreResponsesCustomToolCalls(names, resp)
+	restoreResponsesCustomToolCalls(names, resp)
 	output := resp.Output
 
 	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *output[0].Type)
@@ -301,16 +302,15 @@ func TestRewriteCompactionCustomCalls(t *testing.T) {
 	}
 	req := &schemas.BifrostCompactionRequest{Provider: schemas.XAI, Model: "grok-4", Input: append([]schemas.ResponsesMessage{untyped}, append(history, genuineCall, genuineOutput)...)}
 
-	got, callIDs := RewriteCompactionCustomCalls(nil, schemas.XAI, req)
+	got, restore := RewriteCompactionCustomCalls(nil, schemas.XAI, req)
 	require.NotSame(t, req, got)
-	require.Equal(t, map[string]struct{}{"call_1": {}}, callIDs)
 	require.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *got.Input[1].Type)
 	require.Nil(t, got.Input[1].ID, "a ctc_ id is rejected on a function_call input")
 	require.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *got.Input[2].Type)
 	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *req.Input[1].Type, "the caller's request is untouched")
 
 	resp := &schemas.BifrostCompactionResponse{Output: slices.Clone(got.Input[1:])}
-	RestoreCompactionCustomToolCalls(callIDs, resp)
+	restore(resp)
 	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *resp.Output[0].Type)
 	require.Equal(t, `*** Begin Patch "x"`, resp.Output[0].ResponsesCustomToolCall.Input)
 	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCallOutput, *resp.Output[1].Type, "the converted call's output is restored with it")
@@ -324,26 +324,27 @@ func TestRewriteCompactionCustomCalls(t *testing.T) {
 func TestRewriteCompactionCustomCalls_LeavesRequestAlone(t *testing.T) {
 	stubCustomToolsDatasheet(t)
 	plain := &schemas.BifrostCompactionRequest{Provider: schemas.XAI, Model: "grok-4", Input: []schemas.ResponsesMessage{{Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}}
-	got, names := RewriteCompactionCustomCalls(nil, schemas.XAI, plain)
+	noop := reflect.ValueOf(noCompactionRestore).Pointer()
+	got, restore := RewriteCompactionCustomCalls(nil, schemas.XAI, plain)
 	require.Same(t, plain, got)
-	require.Nil(t, names)
+	require.Equal(t, noop, reflect.ValueOf(restore).Pointer())
 
 	supported := &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "gpt-5", Input: customToolsResponsesRequest(schemas.OpenAI, "gpt-5").Input}
-	got, names = RewriteCompactionCustomCalls(nil, schemas.OpenAI, supported)
+	got, restore = RewriteCompactionCustomCalls(nil, schemas.OpenAI, supported)
 	require.Same(t, supported, got)
-	require.Nil(t, names)
+	require.Equal(t, noop, reflect.ValueOf(restore).Pointer())
 
-	got, names = RewriteCompactionCustomCalls(nil, schemas.OpenAI, nil)
+	got, restore = RewriteCompactionCustomCalls(nil, schemas.OpenAI, nil)
 	require.Nil(t, got)
-	require.Nil(t, names)
-	RestoreCompactionCustomToolCalls(map[string]struct{}{"x": {}}, nil)
+	restore(nil)
+	restoreCompactionCustomToolCalls(map[string]struct{}{"x": {}}, nil)
 }
 
 // A custom tool and a function tool may share a name in different namespaces;
 // only the call to the rewritten custom tool is restored, and it keeps its namespace.
 func TestRestoreCustomToolCall_MatchesNamespace(t *testing.T) {
 	names := map[string]struct{}{}
-	collectCustomToolNames([]schemas.ResponsesTool{
+	responsesCustomToolsAsFunctions([]schemas.ResponsesTool{
 		{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("shell"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
 			{Type: schemas.ResponsesToolTypeCustom, Name: schemas.Ptr("run")},
 		}}},
@@ -378,7 +379,7 @@ func TestRestoreCustomToolCall_MatchesNamespace(t *testing.T) {
 func runStream(t *testing.T, names map[string]struct{}, events []*schemas.BifrostResponsesStreamResponse) []*schemas.BifrostResponsesStreamResponse {
 	t.Helper()
 	var sent []*schemas.BifrostResponsesStreamResponse
-	runner := WrapCustomToolRestorePostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	runner := wrapCustomToolRestorePostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		sent = append(sent, result.ResponsesStreamResponse)
 		return result, err
 	}, names)
@@ -395,7 +396,7 @@ func TestWrapCustomToolRestorePostHookRunner(t *testing.T) {
 	inner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return r, e
 	}
-	require.NotNil(t, WrapCustomToolRestorePostHookRunner(inner, nil))
+	require.NotNil(t, wrapCustomToolRestorePostHookRunner(inner, nil))
 
 	itemID := schemas.Ptr("fc_1")
 	call := func(eventType schemas.ResponsesStreamResponseType, args string) *schemas.BifrostResponsesStreamResponse {
@@ -457,15 +458,15 @@ func TestCustomToolNamesFromTools(t *testing.T) {
 	}}}
 	rewritten := RewriteResponsesCustomTools(nil, schemas.OpenAI, req)
 	require.Equal(t, map[string]struct{}{"apply_patch": {}, "freeform": {}}, rewritten.CustomToolNames)
-	require.Equal(t, rewritten.CustomToolNames, CustomToolNamesFromTools(rewritten.Params.Tools))
+	require.Equal(t, rewritten.CustomToolNames, customToolNamesFromTools(rewritten.Params.Tools))
 
 	encoded, err := MarshalSorted(rewritten.Params.Tools)
 	require.NoError(t, err)
 	var stored []schemas.ResponsesTool
 	require.NoError(t, json.Unmarshal(encoded, &stored))
-	require.Equal(t, rewritten.CustomToolNames, CustomToolNamesFromTools(stored))
+	require.Equal(t, rewritten.CustomToolNames, customToolNamesFromTools(stored))
 
-	require.Nil(t, CustomToolNamesFromTools(req.Params.Tools[2:]), "an ordinary function tool is not a rewritten custom tool")
+	require.Nil(t, customToolNamesFromTools(req.Params.Tools[2:]), "an ordinary function tool is not a rewritten custom tool")
 }
 
 func TestWrapRetrievedCustomToolRestorePostHookRunner(t *testing.T) {
@@ -526,7 +527,7 @@ func BenchmarkRewriteResponsesCustomTools_Rewrite(b *testing.B) {
 // BenchmarkCustomToolStreamRestore measures dropping one argument delta of a restored custom call.
 func BenchmarkCustomToolStreamRestore(b *testing.B) {
 	names := map[string]struct{}{"apply_patch": {}}
-	runner := WrapCustomToolRestorePostHookRunner(func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	runner := wrapCustomToolRestorePostHookRunner(func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return r, e
 	}, names)
 	itemID := schemas.Ptr("fc_1")
@@ -540,4 +541,228 @@ func BenchmarkCustomToolStreamRestore(b *testing.B) {
 		event := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: itemID, Delta: schemas.Ptr("+ line of patch\\n")}
 		_, _ = runner(nil, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
 	}
+}
+
+func customChatToolCall(input string) schemas.ChatAssistantMessageToolCall {
+	return schemas.ChatAssistantMessageToolCall{
+		ID:     schemas.Ptr("call_1"),
+		Type:   schemas.Ptr(string(schemas.ChatToolTypeCustom)),
+		Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: schemas.Ptr("ApplyPatch"), Input: input},
+	}
+}
+
+// Replayed custom calls go to a model without custom tools as function calls, and the
+// rewritten names are kept so the response can be restored.
+func TestRewriteChatCustomTools_History(t *testing.T) {
+	stubCustomToolsDatasheet(t)
+	original := customChatRequest(schemas.Anthropic, "claude-sonnet-4-5")
+	original.Input = []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{customChatToolCall("1\"2")}}},
+		{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")}},
+	}
+	got := RewriteChatCustomTools(nil, schemas.Anthropic, original)
+
+	require.Equal(t, map[string]struct{}{"ApplyPatch": {}}, got.CustomToolNames)
+	call := got.Input[0].ChatAssistantMessage.ToolCalls[0]
+	require.Equal(t, "function", *call.Type)
+	require.Nil(t, call.Custom)
+	require.Equal(t, "ApplyPatch", *call.Function.Name)
+	require.JSONEq(t, `{"input":"1\"2"}`, call.Function.Arguments)
+	require.Equal(t, "call_1", *call.ID)
+	require.NotNil(t, original.Input[0].ChatAssistantMessage.ToolCalls[0].Custom, "the caller's request is not mutated")
+
+	historyOnly := &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Input: original.Input}
+	require.Nil(t, RewriteChatCustomTools(nil, schemas.Anthropic, historyOnly).Input[0].ChatAssistantMessage.ToolCalls[0].Custom)
+
+	supported := customChatRequest(schemas.OpenAI, "gpt-5")
+	supported.Input = original.Input
+	require.Same(t, supported, RewriteChatCustomTools(nil, schemas.OpenAI, supported))
+}
+
+func TestRestoreChatCustomToolCalls(t *testing.T) {
+	resp := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+				{ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("ApplyPatch"), Arguments: `{"input":"a\nb"}`}},
+				{ID: schemas.Ptr("call_2"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"x"}`}},
+			}},
+		}},
+	}}}
+	RestoreChatCustomToolCalls(&schemas.BifrostChatRequest{CustomToolNames: map[string]struct{}{"ApplyPatch": {}}}, resp)
+
+	calls := resp.Choices[0].Message.ChatAssistantMessage.ToolCalls
+	require.Equal(t, "custom", *calls[0].Type)
+	require.Equal(t, "ApplyPatch", *calls[0].Custom.Name)
+	require.Equal(t, "a\nb", calls[0].Custom.Input)
+	require.Equal(t, schemas.ChatAssistantMessageToolCallFunction{}, calls[0].Function)
+	require.Equal(t, "function", *calls[1].Type, "an ordinary function call is left alone")
+	require.Nil(t, calls[1].Custom)
+}
+
+// Streamed function calls of a rewritten custom tool reach the caller as a custom call: the
+// header becomes a custom delta, argument fragments are held back, and the unwrapped input
+// is sent with the finish chunk.
+func TestWrapChatCustomToolRestorePostHookRunner(t *testing.T) {
+	inner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	require.NotNil(t, WrapChatCustomToolRestorePostHookRunner(inner, nil))
+
+	chunk := func(finish *string, calls ...schemas.ChatAssistantMessageToolCall) *schemas.BifrostChatResponse {
+		return &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+			FinishReason:             finish,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: calls}},
+		}}}
+	}
+	fn := func(index uint16, id, name *string, args string) schemas.ChatAssistantMessageToolCall {
+		tc := schemas.ChatAssistantMessageToolCall{Index: index, ID: id, Function: schemas.ChatAssistantMessageToolCallFunction{Name: name, Arguments: args}}
+		if name != nil {
+			tc.Type = schemas.Ptr("function")
+		}
+		return tc
+	}
+	// run sends chunks through the wrapper and returns what reached the inner runner and how many were skipped.
+	run := func(chunks ...*schemas.BifrostChatResponse) ([]*schemas.BifrostChatResponse, int) {
+		var sent []*schemas.BifrostChatResponse
+		runner := WrapChatCustomToolRestorePostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			sent = append(sent, result.ChatResponse)
+			return result, err
+		}, &schemas.BifrostChatRequest{CustomToolNames: map[string]struct{}{"ApplyPatch": {}}})
+		skipped := 0
+		for _, c := range chunks {
+			_, err := runner(nil, &schemas.BifrostResponse{ChatResponse: c}, nil)
+			if err != nil {
+				require.NotNil(t, err.StreamControl)
+				require.True(t, *err.StreamControl.SkipStream)
+				skipped++
+			}
+		}
+		return sent, skipped
+	}
+
+	t.Run("fragment chunks are skipped", func(t *testing.T) {
+		sent, skipped := run(
+			chunk(nil, fn(0, schemas.Ptr("call_1"), schemas.Ptr("ApplyPatch"), "")),
+			chunk(nil, fn(0, nil, nil, `{"inp`)),
+			chunk(nil, fn(0, nil, nil, `ut":"a\n`)),
+			chunk(nil, fn(0, nil, nil, `b"}`)),
+			chunk(schemas.Ptr("tool_calls")),
+		)
+		require.Equal(t, 3, skipped)
+		require.Len(t, sent, 2)
+
+		header := sent[0].Choices[0].Delta.ToolCalls
+		require.Len(t, header, 1)
+		require.Equal(t, "custom", *header[0].Type)
+		require.Equal(t, "call_1", *header[0].ID)
+		require.Equal(t, "ApplyPatch", *header[0].Custom.Name)
+		require.Equal(t, "", header[0].Custom.Input)
+
+		final := sent[1].Choices[0]
+		require.Equal(t, "tool_calls", *final.FinishReason)
+		require.Len(t, final.Delta.ToolCalls, 1)
+		require.Equal(t, uint16(0), final.Delta.ToolCalls[0].Index)
+		require.Nil(t, final.Delta.ToolCalls[0].Custom.Name)
+		require.Equal(t, "a\nb", final.Delta.ToolCalls[0].Custom.Input)
+	})
+
+	t.Run("a fragment chunk with content is sent without tool calls", func(t *testing.T) {
+		withContent := chunk(nil, fn(0, nil, nil, `{"input":"x"}`))
+		withContent.Choices[0].Delta.Content = schemas.Ptr("thinking out loud")
+		sent, skipped := run(
+			chunk(nil, fn(0, schemas.Ptr("call_1"), schemas.Ptr("ApplyPatch"), "")),
+			withContent,
+			chunk(schemas.Ptr("tool_calls")),
+		)
+		require.Equal(t, 0, skipped)
+		require.Len(t, sent, 3)
+		require.Nil(t, sent[1].Choices[0].Delta.ToolCalls)
+		require.Equal(t, "thinking out loud", *sent[1].Choices[0].Delta.Content)
+		require.Equal(t, "x", sent[2].Choices[0].Delta.ToolCalls[0].Custom.Input)
+	})
+
+	t.Run("an ordinary call streams unchanged", func(t *testing.T) {
+		sent, skipped := run(chunk(nil, fn(1, schemas.Ptr("call_2"), schemas.Ptr("get_weather"), `{"city":"x"}`)))
+		require.Equal(t, 0, skipped)
+		require.Equal(t, "get_weather", *sent[0].Choices[0].Delta.ToolCalls[0].Function.Name)
+	})
+}
+
+func TestRewriteChatCustomTools_AllowedTools(t *testing.T) {
+	stubCustomToolsDatasheet(t)
+	original := customChatRequest(schemas.Anthropic, "claude-sonnet-4-5")
+	original.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+		Type: schemas.ChatToolChoiceTypeAllowedTools,
+		AllowedTools: &schemas.ChatToolChoiceAllowedTools{Mode: "required", Tools: []schemas.ChatToolChoiceAllowedToolsTool{
+			{Type: "custom", Custom: &schemas.ChatToolChoiceCustom{Name: "ApplyPatch"}},
+			{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "get_weather"}},
+		}},
+	}}
+	got := RewriteChatCustomTools(nil, schemas.Anthropic, original)
+
+	entries := got.Params.ToolChoice.ChatToolChoiceStruct.AllowedTools.Tools
+	require.Equal(t, "function", entries[0].Type)
+	require.Equal(t, "ApplyPatch", entries[0].Function.Name)
+	require.Nil(t, entries[0].Custom)
+	require.Equal(t, "get_weather", entries[1].Function.Name)
+
+	orig := original.Params.ToolChoice.ChatToolChoiceStruct.AllowedTools.Tools[0]
+	require.Equal(t, "custom", orig.Type)
+	require.Equal(t, "ApplyPatch", orig.Custom.Name)
+	require.Equal(t, "", orig.Function.Name)
+}
+
+func TestRewriteChatCustomTools_NamelessTool(t *testing.T) {
+	stubCustomToolsDatasheet(t)
+	original := customChatRequest(schemas.Anthropic, "claude-sonnet-4-5")
+	original.Params.ToolChoice = nil
+	original.Params.Tools = append(original.Params.Tools, schemas.ChatTool{Type: schemas.ChatToolTypeCustom, Custom: &schemas.ChatToolCustom{}})
+	got := RewriteChatCustomTools(nil, schemas.Anthropic, original)
+
+	require.Equal(t, schemas.ChatToolTypeFunction, got.Params.Tools[0].Type)
+	require.Equal(t, schemas.ChatToolTypeCustom, got.Params.Tools[1].Type, "a nameless custom tool is left for the upstream to reject")
+	require.Equal(t, map[string]struct{}{"ApplyPatch": {}}, got.CustomToolNames)
+}
+
+// Namespace restore runs first, so the custom restore matches on the restored namespace and name.
+func TestRestoreResponsesToolCalls(t *testing.T) {
+	prepared := &schemas.BifrostResponsesRequest{
+		NamespaceToolAliases: map[string]schemas.NamespaceToolAlias{"shell__run": {Namespace: "shell", Name: "run"}},
+		CustomToolNames:      map[string]struct{}{customToolKey("shell", "run"): {}},
+	}
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("shell__run"), Arguments: schemas.Ptr(`{"input":"ls"}`)},
+	}}}
+	RestoreResponsesToolCalls(prepared, resp)
+	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *resp.Output[0].Type)
+	require.Equal(t, "run", *resp.Output[0].Name)
+	require.Equal(t, "shell", *resp.Output[0].Namespace)
+	require.Equal(t, "ls", resp.Output[0].ResponsesCustomToolCall.Input)
+
+	RestoreResponsesToolCalls(nil, resp)
+	RestoreResponsesToolCalls(prepared, nil)
+	require.Zero(t, testing.AllocsPerRun(100, func() { RestoreResponsesToolCalls(&schemas.BifrostResponsesRequest{}, resp) }))
+
+	inner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	same := reflect.ValueOf(inner).Pointer()
+	require.Equal(t, same, reflect.ValueOf(WrapResponsesToolRestorePostHookRunner(inner, nil)).Pointer())
+	require.Equal(t, same, reflect.ValueOf(WrapResponsesToolRestorePostHookRunner(inner, &schemas.BifrostResponsesRequest{})).Pointer())
+	require.NotEqual(t, same, reflect.ValueOf(WrapResponsesToolRestorePostHookRunner(inner, prepared)).Pointer())
+}
+
+func TestRestoreRetrievedCustomToolCalls(t *testing.T) {
+	stubCustomToolsDatasheet(t)
+	rewritten := RewriteResponsesCustomTools(nil, schemas.XAI, customToolsResponsesRequest(schemas.XAI, "grok-4"))
+	resp := &schemas.BifrostResponsesResponse{Tools: rewritten.Params.Tools, Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: rewritten.Params.Tools[0].Name, Arguments: schemas.Ptr(`{"input":"x"}`)},
+	}}}
+	RestoreRetrievedCustomToolCalls(resp)
+	require.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *resp.Output[0].Type)
+	require.Equal(t, "x", resp.Output[0].ResponsesCustomToolCall.Input)
+	RestoreRetrievedCustomToolCalls(nil)
 }

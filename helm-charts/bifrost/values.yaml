@@ -466,29 +466,43 @@ bifrost:
     # requiredHeaders: []                    # Headers that must be present on every request
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
+    # usageEstimationTokenizers: ["anthropic", "llama3"] # Tokenizer families (anthropic, deepseek, llama2, llama3, all) used to estimate usage of a cancelled or timed-out stream the provider never reported; empty counts every model with o200k_base/cl100k_base. Each family preloads at startup and keeps 4-18 MB in memory
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # skipAccessProfileUserVirtualKeyCreation: false # Enterprise: when true, a user's first access profile does not create a virtual key for them
     # skipAccessProfileUserVirtualKeyDeletion: false # Enterprise: when true, removing a user's last access profile does not delete their virtual keys (deleting the user still does)
+    # entityAccessProfileMode: "union"  # Enterprise: "union" (team/BU/customer access profiles add to a user's access) or "intersect" (each level with a profile caps it), like a project's access rule
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
     # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
+    # mcpOpenapiMaxSpecMb: 32                # Size limit in MiB on an openapi MCP client's spec (inline, specFile or fetched from specUrl); 0 = built-in default (32), max 256. Parsing holds several times the spec's size in memory
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
     # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
-    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and client gateways (gateways.<client>.enabled)
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when any client gateway is enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
+    #   gateways:                 # Client gateways at <issuerUrl>/gateway/<client>; each needs issuerUrl, any mcpServerAuthMode
+    #     claudeCode:             # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code
+    #       enabled: false
+    #       managedSettings: {}   # Optional Claude Code managed-settings.json pushed to signed-in clients
+    #       telemetry:            # Forward Claude Code's OTLP telemetry, stamped with the Bifrost identity
+    #         enabled: false
+    #         destinations:       # OTLP/HTTP collectors; signals go to <endpoint>/v1/{metrics,logs,traces}
+    #           - endpoint: "https://otel-collector.example.com"
+    #             headers:
+    #               authorization: "env.OTEL_COLLECTOR_TOKEN"   # a plain value or an env./vault. reference
+    #         dropAttributes: []  # e.g. ["prompt"] to strip prompt text before forwarding
 
   # Server configuration
   server:
@@ -588,6 +602,18 @@ bifrost:
   #     - name: "anthropic-key"
   #       value: "sk-ant-..."
   #       weight: 1
+  #
+  # # Baseten example: Model APIs by default; an alias with deployment_url sends that model to a
+  # # dedicated deployment's OpenAI-compatible base URL instead (must be https)
+  # baseten:
+  #   keys:
+  #     - name: "baseten-key"
+  #       value: "env.BASETEN_API_KEY"
+  #       weight: 1
+  #       aliases:
+  #         my-llama:
+  #           model_id: "not-required"   # Engine-Builder and BEI deployments ignore it
+  #           deployment_url: "https://model-<id>.api.baseten.co/environments/production/sync/v1"
   #
   # # Azure OpenAI example (requires azure_key_config)
   # azure:
@@ -994,6 +1020,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     apply_trace_dimensions_to_child_spans: false # Merge x-bf-dim-* onto child spans as well as the root
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #     excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         #     export_raw_payloads: false  # Raw provider request/response bodies on spans; needs raw storage on the provider
@@ -1029,6 +1056,8 @@ bifrost:
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Merge x-bf-dim-* request dimensions onto child spans as well as the root HTTP span
+        apply_trace_dimensions_to_child_spans: false
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
@@ -1966,13 +1995,14 @@ bifrost:
   # Model routers: named complexity classifiers that each take the requests their routing matches,
   # after governance.routingRules. Each entry takes id, name and description, the settings of
   # governance.complexityAnalyzerConfig (keywords, classifier, semantic, decision, llm, session,
-  # tier_boundaries), suggestions (phrase suggestions, which only routers make), targets: the
-  # model each tier gets, and routing:
-  # which requests it takes. Routers are tried narrowest scope first (virtual key, user, team, customer,
-  # then global), by priority within a scope; the first enabled router whose condition holds classifies the
+  # tier_boundaries), targets: the model each tier gets, and routing: which requests it takes.
+  # Routers are tried narrowest scope first (virtual key, user, team, customer, then global), by
+  # priority within a scope; the first enabled router whose condition holds classifies the
   # request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model.
-  # Rendered as top-level `model_routers` in config.json when non-empty. Routers are separate from
-  # governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.
+  # Rendered as top-level `model_routers` in config.json whenever declared. With sourceOfTruth "config.json",
+  # an explicit list (including []) removes stored routers it does not name; omit the key to leave them.
+  # Routers are separate from governance.complexityAnalyzerConfig, which routing rules read
+  # complexity_tier from.
   # modelRouters:
   #   - id: "support"                    # letters, digits, _ and - (max 64)
   #     name: "Support"                  # unique across routers
@@ -2002,6 +2032,29 @@ bifrost:
   #       scope: "global"                # global, team, customer, virtual_key (user-scoped routing is API/UI only)
   #       # scope_id: "team-1"           # Required for non-global scopes: the entity's ID, not its name
   #       priority: 0                    # Lower = tried first; unique within the scope among model routers
+
+  # Datasheet overrides: edits to the synced model datasheet (pricing and model parameters) that
+  # survive every datasheet sync. Rendered directly as top-level `datasheet_overrides` in config.json
+  # and matched by (provider, model, mode). Both patches are RFC 7386 JSON merge patches: a key sets
+  # the value, null clears it, an omitted key keeps the upstream value. A file entry is applied when
+  # it changes, so UI edits stand until the entry itself changes. With sourceOfTruth "config.json",
+  # an explicit list (including []) removes stored overrides it does not name; omit the key to leave them.
+  # datasheetOverrides:
+  #   - provider: "openai"
+  #     model: "gpt-4o"
+  #     mode: "chat"                         # omit to apply the pricing patch to every mode of the model
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000022
+  #       max_output_tokens: 16384
+  #     params_patch:
+  #       supports_reasoning: false
+  #   - provider: "openai"
+  #     model: "ft:gpt-4o-mini:acme:support"
+  #     mode: "chat"                         # required when is_custom is true
+  #     is_custom: true                      # adds an entry the upstream datasheet does not list
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000003
+  #       output_cost_per_token: 0.0000012
 
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
@@ -2477,8 +2530,59 @@ vectorStore:
 
       affinity: {}
 
+      # Extra environment variables for the Redis container, appended after the chart's own
+      # REDIS_PASSWORD / REDISCLI_AUTH. Standard Kubernetes EnvVar entries (value or valueFrom).
+      # REDIS_ARGS (server flags) and redis-stack module args such as REDISEARCH_ARGS are read from
+      # here. With auth enabled, setting extraEnv or envFrom starts Redis through `sh -c` so REDIS_ARGS
+      # is appended after --requirepass.
+      # extraEnv:
+      #   - name: REDIS_ARGS
+      #     value: "--maxmemory 400mb --maxmemory-policy allkeys-lru"
+      #   - name: REDISEARCH_ARGS
+      #     valueFrom:
+      #       configMapKeyRef:
+      #         name: redis-tuning
+      #         key: redisearch-args
+
+      # Environment variables for the Redis container from secrets/configmaps
+      # envFrom:
+      #   - configMapRef:
+      #       name: redis-tuning
+
+    # Prometheus metrics for the bundled Redis: runs an oliver006/redis_exporter sidecar in the
+    # Redis pod, adds a `metrics` port to the Redis Service and prometheus.io/* scrape annotations
+    # to the pod. The exporter authenticates with the same password as Redis when auth is enabled.
     metrics:
       enabled: false
+      # image:
+      #   repository: oliver006/redis_exporter   # default
+      #   tag: "v1.97.0"                         # default
+      #   pullPolicy: IfNotPresent               # default
+      # port: 9121                               # default
+      # resources:
+      #   limits:
+      #     cpu: 100m
+      #     memory: 64Mi
+      #   requests:
+      #     cpu: 25m
+      #     memory: 32Mi
+      # Extra environment variables for the exporter, e.g. REDIS_EXPORTER_CHECK_KEYS
+      # extraEnv:
+      #   - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+      #     value: "true"
+      # ServiceMonitor for the Prometheus Operator (requires the monitoring.coreos.com/v1 CRDs)
+      # serviceMonitor:
+      #   enabled: false
+      #   namespace: monitoring   # Namespace for the ServiceMonitor (default: release namespace)
+      #   interval: "30s"
+      #   scrapeTimeout: "10s"
+      #   labels: {}              # Extra labels, e.g. the release label your Prometheus selects on
+      #   # Credentials for exporter basic auth (REDIS_EXPORTER_BASIC_AUTH_* in extraEnv)
+      #   basicAuth:
+      #     enabled: true
+      #     existingSecret: redis-exporter-auth   # In the ServiceMonitor's namespace
+      #     usernameKey: username                 # default
+      #     passwordKey: password                 # default
 
   # Qdrant configuration
   qdrant:

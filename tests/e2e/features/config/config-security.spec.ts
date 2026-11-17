@@ -1,7 +1,7 @@
 import { coreConfigApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { ConfigSettingsPage, ConfigSettingsState } from "./pages/config-settings.page";
-import { DefaultCoreConfig } from "../../../../ui/lib/types/config";
+import { DefaultCoreConfig } from "../../../../ui/lib/types/coreConfigDefaults";
 import { storageStatePath } from "../../plan";
 
 test.describe("Inference auth setup defaults", () => {
@@ -322,6 +322,54 @@ test.describe("Security Settings", () => {
       (await coreConfigApi.get(request)).client_config
         .enforce_vk_object_ownership,
     ).toBe(!initial);
+  });
+
+  // The Bifrost MCP server (/v1/mcp) is not released yet, so its switch is hidden
+  // (BIFROST_MCP_SETTINGS_VISIBLE in ui/lib/constants/mcp.ts); the case below that
+  // drives it is skipped until it ships.
+  test("should not show the Bifrost MCP allow writes switch", async ({
+    configSettingsPage,
+  }) => {
+    await configSettingsPage.dismissOnboardingWidget();
+    const page = configSettingsPage.page;
+    await expect(
+      page.getByTestId("security-enforce-vk-object-ownership-switch"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("security-bifrost-mcp-allow-writes-switch"),
+    ).toHaveCount(0);
+  });
+
+  test.skip("should persist the Bifrost MCP allow writes switch", async ({
+    configSettingsPage,
+    request,
+  }) => {
+    const original =
+      (await coreConfigApi.get(request)).client_config.bifrost_mcp_allow_writes ?? null;
+    try {
+      await configSettingsPage.dismissOnboardingWidget();
+      const writes = configSettingsPage.page.getByTestId(
+        "security-bifrost-mcp-allow-writes-switch",
+      );
+      await expect(writes).toBeVisible();
+      const initial = await configSettingsPage.getSwitchState(writes);
+
+      await writes.click();
+      await configSettingsPage.saveSettings();
+      await expect
+        .poll(
+          async () =>
+            (await coreConfigApi.get(request)).client_config
+              .bifrost_mcp_allow_writes ?? true,
+        )
+        .toBe(!initial);
+      await configSettingsPage.goto("security");
+      expect(await configSettingsPage.getSwitchState(writes)).toBe(!initial);
+    } finally {
+      await coreConfigApi.updateClientConfig(request, {
+        bifrost_mcp_allow_writes: original,
+      });
+    }
   });
 
   for (const { name, switchOf, field } of [

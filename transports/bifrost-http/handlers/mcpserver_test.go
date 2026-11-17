@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -496,6 +497,74 @@ func TestMCPGateway_TransportRules(t *testing.T) {
 	}
 }
 
+// The server-side version cap applies to both eras and changes without rebuilding the handler.
+func TestMCPGateway_ServerMaxProtocolVersion(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	modernList := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"raw","version":"0"}}}}`
+	legacyList := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`
+	post := func(t *testing.T, body string, headers map[string]string) (int, string) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(out)
+	}
+	modern := map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+	legacy := func(version string) map[string]string { return map[string]string{"MCP-Protocol-Version": version} }
+	negotiated := func(t *testing.T, version string) string {
+		tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+		require.NoError(t, err)
+		c := client.NewClient(tr, client.WithProtocolVersion(version))
+		require.NoError(t, c.Start(context.Background()))
+		t.Cleanup(func() { _ = c.Close() })
+		init := mcp.InitializeRequest{}
+		init.Params.ProtocolVersion = version
+		init.Params.ClientInfo = mcp.Implementation{Name: "cap", Version: "0.0.1"}
+		result, err := c.Initialize(context.Background(), init)
+		require.NoError(t, err)
+		return result.ProtocolVersion
+	}
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPProtocolVersion20250618)
+	status, body := post(t, modernList, modern)
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, int64(-32022), gjson.Get(body, "error.code").Int(), body)
+	assert.Equal(t, int64(1), gjson.Get(body, "id").Int(), "the refusal answers the request's id: %s", body)
+	assert.Equal(t, `["2025-06-18","2025-03-26","2024-11-05"]`, gjson.Get(body, "error.data.supported").Raw, "the client falls back from this list: %s", body)
+	assert.Equal(t, mcp.ProtocolVersion20250618, negotiated(t, mcp.ProtocolVersion20251125))
+	assert.Equal(t, mcp.ProtocolVersion20250326, negotiated(t, mcp.ProtocolVersion20250326))
+
+	// A legacy request declaring a version above the cap is refused; versions under it, and no header, are served.
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, "Unsupported protocol version: 2025-11-25\n", body)
+	for _, headers := range []map[string]string{legacy(mcp.ProtocolVersion20250618), legacy(mcp.ProtocolVersion20250326), nil} {
+		status, body = post(t, legacyList, headers)
+		assert.Equal(t, http.StatusOK, status, "headers %v: %s", headers, body)
+		assert.Contains(t, body, "gw-echo")
+	}
+	// initialize carrying the header is lowered, not refused.
+	status, body = post(t, initialize, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Contains(t, body, `"protocolVersion":"2025-06-18"`)
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPMaxProtocolVersionAuto)
+	status, body = post(t, modernList, modern)
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, mcp.ProtocolVersion20251125, negotiated(t, mcp.ProtocolVersion20251125))
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, "uncapped: %s", body)
+}
+
 // Browser requests to /mcp are refused with 403 when their Origin may not reach it (Streamable
 // HTTP "Security Warning"). While /mcp accepts unauthenticated calls the bare "*" does not count and
 // same-origin is not exempt; with auth enforced allowed_origins applies as configured. Requests
@@ -641,6 +710,40 @@ func TestMCPGateway_GetStreamCommitsHeadersPromptly(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+}
+
+// A legacy session opened before a cap change still opens its notification stream after it: the session is
+// registered on the shared server at initialize, so the cap must not be applied by replacing the transport.
+func TestMCPGateway_ServerCapChangeKeepsSessions(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	for _, cap := range []string{schemas.MCPProtocolVersion20251125, schemas.MCPMaxProtocolVersionAuto} {
+		h.UpdateServerMaxProtocolVersion(cap)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		get, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/mcp", nil)
+		require.NoError(t, err)
+		get.Header.Set("Accept", "text/event-stream")
+		get.Header.Set("MCP-Protocol-Version", mcp.ProtocolVersion20251125)
+		get.Header.Set("Mcp-Session-Id", sessionID)
+		resp, err := http.DefaultClient.Do(get)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "cap %s", cap)
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"), "cap %s", cap)
+		resp.Body.Close()
+		cancel()
+	}
 }
 
 // A client that hangs up ends its stream on the server, legacy GET and subscriptions/listen alike.

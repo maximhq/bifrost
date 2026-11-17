@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Gemini and Vertex Live through /v1/realtime (Vertex against the real service only): an app that speaks OpenAI Realtime, served by the gateway's
@@ -162,6 +163,63 @@ func TestLiveTranslated_SessionUpdateBecomesTheSetup(t *testing.T) {
 	assert.True(t, setup.Get("inputAudioTranscription").Exists())
 	assert.True(t, setup.Get("outputAudioTranscription").Exists())
 	assert.True(t, setup.Get("realtimeInputConfig.automaticActivityDetection.disabled").Bool(), "a null turn_detection hands turns to the client")
+}
+
+// A session.update after the first message reaches Live as a context update, so a running session can change its
+// instructions and its tools. What Live cannot change after the setup is ignored, and the reply shows what is in effect.
+func TestLiveTranslated_SessionUpdateMidSessionChangesInstructionsAndTools(t *testing.T) {
+	eachTranslated(t, func(t *testing.T, target translatedTarget) {
+		vk := createVirtualKey(t, keySpec{})
+		s, marker := openTranslated(t, target, vk, map[string]any{"tools": []any{weatherTool}})
+		voice := s.created.Get("session.audio.output.voice").Str
+
+		s.client.send(userMessage("What is the weather in Paris right now? Use the get_weather function."), responseCreate())
+		call := functionCall(s.responseDone())
+		require.Equal(t, "get_weather", call.Get("name").Str, "function call: %s", call.Raw)
+		s.client.send(functionCallOutput(call.Get("call_id").Str, `{"conditions":"sunny"}`), responseCreate())
+		s.responseDone()
+
+		const french = "Always answer only in French, in one short sentence."
+		updated := s.configure(map[string]any{
+			"type": "realtime", "instructions": french, "tools": []any{timeTool},
+			"temperature": 0.2, "audio": map[string]any{"output": map[string]any{"voice": "Puck"}},
+		})
+		assert.Equal(t, french, updated.Get("session.instructions").Str)
+		assert.Equal(t, "get_time", updated.Get("session.tools.0.name").Str)
+		assert.Equal(t, voice, updated.Get("session.audio.output.voice").Str, "the voice is fixed with the setup, so the change is ignored")
+
+		s.client.send(userMessage("What time is it in Tokyo? Use the get_time function."), responseCreate())
+		call = functionCall(s.responseDone())
+		require.Equal(t, "get_time", call.Get("name").Str, "the new tool replaces the old one: %s", call.Raw)
+		s.client.send(functionCallOutput(call.Get("call_id").Str, `{"time":"09:00"}`), responseCreate())
+		s.responseDone()
+
+		hello := s.ask("Say hello.")
+		assert.NotEmpty(t, replyText(hello))
+		if fake == nil {
+			assert.Regexp(t, `(?i)bonjour|salut|bonsoir|coucou`, replyText(hello), "the new instructions apply to the next answer")
+		}
+		rows := s.turnRows(5)
+		for _, row := range rows {
+			assert.Equal(t, "success", row.Status)
+		}
+		assert.Equal(t, []string{"get_time"}, rows[2].toolCalls())
+
+		if fake == nil {
+			return
+		}
+		var updates []gjson.Result
+		for _, frame := range fake.WaitSession(t, marker).Frames() {
+			if frame.Get("contextUpdate").Exists() {
+				updates = append(updates, frame)
+			}
+		}
+		require.Len(t, updates, 1, "one session.update, one context update")
+		update := updates[0].Get("contextUpdate")
+		assert.Equal(t, french, update.Get("systemInstruction.parts.0.text").Str)
+		assert.Equal(t, "get_time", update.Get("tools.tools.0.functionDeclarations.0.name").Str)
+		assert.Len(t, update.Map(), 2, "nothing the update ignored travels to Live: %s", update.Raw)
+	})
 }
 
 // A function call ends one turn; the app answers it and asks for the next response.
