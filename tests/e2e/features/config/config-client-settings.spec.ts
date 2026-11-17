@@ -260,7 +260,18 @@ test.describe('Client Settings', () => {
     }
   })
 
-  test('should save the Bifrost URL', async ({ configSettingsPage, request }) => {
+  // The Bifrost MCP server (/v1/mcp) is not released yet, so the dashboard hides its
+  // settings (BIFROST_MCP_SETTINGS_VISIBLE in ui/lib/constants/mcp.ts). The cases that
+  // drive them are skipped until it ships; the one below pins that they stay hidden.
+  test('should not show the Bifrost MCP settings', async ({ configSettingsPage }) => {
+    await configSettingsPage.goto('client-settings')
+    const page = configSettingsPage.page
+    await expect(page.getByTestId('client-settings-async-job-result-ttl-input')).toBeVisible()
+    await expect(page.getByTestId('client-settings-bifrost-url')).toHaveCount(0)
+    await expect(page.getByTestId('client-settings-openapi-url')).toHaveCount(0)
+  })
+
+  test.skip('should save the Bifrost URL', async ({ configSettingsPage, request }) => {
     const original = (await coreConfigApi.get(request)).client_config.bifrost_url ?? ''
     try {
       await configSettingsPage.goto('client-settings')
@@ -284,7 +295,7 @@ test.describe('Client Settings', () => {
     }
   })
 
-  test('should save the OpenAPI URL to the framework config', async ({ configSettingsPage, request }) => {
+  test.skip('should save the OpenAPI URL to the framework config', async ({ configSettingsPage, request }) => {
     const original = String((await coreConfigApi.get(request)).framework_config.openapi_url ?? '')
     try {
       await configSettingsPage.goto('client-settings')
@@ -304,7 +315,7 @@ test.describe('Client Settings', () => {
 
   // The form checks both URLs with the server's rules and shows the error beside
   // the field, so an invalid value never reaches PUT /api/config.
-  test('should refuse invalid Bifrost and OpenAPI URLs inline', async ({ configSettingsPage, request }) => {
+  test.skip('should refuse invalid Bifrost and OpenAPI URLs inline', async ({ configSettingsPage, request }) => {
     const before = await coreConfigApi.get(request)
     const page = configSettingsPage.page
     const bifrostURL = page.getByTestId('client-settings-bifrost-url-input')
