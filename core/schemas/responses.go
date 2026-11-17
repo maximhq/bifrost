@@ -526,12 +526,18 @@ func orDefault[T any](src *T, defaultVal T) *T {
 }
 
 // PromptCacheOptions is the request-wide prompt-caching configuration OpenAI
-// added with the gpt-5.6 family (echoed back on the response). Mode is
-// "implicit" or "explicit"; TTL is the minimum breakpoint lifetime (currently
-// "30m"). Values are passed through untouched.
+// added with the gpt-5.6 family (echoed back on the response). Values are
+// passed through untouched.
 type PromptCacheOptions struct {
-	Mode *string `json:"mode,omitempty"`
-	TTL  *string `json:"ttl,omitempty"`
+	Mode                 *string `json:"mode,omitempty"`                   // "implicit" | "explicit"
+	TTL                  *string `json:"ttl,omitempty"`                    // "30m" | "12h"
+	Prewarm              *bool   `json:"prewarm,omitempty"`                // Write the cache without generating output
+	ComparisonResponseID *string `json:"comparison_response_id,omitempty"` // Response to diff against for cache diagnostics
+}
+
+type ResponsesBackgroundOptions struct {
+	CompletionWindow *string `json:"completion_window,omitempty"` // "soonest" | "2h" | "8h"
+	ContinuationID   *string `json:"continuation_id,omitempty"`   // Caller-chosen ID that prioritizes related runs
 }
 
 // PromptCacheBreakpoint marks the end of a cacheable prompt prefix on a content
@@ -543,6 +549,7 @@ type PromptCacheBreakpoint struct {
 
 type ResponsesParameters struct {
 	Background           *bool                          `json:"background,omitempty"`
+	BackgroundOptions    *ResponsesBackgroundOptions    `json:"background_options,omitempty"` // Completion window and continuation ID for background runs (OpenAI)
 	Conversation         *ResponsesResponseConversation `json:"conversation,omitempty"`
 	Include              []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
 	Instructions         *string                        `json:"instructions,omitempty"`

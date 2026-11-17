@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -124,6 +125,22 @@ func TestResponsesRequestParamsNonNilWithoutParamFields(t *testing.T) {
 	if req.Input.ResponsesRequestInputStr == nil || *req.Input.ResponsesRequestInputStr != "hi" {
 		t.Errorf("string-form input lost")
 	}
+}
+
+// /v1/responses must carry prewarm and background_options as typed params: left to
+// extra params they only reach the provider behind the passthrough header.
+func TestPrepareResponsesRequestKeepsPrewarmAndBackgroundOptions(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-6.2-sol","input":"hi","background":true,` +
+		`"background_options":{"completion_window":"2h","continuation_id":"run-1"},` +
+		`"prompt_cache_options":{"prewarm":true,"comparison_response_id":"resp_1"}}`)
+	_, coreReq, err := prepareResponsesRequest(ctx, nil)
+	require.NoError(t, err)
+	raw, err := sonic.MarshalString(coreReq.Params)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"completion_window":"2h","continuation_id":"run-1"}`, gjson.Get(raw, "background_options").Raw)
+	assert.JSONEq(t, `{"prewarm":true,"comparison_response_id":"resp_1"}`, gjson.Get(raw, "prompt_cache_options").Raw)
+	assert.NotContains(t, coreReq.Params.ExtraParams, "background_options", "typed field must not also ride in extra params")
 }
 
 func TestPrepareResponsesRequestNullClearsParameters(t *testing.T) {
