@@ -49,7 +49,6 @@ import (
 
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -2114,25 +2113,24 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 }
 
-// ctxSensitivePromptStore fails any read whose context is already cancelled. That is how
-// a test observes the context ReloadPlugin handed the plugin constructor: prompts.Init
-// calls loadCache(ctx) and returns its error.
-type ctxSensitivePromptStore struct {
-	configstore.ConfigStore
+// ctxRecordingVectorStore records the context the semantic cache constructor creates its
+// namespace with, which it derives from its own, and whether it was already done then; the
+// constructor cancels it on return. That is how a test observes the context ReloadPlugin
+// handed the plugin constructor.
+type ctxRecordingVectorStore struct {
+	vectorstore.VectorStore
 	gotCtx context.Context
+	errAt  error
 }
 
 // errStopAfterInstantiation ends ReloadPlugin at the constructor, before it needs a live
 // Bifrost client, so the test can inspect the context the constructor was given.
 var errStopAfterInstantiation = errors.New("stop after instantiation")
 
-func (s *ctxSensitivePromptStore) GetPrompts(ctx context.Context, _ *string) ([]configstoreTables.TablePrompt, error) {
-	s.gotCtx = ctx
-	return nil, errStopAfterInstantiation
-}
-
-func (s *ctxSensitivePromptStore) GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error) {
-	return nil, ctx.Err()
+// CreateNamespace records ctx and stops the constructor.
+func (s *ctxRecordingVectorStore) CreateNamespace(ctx context.Context, _ string, _ int, _ map[string]vectorstore.VectorStoreProperties) error {
+	s.gotCtx, s.errAt = ctx, ctx.Err()
+	return errStopAfterInstantiation
 }
 
 // A plugin outlives the request that loaded it, so ReloadPlugin must hand its constructor
@@ -2147,19 +2145,19 @@ func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
 	)
 	defer cancelServer()
 
-	store := &ctxSensitivePromptStore{}
-	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{ConfigStore: store}}
+	store := &ctxRecordingVectorStore{}
+	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{VectorStore: store}}
 
 	// The admin reload request is already over by the time the constructor runs.
 	reloadReqCtx, cancelRequest := context.WithCancel(context.Background())
 	cancelRequest()
 
-	err := s.ReloadPlugin(reloadReqCtx, prompts.PluginName, nil, nil, nil, nil)
+	err := s.ReloadPlugin(reloadReqCtx, semanticcache.PluginName, nil, map[string]any{"dimension": 1}, nil, nil)
 
 	if store.gotCtx == nil {
 		t.Fatal("the plugin constructor never reached the store")
 	}
-	if cerr := store.gotCtx.Err(); cerr != nil {
+	if cerr := store.errAt; cerr != nil {
 		t.Errorf("constructor context was already cancelled (%v); it must be the server context, not the reload request's", cerr)
 	}
 	if !errors.Is(err, errStopAfterInstantiation) {

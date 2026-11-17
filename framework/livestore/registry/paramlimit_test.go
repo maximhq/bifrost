@@ -240,3 +240,52 @@ func TestModelRoutersByIDReadsMoreRoutersThanTheParameterLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestPromptsByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more prompt IDs than one
+// statement may bind still reads the prompts that exist.
+func TestPromptsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TablePrompt{ID: "p-1", Name: "one"})
+	rows, err := PromptsByID(context.Background(), db, withMissingIDs("p-1"))
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "p-1", PromptID(rows[0]))
+}
+
+// TestPromptVersionsReadMoreVersionsThanTheParameterLimit checks that reading more prompt versions
+// than one statement may bind, through their prompt or by ID, reads every one with its messages:
+// the read of the versions and the read of their messages each bind the whole ID list, whose row
+// IDs are integers.
+func TestPromptVersionsReadMoreVersionsThanTheParameterLimit(t *testing.T) {
+	ctx := context.Background()
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TablePrompt{ID: "p-1", Name: "one"})
+	versions := make([]tables.TablePromptVersion, 0, pastSQLiteParamLimit)
+	for i := range pastSQLiteParamLimit {
+		versions = append(versions, tables.TablePromptVersion{PromptID: "p-1", VersionNumber: i + 1, Provider: "openai", Model: "gpt-4o"})
+	}
+	require.NoError(t, db.Omit(clause.Associations).CreateInBatches(versions, 500).Error)
+	first := versions[0].ID
+	insert(t, db, &tables.TablePromptVersionMessage{PromptID: "p-1", VersionID: first, OrderIndex: 0, Message: tables.PromptMessage(`{"role":"user","content":"hi"}`)})
+
+	check := func(name string, rows []*PromptVersion, err error) {
+		t.Helper()
+		require.NoError(t, err, name)
+		require.Len(t, rows, pastSQLiteParamLimit, name)
+		for _, v := range rows {
+			if v.ID == first {
+				require.Len(t, v.Messages, 1, name)
+			} else {
+				require.Empty(t, v.Messages, name)
+			}
+		}
+	}
+	rows, err := PromptVersionsByPrompts(ctx, db, []string{"p-1"})
+	check("through the prompt", rows, err)
+	ids := make([]string, 0, pastSQLiteParamLimit+1)
+	for _, v := range versions {
+		ids = append(ids, NumericID(v.ID))
+	}
+	rows, err = PromptVersionsByID(ctx, db, append(ids, NumericID(1_000_000)))
+	check("by ID", rows, err)
+}

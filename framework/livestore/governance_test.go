@@ -2,6 +2,7 @@ package livestore
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -438,4 +439,75 @@ func TestUnreadableModelRouterFailsTheLoadAndKeepsItsRecordOnRefresh(t *testing.
 	kept, ok = s.Collections.ModelRouters.Get("fine")
 	require.True(t, ok)
 	require.Same(t, fine, kept, "a refresh that cannot read the row keeps the record")
+}
+
+// TestPromptVersionsAreFoundByNumberAndLatest checks that prompt versions load with their messages,
+// are found by prompt and number and as their prompt's latest, follow a refresh of the whole kind,
+// and go with their prompt.
+func TestPromptVersionsAreFoundByNumberAndLatest(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	require.NoError(t, db.Create(&tables.TablePrompt{ID: "p1", Name: "Support"}).Error)
+	for _, v := range []*tables.TablePromptVersion{
+		{PromptID: "p1", VersionNumber: 1},
+		{PromptID: "p1", VersionNumber: 2, IsLatest: true},
+	} {
+		require.NoError(t, db.Omit(clause.Associations).Create(v).Error)
+	}
+	s := loadedGovernance(t, db)
+	prompt, ok := s.Collections.Prompts.Get("p1")
+	require.True(t, ok)
+	require.Equal(t, "Support", prompt.Name)
+	v1, ok := s.Collections.PromptVersions.GetBy(registry.PromptVersionByNumber, registry.PromptVersionKey("p1", 1))
+	require.True(t, ok)
+	require.Equal(t, 1, v1.VersionNumber)
+	latest, ok := s.Collections.PromptVersions.GetBy(registry.PromptVersionLatest, "p1")
+	require.True(t, ok)
+	require.Equal(t, 2, latest.VersionNumber)
+
+	require.NoError(t, db.Model(&tables.TablePromptVersion{}).Where("prompt_id = ?", "p1").Update("is_latest", false).Error)
+	require.NoError(t, db.Omit(clause.Associations).Create(&tables.TablePromptVersion{PromptID: "p1", VersionNumber: 3, IsLatest: true}).Error)
+	require.NoError(t, s.RefreshKind(ctx, KindPromptVersion))
+	latest, ok = s.Collections.PromptVersions.GetBy(registry.PromptVersionLatest, "p1")
+	require.True(t, ok)
+	require.Equal(t, 3, latest.VersionNumber)
+
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindPrompt, ID: "p1", Remove: true}}))
+	_, ok = s.Collections.PromptVersions.GetBy(registry.PromptVersionByNumber, registry.PromptVersionKey("p1", 1))
+	require.False(t, ok, "a prompt's versions go with it")
+}
+
+// TestUnreadablePromptVersionFailsTheLoadAndKeepsRecordsOnRefresh checks that a version whose
+// stored JSON does not decode fails the boot load and a refresh of the whole kind, naming the
+// version, and that refreshing its prompt by ID fails and keeps the records.
+func TestUnreadablePromptVersionFailsTheLoadAndKeepsRecordsOnRefresh(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	require.NoError(t, db.Create(&tables.TablePrompt{ID: "p1", Name: "Support"}).Error)
+	for _, v := range []*tables.TablePromptVersion{
+		{PromptID: "p1", VersionNumber: 1},
+		{PromptID: "p1", VersionNumber: 2, IsLatest: true},
+	} {
+		require.NoError(t, db.Omit(clause.Associations).Create(v).Error)
+	}
+	s := loadedGovernance(t, db)
+	fine, ok := s.Collections.PromptVersions.GetBy(registry.PromptVersionByNumber, registry.PromptVersionKey("p1", 1))
+	require.True(t, ok)
+
+	var broken tables.TablePromptVersion
+	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Where("version_number = ?", 2).First(&broken).Error)
+	require.NoError(t, db.Model(&tables.TablePromptVersion{}).Where("version_number = ?", 2).Update("model_params_json", `{"unterminated`).Error)
+	boot, err := New()
+	require.NoError(t, err)
+	t.Cleanup(boot.Close)
+	err = boot.LoadAll(ctx, db)
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable, "the boot load fails")
+	require.ErrorContains(t, err, fmt.Sprintf("prompt version %d", broken.ID), "and names the version")
+
+	require.ErrorIs(t, s.RefreshKind(ctx, KindPromptVersion), configstore.ErrConfigUnreadable, "a refresh of the whole kind fails")
+	err = s.Refresh(ctx, []Ref{{Kind: KindPrompt, ID: "p1"}})
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable)
+	kept, ok := s.Collections.PromptVersions.GetBy(registry.PromptVersionByNumber, registry.PromptVersionKey("p1", 1))
+	require.True(t, ok)
+	require.Same(t, fine, kept, "a refresh that cannot read the rows keeps the records")
 }
