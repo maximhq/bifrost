@@ -5281,6 +5281,9 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 	return argumentsJSON
 }
 
+// anthropicServerToolUseIDPrefix starts every id Anthropic gives a server_tool_use block.
+const anthropicServerToolUseIDPrefix = "srvtoolu_"
+
 // isWebSearchPendingCall reports whether a web_search_call is a search Anthropic has not
 // run yet (deferred beside a client tool, or a paused turn): it is replayed as a bare
 // server_tool_use.
@@ -5292,11 +5295,14 @@ func isWebSearchPendingCall(msg *schemas.ResponsesMessage) bool {
 // search whose server_tool_use was sent in an earlier assistant message. Anthropic returns
 // a deferred search's web_search_tool_result at the start of the next assistant message;
 // newWebSearchResultOnlyCall represents it as a finished web_search_call with the same id
-// and no query. A real call always has a query (Anthropic's server_tool_use input
-// requires one), so a finished search action with none can only be a result.
+// and no query. An Anthropic server_tool_use always has a query (its input requires one),
+// so a finished Anthropic search (srvtoolu_ id) with none can only be a result. Other
+// providers' calls (OpenAI ws_ ids) may legitimately omit the query and are never
+// result-only: they keep the server_tool_use plus result rebuild.
 func isWebSearchResultOnlyCall(msg *schemas.ResponsesMessage) bool {
 	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeWebSearchCall ||
-		msg.ID == nil || msg.Status == nil || isWebSearchPendingCall(msg) ||
+		msg.ID == nil || !strings.HasPrefix(*msg.ID, anthropicServerToolUseIDPrefix) ||
+		msg.Status == nil || isWebSearchPendingCall(msg) ||
 		msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
 		return false
 	}

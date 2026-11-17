@@ -1267,11 +1267,27 @@ func (state *AnthropicResponsesStreamState) closeDeferredWebSearch(sequenceNumbe
 			ResponsesToolMessage: state.webSearchToolMessage(action),
 		},
 	}
+	state.storeWebSearchOutputItem(state.WebSearchOutputIndex, done.Item)
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchQuery = nil
 	state.WebSearchCaller = nil
 	return done
+}
+
+// storeWebSearchOutputItem keeps a closed web_search_call for the response.completed output
+// built at message_stop, as the advisor and web_fetch paths do for their items. The item is
+// cloned because the emitted one is handed to the consumer.
+func (state *AnthropicResponsesStreamState) storeWebSearchOutputItem(outputIdx *int, item *schemas.ResponsesMessage) {
+	if outputIdx == nil || state.OutputItems == nil {
+		return
+	}
+	cloned := *item
+	if item.ResponsesToolMessage != nil {
+		clonedToolMsg := *item.ResponsesToolMessage
+		cloned.ResponsesToolMessage = &clonedToolMsg
+	}
+	state.OutputItems[*outputIdx] = &cloned
 }
 
 // flush resets the state of the stream state to its initial values
@@ -2657,6 +2673,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 
 				outputIdx := state.WebSearchOutputIndex
+				state.storeWebSearchOutputItem(outputIdx, item)
 
 				// Clear all web search state
 				state.WebSearchToolID = nil
@@ -4168,8 +4185,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 
 			// The result of a search called in the previous message: only its
-			// web_search_tool_result, at the index reserved on output_item.added.
-			if isWebSearchResultOnlyCall(bifrostResp.Item) {
+			// web_search_tool_result, at the index reserved on output_item.added. When
+			// output_item.added did open a server_tool_use here (an in_progress item that
+			// finished without a query), close it and emit the result below instead, so
+			// no second block starts at an open index.
+			if isWebSearchResultOnlyCall(bifrostResp.Item) &&
+				state.blockType(*serverIdx) != AnthropicContentBlockTypeServerToolUse {
 				resultBlock := webSearchToolResultStreamBlock(bifrostResp.Item, wsAction)
 				return []*AnthropicStreamEvent{
 					{Type: AnthropicStreamEventTypeContentBlockStart, Index: serverIdx, ContentBlock: resultBlock},

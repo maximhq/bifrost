@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -554,7 +555,7 @@ func TestWebSearch_PendingCallKeepsNoResultOnResponse(t *testing.T) {
 
 	// A /v1/responses client sends the output items back as it received them. The
 	// status has to survive that JSON round trip for the search to stay pending.
-	wire, err := json.Marshal(neutral.Output)
+	wire, err := providerUtils.MarshalSorted(neutral.Output)
 	if err != nil {
 		t.Fatalf("marshal output: %v", err)
 	}
@@ -711,7 +712,7 @@ func TestWebSearch_DeferredResultOnResponse(t *testing.T) {
 			continue
 		}
 		for _, item := range items {
-			b, err := json.Marshal(item)
+			b, err := providerUtils.MarshalSorted(item)
 			if err != nil {
 				t.Fatalf("marshal output item: %v", err)
 			}
@@ -740,21 +741,24 @@ func TestWebSearch_NeutralResultOnlyCallDecidesBlocks(t *testing.T) {
 	query := schemas.Ptr("pod crashloop")
 	cases := []struct {
 		name   string
+		id     string
 		status *string
 		query  *string
 		want   string
 	}{
-		{"completed without query", schemas.Ptr("completed"), nil, "web_search_tool_result"},
-		{"failed without query", schemas.Ptr("failed"), nil, "web_search_tool_result"},
-		{"completed with query", schemas.Ptr("completed"), query, "server_tool_use,web_search_tool_result"},
-		{"no status with query", nil, query, "server_tool_use,web_search_tool_result"},
-		{"no status without query", nil, nil, "server_tool_use,web_search_tool_result"},
-		{"in_progress with query", schemas.Ptr("in_progress"), query, "server_tool_use"},
+		{"completed without query", "srvtoolu_01Js", schemas.Ptr("completed"), nil, "web_search_tool_result"},
+		{"failed without query", "srvtoolu_01Js", schemas.Ptr("failed"), nil, "web_search_tool_result"},
+		{"completed with query", "srvtoolu_01Js", schemas.Ptr("completed"), query, "server_tool_use,web_search_tool_result"},
+		{"no status with query", "srvtoolu_01Js", nil, query, "server_tool_use,web_search_tool_result"},
+		{"no status without query", "srvtoolu_01Js", nil, nil, "server_tool_use,web_search_tool_result"},
+		{"in_progress with query", "srvtoolu_01Js", schemas.Ptr("in_progress"), query, "server_tool_use"},
+		// OpenAI web_search_call items may finish without a query; they are whole searches.
+		{"OpenAI completed without query", "ws_68c1", schemas.Ptr("completed"), nil, "server_tool_use,web_search_tool_result"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			msg := &schemas.ResponsesMessage{
-				ID:     schemas.Ptr("srvtoolu_01Js"),
+				ID:     schemas.Ptr(tc.id),
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
 				Status: tc.status,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
@@ -770,8 +774,9 @@ func TestWebSearch_NeutralResultOnlyCallDecidesBlocks(t *testing.T) {
 
 // deferredSearchStream runs Anthropic SSE events through the provider stream converter
 // and back to Anthropic SSE, the path of a streamed /anthropic/v1/messages request. It
-// returns the neutral items closed by output_item.done and the client-facing events.
-func deferredSearchStream(t *testing.T, integration string, passthrough bool, events []string) ([]*schemas.ResponsesMessage, []*AnthropicStreamEvent) {
+// returns the neutral items closed by output_item.done, the client-facing events, and the
+// output of the terminal response.completed.
+func deferredSearchStream(t *testing.T, integration string, passthrough bool, events []string) ([]*schemas.ResponsesMessage, []*AnthropicStreamEvent, []schemas.ResponsesMessage) {
 	t.Helper()
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -784,6 +789,7 @@ func deferredSearchStream(t *testing.T, integration string, passthrough bool, ev
 	state := newAdvisorStreamState()
 	var done []*schemas.ResponsesMessage
 	var out []*AnthropicStreamEvent
+	var completed []schemas.ResponsesMessage
 	seq := 0
 	for _, raw := range events {
 		var chunk AnthropicStreamEvent
@@ -802,10 +808,13 @@ func deferredSearchStream(t *testing.T, integration string, passthrough bool, ev
 			if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
 				done = append(done, r.Item)
 			}
+			if r.Type == schemas.ResponsesStreamResponseTypeCompleted && r.Response != nil {
+				completed = r.Response.Output
+			}
 			out = append(out, ToAnthropicResponsesStreamResponse(ctx, r)...)
 		}
 	}
-	return done, out
+	return done, out, completed
 }
 
 // webSearchStreamBlocks rebuilds the content blocks a client assembles from the stream:
@@ -858,6 +867,18 @@ func webSearchStreamBlocks(t *testing.T, events []*AnthropicStreamEvent) []strin
 	return got
 }
 
+// completedWebSearchCall returns the web_search_call with id in a response.completed output.
+func completedWebSearchCall(t *testing.T, output []schemas.ResponsesMessage, id string) *schemas.ResponsesMessage {
+	t.Helper()
+	for i := range output {
+		if output[i].Type != nil && *output[i].Type == schemas.ResponsesMessageTypeWebSearchCall && output[i].ID != nil && *output[i].ID == id {
+			return &output[i]
+		}
+	}
+	t.Fatalf("response.completed output (%d items) has no web_search_call %s", len(output), id)
+	return nil
+}
+
 var (
 	deferredSearchTurnNEvents = []string{
 		`{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":5,"output_tokens":1}}}`,
@@ -889,21 +910,28 @@ func TestWebSearchStream_DeferredSearchAndLateResult(t *testing.T) {
 	for _, integration := range []string{"", "anthropic"} {
 		for _, passthrough := range []bool{false, true} {
 			t.Run("integration="+integration+"/passthrough="+map[bool]string{false: "off", true: "on"}[passthrough], func(t *testing.T) {
-				done, events := deferredSearchStream(t, integration, passthrough, deferredSearchTurnNEvents)
+				done, events, completed := deferredSearchStream(t, integration, passthrough, deferredSearchTurnNEvents)
 				if got, want := strings.Join(webSearchStreamBlocks(t, events), " | "), `tool_use{"args":"get pods"} | server_tool_use{"query":"pod crashloop"}`; got != want {
 					t.Fatalf("turn N blocks = %s\nwant          %s", got, want)
 				}
 				if len(done) != 2 || !isWebSearchPendingCall(done[1]) || done[1].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query == nil {
 					t.Fatalf("turn N output_item.done items = %+v, want the function_call then an in_progress web_search_call with its query", done)
 				}
+				// Clients that rebuild history from response.completed need the search too.
+				if call := completedWebSearchCall(t, completed, "srvtoolu_01Js"); !isWebSearchPendingCall(call) {
+					t.Errorf("turn N response.completed web_search_call = %+v, want in_progress", call)
+				}
 
-				done, events = deferredSearchStream(t, integration, passthrough, deferredSearchTurnNPlus1Events)
+				done, events, completed = deferredSearchStream(t, integration, passthrough, deferredSearchTurnNPlus1Events)
 				if got, want := strings.Join(webSearchStreamBlocks(t, events), " | "), "web_search_tool_result:srvtoolu_01Js | text"; got != want {
 					t.Fatalf("turn N+1 blocks = %s\nwant            %s", got, want)
 				}
 				if len(done) != 2 || !isWebSearchResultOnlyCall(done[0]) ||
 					len(done[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources) != 1 {
 					t.Fatalf("turn N+1 output_item.done items = %+v, want a result-only web_search_call with 1 source, then the message", done)
+				}
+				if call := completedWebSearchCall(t, completed, "srvtoolu_01Js"); !isWebSearchResultOnlyCall(call) {
+					t.Errorf("turn N+1 response.completed web_search_call = %+v, want the result-only call", call)
 				}
 				for _, e := range events {
 					if e.Type == AnthropicStreamEventTypeContentBlockStart && e.ContentBlock.Type == AnthropicContentBlockTypeWebSearchToolResult &&
@@ -920,7 +948,7 @@ func TestWebSearchStream_DeferredSearchAndLateResult(t *testing.T) {
 // stream. Without it the client replays a server_tool_use with no result, which this
 // change sends bare and Anthropic rejects mid-history.
 func TestWebSearchStream_EmptyResultKeepsResultBlock(t *testing.T) {
-	_, events := deferredSearchStream(t, "", false, []string{
+	_, events, completed := deferredSearchStream(t, "", false, []string{
 		`{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":5,"output_tokens":1}}}`,
 		`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01Js","name":"web_search","input":{"query":"pod crashloop"}}}`,
 		`{"type":"content_block_stop","index":0}`,
@@ -934,6 +962,34 @@ func TestWebSearchStream_EmptyResultKeepsResultBlock(t *testing.T) {
 	})
 	if got, want := strings.Join(webSearchStreamBlocks(t, events), " | "), `server_tool_use{"query":"pod crashloop"} | web_search_tool_result:srvtoolu_01Js | text`; got != want {
 		t.Fatalf("blocks = %s\nwant     %s", got, want)
+	}
+	if call := completedWebSearchCall(t, completed, "srvtoolu_01Js"); call.Status == nil || *call.Status != "completed" ||
+		call.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query == nil {
+		t.Errorf("response.completed web_search_call = %+v, want the completed search with its query", call)
+	}
+}
+
+// A web_search_call whose output_item.added opened a server_tool_use and whose done item
+// finished without a query (OpenAI may omit it) is a whole search, not a late result: the
+// open block is closed before the result, never restarted at the same index.
+func TestWebSearchStream_QuerylessDoneAfterOpenBlockStaysBalanced(t *testing.T) {
+	for _, id := range []string{"srvtoolu_01Js", "ws_68c1"} {
+		t.Run(id, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			added := &schemas.ResponsesMessage{ID: schemas.Ptr(id), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall), Status: schemas.Ptr("in_progress")}
+			done := &schemas.ResponsesMessage{
+				ID: schemas.Ptr(id), Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall), Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{Type: "search", Sources: []schemas.ResponsesWebSearchToolCallActionSearchSource{{Type: "url", URL: "https://example.com/a"}}},
+				}},
+			}
+			events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: added, OutputIndex: schemas.Ptr(0)})
+			events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: done, OutputIndex: schemas.Ptr(0)})...)
+			if got, want := strings.Join(webSearchStreamBlocks(t, events), " | "), "server_tool_use | web_search_tool_result:"+id; got != want {
+				t.Fatalf("blocks = %s\nwant     %s", got, want)
+			}
+		})
 	}
 }
 
