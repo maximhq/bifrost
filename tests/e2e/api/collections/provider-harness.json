@@ -339294,6 +339294,416 @@
           }
         }
       ]
+    },
+    {
+      "name": "363. Chat stream usage isolation (#10139)",
+      "description": "OpenAI-compatible streaming must emit usage in a separate choices: [] event after finish_reason and before [DONE]. Anthropic previously produced a single combined finish/usage event on all normalized chat routes. These cases pin native and SDK drop-in HTTP writers with include_usage enabled.",
+      "item": [
+        {
+          "name": "Anthropic claude-haiku-4-5 /v1/chat/completions chat stream usage isolation - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat stream usage isolation: finish, empty choices usage, DONE', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var usageIndex = -1, finishIndex = -1, usageCount = 0, text = '';",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'choices must be an array: ' + data).to.be.an('array');",
+                  "    if (chunk.usage !== null && chunk.usage !== undefined) {",
+                  "      usageCount++;",
+                  "      usageIndex = index;",
+                  "      pm.expect(chunk.choices, 'usage must have empty choices: ' + data).to.deep.equal([]);",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing token totals: ' + data).to.be.above(0);",
+                  "    } else {",
+                  "      pm.expect(chunk.usage, 'ordinary chunk must have null usage: ' + data).to.equal(null);",
+                  "    }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finishIndex = index; }",
+                  "      if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(usageCount, 'expected one usage chunk: ' + body).to.equal(1);",
+                  "  pm.expect(finishIndex, 'missing finish reason: ' + body).to.be.above(-1);",
+                  "  pm.expect(usageIndex, 'usage must follow finish: ' + body).to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must be immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /openai/v1/chat/completions chat stream usage isolation - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat stream usage isolation: finish, empty choices usage, DONE', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var usageIndex = -1, finishIndex = -1, usageCount = 0, text = '';",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'choices must be an array: ' + data).to.be.an('array');",
+                  "    if (chunk.usage !== null && chunk.usage !== undefined) {",
+                  "      usageCount++;",
+                  "      usageIndex = index;",
+                  "      pm.expect(chunk.choices, 'usage must have empty choices: ' + data).to.deep.equal([]);",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing token totals: ' + data).to.be.above(0);",
+                  "    } else {",
+                  "      pm.expect(chunk.usage, 'ordinary chunk must have null usage: ' + data).to.equal(null);",
+                  "    }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finishIndex = index; }",
+                  "      if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(usageCount, 'expected one usage chunk: ' + body).to.equal(1);",
+                  "  pm.expect(finishIndex, 'missing finish reason: ' + body).to.be.above(-1);",
+                  "  pm.expect(usageIndex, 'usage must follow finish: ' + body).to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must be immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /litellm/v1/chat/completions chat stream usage isolation - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat stream usage isolation: finish, empty choices usage, DONE', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var usageIndex = -1, finishIndex = -1, usageCount = 0, text = '';",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'choices must be an array: ' + data).to.be.an('array');",
+                  "    if (chunk.usage !== null && chunk.usage !== undefined) {",
+                  "      usageCount++;",
+                  "      usageIndex = index;",
+                  "      pm.expect(chunk.choices, 'usage must have empty choices: ' + data).to.deep.equal([]);",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing token totals: ' + data).to.be.above(0);",
+                  "    } else {",
+                  "      pm.expect(chunk.usage, 'ordinary chunk must have null usage: ' + data).to.equal(null);",
+                  "    }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finishIndex = index; }",
+                  "      if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(usageCount, 'expected one usage chunk: ' + body).to.equal(1);",
+                  "  pm.expect(finishIndex, 'missing finish reason: ' + body).to.be.above(-1);",
+                  "  pm.expect(usageIndex, 'usage must follow finish: ' + body).to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must be immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /langchain/v1/chat/completions chat stream usage isolation - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat stream usage isolation: finish, empty choices usage, DONE', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var usageIndex = -1, finishIndex = -1, usageCount = 0, text = '';",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'choices must be an array: ' + data).to.be.an('array');",
+                  "    if (chunk.usage !== null && chunk.usage !== undefined) {",
+                  "      usageCount++;",
+                  "      usageIndex = index;",
+                  "      pm.expect(chunk.choices, 'usage must have empty choices: ' + data).to.deep.equal([]);",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing token totals: ' + data).to.be.above(0);",
+                  "    } else {",
+                  "      pm.expect(chunk.usage, 'ordinary chunk must have null usage: ' + data).to.equal(null);",
+                  "    }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finishIndex = index; }",
+                  "      if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(usageCount, 'expected one usage chunk: ' + body).to.equal(1);",
+                  "  pm.expect(finishIndex, 'missing finish reason: ' + body).to.be.above(-1);",
+                  "  pm.expect(usageIndex, 'usage must follow finish: ' + body).to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must be immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /pydanticai/v1/chat/completions chat stream usage isolation - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat stream usage isolation: finish, empty choices usage, DONE', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var usageIndex = -1, finishIndex = -1, usageCount = 0, text = '';",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'choices must be an array: ' + data).to.be.an('array');",
+                  "    if (chunk.usage !== null && chunk.usage !== undefined) {",
+                  "      usageCount++;",
+                  "      usageIndex = index;",
+                  "      pm.expect(chunk.choices, 'usage must have empty choices: ' + data).to.deep.equal([]);",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing token totals: ' + data).to.be.above(0);",
+                  "    } else {",
+                  "      pm.expect(chunk.usage, 'ordinary chunk must have null usage: ' + data).to.equal(null);",
+                  "    }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finishIndex = index; }",
+                  "      if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(usageCount, 'expected one usage chunk: ' + body).to.equal(1);",
+                  "  pm.expect(finishIndex, 'missing finish reason: ' + body).to.be.above(-1);",
+                  "  pm.expect(usageIndex, 'usage must follow finish: ' + body).to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must be immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

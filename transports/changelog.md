@@ -8,6 +8,8 @@
 
 ## 🐞 Fixed
 
+- **Chat Streaming Usage** - Native and OpenAI-compatible chat streams emit token usage in a separate chunk with `choices: []`, after the finish chunk and before `[DONE]`
+
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
 - **Budget Update on config.json Virtual Keys** - Updating the budget of a virtual key provisioned from config.json no longer fails with a 500 `invalid reset duration format: ` when its standalone budget is adopted into the key's model config
 - **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
