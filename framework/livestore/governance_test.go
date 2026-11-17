@@ -511,3 +511,32 @@ func TestUnreadablePromptVersionFailsTheLoadAndKeepsRecordsOnRefresh(t *testing.
 	require.True(t, ok)
 	require.Same(t, fine, kept, "a refresh that cannot read the rows keeps the records")
 }
+
+// TestUnreadableWebhookEndpointFailsTheLoadAndKeepsItsRecordOnRefresh checks that an endpoint
+// stored in a form this version cannot read fails the boot load and a refresh of the whole kind,
+// naming the endpoint, and that a refresh of it by ID fails and keeps its record.
+func TestUnreadableWebhookEndpointFailsTheLoadAndKeepsItsRecordOnRefresh(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	for _, id := range []string{"broken", "fine"} {
+		require.NoError(t, db.Create(&tables.TableWebhookEndpoint{ID: id, Name: id, URL: "https://example.com/" + id, EventsJSON: `[]`}).Error)
+	}
+	s := loadedGovernance(t, db)
+	fine, ok := s.Collections.WebhookEndpoints.Get("fine")
+	require.True(t, ok)
+
+	require.NoError(t, db.Model(&tables.TableWebhookEndpoint{}).Where("id = ?", "broken").Update("events_json", `["unterminated`).Error)
+	boot, err := New()
+	require.NoError(t, err)
+	t.Cleanup(boot.Close)
+	err = boot.LoadAll(ctx, db)
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable, "the boot load fails")
+	require.ErrorContains(t, err, "webhook endpoint broken", "and names the endpoint")
+	require.ErrorIs(t, s.RefreshKind(ctx, KindWebhookEndpoint), configstore.ErrConfigUnreadable, "a refresh of the whole kind fails")
+
+	require.NoError(t, db.Model(&tables.TableWebhookEndpoint{}).Where("id = ?", "fine").Update("events_json", `["unterminated`).Error)
+	require.ErrorIs(t, s.Refresh(ctx, []Ref{{Kind: KindWebhookEndpoint, ID: "fine"}}), configstore.ErrConfigUnreadable)
+	kept, ok := s.Collections.WebhookEndpoints.Get("fine")
+	require.True(t, ok)
+	require.Same(t, fine, kept, "a refresh that cannot read the row keeps the record")
+}

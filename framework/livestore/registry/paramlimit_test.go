@@ -300,3 +300,17 @@ func TestPricingOverridesByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "po-1", PricingOverrideID(rows[0]))
 }
+
+// TestWebhookEndpointsByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more webhook
+// endpoint IDs than one statement may bind still reads the endpoints that exist.
+func TestWebhookEndpointsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	insert(t, db, &tables.TableWebhookEndpoint{
+		ID: "wh-1", Name: "billing-hook", URL: "https://93.184.216.34/hook",
+		Events: []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted},
+	})
+	rows, err := WebhookEndpointsByID(context.Background(), db, withMissingIDs("wh-1"))
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "wh-1", WebhookEndpointID(rows[0]))
+}

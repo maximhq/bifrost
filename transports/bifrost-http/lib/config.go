@@ -755,9 +755,8 @@ type GovernanceFileSync struct {
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 //   - Lock-free plugin reads via atomic.Pointer for minimal hot-path latency
 type Config struct {
-	Mu         sync.RWMutex // Exported for direct access from handlers (governance plugin)
-	muWebhooks sync.RWMutex
-	client     *bifrost.Bifrost
+	Mu     sync.RWMutex // Exported for direct access from handlers (governance plugin)
+	client *bifrost.Bifrost
 
 	// fileVirtualMCPs are the mcp.virtual_mcps declarations from the last config.json load, kept so a
 	// client registered later can be linked into the declarations that name it. Guarded by
@@ -822,14 +821,6 @@ type Config struct {
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
 	// configured one. Never persisted — read fresh from config/env on every boot.
 	SetupToken string
-
-	// webhookEndpoints serves webhook endpoint config to the request path and
-	// the delivery worker without database reads. Guarded by muWebhooks;
-	// handlers mutate it in lockstep with every database write. Operational
-	// counters are deliberately not mirrored here — reads that need them go
-	// to the store.
-	webhookEndpoints       map[string]*configstoreTables.TableWebhookEndpoint // keyed by ID
-	webhookEndpointsByName map[string]string                                  // unique name -> ID
 
 	// Plugin Storage (SINGLE SOURCE OF TRUTH)
 	// All plugins are stored in BasePlugins. Interface-specific caches are
@@ -3177,7 +3168,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
 	clientConfigsToUpdate := make([]configstoreTables.TableMCPClient, 0)
 	perUserDiscoveryChanged := make(map[string]*schemas.MCPClientConfig)
-	clientHashUpgrades := make(map[string][2]string) // client ID -> stored pre-code-mode hash and its current form
+	clientHashUpgrades := make(map[string][2]string) // client ID -> stored older-form hash and its current form
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
 		if newClientConfig == nil {
 			continue
@@ -3206,11 +3197,17 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			if newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name {
 				found = true
 				if existingClientConfig.ConfigHash != fileHash {
-					if legacy, err := configstore.MCPClientHashMatchesLegacyCodeMode(fileClientRow, existingClientConfig.ConfigHash, existingClientConfig.IsCodeModeClient); err == nil && legacy {
-						// Same file client, hashed before is_code_mode_client was: keep the stored edits and move the
-						// stored hash to the current form so this runs once.
-						logger.Debug("MCP client %q carries a pre-code-mode hash, keeping DB config", newClientConfig.Name)
-						clientHashUpgrades[existingClientConfig.ID] = [2]string{existingClientConfig.ConfigHash, fileHash}
+					if legacy, err := configstore.MCPClientHashMatchesLegacy(fileClientRow, existingClientConfig.ConfigHash, existingClientConfig.IsCodeModeClient); err == nil && legacy {
+						// Same file client, hashed by an older build: keep the stored edits and move the stored
+						// hash to the current form so this runs once. That build never stored the file's prices,
+						// so when the file prices a tool the stored row does not, the stored row with those
+						// prices added (a stored price wins) and the new hash is one update, like a file edit.
+						logger.Debug("MCP client %q carries a hash from an older build, keeping DB config", newClientConfig.Name)
+						if row, filled := mcpClientRowWithFilePrices(existingClientConfig, newClientConfig.ToolPricing, fileHash); filled {
+							clientConfigsToUpdate = append(clientConfigsToUpdate, row)
+						} else {
+							clientHashUpgrades[existingClientConfig.ID] = [2]string{existingClientConfig.ConfigHash, fileHash}
+						}
 						existingClientConfig.ConfigHash = fileHash
 						break
 					}
@@ -3295,6 +3292,35 @@ func upgradeMCPClientConfigHashes(ctx context.Context, store configstore.ConfigS
 			logger.Warn("failed to upgrade config hash of MCP client %s: %v", id, err)
 		}
 	}
+}
+
+// mcpClientRowWithFilePrices returns the row to write when filePrices prices a tool stored does not: stored's
+// own fields with those prices added, a stored price winning, under hash. It reports false, changing nothing,
+// when there is no price to add or stored does not convert to a row. On true, stored carries the merged
+// prices too, so the client the boot keeps matches the row written.
+func mcpClientRowWithFilePrices(stored *schemas.MCPClientConfig, filePrices map[string]float64, hash string) (configstoreTables.TableMCPClient, bool) {
+	if len(filePrices) == 0 {
+		return configstoreTables.TableMCPClient{}, false
+	}
+	merged := maps.Clone(filePrices)
+	maps.Copy(merged, stored.ToolPricing)
+	if len(merged) == len(stored.ToolPricing) {
+		return configstoreTables.TableMCPClient{}, false
+	}
+	priced := *stored
+	priced.ToolPricing = merged
+	row, err := mcpClientConfigToTable(&priced)
+	if err != nil {
+		logger.Warn("cannot add config.json tool prices to MCP client %q: %v", stored.Name, err)
+		return configstoreTables.TableMCPClient{}, false
+	}
+	// UpdateMCPClientConfig writes these columns too, and the conversion leaves them out, so they would be
+	// cleared without the stored values.
+	row.TLSConfig = priced.TLSConfig
+	row.MaxInstructionsLength = priced.MaxInstructionsLength
+	row.ConfigHash = hash
+	stored.ToolPricing = merged
+	return row, true
 }
 
 // createFileMCPClient stores a config.json MCP client. When a node booting at the same time stored it
@@ -3738,14 +3764,8 @@ func loadWebhooksConfig(ctx context.Context, config *Config, configData *ConfigD
 	} else {
 		mergeWebhookEndpoints(ctx, config, fileEndpoints, existing)
 	}
-
-	// Memory serves the final database state, whichever path produced it.
-	final, err := config.ConfigStore.GetWebhookEndpoints(ctx)
-	if err != nil {
-		logger.Warn("failed to reload webhook endpoints: %v", err)
-		return
-	}
-	config.replaceWebhookEndpoints(final)
+	// The live store loads the final database state, whichever path produced it, once LoadConfig
+	// has written everything.
 }
 
 // mergeWebhookEndpoints reconciles file declarations additively: new names
@@ -7190,46 +7210,6 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 	config.PluginConfigs = configData.Plugins
 }
 
-// buildMCPPricingDataFromStore builds MCP pricing data from the config store
-func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.ConfigStore) mcpcatalog.MCPPricingData {
-	mcpPricingData := mcpcatalog.MCPPricingData{}
-	clientConfigs, err := configStore.GetMCPClientConfigs(ctx)
-	if err != nil {
-		logger.Warn("failed to get MCP clients from store: %v", err)
-		return mcpPricingData
-	}
-	for _, dbClientConfig := range clientConfigs {
-		for toolName, costPerExecution := range dbClientConfig.ToolPricing {
-			// Tool names in the DB are stored without the client/server prefix.
-			// Build the key using fmt.Sprintf("%s/%s", clientName, toolName) to match
-			// buildMCPPricingDataFromConfig and EditMCPClient patterns.
-			mcpPricingData[fmt.Sprintf("%s/%s", dbClientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
-				Server:           dbClientConfig.Name,
-				ToolName:         toolName,
-				CostPerExecution: costPerExecution,
-			}
-		}
-	}
-	return mcpPricingData
-}
-
-func buildMCPPricingDataFromConfig(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
-	mcpPricingData := mcpcatalog.MCPPricingData{}
-	if configData == nil || configData.MCP == nil {
-		return mcpPricingData
-	}
-	for _, clientConfig := range configData.MCP.ClientConfigs {
-		for toolName, costPerExecution := range clientConfig.ToolPricing {
-			mcpPricingData[fmt.Sprintf("%s/%s", clientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
-				Server:           clientConfig.Name,
-				ToolName:         toolName,
-				CostPerExecution: costPerExecution,
-			}
-		}
-	}
-	return mcpPricingData
-}
-
 // ResolveFrameworkPricingConfig resolves framework pricing configuration.
 //
 // Precedence order (highest → lowest): DB > config.json > built-in defaults.
@@ -7693,7 +7673,6 @@ func nonEmptyOpenAPIURL(value *string) *string {
 
 // initFrameworkConfig initializes framework config and pricing manager from file
 func initFrameworkConfig(ctx context.Context, config *Config, configData *ConfigData) error {
-	mcpPricingConfig := &mcpcatalog.Config{}
 	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
 		frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
@@ -7701,7 +7680,6 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 			logger.Warn("failed to get framework config from store: %v", err)
 		}
 		frameworkConfigFromDB = frameworkConfig
-		mcpPricingConfig.PricingData = buildMCPPricingDataFromStore(ctx, config.ConfigStore)
 	}
 	var fileFrameworkConfig *framework.FrameworkConfig
 	if configData != nil {
@@ -7769,18 +7747,9 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	}
 	config.ModelCatalog = pricingManager
 
-	// Initialize MCP catalog
-	// Merge file-based pricing into mcpPricingConfig (DB data already loaded above).
-	// File config is used as fallback; DB values take precedence via the merge order.
-	if mcpPricingConfig.PricingData == nil {
-		mcpPricingConfig.PricingData = mcpcatalog.MCPPricingData{}
-	}
-	for k, v := range buildMCPPricingDataFromConfig(ctx, configData) {
-		if _, exists := mcpPricingConfig.PricingData[k]; !exists {
-			mcpPricingConfig.PricingData[k] = v
-		}
-	}
-	mcpCatalog, err := mcpcatalog.Init(ctx, mcpPricingConfig, logger)
+	// Initialize the MCP catalog, which prices tool calls from the MCP client
+	// records the live store holds (each client's tool_pricing as stored).
+	mcpCatalog, err := mcpcatalog.Init(ctx, config.LiveStore, logger)
 	if err != nil {
 		logger.Warn("failed to initialize MCP catalog: %v", err)
 	}
@@ -9876,9 +9845,9 @@ func (c *Config) SetBifrostClient(client *bifrost.Bifrost) {
 
 // AddMCPClient connects the MCP client whose row the caller has written: it loads the row into the
 // live store and the discovery the row holds into the discovery store, then the runtime connects
-// the client from them, and its tool prices go into the MCP catalog. When connecting fails the
-// client is dropped from the live store again and the error is returned as is, so the caller can
-// report a failed connect and delete the row.
+// the client from them; the MCP catalog prices its tools from that record. When connecting fails
+// the client is dropped from the live store again and the error is returned as is, so the caller
+// can report a failed connect and delete the row.
 //
 // A client the live store held before the call is never dropped: the runtime refuses an ID it
 // already has and keeps serving that client, so the live store keeps it too.
@@ -9903,18 +9872,12 @@ func (c *Config) AddMCPClient(ctx context.Context, id string) error {
 		// Returned as is: the caller reports it as a failed connect.
 		return err
 	}
-	if stored, ok := c.liveMCPClient(id); ok && c.MCPCatalog != nil {
-		for toolName, costPerExecution := range stored.Config.ToolPricing {
-			c.MCPCatalog.UpdatePricingData(stored.Config.Name, toolName, costPerExecution)
-		}
-		logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", stored.Config.Name, len(stored.Config.ToolPricing))
-	}
 	return nil
 }
 
 // UpdateMCPClient applies an MCP client edit whose row the caller has written: the live store
 // re-reads the row, then the runtime client takes it (disabling or enabling the client when the
-// edit did), then the MCP catalog prices follow it. An error from an edit that still stands (only reconnecting
+// edit did); the MCP catalog prices follow the record. An error from an edit that still stands (only reconnecting
 // failed: mcp.ErrMCPSharedConnectFailedAfterUpdate or mcp.ErrMCPEnableConnectFailed) is returned
 // once everything has applied. On any other error the caller rolls the row back and refreshes
 // its live-store record again.
@@ -9925,19 +9888,15 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string) error {
 	if c.ConfigStore == nil {
 		return ErrNoConfigStore
 	}
-	stored, ok := c.liveMCPClient(id)
-	if !ok {
+	if _, ok := c.liveMCPClient(id); !ok {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-	oldConfig := &stored.Config
 	if err := c.refreshMCPClient(ctx, id); err != nil {
 		return err
 	}
-	edited, ok := c.liveMCPClient(id)
-	if !ok {
+	if _, ok := c.liveMCPClient(id); !ok {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-	updatedConfig := &edited.Config
 	var committedErr error
 	// A client is configured but not registered at runtime when its initialization failed.
 	clientRegistered := c.mcpClientRegistered(id)
@@ -9952,28 +9911,6 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string) error {
 			// Not "failed to edit": the edit stands, only the dial failed.
 			committedErr = err
 		}
-	}
-	// Update MCP catalog pricing data for the edited client
-	if c.MCPCatalog != nil {
-		// If the client name has changed, delete all old pricing entries under the old name
-		if updatedConfig.Name != oldConfig.Name {
-			for toolName := range oldConfig.ToolPricing {
-				c.MCPCatalog.DeletePricingData(oldConfig.Name, toolName)
-			}
-			logger.Debug("deleted old MCP catalog pricing for renamed client: %s -> %s (%d tools)", oldConfig.Name, updatedConfig.Name, len(oldConfig.ToolPricing))
-		} else {
-			// If name hasn't changed, remove pricing entries that were deleted
-			for toolName := range oldConfig.ToolPricing {
-				if _, exists := updatedConfig.ToolPricing[toolName]; !exists {
-					c.MCPCatalog.DeletePricingData(updatedConfig.Name, toolName)
-				}
-			}
-		}
-		// Then, add or update pricing entries from the new config (with new name if changed)
-		for toolName, costPerExecution := range updatedConfig.ToolPricing {
-			c.MCPCatalog.UpdatePricingData(updatedConfig.Name, toolName, costPerExecution)
-		}
-		logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", updatedConfig.Name, len(updatedConfig.ToolPricing))
 	}
 
 	return committedErr
@@ -10019,14 +9956,8 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			return fmt.Errorf("failed to remove MCP client: %w", err)
 		}
 	}
-	stored, ok := c.liveMCPClient(id)
-	if !ok {
+	if _, ok := c.liveMCPClient(id); !ok {
 		return nil
-	}
-	if c.MCPCatalog != nil {
-		for toolName := range stored.Config.ToolPricing {
-			c.MCPCatalog.DeletePricingData(stored.Config.Name, toolName)
-		}
 	}
 	return c.removeMCPClient(ctx, id)
 }
@@ -10210,81 +10141,28 @@ func (c *Config) GetOAuth2SigningKey(ctx context.Context) (*configstoreTables.OA
 	})
 }
 
-// Webhook endpoint config is served from memory on the submit path and by the
-// delivery worker, so neither performs a database read. Handlers keep it in
-// lockstep with every database write.
+// Webhook endpoint config is served from the live store on the submit path and by the delivery
+// worker, so neither performs a database read. Every write refreshes the endpoint's record.
+// Operational counters are read from the store, not from the record.
 
-// WebhookEndpointByID returns the endpoint for id, or false when it does not
-// exist. Callers must treat the returned endpoint as read-only.
+// WebhookEndpointByID returns the endpoint for id, or false when it does not exist. Callers must
+// treat the returned endpoint as read-only.
 func (c *Config) WebhookEndpointByID(id string) (*configstoreTables.TableWebhookEndpoint, bool) {
-	c.muWebhooks.RLock()
-	defer c.muWebhooks.RUnlock()
-	endpoint, ok := c.webhookEndpoints[id]
-	return endpoint, ok
-}
-
-// WebhookEndpointByName returns the endpoint with the given unique name, or
-// false when it does not exist. Callers must treat the returned endpoint as
-// read-only.
-func (c *Config) WebhookEndpointByName(name string) (*configstoreTables.TableWebhookEndpoint, bool) {
-	c.muWebhooks.RLock()
-	defer c.muWebhooks.RUnlock()
-	id, ok := c.webhookEndpointsByName[name]
+	endpoint, ok := c.LiveStore.Collections.WebhookEndpoints.Get(id)
 	if !ok {
 		return nil, false
 	}
-	endpoint, ok := c.webhookEndpoints[id]
-	return endpoint, ok
+	return &endpoint.TableWebhookEndpoint, true
 }
 
-// SetWebhookEndpoint upserts an endpoint in the in-memory store, replacing
-// any previous entry with the same ID (including a stale name-index entry
-// after a rename). Called by handlers right after a successful database
-// write, and by the config load.
-func (c *Config) SetWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) {
-	if endpoint == nil || endpoint.ID == "" {
-		return
-	}
-	copied := *endpoint
-	c.muWebhooks.Lock()
-	defer c.muWebhooks.Unlock()
-	if c.webhookEndpoints == nil {
-		c.webhookEndpoints = make(map[string]*configstoreTables.TableWebhookEndpoint)
-		c.webhookEndpointsByName = make(map[string]string)
-	}
-	if previous, ok := c.webhookEndpoints[copied.ID]; ok && previous.Name != copied.Name {
-		delete(c.webhookEndpointsByName, previous.Name)
-	}
-	c.webhookEndpoints[copied.ID] = &copied
-	c.webhookEndpointsByName[copied.Name] = copied.ID
-}
-
-// RemoveWebhookEndpoint deletes an endpoint from the in-memory store. Called
-// by handlers right after a successful database delete.
-func (c *Config) RemoveWebhookEndpoint(id string) {
-	c.muWebhooks.Lock()
-	defer c.muWebhooks.Unlock()
-	endpoint, ok := c.webhookEndpoints[id]
+// WebhookEndpointByName returns the endpoint with the given unique name, or false when it does
+// not exist. Callers must treat the returned endpoint as read-only.
+func (c *Config) WebhookEndpointByName(name string) (*configstoreTables.TableWebhookEndpoint, bool) {
+	endpoint, ok := c.LiveStore.Collections.WebhookEndpoints.GetBy(registry.WebhookEndpointByName, name)
 	if !ok {
-		return
+		return nil, false
 	}
-	delete(c.webhookEndpointsByName, endpoint.Name)
-	delete(c.webhookEndpoints, id)
-}
-
-// replaceWebhookEndpoints swaps the whole in-memory store for the given rows.
-func (c *Config) replaceWebhookEndpoints(endpoints []configstoreTables.TableWebhookEndpoint) {
-	byID := make(map[string]*configstoreTables.TableWebhookEndpoint, len(endpoints))
-	byName := make(map[string]string, len(endpoints))
-	for i := range endpoints {
-		endpoint := endpoints[i]
-		byID[endpoint.ID] = &endpoint
-		byName[endpoint.Name] = endpoint.ID
-	}
-	c.muWebhooks.Lock()
-	defer c.muWebhooks.Unlock()
-	c.webhookEndpoints = byID
-	c.webhookEndpointsByName = byName
+	return &endpoint.TableWebhookEndpoint, true
 }
 
 // autoDetectProviders automatically detects common environment variables and sets up providers

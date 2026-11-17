@@ -23488,14 +23488,21 @@ func testMemoryEndpoint(id, name string) *configstoreTables.TableWebhookEndpoint
 	}
 }
 
-func TestWebhookEndpointMemoryStore(t *testing.T) {
-	config := &Config{}
+// TestWebhookEndpointsServedFromTheLiveStore checks webhook endpoints are read from the live store
+// by ID and by name, follow a rename and a delete once refreshed, and come back as stored.
+func TestWebhookEndpointsServedFromTheLiveStore(t *testing.T) {
+	ctx := context.Background()
+	config := providerStore(t, nil)
+	refresh := func(id string, remove bool) {
+		t.Helper()
+		require.NoError(t, config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: remove}}))
+	}
 
-	// Empty store misses cleanly.
 	_, ok := config.WebhookEndpointByID("ep-1")
-	assert.False(t, ok)
+	assert.False(t, ok, "an empty store misses cleanly")
 
-	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "first"))
+	require.NoError(t, config.ConfigStore.CreateWebhookEndpoint(ctx, testMemoryEndpoint("ep-1", "first")))
+	refresh("ep-1", false)
 	byID, ok := config.WebhookEndpointByID("ep-1")
 	require.True(t, ok)
 	assert.Equal(t, "first", byID.Name)
@@ -23503,32 +23510,31 @@ func TestWebhookEndpointMemoryStore(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "ep-1", byName.ID)
 
-	// A rename evicts the stale name-index entry.
-	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "renamed"))
+	renamed := testMemoryEndpoint("ep-1", "renamed")
+	require.NoError(t, config.ConfigStore.UpdateWebhookEndpoint(ctx, renamed))
+	refresh("ep-1", false)
 	_, ok = config.WebhookEndpointByName("first")
-	assert.False(t, ok)
+	assert.False(t, ok, "a rename drops the old name")
 	_, ok = config.WebhookEndpointByName("renamed")
 	assert.True(t, ok)
 
-	// Mutating the caller's struct after Set must not affect the store.
-	external := testMemoryEndpoint("ep-2", "second")
-	config.SetWebhookEndpoint(external)
-	external.Name = "mutated"
-	stored, ok := config.WebhookEndpointByID("ep-2")
-	require.True(t, ok)
-	assert.Equal(t, "second", stored.Name)
-
-	config.RemoveWebhookEndpoint("ep-1")
+	require.NoError(t, config.ConfigStore.DeleteWebhookEndpoint(ctx, "ep-1"))
+	refresh("ep-1", true)
 	_, ok = config.WebhookEndpointByID("ep-1")
 	assert.False(t, ok)
 	_, ok = config.WebhookEndpointByName("renamed")
 	assert.False(t, ok)
+}
 
-	config.replaceWebhookEndpoints([]configstoreTables.TableWebhookEndpoint{*testMemoryEndpoint("ep-3", "third")})
-	_, ok = config.WebhookEndpointByID("ep-2")
-	assert.False(t, ok, "replace swaps the whole store")
-	_, ok = config.WebhookEndpointByName("third")
-	assert.True(t, ok)
+// loadWebhooksForTest runs the boot's webhook step, then loads a new live store from the config
+// store as the end of LoadConfig does, so reads see the final database state.
+func loadWebhooksForTest(t *testing.T, config *Config, configData *ConfigData) {
+	t.Helper()
+	ctx := context.Background()
+	loadWebhooksConfig(ctx, config, configData)
+	live := newLiveStoreForTest(t)
+	require.NoError(t, config.AttachLiveStore(live))
+	require.NoError(t, live.LoadAll(ctx, config.ConfigStore.DB()))
 }
 
 // parseConfigData round-trips raw config JSON through ConfigData.UnmarshalJSON
@@ -23563,7 +23569,7 @@ func TestLoadWebhooksConfigMerge(t *testing.T) {
 			{"name": "broken", "url": "http://93.184.216.34/hook", "events": ["async_job.completed"]}
 		]
 	}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	require.Len(t, names, 1)
@@ -23584,7 +23590,7 @@ func TestLoadWebhooksConfigMerge(t *testing.T) {
 			{"name": "from-file", "url": "https://93.184.216.34/hook2", "events": ["async_job.completed"]}
 		]
 	}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names = webhookNamesInStore(t, store)
 	require.Len(t, names, 2)
@@ -23610,7 +23616,7 @@ func TestLoadWebhooksConfigSourceOfTruthPrunes(t *testing.T) {
 		]
 	}`)
 	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	require.Len(t, names, 1)
@@ -23619,7 +23625,7 @@ func TestLoadWebhooksConfigSourceOfTruthPrunes(t *testing.T) {
 	assert.False(t, ok, "rows absent from the file are pruned when it is the source of truth")
 
 	// Re-running with an unchanged file is a no-op (hash match).
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 }
 
@@ -23640,7 +23646,7 @@ func TestLoadWebhooksConfigInvalidDeclarationKeepsEndpoint(t *testing.T) {
 		]
 	}`)
 	require.True(t, configData.isConfigJSONSourceOfTruth())
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	assert.Contains(t, names, "keep-me", "an invalid declaration must not prune its existing endpoint")
@@ -23656,7 +23662,7 @@ func TestLoadWebhooksConfigWithoutSection(t *testing.T) {
 	// Source-of-truth mode without a webhooks section must not prune —
 	// presence of the section is what authorizes it.
 	configData := parseConfigData(t, `{"source_of_truth": "config.json"}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 	_, ok := config.WebhookEndpointByName("db-only")
@@ -27578,20 +27584,238 @@ func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
 	stored.ToolPricing = map[string]float64{"listPets": 0.25}
 	storeMCPClientEdit(t, cfg, stored)
 	require.NoError(t, cfg.refreshMCPClient(context.Background(), stored.ID))
-	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
-		"petstore/listPets": {Server: "petstore", ToolName: "listPets", CostPerExecution: 0.25},
-		"other/listPets":    {Server: "other", ToolName: "listPets", CostPerExecution: 0.5},
-	}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	other := *stored
+	other.ID, other.Name, other.EndpointSlug = stored.ID+"-other", "other", ""
+	other.ToolPricing = map[string]float64{"listPets": 0.5}
+	require.NoError(t, cfg.ConfigStore.CreateMCPClientConfig(context.Background(), &other))
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), other.ID))
+	catalog, err := mcpcatalog.Init(context.Background(), cfg.LiveStore, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	require.NoError(t, err)
 	cfg.MCPCatalog = catalog
+	price, priced := catalog.GetPricingData("petstore", "listPets")
+	require.True(t, priced, "a stored client's price comes from its record")
+	assert.Equal(t, 0.25, price.CostPerExecution)
 
 	// The caller deletes the row before it removes the client.
 	require.NoError(t, cfg.ConfigStore.DeleteMCPClientConfig(context.Background(), stored.ID))
 	require.NoError(t, cfg.RemoveMCPClient(context.Background(), stored.ID))
-	_, priced := catalog.GetPricingData("petstore", "listPets")
+	_, priced = catalog.GetPricingData("petstore", "listPets")
 	assert.False(t, priced, "the deleted client's price is gone")
 	_, priced = catalog.GetPricingData("other", "listPets")
 	assert.True(t, priced, "another client's price stays")
+}
+
+// billingToolsFileClient is a config.json MCP client with this code mode and these tool prices.
+func billingToolsFileClient(codeMode bool, prices map[string]float64) *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		Name:             "billing_tools",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+		ToolsToExecute:   schemas.WhiteList{"*"},
+		Headers:          map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("file")},
+		IsCodeModeClient: codeMode,
+		ToolPricing:      prices,
+	}
+}
+
+// bootMCPToolPricing runs the boot's MCP step over store with client as config.json declares it, loads a
+// live store from the database as the end of LoadConfig does, and returns the MCP catalog over it.
+func bootMCPToolPricing(t *testing.T, store configstore.ConfigStore, sourceOfTruth string, client *schemas.MCPClientConfig) *mcpcatalog.MCPCatalog {
+	t.Helper()
+	ctx := context.Background()
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, cfg, &ConfigData{SourceOfTruth: sourceOfTruth, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}})
+	live := newLiveStoreForTest(t)
+	require.NoError(t, live.LoadAll(ctx, store.DB()))
+	catalog, err := mcpcatalog.Init(ctx, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	return catalog
+}
+
+// editStoredMCPClient applies edit to the stored row of the MCP client named name and saves it as the
+// dashboard's update does: a full row without a config hash, so the stored hash stays as it was.
+func editStoredMCPClient(t *testing.T, store configstore.ConfigStore, name string, edit func(*tables.TableMCPClient)) {
+	t.Helper()
+	ctx := context.Background()
+	row, err := store.GetMCPClientByName(ctx, name)
+	require.NoError(t, err)
+	edit(row)
+	row.ConfigHash = ""
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, row.ClientID, row))
+}
+
+// toolPrice returns what catalog charges for tool on the MCP client named server, and fails the test when
+// it prices nothing.
+func toolPrice(t *testing.T, catalog *mcpcatalog.MCPCatalog, server, tool string) float64 {
+	t.Helper()
+	entry, ok := catalog.GetPricingData(server, tool)
+	require.True(t, ok, "%s.%s has no price", server, tool)
+	return entry.CostPerExecution
+}
+
+// mcpFileClientHash returns the config hash of client as config.json declares it.
+func mcpFileClientHash(t *testing.T, client *schemas.MCPClientConfig) string {
+	t.Helper()
+	row, err := mcpClientConfigToTable(client)
+	require.NoError(t, err)
+	hash, err := configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	return hash
+}
+
+// TestLoadMCPConfig_FileToolPricing: config.json tool prices sync like the client's other fields. A client
+// created from the file is priced from its first boot, and a price edited in the file applies on the next
+// boot. A dashboard price edit survives a boot while the file is unchanged, except with config.json as the
+// source of truth, where every boot rewrites the client from the file.
+func TestLoadMCPConfig_FileToolPricing(t *testing.T) {
+	initTestLogger()
+	for _, tc := range []struct {
+		name, sourceOfTruth    string
+		wantAfterDashboardEdit float64
+	}{
+		{name: "default mode", wantAfterDashboardEdit: 0.75},
+		{name: "config.json source of truth", sourceOfTruth: SourceOfTruthConfigJSON, wantAfterDashboardEdit: 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			catalog := bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.25}))
+			assert.Equal(t, 0.25, toolPrice(t, catalog, "billing_tools", "search"), "a client created from config.json is priced from its first boot")
+
+			catalog = bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.5}))
+			assert.Equal(t, 0.5, toolPrice(t, catalog, "billing_tools", "search"), "a price edited in config.json applies on the next boot")
+
+			editStoredMCPClient(t, store, "billing_tools", func(row *tables.TableMCPClient) {
+				row.ToolPricing = map[string]float64{"search": 0.75}
+			})
+			catalog = bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.5}))
+			assert.Equal(t, tc.wantAfterDashboardEdit, toolPrice(t, catalog, "billing_tools", "search"), "a dashboard price edit, then a boot with config.json unchanged")
+		})
+	}
+}
+
+// TestLoadMCPConfig_UpgradeFillsFileToolPricing: the first boot after tool_pricing joined the MCP client
+// hash. Older builds stored a config.json client under a hash that left out its prices (and, before
+// is_code_mode_client was hashed, its code mode), and stored no prices at create. When the stored hash is
+// the file client's under such a formula, that boot keeps the row's other fields, adds the file's price for
+// each tool the row does not price, and moves the hash to the current form, so the next boot changes nothing.
+func TestLoadMCPConfig_UpgradeFillsFileToolPricing(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	filePrices := map[string]float64{"search": 0.25, "fetch": 0.1}
+	hashOf := func(c *schemas.MCPClientConfig) string { return mcpFileClientHash(t, c) }
+	for _, tc := range []struct {
+		name string
+		// storedCodeMode is the stored row's code mode, hashedCodeMode the one its stored hash was computed
+		// with, and fileCodeMode config.json's.
+		storedCodeMode, hashedCodeMode, fileCodeMode bool
+		storedPrices, wantPrices                     map[string]float64
+		wantHeader                                   string
+	}{
+		{name: "pre-pricing hash, no stored prices", wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "pre-pricing hash, a stored price wins", storedPrices: map[string]float64{"search": 0.9}, wantPrices: map[string]float64{"search": 0.9, "fetch": 0.1}, wantHeader: "dashboard"},
+		{name: "pre-pricing hash of a code-mode client", storedCodeMode: true, hashedCodeMode: true, fileCodeMode: true, wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "pre-code-mode and pre-pricing hash", storedCodeMode: true, fileCodeMode: true, wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "config.json turning code mode on is a file edit", fileCodeMode: true, wantPrices: filePrices, wantHeader: "file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			// What an older build stored: the file client without prices, under its hash then.
+			old := billingToolsFileClient(tc.storedCodeMode, nil)
+			old.ID = "billing-1"
+			old.ConfigHash = hashOf(billingToolsFileClient(tc.hashedCodeMode, nil))
+			require.NoError(t, store.CreateMCPClientConfig(ctx, old))
+			editStoredMCPClient(t, store, "billing_tools", func(row *tables.TableMCPClient) {
+				row.Headers = map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("dashboard")}
+				row.ToolPricing = tc.storedPrices
+				row.MaxInstructionsLength = 4096
+				row.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+			})
+
+			catalog := bootMCPToolPricing(t, store, "", billingToolsFileClient(tc.fileCodeMode, filePrices))
+			row, err := store.GetMCPClientByName(ctx, "billing_tools")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPrices, row.ToolPricing, "stored prices")
+			header := row.Headers["X-Team"]
+			assert.Equal(t, tc.wantHeader, header.GetValue(), "stored header")
+			if tc.wantHeader == "dashboard" {
+				assert.Equal(t, 4096, row.MaxInstructionsLength, "a dashboard max_instructions_length survives")
+				assert.Equal(t, &schemas.MCPTLSConfig{InsecureSkipVerify: true}, row.TLSConfig, "a dashboard TLS config survives")
+			}
+			assert.Equal(t, hashOf(billingToolsFileClient(tc.fileCodeMode, filePrices)), row.ConfigHash, "the stored hash moves to the current form")
+			for tool, price := range tc.wantPrices {
+				assert.Equal(t, price, toolPrice(t, catalog, "billing_tools", tool), "catalog price of %s", tool)
+			}
+
+			bootMCPToolPricing(t, store, "", billingToolsFileClient(tc.fileCodeMode, filePrices))
+			again, err := store.GetMCPClientByName(ctx, "billing_tools")
+			require.NoError(t, err)
+			assert.Equal(t, row.ToolPricing, again.ToolPricing, "the next boot keeps the prices")
+			assert.Equal(t, row.Headers, again.Headers, "the next boot keeps the header")
+			assert.Equal(t, row.ConfigHash, again.ConfigHash, "the next boot keeps the hash")
+			assert.True(t, row.UpdatedAt.Equal(again.UpdatedAt), "the next boot writes nothing")
+		})
+	}
+}
+
+// TestLoadMCPConfig_UpgradeFillKeepsEveryStoredField: the upgrade boot writes the price fill back as one
+// full-row update, and that update writes nearly every column, so each must carry the stored value. A
+// stored row that differs from config.json in each of them comes back unchanged except for the added price
+// and the moved hash, both in the database and in the client the boot keeps.
+func TestLoadMCPConfig_UpgradeFillKeepsEveryStoredField(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateOauthConfig(ctx, &tables.TableOauthConfig{
+		ID: "billing-oauth", ClientID: schemas.NewSecretVar("registered"), ClientSecret: schemas.NewSecretVar("secret"),
+		AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token",
+		RedirectURI: "http://127.0.0.1/cb", Scopes: `["read"]`, Status: "authorized",
+	}))
+	description := "Search the billing records"
+	// Stored by an older build from config.json, under that build's hash, then edited everywhere it can be.
+	stored := billingToolsFileClient(false, map[string]float64{"search": 0.9})
+	stored.ID = "billing-1"
+	stored.ConfigHash = mcpFileClientHash(t, billingToolsFileClient(false, nil))
+	stored.ConnectionString = schemas.NewSecretVar("http://localhost:3002/mcp")
+	stored.Headers = map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("dashboard")}
+	stored.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	stored.MaxInstructionsLength = 4096
+	stored.OpenAPIConfig = &schemas.MCPOpenAPIConfig{
+		Spec:    `{"openapi":"3.0.0","info":{"title":"billing","version":"1"},"paths":{}}`,
+		BaseURL: schemas.Ptr("https://billing.example.com"),
+	}
+	stored.TokenExchange = &schemas.MCPTokenExchangeConfig{
+		Audience: "api://billing", ClientID: schemas.NewSecretVar("exchange-app"),
+		ClientSecret: schemas.NewSecretVar("exchange-secret"), Scopes: []string{"billing.read"},
+	}
+	stored.PendingOAuthConfig = &schemas.OAuth2Config{AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token", Scopes: []string{"read"}}
+	stored.OauthConfigID = schemas.Ptr("billing-oauth")
+	stored.DiscoveredTools = map[string]schemas.ChatTool{"search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "search", Description: &description}}}
+	stored.DiscoveredInstructions = "Call search first."
+	stored.PerUserHeaderKeys = []string{"x-user-token"} // canonical, as the dashboard stores them
+	stored.ToolsToExecute = schemas.WhiteList{"search"}
+	stored.ToolsToAutoExecute = schemas.WhiteList{"search"}
+	stored.AllowByDefault = true
+	stored.Disabled = true
+	stored.ToolExecutionTimeout = 45 * time.Second
+	stored.IsPingAvailable = schemas.Ptr(false)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, stored))
+	before, err := store.GetMCPClientByName(ctx, "billing_tools")
+	require.NoError(t, err)
+
+	filePrices := map[string]float64{"search": 0.25, "fetch": 0.1}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{billingToolsFileClient(false, filePrices)}}})
+
+	after, err := store.GetMCPClientByName(ctx, "billing_tools")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]float64{"search": 0.9, "fetch": 0.1}, after.ToolPricing, "the missing price is added and the stored one wins")
+	assert.Equal(t, mcpFileClientHash(t, billingToolsFileClient(false, filePrices)), after.ConfigHash, "the hash moves to the current form")
+	want := *before
+	want.ToolPricing, want.ToolPricingJSON = after.ToolPricing, after.ToolPricingJSON
+	want.ConfigHash, want.UpdatedAt = after.ConfigHash, after.UpdatedAt
+	assert.Equal(t, want, *after, "every other stored column keeps its value")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, configstore.MCPClientConfigFromTable(after), *cfg.boot.mcpClients[0], "the client the boot keeps matches the row written")
 }
 
 // TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored: an update that leaves

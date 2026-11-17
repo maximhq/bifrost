@@ -2638,19 +2638,43 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write([]byte("per_user_discovery:true"))
 	}
 
+	// Hash tool_pricing in tool order, so a price edited in config.json drifts the hash and syncs like any
+	// other field. Each entry is length-framed. An empty map contributes nothing, so a client without prices
+	// keeps its earlier hash; MCPClientHashMatchesLegacy recognises a priced client's earlier hash.
+	for _, tool := range slices.Sorted(maps.Keys(m.ToolPricing)) {
+		price := strconv.FormatFloat(m.ToolPricing[tool], 'g', -1, 64)
+		fmt.Fprintf(hash, "tool_pricing:%d:%s=%s;", len(tool), tool, price)
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// MCPClientHashMatchesLegacyCodeMode reports whether storedHash is this client's hash under the formula of
-// builds that did not hash is_code_mode_client. GenerateMCPClientHash now does when it is true, so the
-// first restart after the upgrade sees a mismatch for every such client even when config.json is untouched;
-// reconciliation calls this before treating that mismatch as a file edit, so UI and API edits survive.
-// storedCodeMode must be true too: without code mode both formulas agree, so a stored client without it
-// that now declares it is a file edit, not an old hash.
-func MCPClientHashMatchesLegacyCodeMode(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
-	if storedHash == "" || !m.IsCodeModeClient || !storedCodeMode {
+// MCPClientHashMatchesLegacy reports whether storedHash is this client's hash under the formula of an older
+// build. Builds before tool_pricing was hashed left out the prices, and builds before is_code_mode_client was
+// hashed left out code mode as well; no build hashed prices without code mode, so that form is never tried.
+// The first restart after each change sees a mismatch for every affected client even when config.json is
+// untouched, so reconciliation calls this before treating a mismatch as a file edit: UI and API edits
+// survive, and the caller adds the file's prices for tools the stored row does not price, since those builds
+// never stored a file client's prices at create. The code-mode form also needs storedCodeMode: without code
+// mode both formulas agree, so a stored client without it that now declares it is a file edit, not an old hash.
+func MCPClientHashMatchesLegacy(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
+	if storedHash == "" {
+		return false, nil
+	}
+	priced := len(m.ToolPricing) > 0
+	m.ToolPricing = nil
+	if priced {
+		legacy, err := GenerateMCPClientHash(m)
+		if err != nil {
+			return false, err
+		}
+		if legacy == storedHash {
+			return true, nil
+		}
+	}
+	if !m.IsCodeModeClient || !storedCodeMode {
 		return false, nil
 	}
 	m.IsCodeModeClient = false
