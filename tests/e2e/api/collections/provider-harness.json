@@ -340685,6 +340685,575 @@
           }
         }
       ]
+    },
+    {
+      "name": "368. Mid-conversation system reminder keeps its form across turns (reminder form stability)",
+      "description": "Claude Code ends every turn with a mid-conversation role:\"system\" reminder carrying the rolling cache marker. The Anthropic converter decided native vs <system-reminder>-wrapped by looking at the next INPUT item's role. A tool_use-led assistant reply arrives as a role-less function_call item, so the same reminder went out native while it was the last message (turn N) and wrapped once the reply followed it (turn N+1). The prefix changed at that reminder, its checkpoint stopped matching, and nearly the whole conversation was re-written every turn (Bedrock InvokeModel Opus 5.5, 2026-11-16: cached input 96% -> 65%, cost about 4x, then 429s).\n\nFix: placement is decided on the emitted Anthropic messages (enforceMidConversationSystemPlacement). The datasheet holds supports_mid_conversation_system_messages false for these rows so released gateways keep wrapping; this build enables the native form for a temporary list of verified models in code (midConvSystemPinnedModels).\n\nCases: (1-3) bedrock us.anthropic.claude-opus-5-5 on /anthropic/v1/messages with a deferred tool behind tool search (InvokeModel), three chained turns. Every earlier reminder must stay role:system with unchanged text, and turns B and C must read at least 90% of the previous turn's prompt from cache. The bulk text rides the first user turn, not the system block, so a lost checkpoint shows up as a near-zero read instead of being masked by a system floor. (4-7) vertex claude-opus-5-5 and azure claude-opus-5, turn N and N+1, form check only. Red before the fix: the turn B/C and N+1 form checks fail (the reminder comes back as a user turn) and the read collapses; green after.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-opus-5-5 /anthropic/v1/messages turn A writes the prefix through reminder 1 (InvokeModel) - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('bf368_bedrock_prompt_a');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('bedrock claude-opus-5-5 turn A: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn A: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn A: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "var u = body.usage || {};",
+                  "var read = u.cache_read_input_tokens || 0, write = u.cache_creation_input_tokens || 0, uncached = u.input_tokens || 0;",
+                  "var prompt = read + write + uncached;",
+                  "var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write + ' uncached=' + uncached;",
+                  "pm.test('bedrock claude-opus-5-5 turn A: the reminder breakpoint caches the conversation', function () {",
+                  "  pm.expect(read + write, 'no cache activity, ' + usage).to.be.above(1024);",
+                  "});",
+                  "if (pm.response.code === 200 && read + write > 1024) { pm.collectionVariables.set('bf368_bedrock_prompt_a', String(prompt)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Context for this run follows. {{cachePrefix}}\\n\\nSummarize nothing yet; wait for files.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-opus-5-5 /anthropic/v1/messages turn B reads the previous turn's prefix after a tool_use reply (InvokeModel) - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('bf368_bedrock_prompt_b');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('bedrock claude-opus-5-5 turn B: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn B: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn B: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn B: reminder 2 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R2: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 2 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 2 text changed').to.eql(\"R2: reminder 2 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "var u = body.usage || {};",
+                  "var read = u.cache_read_input_tokens || 0, write = u.cache_creation_input_tokens || 0, uncached = u.input_tokens || 0;",
+                  "var prompt = read + write + uncached;",
+                  "var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write + ' uncached=' + uncached;",
+                  "var prev = Number(pm.collectionVariables.get('bf368_bedrock_prompt_a') || 0);",
+                  "pm.test('bedrock claude-opus-5-5 turn B: the previous turn\\'s prefix is read from cache, not re-written', function () {",
+                  "  pm.expect(prev, 'the previous turn did not record its prompt size').to.be.above(0);",
+                  "  pm.expect(read, 'cache read collapsed (pre-fix: the earlier reminder flipped form, so its checkpoint no longer matched and the conversation was re-written), prev=' + prev + ' ' + usage).to.be.at.least(Math.floor(prev * 0.9));",
+                  "});",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('bf368_bedrock_prompt_b', String(prompt)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Context for this run follows. {{cachePrefix}}\\n\\nSummarize nothing yet; wait for files.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_rfs_1\",\n          \"name\": \"read\",\n          \"input\": {\n            \"path\": \"notes-1.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_rfs_1\",\n          \"content\": \"notes 1: nothing new.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R2: reminder 2 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-opus-5-5 /anthropic/v1/messages turn C reads the previous turn's prefix after a tool_use reply (InvokeModel) - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('bedrock claude-opus-5-5 turn C: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn C: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn C: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn C: reminder 2 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R2: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 2 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 2 text changed').to.eql(\"R2: reminder 2 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "pm.test('bedrock claude-opus-5-5 turn C: reminder 3 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R3: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 3 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 3 text changed').to.eql(\"R3: reminder 3 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "var u = body.usage || {};",
+                  "var read = u.cache_read_input_tokens || 0, write = u.cache_creation_input_tokens || 0, uncached = u.input_tokens || 0;",
+                  "var prompt = read + write + uncached;",
+                  "var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write + ' uncached=' + uncached;",
+                  "var prev = Number(pm.collectionVariables.get('bf368_bedrock_prompt_b') || 0);",
+                  "pm.test('bedrock claude-opus-5-5 turn C: the previous turn\\'s prefix is read from cache, not re-written', function () {",
+                  "  pm.expect(prev, 'the previous turn did not record its prompt size').to.be.above(0);",
+                  "  pm.expect(read, 'cache read collapsed (pre-fix: the earlier reminder flipped form, so its checkpoint no longer matched and the conversation was re-written), prev=' + prev + ' ' + usage).to.be.at.least(Math.floor(prev * 0.9));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Context for this run follows. {{cachePrefix}}\\n\\nSummarize nothing yet; wait for files.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_rfs_1\",\n          \"name\": \"read\",\n          \"input\": {\n            \"path\": \"notes-1.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_rfs_1\",\n          \"content\": \"notes 1: nothing new.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R2: reminder 2 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_rfs_2\",\n          \"name\": \"read\",\n          \"input\": {\n            \"path\": \"notes-2.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_rfs_2\",\n          \"content\": \"notes 2: nothing new.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R3: reminder 3 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages turn N sends the tail reminder as role:system - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('vertex claude-opus-5-5 turn N: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('vertex claude-opus-5-5 turn N: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('vertex claude-opus-5-5 turn N: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the notes file when asked.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages turn N+1 keeps the reminder as role:system after a tool_use reply - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('vertex claude-opus-5-5 turn N+1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('vertex claude-opus-5-5 turn N+1: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('vertex claude-opus-5-5 turn N+1: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "pm.test('vertex claude-opus-5-5 turn N+1: reminder 2 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R2: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 2 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 2 text changed').to.eql(\"R2: reminder 2 for the reminder form stability case. Keep answers short.\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the notes file when asked.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_rfs_1\",\n          \"name\": \"read\",\n          \"input\": {\n            \"path\": \"notes-1.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_rfs_1\",\n          \"content\": \"notes 1: nothing new.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R2: reminder 2 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/claude-opus-5 /anthropic/v1/messages turn N sends the tail reminder as role:system - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('azure claude-opus-5 turn N: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('azure claude-opus-5 turn N: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('azure claude-opus-5 turn N: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-opus-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the notes file when asked.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/claude-opus-5 /anthropic/v1/messages turn N+1 keeps the reminder as role:system after a tool_use reply - reminder form stability",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var msgs = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "function formOf(text) {",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var m = msgs[i], c = Array.isArray(m.content) ? m.content : [{ text: m.content }];",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j] && typeof c[j].text === 'string' && c[j].text.indexOf(text) !== -1) { return { role: m.role, text: c[j].text }; }",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "pm.test('azure claude-opus-5 turn N+1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('azure claude-opus-5 turn N+1: raw_request echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('azure claude-opus-5 turn N+1: reminder 1 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R1: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 1 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 1 text changed').to.eql(\"R1: reminder 1 for the reminder form stability case. Keep answers short.\");",
+                  "});",
+                  "pm.test('azure claude-opus-5 turn N+1: reminder 2 reaches the provider as role:system, unchanged', function () {",
+                  "  var f = formOf(\"R2: reminder\");",
+                  "  pm.expect(f, 'reminder missing from raw_request: ' + JSON.stringify(msgs).slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(f.role, 'reminder 2 changed form (pre-fix: inlined as a <system-reminder> user turn once a tool_use reply follows it, which breaks the cached prefix at that reminder every turn): ' + JSON.stringify(msgs).slice(0, 1500)).to.eql('system');",
+                  "  pm.expect(f.text, 'reminder 2 text changed').to.eql(\"R2: reminder 2 for the reminder form stability case. Keep answers short.\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-opus-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Run {{pcNonce}}. You are a terse assistant for the reminder form stability harness case.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"read\",\n      \"description\": \"Read a file and return its contents.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the notes file when asked.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R1: reminder 1 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_rfs_1\",\n          \"name\": \"read\",\n          \"input\": {\n            \"path\": \"notes-1.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_rfs_1\",\n          \"content\": \"notes 1: nothing new.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"R2: reminder 2 for the reminder form stability case. Keep answers short.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

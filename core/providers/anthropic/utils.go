@@ -2031,6 +2031,86 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 	return false
 }
 
+// midConvSystemPinnedModels is a TEMPORARY list of the exact Claude versions verified to
+// accept a native mid-conversation system message on Bedrock, Vertex, Mantle and Azure.
+//
+// The bug it works around: gateways built before the post-conversion placement pass
+// (enforceMidConversationSystemPlacement; core <= v1.15.2, enterprise 2.5.x) decide native vs
+// <system-reminder>-wrapped by looking at the next input item's role. A tool_use-led assistant
+// reply arrives as a role-less function_call item, so the same reminder is sent native while it
+// is the last message and wrapped once the reply follows it. That change of form invalidates the
+// prompt cache at that reminder on every turn (seen 2026-11-16 on Bedrock InvokeModel Opus 5.5:
+// cached input 96% -> 65%, cost about 4x, then 429s).
+//
+// Those gateways read supports_mid_conversation_system_messages from the datasheet, so it is
+// held false for these rows to keep them on the wrapped form. This build places the reminder
+// correctly and enables the native form here instead, ignoring the false.
+//
+// Remove this list, and set the datasheet rows to true, once no supported gateway predates the
+// fix. Until then a new model is added here with a test, never by setting the datasheet to true.
+var midConvSystemPinnedModels = []string{
+	"opus-5", "opus-5-5", "sonnet-5-5", "haiku-5-5", "fable-5", "fable-5-1", "fable-5-2",
+}
+
+// matchesPinnedClaudeVersion reports whether model names exactly one of the versions in
+// midConvSystemPinnedModels, in any of its host forms (us.anthropic.claude-opus-5-5,
+// anthropic.claude-opus-5-20261001-v1:0, claude-opus-5-5@20261001, claude-opus-5.5). The
+// version must end at the stem, so opus-5 does not match opus-5-6 and fable-5 not fable-5-3.
+func matchesPinnedClaudeVersion(model string) bool {
+	m := strings.ReplaceAll(strings.ToLower(model), ".", "-")
+	for _, stem := range midConvSystemPinnedModels {
+		for from := 0; ; {
+			i := strings.Index(m[from:], stem)
+			if i < 0 {
+				break
+			}
+			i += from
+			from = i + 1
+			if i > 0 && m[i-1] != '-' && m[i-1] != '/' {
+				continue
+			}
+			if claudeVersionEndsAt(m[i+len(stem):]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claudeVersionEndsAt reports whether rest, the text after a version stem, closes the version:
+// end of string, a @date or :revision suffix, a -v1 revision, or a -YYYYMMDD date.
+func claudeVersionEndsAt(rest string) bool {
+	if rest == "" || rest[0] == '@' || rest[0] == ':' {
+		return true
+	}
+	if rest[0] != '-' || len(rest) < 2 {
+		return false
+	}
+	if rest[1] == 'v' {
+		return true
+	}
+	digits := 0
+	for digits < len(rest)-1 && rest[1+digits] >= '0' && rest[1+digits] <= '9' {
+		digits++
+	}
+	return digits >= 6
+}
+
+// midConversationSystemSupported resolves whether a mid-conversation system message may be
+// emitted as role:"system". On Bedrock, Vertex, Mantle and Azure the versions in
+// midConvSystemPinnedModels take the native form regardless of the datasheet (see that list for
+// why the datasheet holds them false); every other pair keeps datasheet-then-default.
+func midConversationSystemSupported(caps schemas.ModelCaps) bool {
+	provider, model := caps.Provider(), caps.Model()
+	switch provider {
+	case schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure:
+		if matchesPinnedClaudeVersion(model) {
+			return true
+		}
+	}
+	return caps.SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(provider, model))
+}
+
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
 // accepts output_config.effort on a role:"system" message inside messages (per-message
 // effort, beta mid-conversation-output-config-2026-07-01). Claude API direct only: the
