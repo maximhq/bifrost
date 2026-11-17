@@ -331584,11 +331584,11 @@
       ]
     },
     {
-      "name": "353. Warp does not answer without the Bifrost MCP (warp-needs-mcp) [SERIAL]",
-      "description": "Warp reads this deployment's configuration through the Bifrost MCP, the server behind /v1/mcp that loads only when client.bifrost_url is set. Without it Warp used to keep answering from its traffic tools alone, and asked \"what routing rules exist?\" it listed the rules it had seen in logged traffic as if they were the configured list. Warp now does not answer at all without the Bifrost MCP: GET /api/warp/config reports bifrost_mcp_available, and POST /api/warp/chat returns 503 with reason no_bifrost_mcp before any model is called, so no tokens are spent. The case confirms the profile's Bifrost MCP is loaded, clears bifrost_url, waits for the config to report it gone, sends one chat and expects the refusal, then restores the client config and waits for the Bifrost MCP to load again so later Warp cases can answer. Red before the change: the chat answered 200 and the config had no bifrost_mcp_available. Requires the profile to set client.bifrost_url and the warp flag to be unlocked; the client config, Warp config and flag are restored at the end.",
+      "name": "353. Warp answers without the Bifrost MCP while decoupled from it (warp-decoupled-mcp) [SERIAL]",
+      "description": "Warp is decoupled from the Bifrost MCP for now (warp.BifrostMCPEnabled is off): it answers from its own traffic tools only, never reaches the gateway's /api through the Bifrost MCP, and does not need client.bifrost_url. Coupled, it refused every chat with 503 no_bifrost_mcp while the Bifrost MCP was not loaded. The case confirms GET /api/warp/config reports bifrost_mcp_enabled false (and bifrost_mcp_available false, since Warp reads nothing through it) with bifrost_url set, clears bifrost_url, sends one chat and expects a 200 answer whose tool calls are all Warp's own snake_case tools (no camelCase /api operation), then restores the client config and checks the flag again. Red before the change: the config had no bifrost_mcp_enabled and the chat was refused with 503 no_bifrost_mcp. Requires the profile to set client.bifrost_url and the warp flag to be unlocked; the client config, Warp config and flag are restored at the end.",
       "item": [
         {
-          "name": "openai warp-needs-mcp setup: read warp feature flag",
+          "name": "openai warp-decoupled-mcp setup: read warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -331605,12 +331605,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: feature flags list', function () {",
+                  "pm.test('warp-decoupled-mcp: feature flags list', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var flag;",
                   "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
-                  "pm.test('warp-needs-mcp: warp flag exists', function () {",
+                  "pm.test('warp-decoupled-mcp: warp flag exists', function () {",
                   "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
                   "});",
@@ -331630,7 +331630,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: enable warp feature flag",
+          "name": "openai warp-decoupled-mcp setup: enable warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -331647,7 +331647,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp flag enabled', function () {",
+                  "pm.test('warp-decoupled-mcp: warp flag enabled', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331675,7 +331675,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: read current warp config",
+          "name": "openai warp-decoupled-mcp setup: read current warp config",
           "event": [
             {
               "listen": "prerequest",
@@ -331692,13 +331692,13 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var config;",
                   "try { config = pm.response.json(); } catch (e) { config = undefined; }",
                   "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
-                  "pm.test('warp-needs-mcp: warp config is a config object', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config is a config object', function () {",
                   "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
                   "});",
                   "// Saved unchanged, and only when it is a config: an error body must never be written",
@@ -331715,7 +331715,7 @@
           }
         },
         {
-          "name": "openai gpt-4o-mini warp-needs-mcp: configure Warp on gpt-4o-mini",
+          "name": "openai gpt-4o-mini warp-decoupled-mcp: configure Warp on gpt-4o-mini",
           "event": [
             {
               "listen": "prerequest",
@@ -331746,7 +331746,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: config saved', function () {",
+                  "pm.test('warp-decoupled-mcp: config saved', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331774,7 +331774,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp setup: read current client config",
+          "name": "openai warp-decoupled-mcp setup: read current client config",
           "event": [
             {
               "listen": "prerequest",
@@ -331791,13 +331791,13 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: client config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "var body;",
                   "try { body = pm.response.json(); } catch (e) { body = undefined; }",
                   "var client = body && body.client_config;",
-                  "pm.test('warp-needs-mcp: the profile sets bifrost_url, which Warp needs', function () {",
+                  "pm.test('warp-decoupled-mcp: the profile sets bifrost_url', function () {",
                   "  pm.expect(client && client.bifrost_url, 'no bifrost_url: ' + pm.response.text()).to.be.an('object');",
                   "});",
                   "// Saved unchanged, and only when it is a config with a Bifrost URL: the clear and",
@@ -331814,30 +331814,23 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: the config reports the Bifrost MCP loaded",
+          "name": "openai warp-decoupled-mcp: the config reports Warp does not use the Bifrost MCP",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== true && polls < 40) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true with bifrost_url set', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false with bifrost_url set', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -331850,7 +331843,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: clear the Bifrost URL",
+          "name": "openai warp-decoupled-mcp: clear the Bifrost URL",
           "event": [
             {
               "listen": "prerequest",
@@ -331870,7 +331863,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config saved without bifrost_url', function () {",
+                  "pm.test('warp-decoupled-mcp: client config saved without bifrost_url', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
                 ]
@@ -331898,7 +331891,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp: the config reports no Bifrost MCP",
+          "name": "openai warp-decoupled-mcp: the config reports no setup step without bifrost_url",
           "event": [
             {
               "listen": "prerequest",
@@ -331914,23 +331907,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== false && polls < 40) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is false without bifrost_url', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false without bifrost_url', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -331943,7 +331929,7 @@
           }
         },
         {
-          "name": "openai gpt-4o-mini warp-needs-mcp: chat without the Bifrost MCP is refused before any model call [EXPECT-503]",
+          "name": "openai gpt-4o-mini warp-decoupled-mcp: chat without the Bifrost URL is answered from Warp's own tools",
           "event": [
             {
               "listen": "prerequest",
@@ -331959,15 +331945,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Red before the change: Warp answered from traffic alone (200), passing off",
-                  "// routing rules seen in logs as the configured list.",
-                  "pm.test('warp-needs-mcp: 503 when the Bifrost MCP is not loaded', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(503);",
+                  "// Red before the change: Warp refused with 503 no_bifrost_mcp before any model call.",
+                  "pm.test('warp-decoupled-mcp: 200 without the Bifrost MCP', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "var body;",
+                  "var body = {};",
                   "try { body = pm.response.json(); } catch (e) { body = {}; }",
-                  "pm.test('warp-needs-mcp: reason is no_bifrost_mcp', function () {",
-                  "  pm.expect(body.reason, 'reason: ' + pm.response.text()).to.equal('no_bifrost_mcp');",
+                  "pm.test('warp-decoupled-mcp: the turn answers', function () {",
+                  "  pm.expect(body.answer, 'answer: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.error, 'error: ' + pm.response.text()).to.be.undefined;",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: the turn calls at least one tool', function () {",
+                  "  pm.expect(body.tool_calls, 'tool_calls: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: only Warp\\'s own tools are called, no /api operation', function () {",
+                  "  var names = (body.tool_calls || []).map(function (c) { return c.name; });",
+                  "  names.forEach(function (name) {",
+                  "    pm.expect(name, 'tool ' + name + ' in ' + pm.response.text()).to.match(/^[a-z][a-z0-9_]*$/);",
+                  "  });",
                   "});"
                 ]
               }
@@ -331984,7 +331979,7 @@
             "url": "{{baseUrl}}/api/warp/chat",
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"what routing rules exist?\"}], \"stream\": false}",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"How many requests did this deployment serve in the last 24 hours?\"}], \"stream\": false}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -331994,7 +331989,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore client config",
+          "name": "openai warp-decoupled-mcp cleanup: restore client config",
           "event": [
             {
               "listen": "prerequest",
@@ -332010,7 +332005,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: client config restored', function () {",
+                  "pm.test('warp-decoupled-mcp: client config restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "// Its snapshot is cleared at the end of the folder, and only if this restore succeeded.",
@@ -332040,7 +332035,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: the Bifrost MCP loads again",
+          "name": "openai warp-decoupled-mcp cleanup: Warp still does not use the Bifrost MCP",
           "event": [
             {
               "listen": "prerequest",
@@ -332056,23 +332051,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "pm.test('warp-decoupled-mcp: warp config readable', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
-                  "var available = pm.response.json().bifrost_mcp_available;",
-                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
-                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
-                  "if (available !== true && polls < 60) {",
-                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
-                  "  // The pending timer holds the sandbox open, which delays the next request.",
-                  "  setTimeout(function () {}, 500);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
-                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true again, so later Warp cases can answer', function () {",
-                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "var config = {};",
+                  "try { config = pm.response.json(); } catch (e) { config = {}; }",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_enabled is false with bifrost_url restored', function () {",
+                  "  pm.expect(config.bifrost_mcp_enabled, 'bifrost_mcp_enabled: ' + pm.response.text()).to.equal(false);",
+                  "});",
+                  "pm.test('warp-decoupled-mcp: bifrost_mcp_available is false, since Warp reads nothing through it', function () {",
+                  "  pm.expect(config.bifrost_mcp_available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
                   "});"
                 ]
               }
@@ -332085,7 +332073,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore warp config",
+          "name": "openai warp-decoupled-mcp cleanup: restore warp config",
           "event": [
             {
               "listen": "prerequest",
@@ -332102,7 +332090,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: previous config restored', function () {",
+                  "pm.test('warp-decoupled-mcp: previous config restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "pm.collectionVariables.unset('warpNeedsMcpConfigBody');",
@@ -332133,7 +332121,7 @@
           }
         },
         {
-          "name": "openai warp-needs-mcp cleanup: restore warp feature flag",
+          "name": "openai warp-decoupled-mcp cleanup: restore warp feature flag",
           "event": [
             {
               "listen": "prerequest",
@@ -332151,7 +332139,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('warp-needs-mcp: flag restored', function () {",
+                  "pm.test('warp-decoupled-mcp: flag restored', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "// Last request of the folder. Each snapshot is cleared only once its own restore succeeded,",
@@ -339296,20 +339284,397 @@
       ]
     },
     {
-      "name": "363. Streamed usage bills each cached prompt token once (stream cache usage)",
+      "name": "364. Bedrock synthetic structured-output tool streams as one text block (bedrock synthetic structured output stream) (#10128 / PR #10138)",
+      "description": "When a Bedrock model keeps the synthetic bf_so_* tool for structured output (older Claude, Fable 5.1+, or a schema Claude rejects natively, here a nullable enum on Claude Sonnet 4.5), the streamed tool input used to go out as bare output_text.delta events with no item id. /anthropic/v1/messages then emitted content_block_delta with a fresh index per delta and no content_block_start/stop, so Anthropic SDK clients assembled nothing (#10128, #8158 shape 1). When the tool is unpinned (thinking on), the model may answer in plain text instead, and every text event was dropped, leaving only message_delta with billed output tokens (#8158 shape 2). Cases pin one well-formed text block on the /anthropic stream, one announced output_text item on the /v1/responses stream, and streamed content on /v1/chat/completions under reasoning. The two unpinned cases are red before the fix only on turns where the model answers in prose.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format on the synthetic tool arrives as one text block (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('one text block: content_block_start, deltas on its index, content_block_stop', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"stream\":true,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /anthropic/v1/messages stream output_config.format with thinking (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('the answer streams as one text block whether the model used the tool or plain text', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null, toolUse = 0;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "      if (ev.content_block.type === 'tool_use') { toolUse++; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(toolUse, 'the synthetic tool leaked as tool_use: ' + body).to.equal(0);",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses stream text.format on the synthetic tool streams one output_text item (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('output_text deltas belong to one announced message item', function () {",
+                  "  var added = {}, parts = {}, text = '', itemIds = {}, done = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'response.output_item.added' && ev.item) { added[ev.item.id] = ev.item.type; }",
+                  "    if (ev.type === 'response.content_part.added') { parts[ev.item_id] = true; }",
+                  "    if (ev.type === 'response.output_text.delta') {",
+                  "      pm.expect(ev.item_id, 'delta without item_id: ' + body).to.be.a('string').and.not.empty;",
+                  "      pm.expect(added[ev.item_id], 'delta before output_item.added for ' + ev.item_id + ': ' + body).to.equal('message');",
+                  "      pm.expect(parts[ev.item_id], 'delta before content_part.added for ' + ev.item_id + ': ' + body).to.equal(true);",
+                  "      itemIds[ev.item_id] = true;",
+                  "      text += ev.delta;",
+                  "    }",
+                  "    if (ev.type === 'response.output_item.added' && ev.item && ev.item.type === 'function_call') {",
+                  "      pm.expect.fail('the synthetic tool leaked as a function_call: ' + body);",
+                  "    }",
+                  "    if (ev.type === 'response.completed') { done = true; }",
+                  "  });",
+                  "  pm.expect(Object.keys(itemIds).length, 'items carrying text: ' + body).to.equal(1);",
+                  "  pm.expect(done, 'no response.completed: ' + body).to.equal(true);",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_output_tokens\":400,\"stream\":true,\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"input\":\"The ticket is open. Report its status.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream response_format with reasoning (unpinned synthetic tool) still streams the answer (bedrock synthetic structured output stream) - #10128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('content deltas concatenate to schema JSON, finish_reason stop, no tool_calls', function () {",
+                  "  var text = '', finish = null, toolCalls = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.error, 'error event: ' + body).to.be.undefined;",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.delta && c.delta.tool_calls) { toolCalls = true; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(toolCalls, 'unexpected tool_calls: ' + body).to.equal(false);",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "  pm.expect(text, 'no content streamed: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).status, 'text: ' + text).to.equal('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2000,\"stream\":true,\"reasoning\":{\"max_tokens\":1024},\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"ticket\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":[\"string\",\"null\"],\"enum\":[\"open\",\"closed\",null]}},\"required\":[\"status\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"The ticket is open. Report its status.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "365. Log list stop reason (#9846)",
+      "description": "The logs table can show stop reason only if GET /api/logs returns it. The list SELECT omitted stop_reason even though it was stored and filterable. Seed a small OpenAI chat completion, then poll the flat list by its exact request ID and the grouped list by model and timestamp without request_id, comparing stop_reason with the response finish_reason. Red before the list projection fix, green after; requires logging and access to management log APIs. No provider conversion changes are involved.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log list stop reason preserves finish_reason - #9846",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('log list stop reason: seed succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var expected = pm.response.json().choices[0].finish_reason;",
+                  "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('log list stop reason: seed carries finish reason and request id', function () {",
+                  "  pm.expect(expected, raw).to.be.a('string').and.not.empty;",
+                  "  pm.expect(requestId, raw).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkList(grouped, attempt, seed) {",
+                  "  var query = 'request_id=' + encodeURIComponent(requestId);",
+                  "  if (grouped) {",
+                  "    var timestamp = new Date(seed.timestamp).getTime();",
+                  "    query = 'models=' + encodeURIComponent(seed.model) + '&start_time=' + encodeURIComponent(new Date(timestamp - 1000).toISOString()) + '&end_time=' + encodeURIComponent(new Date(timestamp + 1000).toISOString());",
+                  "  }",
+                  "  var url = pm.variables.get('baseUrl') + '/api/logs?' + query + '&limit=100&roots_only=' + grouped;",
+                  "  pm.sendRequest({url: url, method: 'GET'}, function (err, res) {",
+                  "    pm.test('log list stop reason: list responds (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    var logs = res.json().logs || [];",
+                  "    var row = logs.filter(function (log) { return log.id === requestId; })[0];",
+                  "    // Only wait for the asynchronous writer; a terminal row missing stop_reason fails immediately.",
+                  "    if ((!row || row.status === 'processing') && attempt < 10) {",
+                  "      setTimeout(function () { checkList(grouped, attempt + 1, seed); }, 1000);",
+                  "      return;",
+                  "    }",
+                  "    pm.test('log list stop reason: persisted reason survives projection (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(row, res.text()).to.be.an('object');",
+                  "      pm.expect(row.stop_reason, res.text()).to.equal(expected);",
+                  "    });",
+                  "    if (!grouped && row && row.status !== 'processing') { checkList(true, 0, row); }",
+                  "  });",
+                  "}",
+                  "checkList(false, 0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
+    },
+    {
+      "name": "366. Streamed usage bills each cached prompt token once (stream cache usage)",
       "description": "Issue #5354 / PR #5355. Anthropic splits streaming usage across message_start (nested message.usage) and message_delta (top-level usage), and upstreams disagree on where the prompt-side split goes. Anthropic, Vertex and Bedrock put the uncached input_tokens and the cache counters on message_start and usually only output_tokens on message_delta. Some Anthropic-compatible upstreams (kimi-code) put the whole prompt in message_start.input_tokens with zero cache counters and re-report the split on message_delta. The streaming accumulators kept the larger input_tokens and then folded the cache counters on top, so the second shape billed every cached token twice (20532 + 20224 = 40756).\n\nBoth stream accumulators in core/providers/anthropic/anthropic.go (HandleAnthropicChatCompletionStreaming for /v1/chat/completions, HandleAnthropicResponsesStream for /v1/responses and /anthropic/v1/messages) now treat each usage object as a snapshot: a prompt-side counter is overwritten only when the frame carried that key (reportedAnthropicStreamPromptCounters, read from the raw frame; compaction passes are kept apart and taken from the latest frame, see anthropicStreamPromptUsage), and the cache counters are folded in once at stream end.\n\nEach route sends the same ~5k-token system prefix twice with a block-level cache_control: turn 1 writes (or, on a warm cache, reads), turn 2 must read, and both turns must bill the same prompt total with each cached token counted once, and a third, non-streaming request with the same body (a separate converter) must report that same total, so an undercount shared by both streamed turns still fails. The live upstreams here use the Anthropic split, so these rows pin the invariant the fix must keep on the common shape (the first version of the fix billed only the uncached input on it); the double count itself needs a kimi-shaped upstream and is pinned red/green by TestStreamFinalUsageCountsCachedTokensOnce in cancelbilling_test.go. Rows: (1-3) Anthropic /v1/chat/completions, (4-6) /v1/responses, (7-9) the /anthropic/v1/messages SDK surface, read the way @anthropic-ai/sdk accumulates usage, (10-12) Vertex Claude /v1/chat/completions, which reuses the same chat stream handler.",
       "item": [
         {
-          "name": "363.1 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "366.1 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.1 streams with HTTP 200', function () {",
+                  "pm.test('366.1 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf363_prompt_1');",
+                  "pm.collectionVariables.unset('bf366_prompt_1');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -339324,23 +339689,23 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.1 the stream completes without an error event', function () {",
+                  "pm.test('366.1 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.1 the stream reports prompt usage', function () {",
+                  "pm.test('366.1 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.1 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.1 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf363_prompt_1', String(prompt));"
+                  "pm.collectionVariables.set('bf366_prompt_1', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -339372,13 +339737,13 @@
           }
         },
         {
-          "name": "363.2 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "366.2 anthropic claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.2 streams with HTTP 200', function () {",
+                  "pm.test('366.2 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -339395,27 +339760,27 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.2 the stream completes without an error event', function () {",
+                  "pm.test('366.2 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.2 the stream reports prompt usage', function () {",
+                  "pm.test('366.2 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.2 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.2 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('363.2 the cache read turn reports a cache read', function () {",
+                  "pm.test('366.2 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf363_prompt_1'), 10);",
-                  "pm.test('363.2 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf366_prompt_1'), 10);",
+                  "pm.test('366.2 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -339450,26 +339815,26 @@
           }
         },
         {
-          "name": "363.3 anthropic claude-sonnet-4-6 /v1/chat/completions non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
+          "name": "366.3 anthropic claude-sonnet-4-6 /v1/chat/completions non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.3 the non-streaming request returns HTTP 200', function () {",
+                  "pm.test('366.3 the non-streaming request returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = null; try { json = pm.response.json(); } catch (e) {}",
                   "var u = (json && json.usage) || {}, d = u.prompt_tokens_details || {};",
                   "var prompt = u.prompt_tokens, read = d.cached_read_tokens || 0, write = d.cached_write_tokens || 0;",
-                  "pm.test('363.3 the non-streaming response reports a cached prompt', function () {",
+                  "pm.test('366.3 the non-streaming response reports a cached prompt', function () {",
                   "  pm.expect(prompt, 'no usage in the response: ' + pm.response.text()).to.be.a('number');",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, prompt=' + prompt).to.be.above(0);",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "var streamed = parseInt(pm.collectionVariables.get('bf363_prompt_1'), 10);",
-                  "pm.test('363.3 the streamed prompt total matches the non-streaming one', function () {",
+                  "var streamed = parseInt(pm.collectionVariables.get('bf366_prompt_1'), 10);",
+                  "pm.test('366.3 the streamed prompt total matches the non-streaming one', function () {",
                   "  pm.expect(streamed, 'the streamed turns did not record a prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(streamed, 'streamed ' + streamed + ', non-streaming ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(prompt);",
                   "});"
@@ -339504,16 +339869,16 @@
           }
         },
         {
-          "name": "363.4 anthropic claude-sonnet-4-6 /v1/responses streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "366.4 anthropic claude-sonnet-4-6 /v1/responses streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.4 streams with HTTP 200', function () {",
+                  "pm.test('366.4 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf363_prompt_2');",
+                  "pm.collectionVariables.unset('bf366_prompt_2');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -339530,23 +339895,23 @@
                   "    prompt = u.input_tokens; read = d.cached_read_tokens || d.cached_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.4 the stream completes without an error event', function () {",
+                  "pm.test('366.4 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached response.completed or response.incomplete: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.4 the stream reports prompt usage', function () {",
+                  "pm.test('366.4 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.4 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.4 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf363_prompt_2', String(prompt));"
+                  "pm.collectionVariables.set('bf366_prompt_2', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -339577,13 +339942,13 @@
           }
         },
         {
-          "name": "363.5 anthropic claude-sonnet-4-6 /v1/responses streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "366.5 anthropic claude-sonnet-4-6 /v1/responses streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.5 streams with HTTP 200', function () {",
+                  "pm.test('366.5 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -339602,27 +339967,27 @@
                   "    prompt = u.input_tokens; read = d.cached_read_tokens || d.cached_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.5 the stream completes without an error event', function () {",
+                  "pm.test('366.5 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached response.completed or response.incomplete: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.5 the stream reports prompt usage', function () {",
+                  "pm.test('366.5 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.5 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.5 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('363.5 the cache read turn reports a cache read', function () {",
+                  "pm.test('366.5 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf363_prompt_2'), 10);",
-                  "pm.test('363.5 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf366_prompt_2'), 10);",
+                  "pm.test('366.5 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -339656,26 +340021,26 @@
           }
         },
         {
-          "name": "363.6 anthropic claude-sonnet-4-6 /v1/responses non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
+          "name": "366.6 anthropic claude-sonnet-4-6 /v1/responses non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.6 the non-streaming request returns HTTP 200', function () {",
+                  "pm.test('366.6 the non-streaming request returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = null; try { json = pm.response.json(); } catch (e) {}",
                   "var u = (json && json.usage) || {}, d = u.input_tokens_details || {};",
                   "var prompt = u.input_tokens, read = d.cached_read_tokens || d.cached_tokens || 0, write = d.cached_write_tokens || 0;",
-                  "pm.test('363.6 the non-streaming response reports a cached prompt', function () {",
+                  "pm.test('366.6 the non-streaming response reports a cached prompt', function () {",
                   "  pm.expect(prompt, 'no usage in the response: ' + pm.response.text()).to.be.a('number');",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, prompt=' + prompt).to.be.above(0);",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "var streamed = parseInt(pm.collectionVariables.get('bf363_prompt_2'), 10);",
-                  "pm.test('363.6 the streamed prompt total matches the non-streaming one', function () {",
+                  "var streamed = parseInt(pm.collectionVariables.get('bf366_prompt_2'), 10);",
+                  "pm.test('366.6 the streamed prompt total matches the non-streaming one', function () {",
                   "  pm.expect(streamed, 'the streamed turns did not record a prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(streamed, 'streamed ' + streamed + ', non-streaming ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(prompt);",
                   "});"
@@ -339709,16 +340074,16 @@
           }
         },
         {
-          "name": "363.7 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "366.7 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.7 streams with HTTP 200', function () {",
+                  "pm.test('366.7 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf363_prompt_3');",
+                  "pm.collectionVariables.unset('bf366_prompt_3');",
                   "if (pm.response.code !== 200) { return; }",
                   "var snap = { input_tokens: null, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -339734,23 +340099,23 @@
                   "});",
                   "var read = snap.cache_read_input_tokens, write = snap.cache_creation_input_tokens;",
                   "var prompt = snap.input_tokens === null ? null : snap.input_tokens + read + write;",
-                  "pm.test('363.7 the stream completes without an error event', function () {",
+                  "pm.test('366.7 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached message_stop: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.7 the stream reports prompt usage', function () {",
+                  "pm.test('366.7 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.7 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.7 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf363_prompt_3', String(prompt));"
+                  "pm.collectionVariables.set('bf366_prompt_3', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -339782,13 +340147,13 @@
           }
         },
         {
-          "name": "363.8 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "366.8 anthropic claude-sonnet-4-6 /anthropic/v1/messages streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.8 streams with HTTP 200', function () {",
+                  "pm.test('366.8 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -339806,27 +340171,27 @@
                   "});",
                   "var read = snap.cache_read_input_tokens, write = snap.cache_creation_input_tokens;",
                   "var prompt = snap.input_tokens === null ? null : snap.input_tokens + read + write;",
-                  "pm.test('363.8 the stream completes without an error event', function () {",
+                  "pm.test('366.8 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached message_stop: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.8 the stream reports prompt usage', function () {",
+                  "pm.test('366.8 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.8 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.8 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('363.8 the cache read turn reports a cache read', function () {",
+                  "pm.test('366.8 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf363_prompt_3'), 10);",
-                  "pm.test('363.8 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf366_prompt_3'), 10);",
+                  "pm.test('366.8 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -339861,13 +340226,13 @@
           }
         },
         {
-          "name": "363.9 anthropic claude-sonnet-4-6 /anthropic/v1/messages non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
+          "name": "366.9 anthropic claude-sonnet-4-6 /anthropic/v1/messages non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.9 the non-streaming request returns HTTP 200', function () {",
+                  "pm.test('366.9 the non-streaming request returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -339875,13 +340240,13 @@
                   "var u = (json && json.usage) || {};",
                   "var read = u.cache_read_input_tokens || 0, write = u.cache_creation_input_tokens || 0;",
                   "var prompt = typeof u.input_tokens === 'number' ? u.input_tokens + read + write : null;",
-                  "pm.test('363.9 the non-streaming response reports a cached prompt', function () {",
+                  "pm.test('366.9 the non-streaming response reports a cached prompt', function () {",
                   "  pm.expect(prompt, 'no usage in the response: ' + pm.response.text()).to.be.a('number');",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, prompt=' + prompt).to.be.above(0);",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "var streamed = parseInt(pm.collectionVariables.get('bf363_prompt_3'), 10);",
-                  "pm.test('363.9 the streamed prompt total matches the non-streaming one', function () {",
+                  "var streamed = parseInt(pm.collectionVariables.get('bf366_prompt_3'), 10);",
+                  "pm.test('366.9 the streamed prompt total matches the non-streaming one', function () {",
                   "  pm.expect(streamed, 'the streamed turns did not record a prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(streamed, 'streamed ' + streamed + ', non-streaming ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(prompt);",
                   "});"
@@ -339916,16 +340281,16 @@
           }
         },
         {
-          "name": "363.10 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
+          "name": "366.10 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 1 writes the cached prefix (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.10 streams with HTTP 200', function () {",
+                  "pm.test('366.10 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.collectionVariables.unset('bf363_prompt_4');",
+                  "pm.collectionVariables.unset('bf366_prompt_4');",
                   "if (pm.response.code !== 200) { return; }",
                   "var prompt = null, read = 0, write = 0, events = 0, errors = [], done = false;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
@@ -339940,23 +340305,23 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.10 the stream completes without an error event', function () {",
+                  "pm.test('366.10 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.10 the stream reports prompt usage', function () {",
+                  "pm.test('366.10 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.10 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.10 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.collectionVariables.set('bf363_prompt_4', String(prompt));"
+                  "pm.collectionVariables.set('bf366_prompt_4', String(prompt));"
                 ],
                 "type": "text/javascript"
               }
@@ -339988,13 +340353,13 @@
           }
         },
         {
-          "name": "363.11 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
+          "name": "366.11 vertex claude-sonnet-4-6 /v1/chat/completions streaming turn 2 reads it and bills the same prompt (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.11 streams with HTTP 200', function () {",
+                  "pm.test('366.11 streams with HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -340011,27 +340376,27 @@
                   "    prompt = ev.usage.prompt_tokens; read = d.cached_read_tokens || 0; write = d.cached_write_tokens || 0;",
                   "  }",
                   "});",
-                  "pm.test('363.11 the stream completes without an error event', function () {",
+                  "pm.test('366.11 the stream completes without an error event', function () {",
                   "  pm.expect(errors, 'SSE error events: ' + errors.join(' | ')).to.be.empty;",
                   "  pm.expect(done, 'the stream never reached data: [DONE]: ' + pm.response.text().slice(-800)).to.equal(true);",
                   "});",
                   "if (errors.length || !done) { return; }",
-                  "pm.test('363.11 the stream reports prompt usage', function () {",
+                  "pm.test('366.11 the stream reports prompt usage', function () {",
                   "  pm.expect(events, 'no SSE events: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(prompt, 'no usage in the stream: ' + pm.response.text()).to.be.a('number');",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "pm.test('363.11 prompt tokens include each cached token exactly once', function () {",
+                  "pm.test('366.11 prompt tokens include each cached token exactly once', function () {",
                   "  var usage = 'prompt=' + prompt + ' read=' + read + ' write=' + write;",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, ' + usage).to.be.above(0);",
                   "  pm.expect(prompt, 'cached tokens missing from the prompt total, ' + usage).to.be.at.least(read + write);",
                   "  pm.expect(prompt - read - write, 'cached tokens counted twice, ' + usage).to.be.below(read + write);",
                   "});",
-                  "pm.test('363.11 the cache read turn reports a cache read', function () {",
+                  "pm.test('366.11 the cache read turn reports a cache read', function () {",
                   "  pm.expect(read, 'expected a cache read, prompt=' + prompt + ' write=' + write).to.be.above(0);",
                   "});",
-                  "var turn1 = parseInt(pm.collectionVariables.get('bf363_prompt_4'), 10);",
-                  "pm.test('363.11 the identical request bills the same prompt on the write and the read turn', function () {",
+                  "var turn1 = parseInt(pm.collectionVariables.get('bf366_prompt_4'), 10);",
+                  "pm.test('366.11 the identical request bills the same prompt on the write and the read turn', function () {",
                   "  pm.expect(turn1, 'turn 1 did not record its prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(prompt, 'turn 1 billed ' + turn1 + ', turn 2 billed ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(turn1);",
                   "});"
@@ -340066,26 +340431,26 @@
           }
         },
         {
-          "name": "363.12 vertex claude-sonnet-4-6 /v1/chat/completions non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
+          "name": "366.12 vertex claude-sonnet-4-6 /v1/chat/completions non-streaming reference bills the same prompt as the streamed turns (stream cache usage)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('363.12 the non-streaming request returns HTTP 200', function () {",
+                  "pm.test('366.12 the non-streaming request returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = null; try { json = pm.response.json(); } catch (e) {}",
                   "var u = (json && json.usage) || {}, d = u.prompt_tokens_details || {};",
                   "var prompt = u.prompt_tokens, read = d.cached_read_tokens || 0, write = d.cached_write_tokens || 0;",
-                  "pm.test('363.12 the non-streaming response reports a cached prompt', function () {",
+                  "pm.test('366.12 the non-streaming response reports a cached prompt', function () {",
                   "  pm.expect(prompt, 'no usage in the response: ' + pm.response.text()).to.be.a('number');",
                   "  pm.expect(read + write, 'the cache breakpoint did not activate, prompt=' + prompt).to.be.above(0);",
                   "});",
                   "if (typeof prompt !== 'number') { return; }",
-                  "var streamed = parseInt(pm.collectionVariables.get('bf363_prompt_4'), 10);",
-                  "pm.test('363.12 the streamed prompt total matches the non-streaming one', function () {",
+                  "var streamed = parseInt(pm.collectionVariables.get('bf366_prompt_4'), 10);",
+                  "pm.test('366.12 the streamed prompt total matches the non-streaming one', function () {",
                   "  pm.expect(streamed, 'the streamed turns did not record a prompt total').to.be.a('number').and.not.NaN;",
                   "  pm.expect(streamed, 'streamed ' + streamed + ', non-streaming ' + prompt + ' (read=' + read + ' write=' + write + ')').to.equal(prompt);",
                   "});"

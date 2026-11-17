@@ -20244,6 +20244,10 @@ var excludedGoFields = map[string]map[string]bool{
 		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
 		"mcp_max_protocol_version":        true,
 		"mcp_server_max_protocol_version": true,
+		// The Bifrost MCP server (/v1/mcp) is not released yet: config.json still reads
+		// these, but the schema leaves them out so they are not advertised.
+		"bifrost_url":              true,
+		"bifrost_mcp_allow_writes": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// Phrase suggestions are a model router's: the type is shared with
@@ -20350,7 +20354,7 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	"schemas.PluginConfig":            {},
 	"framework.FrameworkConfig":       {},
-	"modelcatalog.Config":             {},
+	"modelcatalog.Config":             {"openapi_url": true}, // the Bifrost MCP's spec; unreleased, so left out of the schema
 	"tables.GlobalHeaderFilterConfig": {},
 	"configstore.AuthConfig":          {},
 	"schemas.MCPStdioConfig":          {},

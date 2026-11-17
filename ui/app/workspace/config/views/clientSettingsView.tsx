@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
+import { BIFROST_MCP_SETTINGS_VISIBLE } from "@/lib/constants/mcp";
 import { bifrostUrlSchema, openAPIUrlSchema, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { secretVarEquals } from "@/lib/utils/secretVarForm";
@@ -156,7 +157,8 @@ export default function ClientSettingsView() {
 	const bifrostURLError = bifrostURLCheck && !bifrostURLCheck.success ? bifrostURLCheck.error.issues[0]?.message : undefined;
 	const openAPIURLCheck = openAPIUrlSchema.safeParse(openAPIURL);
 	const openAPIURLError = openAPIURLCheck.success ? undefined : openAPIURLCheck.error.issues[0]?.message;
-	const hasURLError = !!bifrostURLError || !!openAPIURLError;
+	// Hidden fields cannot be fixed, so they never block a save.
+	const hasURLError = BIFROST_MCP_SETTINGS_VISIBLE && (!!bifrostURLError || !!openAPIURLError);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[] | GlobalHeaderFilterConfig) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
@@ -471,55 +473,60 @@ export default function ClientSettingsView() {
 				</div>
 			</div>
 
-			{/* Bifrost URL */}
-			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-bifrost-url">
-				<label htmlFor="bifrost-url" className="text-sm font-medium">
-					{t("clientSettings.bifrostUrl")}
-				</label>
-				<p className="text-muted-foreground text-sm">
-					<Trans t={t} i18nKey="clientSettings.bifrostUrlHelp" components={{ code0: <code className="text-xs" /> }} />
-				</p>
-				<SecretVarInput
-					id="bifrost-url"
-					data-testid="client-settings-bifrost-url-input"
-					placeholder={t("clientSettings.bifrostUrlPlaceholder")}
-					value={localConfig.bifrost_url}
-					onChange={(value: SecretVar) => setLocalConfig((prev) => ({ ...prev, bifrost_url: value }))}
-					disabled={!hasSettingsUpdateAccess}
-					aria-invalid={!!bifrostURLError}
-					aria-describedby={bifrostURLError ? "bifrost-url-error" : undefined}
-				/>
-				{bifrostURLError && (
-					<p id="bifrost-url-error" className="text-destructive text-sm" data-testid="client-settings-bifrost-url-error">
-						{bifrostURLError}
-					</p>
-				)}
-			</div>
+			{/* Bifrost MCP server settings: hidden until it is released (BIFROST_MCP_SETTINGS_VISIBLE) */}
+			{BIFROST_MCP_SETTINGS_VISIBLE && (
+				<>
+					{/* Bifrost URL */}
+					<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-bifrost-url">
+						<label htmlFor="bifrost-url" className="text-sm font-medium">
+							{t("clientSettings.bifrostUrl")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="clientSettings.bifrostUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+						<SecretVarInput
+							id="bifrost-url"
+							data-testid="client-settings-bifrost-url-input"
+							placeholder={t("clientSettings.bifrostUrlPlaceholder")}
+							value={localConfig.bifrost_url}
+							onChange={(value: SecretVar) => setLocalConfig((prev) => ({ ...prev, bifrost_url: value }))}
+							disabled={!hasSettingsUpdateAccess}
+							aria-invalid={!!bifrostURLError}
+							aria-describedby={bifrostURLError ? "bifrost-url-error" : undefined}
+						/>
+						{bifrostURLError && (
+							<p id="bifrost-url-error" className="text-destructive text-sm" data-testid="client-settings-bifrost-url-error">
+								{bifrostURLError}
+							</p>
+						)}
+					</div>
 
-			{/* OpenAPI URL: the spec /v1/mcp builds its tools from (framework config) */}
-			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-openapi-url">
-				<label htmlFor="openapi-url" className="text-sm font-medium">
-					{t("clientSettings.openapiUrl")}
-				</label>
-				<p className="text-muted-foreground text-sm">
-					<Trans t={t} i18nKey="clientSettings.openapiUrlHelp" components={{ code0: <code className="text-xs" /> }} />
-				</p>
-				<Input
-					id="openapi-url"
-					data-testid="client-settings-openapi-url-input"
-					placeholder={t("clientSettings.openapiUrlPlaceholder")}
-					value={openAPIURL}
-					onChange={(e) => setOpenAPIURL(e.target.value)}
-					disabled={!hasSettingsUpdateAccess}
-					aria-invalid={!!openAPIURLError}
-					aria-describedby={openAPIURLError ? "openapi-url-error" : undefined}
-				/>
-				{openAPIURLError && (
-					<p id="openapi-url-error" className="text-destructive text-sm" data-testid="client-settings-openapi-url-error">
-						{openAPIURLError}
-					</p>
-				)}
-			</div>
+					{/* OpenAPI URL: the spec /v1/mcp builds its tools from (framework config) */}
+					<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-openapi-url">
+						<label htmlFor="openapi-url" className="text-sm font-medium">
+							{t("clientSettings.openapiUrl")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="clientSettings.openapiUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+						<Input
+							id="openapi-url"
+							data-testid="client-settings-openapi-url-input"
+							placeholder={t("clientSettings.openapiUrlPlaceholder")}
+							value={openAPIURL}
+							onChange={(e) => setOpenAPIURL(e.target.value)}
+							disabled={!hasSettingsUpdateAccess}
+							aria-invalid={!!openAPIURLError}
+							aria-describedby={openAPIURLError ? "openapi-url-error" : undefined}
+						/>
+						{openAPIURLError && (
+							<p id="openapi-url-error" className="text-destructive text-sm" data-testid="client-settings-openapi-url-error">
+								{openAPIURLError}
+							</p>
+						)}
+					</div>
+				</>
+			)}
 
 			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
 

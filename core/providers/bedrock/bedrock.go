@@ -1640,8 +1640,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput, sawCallerToolUse bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse, usedStructuredOutputTool bool
 		var structuredOutputBuilder strings.Builder
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of held text
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
 
@@ -1814,6 +1816,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							usedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
@@ -1859,13 +1869,33 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						continue
 					}
 
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output (mirrors ResponsesStreamRequest).
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					// Text is held, not dropped: see the matching block in ResponsesStream.
+					if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
 					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						if !usedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
+						continue
+					}
+					if len(heldSO) > 0 && !usedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -2100,6 +2130,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of heldText
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
@@ -2266,47 +2298,52 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
 						isAccumulatingStructuredOutput = false
 					}
 
-					// Check for tool use delta event
+					// The synthetic tool's input is the answer: send it as a text delta on the same
+					// content block so the converter opens and closes a regular text item around it.
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+						text := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &text}
+					} else if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					} else if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						// Prose beside the synthetic tool would corrupt the JSON, but an unpinned
+						// tool (thinking, Fable 5.1+) can be answered in plain text instead: hold
+						// it until the turn shows which one happened.
+						if !streamState.UsedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
 						continue
-					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					} else if len(heldSO) > 0 && !streamState.UsedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							// Anything after held text waits behind it, so blocks reach the client in order.
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -4989,4 +5026,38 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
 	}
+}
+
+// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text delta, a
+// non-tool block start, or the stop of a block already in textBlocks.
+func isTextBlockEvent(ev *BedrockStreamEvent, textBlocks map[int]struct{}) bool {
+	if ev.Delta != nil {
+		return ev.Delta.Text != nil
+	}
+	if ev.Start != nil {
+		return ev.Start.ToolUse == nil
+	}
+	if ev.ContentBlockIndex != nil && ev.StopReason == nil && ev.Usage == nil {
+		_, ok := textBlocks[*ev.ContentBlockIndex]
+		return ok
+	}
+	return false
+}
+
+// heldConverseEvent is a Converse stream event held back on the synthetic structured-output path.
+type heldConverseEvent struct {
+	event   *BedrockStreamEvent
+	payload []byte // upstream payload, copied off the reused decoder buffer; nil when raw responses are off
+	text    bool   // part of a text block, dropped if bf_so_* turns out to carry the answer
+}
+
+// holdConverseEvent copies ev, and its payload when raw responses are on, so both outlive the
+// decoder's buffer reuse.
+func holdConverseEvent(ev *BedrockStreamEvent, payload []byte, sendRaw, text bool) heldConverseEvent {
+	h := heldConverseEvent{event: new(BedrockStreamEvent), text: text}
+	*h.event = *ev
+	if sendRaw && len(payload) > 0 {
+		h.payload = append([]byte(nil), payload...)
+	}
+	return h
 }
