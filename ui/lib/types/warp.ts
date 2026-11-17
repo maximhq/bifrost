@@ -213,6 +213,8 @@ export interface WarpStoredMessage {
 		options?: { label: string; hint?: string }[];
 		allow_other?: boolean;
 		kind?: string;
+		/** On a confirmation card, the write it asks about. */
+		action?: { tool: string; arguments: string; destructive?: boolean };
 	};
 	total_tokens?: number;
 	cost?: number;

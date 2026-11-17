@@ -11,6 +11,15 @@ export interface WarpQuestion {
 	kind?: "time_range" | "scope" | "other" | "confirm";
 	options: WarpQuestionOption[];
 	allow_other?: boolean;
+	/** On a confirmation card, the write it would run. Older stored cards lack it. */
+	action?: WarpConfirmAction;
+}
+
+export interface WarpConfirmAction {
+	tool: string;
+	/** The JSON arguments, exactly as they will run. */
+	arguments: string;
+	destructive?: boolean;
 }
 
 export interface WarpUsage {
@@ -195,6 +204,7 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 					allow_other: message.question.allow_other,
 					kind: message.question.kind as WarpQuestion["kind"],
 				};
+				if (message.question.action) turn.question.action = message.question.action;
 			} else {
 				turn.question = { question: message.content, options: [] };
 			}

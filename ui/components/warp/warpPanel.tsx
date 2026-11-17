@@ -10,6 +10,7 @@ import WarpHistory from "@/components/warp/warpHistory";
 import { useWarpBifrostMCPNotice, WarpBifrostMCPNoticeDialog } from "@/components/warp/warpBifrostMCPNotice";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
+import { questionCardKey } from "@/components/warp/warpQuestion.utils";
 import {
 	decodeTurnError,
 	indexStatusLabel,
@@ -454,20 +455,21 @@ export default function WarpPanel() {
 					</div>
 
 					<div className="bg-card absolute inset-x-0 bottom-0" ref={setControlsNode}>
-						{question && !isStreaming && (
-							<div className="px-3 pt-3 pb-2">
-								<WarpQuestionCard
-									question={question}
-									onAnswer={ask}
-									onSkip={() => {
-										ask(t("warp.question.skipAnswer"));
-									}}
-								/>
-							</div>
-						)}
 						<WarpComposer
 							isStreaming={isStreaming}
-							attached={!!question && !isStreaming}
+							tray={
+								question && !isStreaming ? (
+									<WarpQuestionCard
+										// A new question must not inherit the state of the card still folding back.
+										key={questionCardKey(question)}
+										question={question}
+										onAnswer={ask}
+										onSkip={() => {
+											ask(t("warp.question.skipAnswer"));
+										}}
+									/>
+								) : undefined
+							}
 							onCommand={(command) => {
 								if (command.id === "clear") {
 									stop();

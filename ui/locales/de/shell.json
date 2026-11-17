@@ -459,7 +459,15 @@
 			"label": "Frage",
 			"skip": "Überspringen",
 			"orType": "Oder eigene Antwort unten eingeben.",
-			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast."
+			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast.",
+			"confirm": {
+				"subtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen.",
+				"destructiveSubtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen. Prüfen Sie sie sorgfältig.",
+				"cannotUndo": "Dies kann nicht rückgängig gemacht werden.",
+				"noArguments": "Keine Argumente.",
+				"cancel": "Abbrechen",
+				"confirm": "Bestätigen"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Was das abdeckt",
