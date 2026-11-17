@@ -70,8 +70,20 @@ const (
 type VectorStoreProperties struct {
 	DataType    VectorStorePropertyType `json:"data_type"`
 	Description string                  `json:"description"`
-	// Filterable marks a property used in Query filters; stores may encode it.
+	// Filterable marks Query filter fields; stores may index or encode them.
 	Filterable bool `json:"filterable,omitempty"`
+}
+
+// hasFilterableProperties reports whether a schema annotates any Filterable
+// field. Stores use it to index only those fields, and keep index-all
+// behavior for unannotated legacy schemas.
+func hasFilterableProperties(properties map[string]VectorStoreProperties) bool {
+	for _, prop := range properties {
+		if prop.Filterable {
+			return true
+		}
+	}
+	return false
 }
 
 type VectorStorePropertyType string

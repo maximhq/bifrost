@@ -40,7 +40,9 @@ func (s *QdrantStore) Ping(ctx context.Context) error {
 	return err
 }
 
-// CreateNamespace creates a new collection in the Qdrant vector store.
+// CreateNamespace ensures a collection and its payload indexes exist. Schemas
+// with Filterable fields index only those fields; unannotated legacy schemas
+// retain index-all behavior. Existing indexes are never removed.
 func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
 	exists, err := s.client.CollectionExists(ctx, namespace)
 	if err != nil {
@@ -76,7 +78,14 @@ func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dim
 		}
 	}
 
+	// Avoid indexing payload-only values such as cached responses. Legacy
+	// callers omit Filterable even on query fields, so selective indexing
+	// must be opt-in to avoid breaking their filters.
+	selectiveIndexing := hasFilterableProperties(properties)
 	for fieldName, prop := range properties {
+		if selectiveIndexing && !prop.Filterable {
+			continue
+		}
 		var fieldType qdrant.FieldType
 		switch prop.DataType {
 		case VectorStorePropertyTypeInteger:
