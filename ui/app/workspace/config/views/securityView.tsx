@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { BIFROST_MCP_SETTINGS_VISIBLE } from "@/lib/constants/mcp";
 import { getErrorMessage, useGetCoreConfigQuery, useIsAuthEnabledQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { authProofOfControlSchema, SecretVar } from "@/lib/types/schemas";
@@ -671,23 +672,25 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
-				{/* Bifrost MCP: whether /v1/mcp serves non-GET /api operations as tools */}
-				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
-					<div className="space-y-0.5">
-						<label htmlFor="bifrost-mcp-allow-writes" className="text-sm font-medium">
-							{t("security.bifrostMcpAllowWrites")}
-						</label>
-						<p className="text-muted-foreground text-sm">
-							<Trans t={t} i18nKey="security.bifrostMcpAllowWritesHelp" components={{ code0: <code className="text-xs" /> }} />
-						</p>
+				{/* Bifrost MCP: whether /v1/mcp serves non-GET /api operations as tools. Hidden until it is released. */}
+				{BIFROST_MCP_SETTINGS_VISIBLE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="bifrost-mcp-allow-writes" className="text-sm font-medium">
+								{t("security.bifrostMcpAllowWrites")}
+							</label>
+							<p className="text-muted-foreground text-sm">
+								<Trans t={t} i18nKey="security.bifrostMcpAllowWritesHelp" components={{ code0: <code className="text-xs" /> }} />
+							</p>
+						</div>
+						<Switch
+							id="bifrost-mcp-allow-writes"
+							data-testid="security-bifrost-mcp-allow-writes-switch"
+							checked={localConfig.bifrost_mcp_allow_writes ?? true}
+							onCheckedChange={(checked) => handleConfigChange("bifrost_mcp_allow_writes", checked)}
+						/>
 					</div>
-					<Switch
-						id="bifrost-mcp-allow-writes"
-						data-testid="security-bifrost-mcp-allow-writes-switch"
-						checked={localConfig.bifrost_mcp_allow_writes ?? true}
-						onCheckedChange={(checked) => handleConfigChange("bifrost_mcp_allow_writes", checked)}
-					/>
-				</div>
+				)}
 				{/* Access profiles creating and deleting users' virtual keys, each switched separately */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">

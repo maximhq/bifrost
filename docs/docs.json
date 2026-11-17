@@ -294,7 +294,6 @@
               "features/routers",
               "features/complexity-router",
               "features/warp",
-          "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -1570,8 +1569,6 @@
                   "GET /ws",
                   "GET /mcp",
                   "POST /mcp",
-                  "GET /v1/mcp",
-                  "POST /v1/mcp",
                   "GET /metrics",
                   "POST /inspect"
                 ]

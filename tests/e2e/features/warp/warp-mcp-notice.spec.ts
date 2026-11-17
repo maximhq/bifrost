@@ -14,6 +14,11 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 // page's view only and its PUT is captured, never sent, since those settings are
 // shared server state; /api/warp/config reports bifrost_mcp_available the way
 // the server does, from whether bifrost_url is set, unless a test overrides it.
+//
+// All of that applies only while Warp uses the Bifrost MCP (bifrost_mcp_enabled).
+// The two are decoupled for now, so the server reports it false and none of it
+// shows; these cases pin the coupled path with it mocked on, and the last
+// describe pins the decoupled default.
 
 const NOTICE_KEY = 'bifrost.warpBifrostMCPNoticeSeen'
 const LATER_COUNT_KEY = 'bifrost.warpBifrostMCPNoticeLaterCount'
@@ -34,6 +39,7 @@ const configuredWarp = {
   semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
+  bifrost_mcp_enabled: true,
 }
 
 interface MCPSettings {
@@ -375,5 +381,41 @@ test.describe('Warp panel without the Bifrost MCP', () => {
     await expect(page.getByTestId('warp-needs-bifrost-mcp')).toBeVisible()
     await expect(page.getByTestId('warp-mcp-notice-dialog')).toHaveAttribute('data-setup', 'true')
     await expect(composer).toHaveCount(0)
+  })
+})
+
+// Decoupled from the Bifrost MCP (the server's default for now), Warp answers
+// from its own tools: no setup popup or banner on the settings page, no setup
+// state in the panel, and the composer is there even with no Bifrost URL.
+test.describe('Warp decoupled from the Bifrost MCP', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.context().addCookies([
+      {
+        name: 'bifrost_onboarding_remind_at',
+        value: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        url: test.info().project.use.baseURL ?? 'http://localhost:3000',
+      },
+    ])
+  })
+
+  test('shows no notice on the settings page, even without a Bifrost URL', async ({ page }) => {
+    await mockNotice(page, {}, { bifrost_mcp_enabled: false })
+    await page.goto('/workspace/config/warp')
+
+    // The view renders before the config loads; the enabled switch reflects the mocked config.
+    await expect(page.getByTestId('warp-enabled-switch')).toBeVisible()
+    await expect(page.getByTestId('warp-enabled-switch')).toBeChecked()
+    await expect(page.getByTestId('warp-mcp-notice-dialog')).toHaveCount(0)
+    await expect(page.getByTestId('warp-mcp-notice-banner')).toHaveCount(0)
+  })
+
+  test('opens the panel on the composer, with no setup popup', async ({ page }) => {
+    await mockNotice(page, {}, { bifrost_mcp_enabled: false })
+    await page.goto('/workspace/config/client-settings')
+
+    await page.getByTestId('topbar-warp-btn').click()
+    await expect(page.getByTestId('warp-composer-input')).toBeVisible()
+    await expect(page.getByTestId('warp-needs-bifrost-mcp')).toHaveCount(0)
+    await expect(page.getByTestId('warp-mcp-notice-dialog')).toHaveCount(0)
   })
 })
