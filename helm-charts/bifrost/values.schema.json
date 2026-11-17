@@ -844,6 +844,13 @@
               "description": "Number of days to retain logs",
               "default": 365
             },
+            "vectorRetentionDays": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 106751,
+              "default": 0,
+              "description": "Upper bound, in days, on how long vector store entries tied to logs are kept (Warp's log index, the complexity router's captured requests). While log cleanup runs (a logs store is configured), 0 follows logRetentionDays and a larger value is capped at it. Without a logs store, a positive value applies on its own and 0 sets no retention limit. A complexity router also drops its captured requests after its own suggestions lookback (7 days unless set), whichever comes first."
+            },
             "enforceGovernanceHeader": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"

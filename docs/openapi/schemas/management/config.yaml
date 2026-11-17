@@ -93,6 +93,21 @@ ClientConfig:
     log_retention_days:
       type: integer
       description: Number of days to retain logs
+    vector_retention_days:
+      type: [integer, 'null']
+      minimum: 0
+      maximum: 106751
+      default: 0
+      description: >
+        Upper bound, in days, on how long vector store entries tied to logs are
+        kept: Warp's log index and the complexity router's captured requests.
+        It caps, never extends: a value above log_retention_days is capped at
+        it, and 0 bounds them by the log retention alone. A router also drops
+        its captured requests after its own suggestions lookback (7 days
+        unless set), so they go at whichever comes first. Where no log
+        retention applies (logs kept forever, with no log store or cleaner), a
+        positive value applies on its own. null on PUT resets it to 0; omitted
+        on PUT keeps the stored value.
     delete_expired_virtual_keys:
       type: boolean
       default: false

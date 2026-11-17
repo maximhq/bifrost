@@ -159,6 +159,7 @@ bifrost:
     disableContentLogging: true
     disableDbPingsInHealth: true
     logRetentionDays: 30
+    vectorRetentionDays: 7
     enforceGovernanceHeader: true
     maxRequestBodySizeMb: 50
     compat:
@@ -199,6 +200,7 @@ assert_field_value 'client.enable_logging' '.client.enable_logging' 'true'
 assert_field_value 'client.disable_content_logging' '.client.disable_content_logging' 'true'
 assert_field_value 'client.disable_db_pings_in_health' '.client.disable_db_pings_in_health' 'true'
 assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
+assert_field_value 'client.vector_retention_days' '.client.vector_retention_days' '7'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
 assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'

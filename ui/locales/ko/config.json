@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "활성화되면 개별 요청은 x-bf-send-back-raw-request 및 x-bf-send-back-raw-response 헤더를 사용하여 원시 공급자 요청/응답 바이트를 호출자에게 다시 보낼 수 있어요. 로그 저장에는 영향을 주지 않어요. 로그의 원시 바이트 지속성은 {{setting}}에 의해 제어돼요.",
 		"logRetentionDays": "로그 보존 일수",
 		"logRetentionDaysHelp": "데이터베이스에 로그(릴레이 로그 포함)를 보관하는 일수이에요. 최소 기간은 1일이에요. 오래된 로그는 자동으로 삭제돼요.",
+		"vectorRetentionDays": "벡터 보존 일수",
+		"vectorRetentionDaysHelp": "로그로 만든 벡터를 보관하는 일수예요. 비워 두면 로그 보존 기간과 같아지며, 그보다 길게 설정할 수 없어요.",
 		"hideDeletedVks": "필터에 삭제된 가상 키를 표시하지 않음",
 		"hideDeletedVksHelp": "활성화되면 삭제된 가상 키는 로그, 대시보드, MCP 로그 및 릴레이 로그의 가상 키 필터 옵션에서 제외돼요.",
 		"loggingHeaders": "로깅 헤더",

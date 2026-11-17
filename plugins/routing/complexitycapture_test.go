@@ -171,7 +171,7 @@ func TestComplexityCaptureKeepsVectorsNoLongerThanLogs(t *testing.T) {
 
 	days := 30
 	retention := func() int { return days }
-	cc.logRetention.Store(&retention)
+	cc.vectorRetention.Store(&retention)
 	assert.Equal(t, 14, cc.keepDays(14))
 	days = 3
 	assert.Equal(t, 3, cc.keepDays(14), "a vector must not outlive its log")
