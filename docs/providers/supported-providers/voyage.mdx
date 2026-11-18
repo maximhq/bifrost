@@ -25,7 +25,7 @@ icon: "v"
 | Text Completions, Images, Speech, Transcriptions, Files, Batch | ❌ | ❌ | - |
 
 <Note>
-Everything else returns `UnsupportedOperationError`. Voyage has no model listing endpoint, so **List Models** is not available; the model catalog supplies the models.
+Everything else returns `UnsupportedOperationError`. Batch and file requests are first checked for a key with *Use for Batch APIs* enabled, so without one they fail with that key-selection error instead; enabling it does not make Voyage serve them. Voyage has no model listing endpoint, so **List Models** is not available; the model catalog supplies the models.
 </Note>
 
 ## Setup & Configuration
