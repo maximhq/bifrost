@@ -327,6 +327,7 @@ func confirmationQuestion(tool ManagementTool, arguments string) (*Question, err
 			{Label: "Cancel", Hint: cancelHint},
 		},
 		Kind:    ConfirmQuestionKind,
+		Action:  &schemas.WarpConfirmAction{Tool: tool.Name, Arguments: shown, Destructive: tool.Destructive},
 		pending: &schemas.WarpPendingCall{Token: token, Tool: tool.Name, Arguments: arguments},
 	}, nil
 }

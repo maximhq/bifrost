@@ -49408,6 +49408,10 @@
                     },
                     "offset": {
                       "type": "integer"
+                    },
+                    "access_token_ttl": {
+                      "type": "integer",
+                      "description": "Configured access token lifetime in seconds, for estimating when a grant's current access token expires."
                     }
                   }
                 }
@@ -108284,8 +108288,10 @@
                 "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
               },
               "bifrost_mcp_allow_writes": {
-                "type": "boolean",
-                "nullable": true,
+                "type": [
+                  "boolean",
+                  "null"
+                ],
                 "default": true,
                 "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
               },
@@ -108836,7 +108842,7 @@
               "openapi_url": {
                 "type": "string",
                 "maxLength": 2048,
-                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, dev's docs/openapi/openapi-oss.json. Saving a new value rebuilds /v1/mcp. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url applies that change first, against the spec already in use: turning writes off can leave a read-only server on the previous spec running, so /v1/mcp keeps answering and does not move to the new spec on its own. Only when that first rebuild fails are the previous tools unloaded, /v1/mcp answers 503, and the load is retried in the background. Omit the field to keep the stored value.\n"
+                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, https://getbifrost.ai/openapi-oss.json. Saving a new value rebuilds /v1/mcp from it. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url never leaves the previous, broader tools in service: /v1/mcp either serves within the new settings or answers 503 and retries in the background. Omit the field to keep the stored value.\n"
               }
             }
           },
@@ -109177,8 +109183,10 @@
                 "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
               },
               "bifrost_mcp_allow_writes": {
-                "type": "boolean",
-                "nullable": true,
+                "type": [
+                  "boolean",
+                  "null"
+                ],
                 "default": true,
                 "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
               },
@@ -109729,7 +109737,7 @@
               "openapi_url": {
                 "type": "string",
                 "maxLength": 2048,
-                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, dev's docs/openapi/openapi-oss.json. Saving a new value rebuilds /v1/mcp. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url applies that change first, against the spec already in use: turning writes off can leave a read-only server on the previous spec running, so /v1/mcp keeps answering and does not move to the new spec on its own. Only when that first rebuild fails are the previous tools unloaded, /v1/mcp answers 503, and the load is retried in the background. Omit the field to keep the stored value.\n"
+                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, https://getbifrost.ai/openapi-oss.json. Saving a new value rebuilds /v1/mcp from it. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url never leaves the previous, broader tools in service: /v1/mcp either serves within the new settings or answers 503 and retries in the background. Omit the field to keep the stored value.\n"
               }
             }
           },
@@ -113620,7 +113628,7 @@
         "properties": {
           "base_url": {
             "type": "string",
-            "description": "Base URL for the provider (optional)"
+            "description": "Base URL for the provider (optional). For Bedrock, only the host is used, as the bedrock-runtime host for all inference; a key's bedrock_key_config.endpoints.runtime takes precedence."
           },
           "extra_headers": {
             "type": "object",
@@ -126365,62 +126373,6 @@
             "type": "boolean",
             "readOnly": true,
             "description": "Whether the shared runtime vector store is connected."
-          },
-          "management_writes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "create",
-                "update",
-                "delete",
-                "action"
-              ],
-              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
-            },
-            "description": "Kinds of configuration change Warp may offer through the Bifrost MCP,\neach run only after the person confirms it. Reads are always offered;\nempty, the default, is reads only.\n"
-          },
-          "management_writes_available": {
-            "type": "boolean",
-            "readOnly": true,
-            "description": "Whether the Bifrost MCP serves writes at all. It is the ceiling: with\nclient.bifrost_mcp_allow_writes off, no kind of write is offered,\nwhatever management_writes says.\n"
-          },
-          "management_tool_sizes": {
-            "type": "array",
-            "readOnly": true,
-            "description": "Per kind, how many management tools Warp could be offered and roughly\nhow many tokens their declarations add to every Warp request. Absent\nwhile the Bifrost MCP is not loaded.\n",
-            "items": {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "read",
-                    "create",
-                    "update",
-                    "delete",
-                    "action"
-                  ]
-                },
-                "tools": {
-                  "type": "integer"
-                },
-                "estimated_tokens": {
-                  "type": "integer",
-                  "description": "Rough estimate (declaration characters / 3)."
-                }
-              },
-              "required": [
-                "kind",
-                "tools",
-                "estimated_tokens"
-              ]
-            }
-          },
-          "bifrost_mcp_available": {
-            "type": "boolean",
-            "readOnly": true,
-            "description": "Whether the gateway's Bifrost MCP is loaded. Warp reads configuration\nthrough it and does not answer without it: chat returns 503 with reason\n`no_bifrost_mcp`. False when `client.bifrost_url` is unset or the\nOpenAPI spec could not be read.\n"
           }
         },
         "required": [
@@ -126438,10 +126390,7 @@
           "semantic_search_threshold",
           "semantic_search_limit",
           "topic_discovery_min_requests",
-          "vector_store_connected",
-          "management_writes",
-          "management_writes_available",
-          "bifrost_mcp_available"
+          "vector_store_connected"
         ]
       },
       "WarpConfigInput": {
@@ -126602,21 +126551,6 @@
               }
             ],
             "description": "How many requests that matched no topic have to be waiting before an\nhourly pass clusters them into new topics, from 10 to 20000. Omitted\nkeeps the stored value; zero means \"use the default\", resolved before\nvalidation. 1 to 9 are refused.\n"
-          },
-          "management_writes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "create",
-                "update",
-                "delete",
-                "action"
-              ],
-              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
-            },
-            "uniqueItems": true,
-            "description": "Kinds of configuration change Warp may offer, each run only after the\nperson confirms it. Reads are always offered and are not a kind. Omitted\nkeeps the stored value; [] is reads only.\n"
           }
         }
       },
@@ -126894,15 +126828,14 @@
       },
       "WarpUnavailable": {
         "type": "object",
-        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n- `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,\n  or its OpenAPI spec could not be read). Warp does not answer without it.\n  Show administrators the setup step and everyone else an ask-an-admin\n  message, in place of the composer.\n",
+        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n",
         "properties": {
           "reason": {
             "type": "string",
             "enum": [
               "not_configured",
               "no_log_store",
-              "no_vector_store",
-              "no_bifrost_mcp"
+              "no_vector_store"
             ]
           },
           "message": {

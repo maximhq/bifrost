@@ -459,7 +459,15 @@
 			"label": "Domanda",
 			"skip": "Salta",
 			"orType": "Oppure digita la tua risposta qui sotto.",
-			"skipAnswer": "Usa il tuo miglior giudizio e indica cosa hai ipotizzato."
+			"skipAnswer": "Usa il tuo miglior giudizio e indica cosa hai ipotizzato.",
+			"confirm": {
+				"subtitle": "Warp applicherà questa modifica dopo la tua conferma.",
+				"destructiveSubtitle": "Warp applicherà questa modifica dopo la tua conferma. Controllala con attenzione.",
+				"cannotUndo": "Questa operazione non può essere annullata.",
+				"noArguments": "Nessun argomento.",
+				"cancel": "Annulla",
+				"confirm": "Conferma"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Cosa copre",

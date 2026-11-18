@@ -459,7 +459,15 @@
 			"label": "Pregunta",
 			"skip": "Omitir",
 			"orType": "O escribe tu propia respuesta abajo.",
-			"skipAnswer": "Usa tu mejor criterio e indica qué has supuesto."
+			"skipAnswer": "Usa tu mejor criterio e indica qué has supuesto.",
+			"confirm": {
+				"subtitle": "Warp aplicará este cambio cuando lo confirmes.",
+				"destructiveSubtitle": "Warp aplicará este cambio cuando lo confirmes. Revísalo con cuidado.",
+				"cannotUndo": "Esta acción no se puede deshacer.",
+				"noArguments": "Sin argumentos.",
+				"cancel": "Cancelar",
+				"confirm": "Confirmar"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Qué cubre esto",

@@ -1413,7 +1413,7 @@ func TestQueueWaitHistogramObservesRecordedWait(t *testing.T) {
 }
 
 // BenchmarkTransportOverheadHooks covers the per-request transport work: slot stamp,
-// LLM-hook capture handoff, and the scalar overhead observation.
+// active-request slot, LLM-hook capture handoff, and the scalar overhead observation.
 func BenchmarkTransportOverheadHooks(b *testing.B) {
 	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
@@ -1428,9 +1428,24 @@ func BenchmarkTransportOverheadHooks(b *testing.B) {
 	for b.Loop() {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		_, _ = p.HTTPTransportPreHook(ctx, req)
+		p.acquireActiveRequest(ctx, schemas.ResponsesStreamRequest)
 		slot := ctx.Value(overheadSlotKey).(*overheadSlot)
 		slot.capture.Store(&overheadCapture{labels: labels, root: root})
 		_ = p.HTTPTransportPostHook(ctx, req, resp)
+	}
+}
+
+// BenchmarkActiveRequestSDKPath covers acquire and release without a transport slot, as the Go SDK runs them.
+func BenchmarkActiveRequestSDKPath(b *testing.B) {
+	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		p.acquireActiveRequest(ctx, schemas.ChatCompletionRequest)
+		p.releaseActiveRequest(ctx)
 	}
 }
 
