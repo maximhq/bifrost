@@ -527,19 +527,18 @@ func responsesAnnotationsToGeminiInteractions(annotations []schemas.ResponsesOut
 // Gemini 3 and later, one per grounded request before that, the same rule generateContent
 // follows. Other grounding tools (google_maps) are not search units.
 func geminiInteractionsSearchUnits(counts []GeminiInteractionsGroundingToolCount, model string) int {
+	return schemas.GeminiSearchUnits(geminiInteractionsSearchQueries(counts), model)
+}
+
+// geminiInteractionsSearchQueries is how many Google Search queries a run made.
+func geminiInteractionsSearchQueries(counts []GeminiInteractionsGroundingToolCount) int {
 	total := 0
 	for _, c := range counts {
 		if c.Type == geminiInteractionsGoogleSearch {
 			total += c.Count
 		}
 	}
-	if total <= 0 {
-		return 0
-	}
-	if !isGemini3Plus(model) {
-		return 1
-	}
-	return total
+	return max(total, 0)
 }
 
 // responsesServerToolItemToGeminiInteractionSteps renders a built-in tool item another provider

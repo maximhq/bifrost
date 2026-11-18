@@ -336,6 +336,8 @@ type InteractionsPassthroughInfo struct {
 	Model  string // the agent that ran, else the model
 	Status string
 	Usage  *schemas.BifrostPassthroughUsage
+
+	searchQueries int // searches the run made, when nothing named its model
 }
 
 // terminal reports whether the run has stopped. A run still in progress (or waiting on a
@@ -393,6 +395,9 @@ func parseInteractionsPassthrough(body []byte, fallbackModel string) Interaction
 		pricingModel = fallbackModel
 	}
 	info.Usage = interactionsUsage(u, tier, pricingModel)
+	if pricingModel == "" && u != nil {
+		info.searchQueries = geminiInteractionsSearchQueries(u.GroundingToolCount)
+	}
 	return info
 }
 
@@ -501,6 +506,8 @@ func (r interactionsRequest) job(info InteractionsPassthroughInfo) *schemas.Bifr
 		PollPath:   pollPath,
 		APIVersion: r.apiVersion,
 		Usage:      info.Usage,
+
+		SearchQueries: info.searchQueries,
 	}
 }
 
@@ -564,9 +571,31 @@ func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPasst
 		o.last.Status = info.Status
 	}
 	if info.Usage != nil {
-		o.last.Usage = info.Usage
+		o.last.Usage, o.last.searchQueries = info.Usage, info.searchQueries
+	}
+	if o.last.searchQueries > 0 && o.last.Model != "" && o.last.Usage != nil {
+		// The model came after the usage it decides the search units of.
+		o.last.Usage = withSearchUnits(o.last.Usage, schemas.GeminiSearchUnits(o.last.searchQueries, o.last.Model))
+		o.last.searchQueries = 0
 	}
 	return info.Usage
+}
+
+// withSearchUnits is usage with its search count set to units. usage is not modified.
+func withSearchUnits(usage *schemas.BifrostPassthroughUsage, units int) *schemas.BifrostPassthroughUsage {
+	if usage.LLMUsage == nil {
+		return usage
+	}
+	out, llm := *usage, *usage.LLMUsage
+	details := schemas.ChatCompletionTokensDetails{}
+	if llm.CompletionTokensDetails != nil {
+		details = *llm.CompletionTokensDetails
+	}
+	details.NumSearchQueries = &units
+	llm.CompletionTokensDetails = &details
+	llm.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: units}}
+	out.LLMUsage = &llm
+	return &out
 }
 
 // Finalize names the model the stream reported running and moves the observed usage onto the run

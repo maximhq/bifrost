@@ -3892,6 +3892,38 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(resp, nil))
 }
 
+// A read or cancel of a stored run is a status read too: every GET of a finished Gemini Interaction repeats
+// the run's full usage. Only the create is priced; job accounting settles the run once, so a read that
+// reports one prices at zero, a cost the provider reported included. A retrieve no run covers, such as an
+// OpenAI background response, keeps the cost its provider reports.
+func TestCalculateCost_ResponsesLifecycleReadsAreNotBilled(t *testing.T) {
+	model := chatPricing(0.000002, 0.000012)
+	model.Provider, model.Model = "gemini", "gemini-3.8-flash"
+	store := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized(model.Model, model.Provider, model.Mode): model,
+	})
+	priced := func(requestType schemas.RequestType, job *schemas.BifrostPassthroughJob, reported *schemas.BifrostCost) float64 {
+		extra := schemas.BifrostResponseExtraFields{RequestType: requestType, RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.8-flash")}
+		response := &schemas.BifrostResponsesResponse{
+			Usage:       &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100, Cost: reported},
+			ProviderJob: job, ExtraFields: extra,
+		}
+		if requestType == schemas.ResponsesRetrieveStreamRequest {
+			return store.CalculateCost(&schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: response, ExtraFields: extra}}, nil)
+		}
+		return store.CalculateCost(&schemas.BifrostResponse{ResponsesResponse: response}, nil)
+	}
+	run, reported := &schemas.BifrostPassthroughJob{ID: "v1_x", Terminal: true}, &schemas.BifrostCost{TotalCost: 0.5}
+	assert.Greater(t, priced(schemas.ResponsesRequest, nil, nil), 0.0, "the create is billed")
+	for _, read := range []schemas.RequestType{schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesCancelRequest} {
+		assert.Zero(t, priced(read, run, nil), read)
+		assert.Zero(t, priced(read, run, reported), read)
+		assert.Zero(t, priced(read, nil, nil), read)
+	}
+	assert.InDelta(t, 0.5, priced(schemas.ResponsesRetrieveRequest, nil, reported), 1e-9, "no run covers it")
+	assert.InDelta(t, 0.5, priced(schemas.ResponsesCancelRequest, nil, reported), 1e-9)
+}
+
 // A Gemini Interactions poll names no model on the request: the agent that ran comes back on the
 // response as ServedModel, and the run is priced at that agent's rates. Without it the record has
 // no model to look up and is left unpriced.

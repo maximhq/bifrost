@@ -5,10 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
@@ -224,4 +227,189 @@ func TestPostLLMHookSettlesAStreamedInteractionWhenItEnds(t *testing.T) {
 	assert.True(t, streamRow.Stream)
 	assert.Equal(t, testInteractionAgent, streamRow.Model)
 	assert.True(t, streamRow.Cost == nil || *streamRow.Cost == 0, "the stream's own row is not billed for the run: cost=%v", streamRow.Cost)
+}
+
+// sendTypedInteraction drives a typed Responses request through the plugin, the way the /genai
+// Interactions route and /v1/responses reach a Gemini run: the create is a Responses request
+// naming the agent, a read is a Responses retrieve naming none.
+func sendTypedInteraction(t *testing.T, plugin *LoggerPlugin, requestID string, run *schemas.BifrostPassthroughJob, usage *schemas.ResponsesResponseUsage) {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-"+requestID)
+	request := &schemas.BifrostRequest{RequestType: schemas.ResponsesRetrieveRequest, ResponsesRetrieveRequest: &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.Gemini, ResponseID: run.ID}}
+	model := ""
+	if run.Created {
+		model = testInteractionAgent
+		request = &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: model, Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)}}}
+	}
+	_, _, err := plugin.PreLLMHook(ctx, request)
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:          schemas.Ptr(run.ID),
+			Model:       testInteractionAgent,
+			Status:      schemas.Ptr(run.Status),
+			Usage:       usage,
+			ProviderJob: run,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: request.RequestType,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini, Model: model},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+}
+
+// TestPostLLMHookBillsATypedInteractionRunOnce pins a background run started through a typed
+// Responses request: the create records the run, a read of the finished run settles it once under
+// the create, and neither the create nor the reads are billed for it themselves.
+func TestPostLLMHookBillsATypedInteractionRunOnce(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newInteractionPricingManager(t), nil)
+	require.NoError(t, err)
+
+	sendTypedInteraction(t, plugin, "req-typed-create", &schemas.BifrostPassthroughJob{
+		ID: "int_typed", Status: "in_progress", Created: true, PollPath: "/interactions/int_typed",
+	}, nil)
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindInteraction, string(schemas.Gemini), "int_typed")
+	job, err := bs.GetProviderJob(context.Background(), jobID)
+	require.NoError(t, err)
+	require.NotNil(t, job, "the typed create records the run")
+	assert.Equal(t, "/interactions/int_typed", job.Endpoint)
+
+	runUsage := &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}}
+	finished := &schemas.BifrostPassthroughJob{ID: "int_typed", Status: "completed", Terminal: true, PollPath: "/interactions/int_typed", Usage: runUsage}
+	readUsage := &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
+	sendTypedInteraction(t, plugin, "req-typed-read-1", finished, readUsage)
+	sendTypedInteraction(t, plugin, "req-typed-read-2", finished, readUsage)
+	require.NoError(t, plugin.Cleanup())
+
+	settled, err := bs.GetProviderJob(context.Background(), jobID)
+	require.NoError(t, err)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
+	row, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindInteraction, schemas.Gemini, "int_typed"))
+	require.NoError(t, err, "the run's cost row is written")
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 1000*2e-06+100*1.2e-05, *row.Cost, 1e-9)
+
+	for _, id := range []string{"req-typed-create", "req-typed-read-1", "req-typed-read-2"} {
+		entry, err := store.FindByID(context.Background(), id)
+		require.NoError(t, err, id)
+		assert.True(t, entry.Cost == nil || *entry.Cost == 0, "%s is not billed for the run: cost=%v", id, entry.Cost)
+	}
+}
+
+// TestInteractionPricingScopesAreTheCreators pins whose rates a run is charged at: a read that settles it,
+// from another user on another key, prices it under the create's key, virtual key, user and time.
+func TestInteractionPricingScopesAreTheCreators(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-reader")
+	reader := grant.New()
+	reader.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: "user-reader"}, &schemas.EntityRef{ID: "vk-reader"}, nil, nil, nil, nil))
+	ctx.SetGrant(reader)
+	entry := &logstore.Log{Provider: string(schemas.Gemini)}
+	created := time.Date(2026, 11, 25, 2, 0, 0, 0, time.UTC)
+
+	scopes := interactionPricingScopes(ctx, entry, &cstables.TableProviderJob{
+		Provider: string(schemas.Gemini), SelectedKeyID: "key-creator", VirtualKeyID: schemas.Ptr("vk-creator"), UserID: schemas.Ptr("user-creator"), CreatedAt: created,
+	})
+	assert.Equal(t, &modelcatalog.PricingLookupScopes{Provider: string(schemas.Gemini), SelectedKeyID: "key-creator", VirtualKeyID: "vk-creator", UserID: "user-creator", BilledAt: created}, scopes)
+
+	scopes = interactionPricingScopes(ctx, entry, nil)
+	assert.Equal(t, "key-reader", scopes.SelectedKeyID, "a create that finished is its own caller's")
+	assert.Equal(t, "user-reader", scopes.UserID)
+}
+
+// TestInteractionReadSettlesUnderTheCreate pins the wiring: the row a read gets back is the create's.
+func TestInteractionReadSettlesUnderTheCreate(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newInteractionPricingManager(t), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	sendInteractionRead(t, plugin, "create", "POST", "/interactions", &schemas.BifrostPassthroughJob{ID: "int_own", Status: "in_progress", Created: true, PollPath: "/interactions/int_own"})
+	stored, ok := plugin.recordInteractionJob(&logstore.Log{Provider: string(schemas.Gemini), SelectedKeyID: "key-read"}, &schemas.BifrostPassthroughJob{ID: "int_own", Status: "completed", Terminal: true})
+	require.True(t, ok)
+	require.NotNil(t, stored)
+	assert.Equal(t, "key-create", stored.SelectedKeyID)
+}
+
+// TestPostLLMHookRecordsAStreamedTypedInteractionRun pins a background run started through a
+// streamed typed Responses request (/v1/responses with stream and background). The stream hands
+// the run off on its final chunk while it is still going; that chunk records the run, so a later
+// read of the finished run settles it once, even if the client never watched the stream end.
+func TestPostLLMHookRecordsAStreamedTypedInteractionRun(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newInteractionPricingManager(t), nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-typed-stream")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-req-typed-stream")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini, Model: testInteractionAgent,
+			Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)},
+		},
+	})
+	require.NoError(t, err)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeInProgress,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: schemas.Ptr("int_typed_stream"), Model: testInteractionAgent, Status: schemas.Ptr("in_progress"),
+				ProviderJob: &schemas.BifrostPassthroughJob{ID: "int_typed_stream", Status: "in_progress", Created: true, PollPath: "/interactions/int_typed_stream"},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesStreamRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini, Model: testInteractionAgent},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindInteraction, string(schemas.Gemini), "int_typed_stream")
+	job, err := bs.GetProviderJob(context.Background(), jobID)
+	require.NoError(t, err)
+	require.NotNil(t, job, "the streamed create records the run")
+	assert.Equal(t, "/interactions/int_typed_stream", job.Endpoint)
+
+	runUsage := &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}}
+	sendTypedInteraction(t, plugin, "req-typed-stream-read", &schemas.BifrostPassthroughJob{ID: "int_typed_stream", Status: "completed", Terminal: true, PollPath: "/interactions/int_typed_stream", Usage: runUsage},
+		&schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100})
+	require.NoError(t, plugin.Cleanup())
+
+	settled, err := bs.GetProviderJob(context.Background(), jobID)
+	require.NoError(t, err)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
+	row, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindInteraction, schemas.Gemini, "int_typed_stream"))
+	require.NoError(t, err, "the run's cost row is written")
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 1000*2e-06+100*1.2e-05, *row.Cost, 1e-9)
+	require.NotNil(t, row.ParentRequestID)
+	assert.Equal(t, "req-typed-stream", *row.ParentRequestID)
+}
+
+// BenchmarkInteractionJobOf measures finding the stored run a result reports on, which the typed
+// Responses post-hook runs for a result that carries one; an ordinary result stops at nil checks.
+func BenchmarkInteractionJobOf(b *testing.B) {
+	run := &schemas.BifrostPassthroughJob{ID: "v1_run"}
+	for name, result := range map[string]*schemas.BifrostResponse{
+		"no_run":    {ResponsesResponse: &schemas.BifrostResponsesResponse{Model: testInteractionAgent}},
+		"unary_run": {ResponsesResponse: &schemas.BifrostResponsesResponse{Model: testInteractionAgent, ProviderJob: run}},
+		"stream_run": {ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{Model: testInteractionAgent, ProviderJob: run}}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				interactionJobOf(result)
+			}
+		})
+	}
 }

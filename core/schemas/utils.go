@@ -2711,6 +2711,36 @@ func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }
 
+// IsGemini3PlusModel reports whether model names Gemini 3 or later.
+func IsGemini3PlusModel(model string) bool {
+	model = strings.ToLower(model)
+	idx := strings.Index(model, "gemini-")
+	if idx == -1 {
+		return false
+	}
+	afterPrefix := model[idx+7:] // len("gemini-") = 7
+	if len(afterPrefix) == 0 {
+		return false
+	}
+	firstChar := afterPrefix[0]
+	if firstChar < '0' || firstChar > '9' {
+		return false
+	}
+	return firstChar >= '3'
+}
+
+// GeminiSearchUnits is how many search units queries Google Search queries bill as: Gemini 3 and
+// later bill each query, an older model bills one unit however many ran.
+func GeminiSearchUnits(queries int, model string) int {
+	if queries <= 0 {
+		return 0
+	}
+	if !IsGemini3PlusModel(model) {
+		return 1
+	}
+	return queries
+}
+
 func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
 }

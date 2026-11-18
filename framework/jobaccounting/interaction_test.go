@@ -179,6 +179,23 @@ func TestInteractionSettle(t *testing.T) {
 		require.NotNil(t, entry.ServiceTier)
 		assert.Equal(t, "priority", *entry.ServiceTier)
 	})
+	t.Run("searches are counted by the create's model when the read named none", func(t *testing.T) {
+		settle := func(fallback, served string) *Settlement {
+			run := finishedRun("int_settle", "completed", 1000, 50)
+			run.SearchQueries = 3
+			run.Usage.LLMUsage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 1}}
+			run.Usage.LLMUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{NumSearchQueries: schemas.Ptr(1)}
+			s, err := NewInteractionSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{Provider: schemas.Gemini, FallbackModel: fallback, Payload: InteractionPayload{Run: run, Model: served}})
+			require.NoError(t, err)
+			assert.Equal(t, 1, run.Usage.LLMUsage.ToolUsage.WebSearch.NumRequests, "the read's usage is not modified")
+			return s
+		}
+		s := settle("gemini-3-flash-preview", "")
+		assert.Equal(t, 3, s.Usage.ToolUsage.WebSearch.NumRequests)
+		assert.Equal(t, 3, *s.Usage.CompletionTokensDetails.NumSearchQueries)
+		assert.Equal(t, 1, settle("gemini-2.5-flash", "").Usage.ToolUsage.WebSearch.NumRequests, "an older model bills one unit")
+		assert.Equal(t, 1, settle("gemini-3-flash-preview", "gemini-2.5-flash").Usage.ToolUsage.WebSearch.NumRequests, "a named model already decided")
+	})
 	t.Run("a run that failed or was cancelled before doing work owes nothing", func(t *testing.T) {
 		for _, status := range []string{"failed", "cancelled"} {
 			s := settleInteraction(t, InteractionPayload{Run: finishedRun("int_settle", status, 0, 0)})

@@ -929,3 +929,37 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 		assert.Equal(c, int64(160), fixture.tokens())
 	}, time.Second, 10*time.Millisecond)
 }
+
+// TestPostHookWorkerReadOfStoredRunChargesNoTokens: every read and cancel of a stored run repeats
+// the run's full usage, and job accounting charges its tokens once, so a read that reports the run
+// charges none. A create, and a read of a run nothing settles, are charged as before.
+func TestPostHookWorkerReadOfStoredRunChargesNoTokens(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
+	run := &schemas.BifrostPassthroughJob{ID: "v1_run", Status: "completed", Terminal: true}
+	resp := func(job *schemas.BifrostPassthroughJob) *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{ID: schemas.Ptr("v1_run"), Usage: usage, ProviderJob: job}
+	}
+	stream := func(job *schemas.BifrostPassthroughJob) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: resp(job)}}
+	}
+	for name, tc := range map[string]struct {
+		requestType schemas.RequestType
+		result      *schemas.BifrostResponse
+		want        int64
+	}{
+		"retrieve":         {schemas.ResponsesRetrieveRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 0},
+		"cancel":           {schemas.ResponsesCancelRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 0},
+		"replay":           {schemas.ResponsesRetrieveStreamRequest, stream(run), 0},
+		"retrieve, no run": {schemas.ResponsesRetrieveRequest, &schemas.BifrostResponse{ResponsesResponse: resp(nil)}, 1100},
+		"create":           {schemas.ResponsesRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 1100},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newAccountingFixture(t)
+			plugin := &GovernancePlugin{ctx: context.Background(), tracker: fixture.tracker}
+			settled := settleLimits(fixture.store, "sk-bf-acct", schemas.Gemini, "gemini-3.8-flash", &UsageUpdate{})
+			plugin.postHookWorker(tc.result, nil, schemas.Gemini, "gemini-3.8-flash", tc.requestType, "read-"+name, "", time.Time{}, true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+			assert.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, int64(1), fixture.requests()) }, time.Second, 10*time.Millisecond)
+			assert.Equal(t, tc.want, fixture.tokens())
+		})
+	}
+}

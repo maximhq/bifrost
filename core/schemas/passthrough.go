@@ -222,6 +222,8 @@ type BifrostPassthroughJob struct {
 	PollPath   string                   // stripped provider path that reads the run by id
 	APIVersion string                   // version segment PollPath is served under
 	Usage      *BifrostPassthroughUsage // the run's usage as of this read
+	// SearchQueries is how many searches the run made, set when the read named no model to count them by.
+	SearchQueries int
 }
 
 type PassthroughLogParams struct {

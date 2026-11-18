@@ -58,6 +58,10 @@ func (t *GeminiInteractionsTarget) interactionJob(resp *schemas.BifrostResponses
 			OutputTokensByModality: usage.OutputTokensByModality,
 		}, serviceTier, resp.Model)
 	}
+	searchQueries := 0
+	if resp.Model == "" && usage != nil {
+		searchQueries = geminiInteractionsSearchQueries(usage.GroundingToolCount)
+	}
 	return &schemas.BifrostPassthroughJob{
 		ID:         info.ID,
 		Status:     status,
@@ -66,6 +70,8 @@ func (t *GeminiInteractionsTarget) interactionJob(resp *schemas.BifrostResponses
 		PollPath:   geminiInteractionsPath + "/" + info.ID,
 		APIVersion: t.PollAPIVersion,
 		Usage:      info.Usage,
+
+		SearchQueries: searchQueries,
 	}
 }
 
@@ -260,6 +266,9 @@ func decodeGeminiInteraction(ctx *schemas.BifrostContext, t *GeminiInteractionsT
 	case jobCreate:
 		if run := t.interactionJob(resp, interaction.Status, interaction.Usage, interaction.ServiceTier, true); run != nil && !run.Terminal {
 			resp.ProviderJob = run
+			// The usage so far moves onto the run, billed once when it ends, as the stream handoff
+			// does. The native route still returns Google's own body with its usage.
+			resp.Usage = nil
 		}
 	}
 	resp.ExtraFields.Latency = latency.Milliseconds()
@@ -612,9 +621,15 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 		// recordRun attaches a create's still-open run to its last event, as the unary create does,
 		// so job accounting settles a run the stream left running or at a checkpoint. The usage so
 		// far moves onto the run, which is billed once when it ends; left on the create row it would
-		// be billed twice. A replay reads a run already reported.
+		// be billed twice.
 		recordRun := func(last *schemas.BifrostResponsesResponse, status string) {
-			if method != http.MethodPost || last == nil {
+			if last == nil {
+				return
+			}
+			if method != http.MethodPost {
+				// A replay reports the run as a unary read does: settled once by job accounting, with
+				// the usage left for the caller to see.
+				last.ProviderJob = t.interactionJob(last, status, state.Usage, state.ServiceTier, false)
 				return
 			}
 			last.ProviderJob = t.interactionJob(last, status, state.Usage, state.ServiceTier, true)
@@ -626,7 +641,10 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 		state.ID = runID
 		state.RawReplay = native
 		streamUsage := &schemas.BifrostLLMUsage{}
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+		// A replay the caller abandons owes nothing: the run's usage belongs to the run.
+		if method == http.MethodPost {
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+		}
 
 		var pendingRaw []byte // captured frames no chunk stands for, kept for the next chunk's raw payload
 		chunkIndex, sequenceNumber := 0, 0
@@ -733,7 +751,7 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 				// A completion frame ends the stream even when its run goes on.
 				stillRunning := event.EventType == GeminiInteractionsEventCompleted && i == len(events)-1 && !terminal
 				terminal = terminal || stillRunning
-				if terminal && (state.Status == GeminiInteractionStatusRequiresContinuation || stillRunning) {
+				if terminal && (method != http.MethodPost || state.Status == GeminiInteractionStatusRequiresContinuation || stillRunning) {
 					recordRun(ev.Response, state.Status)
 				}
 				send(ev, attach, terminal)
@@ -779,7 +797,7 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, streamErr, body, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
-				if state.Status == GeminiInteractionStatusRequiresContinuation && len(final) > 0 {
+				if (method != http.MethodPost || state.Status == GeminiInteractionStatusRequiresContinuation) && len(final) > 0 {
 					recordRun(final[len(final)-1].Response, state.Status)
 				}
 			}

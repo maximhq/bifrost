@@ -467,3 +467,49 @@ func TestInteractionsStreamObserverPricesSearchesWithStreamModel(t *testing.T) {
 		t.Fatalf("search units = %d, want 3 for a Gemini 3 run", n)
 	}
 }
+
+// TestInteractionsStreamObserverKeepsSearchCount pins that a stream whose events name no model hands its
+// search count to settlement, which counts them by the model the create named. A stream that names its
+// model has them in its usage already.
+func TestInteractionsStreamObserverKeepsSearchCount(t *testing.T) {
+	const usage = `"usage":{"total_input_tokens":46,"total_output_tokens":47,"total_tokens":93,"grounding_tool_count":[{"type":"google_search","count":3}]}`
+	for model, want := range map[string]int{"": 3, `"model":"gemini-3-flash-preview",`: 0} {
+		o := gemini.NewInteractionsStreamObserver(&schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"})
+		resp := &schemas.BifrostPassthroughResponse{}
+		o.Observe([]byte(`{"event_type":"interaction.created","interaction":{"id":"int_s",` + model + `"status":"in_progress"}}`))
+		o.Observe([]byte(`{"event_type":"interaction.completed","interaction":{"id":"int_s","status":"completed",` + usage + `}}`))
+		o.Finalize(resp)
+		if resp.ProviderJob == nil {
+			t.Fatalf("model %q: no job", model)
+		}
+		if got := resp.ProviderJob.SearchQueries; got != want {
+			t.Errorf("model %q: SearchQueries = %d, want %d", model, got, want)
+		}
+	}
+}
+
+// TestInteractionsStreamObserverModelAfterUsage pins that searches counted before the stream named its model
+// are priced with that model, whichever event comes first.
+func TestInteractionsStreamObserverModelAfterUsage(t *testing.T) {
+	const usage = `{"event_type":"interaction.completed","interaction":{"id":"int_s","status":"completed","usage":{"total_input_tokens":46,"total_output_tokens":47,"total_tokens":93,"grounding_tool_count":[{"type":"google_search","count":3}]}}}`
+	named := func(model string) string {
+		return `{"event_type":"interaction.status_update","interaction_id":"int_s","interaction":{"id":"int_s","model":"` + model + `","status":"completed"}}`
+	}
+	for model, want := range map[string]int{"gemini-3-flash-preview": 3, "gemini-2.5-flash": 1} {
+		for _, events := range [][]string{{usage, named(model)}, {named(model), usage}} {
+			o := gemini.NewInteractionsStreamObserver(&schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"})
+			resp := &schemas.BifrostPassthroughResponse{}
+			for _, e := range events {
+				o.Observe([]byte(e))
+			}
+			o.Finalize(resp)
+			job := resp.ProviderJob
+			if job == nil || job.Usage == nil || job.Usage.LLMUsage.ToolUsage == nil {
+				t.Fatalf("%s: job=%+v", model, job)
+			}
+			if n := job.Usage.LLMUsage.ToolUsage.WebSearch.NumRequests; n != want || *job.Usage.LLMUsage.CompletionTokensDetails.NumSearchQueries != want || job.SearchQueries != 0 {
+				t.Errorf("%s: units=%d left=%d, want %d and 0", model, n, job.SearchQueries, want)
+			}
+		}
+	}
+}
