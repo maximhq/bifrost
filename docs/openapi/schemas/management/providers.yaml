@@ -400,8 +400,8 @@ OAuthKeyConfig:
   properties:
     grant_type:
       type: string
-      enum: [client_credentials, jwt_bearer]
-      description: client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key)
+      enum: [client_credentials, jwt_bearer, token_exchange]
+      description: client_credentials (RFC 6749 §4.4), jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key) or token_exchange (RFC 8693, Bifrost exchanges the workload token read from subject_token_file)
     token_url:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params
@@ -446,7 +446,21 @@ OAuthKeyConfig:
       type: object
       additionalProperties:
         type: string
-      description: Extra form parameters sent on the token request
+      description: Extra parameters sent on the token request (form fields, or JSON fields with request_encoding json)
+    subject_token_file:
+      type: string
+      minLength: 1
+      description: token_exchange absolute path of the subject token, re-read on every exchange; must sit under BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS
+    subject_token_type:
+      type: string
+      enum: ['urn:ietf:params:oauth:token-type:jwt', 'urn:ietf:params:oauth:token-type:id_token']
+      default: 'urn:ietf:params:oauth:token-type:jwt'
+      description: token_exchange RFC 8693 subject token type
+    request_encoding:
+      type: string
+      enum: [form, json]
+      default: form
+      description: token_exchange request body encoding (json for OpenAI)
     assertion_lifetime_seconds:
       type: integer
       minimum: 0
@@ -477,6 +491,14 @@ OAuthKeyConfig:
           audience:
             minLength: 1
         description: jwt_bearer needs the signing key plus the non-empty iss and aud claims
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: token_exchange
+      then:
+        required: [subject_token_file]
+        description: token_exchange needs the subject token file
 
 Key:
   type: object

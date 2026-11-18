@@ -373,6 +373,8 @@
 		"clientIdIsRequiredForClientCredentials": "客户端凭据模式需要填写 Client ID",
 		"clientSecretIsRequiredForClientCredentials": "客户端凭据模式需要填写 Client Secret",
 		"privateKeyIsRequiredForJwtBearer": "JWT bearer 需要填写私钥",
+		"subjectTokenFileIsRequiredForTokenExchange": "令牌交换需要主体令牌文件",
+		"subjectTokenFileMustBeAnAbsolutePath": "主体令牌文件必须使用绝对路径",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "私钥必须是 RSA 或 EC PEM 块",
 		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填写 Issuer",
 		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填写 Audience",

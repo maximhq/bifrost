@@ -168,6 +168,8 @@
 		"clientIdIsRequiredForClientCredentials": "客戶端憑證模式需要填寫 Client ID",
 		"clientSecretIsRequiredForClientCredentials": "客戶端憑證模式需要填寫 Client Secret",
 		"privateKeyIsRequiredForJwtBearer": "JWT bearer 需要填寫私鑰",
+		"subjectTokenFileIsRequiredForTokenExchange": "權杖交換需要主體權杖檔案",
+		"subjectTokenFileMustBeAnAbsolutePath": "主體權杖檔案必須使用絕對路徑",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "私鑰必須是 RSA 或 EC PEM 區塊",
 		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填寫 Issuer",
 		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填寫 Audience",

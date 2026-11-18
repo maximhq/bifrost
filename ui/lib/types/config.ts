@@ -348,7 +348,7 @@ export interface GithubCopilotSignInPollResult {
 // OAuthKeyConfig matching Go's schemas.OAuthKeyConfig. Honoured by openai and by custom
 // providers whose base_provider_type is openai: with an empty key value, Bifrost mints the
 // bearer from the token endpoint and refreshes it before expiry.
-export type OAuthGrantType = "client_credentials" | "jwt_bearer";
+export type OAuthGrantType = "client_credentials" | "jwt_bearer" | "token_exchange";
 export type OAuthAuthStyle = "header" | "body";
 export type OAuthSigningAlgorithm = "RS256" | "RS384" | "RS512" | "PS256" | "PS384" | "PS512" | "ES256" | "ES384" | "ES512";
 export const OAuthSigningAlgorithms: OAuthSigningAlgorithm[] = [
@@ -377,6 +377,9 @@ export interface OAuthKeyConfig {
 	auth_style?: OAuthAuthStyle;
 	extra_params?: Record<string, string>;
 	assertion_lifetime_seconds?: number;
+	subject_token_file?: string;
+	subject_token_type?: "urn:ietf:params:oauth:token-type:jwt" | "urn:ietf:params:oauth:token-type:id_token";
+	request_encoding?: "form" | "json";
 	// UI-only discriminator; not sent to the API.
 	_auth_type?: "api_key" | "oauth";
 }
@@ -397,6 +400,9 @@ export const DefaultOAuthKeyConfig: OAuthKeyConfig = {
 	auth_style: "header",
 	extra_params: {},
 	assertion_lifetime_seconds: 300,
+	subject_token_file: "",
+	subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+	request_encoding: "form",
 	_auth_type: "api_key",
 } as const satisfies Required<OAuthKeyConfig>;
 

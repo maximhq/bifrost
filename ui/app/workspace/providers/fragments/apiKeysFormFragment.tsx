@@ -4,6 +4,7 @@ import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessa
 import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
 import { identitySourceType } from "@/lib/types/schemas";
 import { Input } from "@/components/ui/input";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -1408,6 +1409,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 											<SelectContent>
 												<SelectItem value="client_credentials">{t("providers.keys.oauthGrantClientCredentials")}</SelectItem>
 												<SelectItem value="jwt_bearer">{t("providers.keys.oauthGrantJwtBearer")}</SelectItem>
+												<SelectItem value="token_exchange">{t("providers.keys.oauthGrantTokenExchange")}</SelectItem>
 											</SelectContent>
 										</Select>
 										<FormMessage />
@@ -1486,6 +1488,92 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 														<SelectItem value="body">{t("providers.keys.oauthPlacementBody")}</SelectItem>
 													</SelectContent>
 												</Select>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</>
+							)}
+							{oauthGrantType === "token_exchange" && (
+								<>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.subject_token_file"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("providers.keys.oauthSubjectTokenFile")}</FormLabel>
+												<FormDescription>{t("providers.keys.oauthSubjectTokenFileHelp")}</FormDescription>
+												<FormControl>
+													<Input
+														data-testid="key-input-oauth-subject-token-file"
+														placeholder="/var/run/secrets/identity/token"
+														{...field}
+														value={field.value ?? ""}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.subject_token_type"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("providers.keys.oauthSubjectTokenType")}</FormLabel>
+												<Select value={field.value ?? "urn:ietf:params:oauth:token-type:jwt"} onValueChange={field.onChange}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="key-select-oauth-subject-token-type">
+															<SelectValue placeholder="JWT" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														<SelectItem value="urn:ietf:params:oauth:token-type:jwt">JWT</SelectItem>
+														<SelectItem value="urn:ietf:params:oauth:token-type:id_token">
+															{t("providers.keys.oauthSubjectTokenTypeIdToken")}
+														</SelectItem>
+													</SelectContent>
+												</Select>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.request_encoding"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("providers.keys.oauthRequestEncoding")}</FormLabel>
+												<Select value={field.value ?? "form"} onValueChange={field.onChange}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="key-select-oauth-request-encoding">
+															<SelectValue placeholder={t("providers.keys.oauthRequestEncodingForm")} />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														<SelectItem value="form">{t("providers.keys.oauthRequestEncodingForm")}</SelectItem>
+														<SelectItem value="json">JSON</SelectItem>
+													</SelectContent>
+												</Select>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.extra_params"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("providers.keys.oauthExtraParams")}</FormLabel>
+												<FormDescription>{t("providers.keys.oauthExtraParamsHelp")}</FormDescription>
+												<HeadersTable<string>
+													value={field.value ?? {}}
+													onChange={field.onChange}
+													label={t("providers.keys.oauthExtraParams")}
+													keyPlaceholder="identity_provider_id"
+													valuePlaceholder={t("headersTable.value", { ns: "common" })}
+													testIdPrefix="key-input-oauth-extra-param"
+												/>
 												<FormMessage />
 											</FormItem>
 										)}
