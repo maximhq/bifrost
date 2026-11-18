@@ -770,10 +770,10 @@ type MCPTokenExchangeConfig struct {
 	ResourceClientAuthMethod string `json:"resource_client_auth_method,omitempty"`
 }
 
-// Values of MCPTokenExchangeConfig.ResourceClientAuthMethod.
+// How a client secret is sent to a token endpoint (UpstreamClientAuth.Method).
 const (
-	ResourceClientAuthBasic = "client_secret_basic"
-	ResourceClientAuthPost  = "client_secret_post"
+	ClientSecretBasic = "client_secret_basic"
+	ClientSecretPost  = "client_secret_post"
 )
 
 // Token-exchange profiles (MCPTokenExchangeConfig.Profile).
@@ -831,36 +831,86 @@ func (c *MCPTokenExchangeConfig) ValidateProfile() error {
 // UsesResourcePrivateKey reports whether Bifrost authenticates to the upstream
 // authorization server with private_key_jwt rather than a client secret.
 func (c *MCPTokenExchangeConfig) UsesResourcePrivateKey() bool {
-	return c != nil && (strings.TrimSpace(c.ResourcePrivateKey.GetValue()) != "" || c.ResourcePrivateKey.IsFromSecret())
+	return c != nil && c.ResourceClientAuth().UsesPrivateKey()
+}
+
+// ResourceClientAuth returns how Bifrost authenticates at the upstream
+// authorization server for the id_jag profile.
+func (c *MCPTokenExchangeConfig) ResourceClientAuth() UpstreamClientAuth {
+	return UpstreamClientAuth{
+		ClientID:          c.ResourceClientID,
+		ClientSecret:      c.ResourceClientSecret,
+		Method:            c.ResourceClientAuthMethod,
+		PrivateKey:        c.ResourcePrivateKey,
+		KeyID:             c.ResourceKeyID,
+		SigningAlgorithm:  c.ResourceSigningAlgorithm,
+		AssertionAudience: c.ResourceAssertionAudience,
+	}
 }
 
 // validateResourceClientAuth checks the upstream client authentication: a
 // secret or a private key, never both, and key settings only with a key.
 func (c *MCPTokenExchangeConfig) validateResourceClientAuth() error {
-	hasSecret := strings.TrimSpace(c.ResourceClientSecret.GetValue()) != "" || c.ResourceClientSecret.IsFromSecret()
-	if c.UsesResourcePrivateKey() {
+	return c.ResourceClientAuth().validate(upstreamClientAuthFields{
+		block: "token_exchange", secret: "resource_client_secret", key: "resource_private_key", method: "resource_client_auth_method",
+		keyID: "resource_key_id", alg: "resource_signing_algorithm", audience: "resource_assertion_audience",
+	})
+}
+
+// UpstreamClientAuth is how Bifrost authenticates as an OAuth client at an
+// upstream token endpoint: a client secret, or a private key signing an RFC 7523
+// §2.2 client assertion (private_key_jwt).
+type UpstreamClientAuth struct {
+	ClientID          *SecretVar
+	ClientSecret      *SecretVar
+	Method            string // ClientSecretBasic or ClientSecretPost; empty follows the server's metadata, else Basic
+	PrivateKey        *SecretVar
+	KeyID             string
+	SigningAlgorithm  string
+	AssertionAudience string // empty: the token endpoint
+}
+
+// UsesPrivateKey reports whether a private key, not a secret, authenticates the client.
+func (a UpstreamClientAuth) UsesPrivateKey() bool {
+	return a.PrivateKey.IsSet()
+}
+
+// HasSecret reports whether a client secret is set.
+func (a UpstreamClientAuth) HasSecret() bool {
+	return a.ClientSecret.IsSet()
+}
+
+// upstreamClientAuthFields names a config block's client authentication fields for error messages.
+type upstreamClientAuthFields struct {
+	block, secret, key, method, keyID, alg, audience string
+}
+
+// validate checks a secret or a private key, never both, and key settings only with a key.
+func (a UpstreamClientAuth) validate(f upstreamClientAuthFields) error {
+	hasSecret := a.HasSecret()
+	if a.UsesPrivateKey() {
 		if hasSecret {
-			return fmt.Errorf("token_exchange: set either resource_client_secret or resource_private_key, not both")
+			return fmt.Errorf("%s: set either %s or %s, not both", f.block, f.secret, f.key)
 		}
-		if c.ResourceClientAuthMethod != "" {
-			return fmt.Errorf("token_exchange.resource_client_auth_method applies to resource_client_secret, not resource_private_key")
+		if a.Method != "" {
+			return fmt.Errorf("%s.%s applies to %s, not %s", f.block, f.method, f.secret, f.key)
 		}
-	} else if c.ResourceKeyID != "" || c.ResourceSigningAlgorithm != "" || c.ResourceAssertionAudience != "" {
-		return fmt.Errorf("token_exchange.resource_key_id, resource_signing_algorithm and resource_assertion_audience require resource_private_key")
+	} else if a.KeyID != "" || a.SigningAlgorithm != "" || a.AssertionAudience != "" {
+		return fmt.Errorf("%s.%s, %s and %s require %s", f.block, f.keyID, f.alg, f.audience, f.key)
 	}
-	switch c.ResourceClientAuthMethod {
-	case "", ResourceClientAuthBasic, ResourceClientAuthPost:
+	switch a.Method {
+	case "", ClientSecretBasic, ClientSecretPost:
 	default:
-		return fmt.Errorf("token_exchange.resource_client_auth_method must be empty, %q or %q", ResourceClientAuthBasic, ResourceClientAuthPost)
+		return fmt.Errorf("%s.%s must be empty, %q or %q", f.block, f.method, ClientSecretBasic, ClientSecretPost)
 	}
-	if c.ResourceClientAuthMethod != "" && !hasSecret {
-		return fmt.Errorf("token_exchange.resource_client_auth_method requires resource_client_secret")
+	if a.Method != "" && !hasSecret {
+		return fmt.Errorf("%s.%s requires %s", f.block, f.method, f.secret)
 	}
-	if aud := strings.TrimSpace(c.ResourceAssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
-		return fmt.Errorf("token_exchange.resource_assertion_audience must be an https URL")
+	if aud := strings.TrimSpace(a.AssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
+		return fmt.Errorf("%s.%s must be an https URL", f.block, f.audience)
 	}
-	if alg := c.ResourceSigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
-		return fmt.Errorf("token_exchange.resource_signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+	if alg := a.SigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("%s.%s must be one of %s", f.block, f.alg, strings.Join(OAuthSigningAlgorithms, ", "))
 	}
 	return nil
 }

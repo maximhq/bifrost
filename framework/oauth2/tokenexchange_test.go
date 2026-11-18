@@ -1789,8 +1789,8 @@ func TestIDJAGExchange_ClientSecretPostWhenOnlyAdvertised(t *testing.T) {
 		"basic and post":                        {methods: []string{"client_secret_post", "client_secret_basic"}, wantBasic: true},
 		"methods not listed":                    {wantBasic: true},
 		"configured endpoint defaults to basic": {configured: true, wantBasic: true},
-		"configured endpoint with post":         {configured: true, method: schemas.ResourceClientAuthPost},
-		"explicit basic overrides discovery":    {methods: []string{"client_secret_post"}, method: schemas.ResourceClientAuthBasic, wantBasic: true},
+		"configured endpoint with post":         {configured: true, method: schemas.ClientSecretPost},
+		"explicit basic overrides discovery":    {methods: []string{"client_secret_post"}, method: schemas.ClientSecretBasic, wantBasic: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newIDJAGLegs(t)
@@ -2412,9 +2412,9 @@ func TestValidateProfile(t *testing.T) {
 		"plain-http audience": func(c *schemas.MCPTokenExchangeConfig) {
 			c.ResourcePrivateKey, c.ResourceAssertionAudience = keyPEM, "http://as.example.com"
 		},
-		"auth method without a secret": func(c *schemas.MCPTokenExchangeConfig) { c.ResourceClientAuthMethod = schemas.ResourceClientAuthPost },
+		"auth method without a secret": func(c *schemas.MCPTokenExchangeConfig) { c.ResourceClientAuthMethod = schemas.ClientSecretPost },
 		"auth method with a key": func(c *schemas.MCPTokenExchangeConfig) {
-			c.ResourcePrivateKey, c.ResourceClientAuthMethod = keyPEM, schemas.ResourceClientAuthPost
+			c.ResourcePrivateKey, c.ResourceClientAuthMethod = keyPEM, schemas.ClientSecretPost
 		},
 		"unknown auth method": func(c *schemas.MCPTokenExchangeConfig) {
 			c.ResourceClientSecret, c.ResourceClientAuthMethod = schemas.NewSecretVar("s"), "private_key_jwt"
@@ -2427,7 +2427,7 @@ func TestValidateProfile(t *testing.T) {
 		}
 	}
 	postOK := base()
-	postOK.ResourceClientSecret, postOK.ResourceClientAuthMethod = schemas.NewSecretVar("s"), schemas.ResourceClientAuthPost
+	postOK.ResourceClientSecret, postOK.ResourceClientAuthMethod = schemas.NewSecretVar("s"), schemas.ClientSecretPost
 	if err := postOK.ValidateProfile(); err != nil {
 		t.Fatalf("a secret sent with client_secret_post is valid: %v", err)
 	}

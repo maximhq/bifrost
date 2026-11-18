@@ -384,7 +384,7 @@ func TestEntryFor(t *testing.T) {
 	t.Run("a token already inside its margin is trusted for half its remaining life", func(t *testing.T) {
 		// The docs promise a 30-second token is re-minted after about 15 seconds.
 		expiry := time.Now().Add(30 * time.Second)
-		e := entryFor("t", expiry, time.Minute)
+		e := EntryFor("t", expiry, time.Minute)
 		assert.WithinDuration(t, time.Now().Add(15*time.Second), e.RefreshAt, 2*time.Second)
 		assert.True(t, e.RefreshAt.Before(expiry))
 	})
