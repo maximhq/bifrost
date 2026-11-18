@@ -1570,6 +1570,14 @@ check_workload "networkPolicy: IPv4 and IPv6 ipBlocks with except are accepted" 
 assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"ipBlock": {"cidr": "10.0.0.0/8", "except": ["10.1.0.0/16"]}}, {"ipBlock": {"cidr": "2001:db8::/32"}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
   --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
   --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"10.0.0.0/8","except":["10.1.0.0/16"]}},{"ipBlock":{"cidr":"2001:db8::/32"}}]'
+check_workload "networkPolicy: IPv6 CIDRs with a dotted-decimal tail are accepted in cidr and except" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"ipBlock": {"cidr": "2001:db8::192.0.2.0/120", "except": ["2001:db8::192.0.2.128/121"]}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
+  --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"2001:db8::192.0.2.0/120","except":["2001:db8::192.0.2.128/121"]}}]'
+expect_render_failure "networkPolicy: schema rejects a dotted-decimal IPv6 tail with an octet over 255" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"2001:db8::192.0.2.256/120"}}]'
 check_workload "networkPolicy: an empty selector is a valid peer (all pods in the namespace)" \
   "$NP"'
 assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"podSelector": {}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
