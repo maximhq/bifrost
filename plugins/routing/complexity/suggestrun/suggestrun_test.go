@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +41,7 @@ func nearAxis(i, j int) []float32 {
 type fakeSpace struct {
 	captured []complexity.CapturedRequest
 	live     []complexity.SuggestionPhrase
+	reversed bool // page the captured requests in the opposite order, as another walk of the store may
 }
 
 func (f *fakeSpace) Namespace() string                          { return "BifrostComplexityRequests_test" }
@@ -59,7 +62,12 @@ func (f *fakeSpace) Embed(_ context.Context, texts []string) ([][]float32, error
 }
 func (f *fakeSpace) EachCaptured(_ context.Context, from, to time.Time, fn func([]complexity.CapturedRequest) error) error {
 	var page []complexity.CapturedRequest
-	for _, r := range f.captured {
+	captured := f.captured
+	if f.reversed {
+		captured = slices.Clone(captured)
+		slices.Reverse(captured)
+	}
+	for _, r := range captured {
 		if !r.At.Before(from) && !r.At.After(to) {
 			page = append(page, r)
 			if len(page) == 5 {
@@ -831,4 +839,120 @@ func TestFitSuggestionsDropsBeforeDeduplicating(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, suggest.CategoryCovered, got[1].Category)
 	assert.Zero(t, dropped)
+}
+
+// addRouted adds captured requests carrying the tier a decision-model
+// router's decision model logged for them.
+func (f *fakeSpace) addRouted(kind string, axisIndex, n int, at time.Time, tier string) {
+	for j := range n {
+		f.captured = append(f.captured, complexity.CapturedRequest{LogID: fmt.Sprintf("%s-%d", kind, j), Vector: nearAxis(axisIndex, j), At: at, Tier: tier})
+	}
+}
+
+// A decision-model router's run writes examples: each request counts under
+// the tier its decision model logged, so a cluster it already sends to the
+// tier the judge picks is covered without an example call, and one it sends
+// elsewhere gets examples for the judge's tier, recorded as misrouted with
+// the logged routing. The prompt hash names the example step's instructions.
+func TestRunWritesExamplesForADecisionRouter(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "Answer a direct everyday question", Vector: axis(5)}}}
+	space.addRouted("refund", 0, 12, now.Add(-time.Hour), "COMPLEX")
+	space.addRouted("invoice", 1, 9, now.Add(-time.Hour), "SIMPLE")
+	llm := &kindLLM{phrases: map[string][]string{"refund": {"Check the status of a refund"}}}
+	s := settings("examples", now)
+	s.Mode, s.MaxPerTier = suggest.ModeExamples, 60
+
+	result, err := Run(ctx, space, store, texts, llm, s)
+	require.NoError(t, err)
+	assert.Zero(t, llm.calls["invoice"], "the router already sends the invoice requests where the judge puts them")
+	assert.EqualValues(t, 1, result.Run.ClustersCovered)
+	assert.EqualValues(t, 1, result.Run.Created)
+	assert.Equal(t, PromptHash(suggest.DefaultExampleInstructions(), s.TierPrompt), result.Run.PromptHash)
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, []string{"Check the status of a refund"}, rows[0].Phrases())
+	assert.Equal(t, "SIMPLE", rows[0].Tier)
+	assert.Equal(t, string(suggest.CategoryMisrouted), rows[0].Category)
+	assert.Equal(t, map[string]int64{"COMPLEX": 12}, rows[0].CurrentRouting())
+}
+
+// A decision-model router's tiers each hold so many examples: a run writes
+// none for a tier that is full, however much room the others have.
+func TestRunStaysWithinEachTiersExamples(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "Answer a direct everyday question", Vector: axis(5)}}}
+	space.addRouted("refund", 0, 12, now.Add(-time.Hour), "COMPLEX")
+	s := settings("tier-full", now)
+	s.Mode, s.MaxPerTier, s.Workers = suggest.ModeExamples, 1, 1 // SIMPLE already holds its one
+
+	store := newStore(t)
+	result, err := Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, result.Run.ClustersAsked, "the other tiers have room, so the cluster is asked")
+	assert.EqualValues(t, 1, result.Run.ClustersOverLimit, "its SIMPLE examples do not fit")
+	assert.Zero(t, result.Run.Created)
+
+	s.MaxPerTier = 2
+	store = newStore(t)
+	result, err = Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, result.Run.Created)
+}
+
+// A room bounds phrases in all, per tier, or both; a run stops asking only
+// once no tier has room.
+func TestRoomBoundsPerTier(t *testing.T) {
+	live := []suggest.Phrase{{Tier: "SIMPLE"}, {Tier: "SIMPLE"}, {Tier: "COMPLEX"}}
+	room := Room{Total: -1, Tiers: tierRoom(live, 2)}
+	assert.Equal(t, map[string]int{"SIMPLE": 0, "MEDIUM": 2, "COMPLEX": 1}, room.Tiers)
+	assert.False(t, room.fits(nil, "SIMPLE", 1))
+	assert.True(t, room.fits(map[string]int{"MEDIUM": 1}, "MEDIUM", 1))
+	assert.False(t, room.fits(map[string]int{"MEDIUM": 1}, "MEDIUM", 2))
+	assert.False(t, room.fits(nil, "UNKNOWN", 1), "a tier with no entry has no room")
+	assert.False(t, room.full(map[string]int{"MEDIUM": 2}), "COMPLEX still has room")
+	assert.True(t, room.full(map[string]int{"MEDIUM": 2, "COMPLEX": 1}))
+
+	both := Room{Total: 2, Tiers: map[string]int{"SIMPLE": 5}}
+	assert.False(t, both.fits(map[string]int{"SIMPLE": 2}, "SIMPLE", 1), "the overall bound holds too")
+	assert.True(t, both.full(map[string]int{"SIMPLE": 2}))
+	assert.False(t, Room{Total: -1}.full(map[string]int{"SIMPLE": 100}), "no bound is never full")
+}
+
+// A run on a schedule finds the same request types each time, so its
+// suggestions must be refreshed, not superseded and written again, while the
+// traffic stays the same: the same requests with the same seed form the same
+// clusters, in whatever order the store pages them.
+func TestRunRefreshesWhatItFoundBefore(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "write a poem", Vector: axis(5)}}}
+	// Requests of two kinds spread widely around their centres, so where
+	// k-means starts decides which of them group together.
+	rng := rand.New(rand.NewSource(3))
+	for i, kind := range []string{"refund", "invoice"} {
+		for j := range 40 {
+			v := axis(i)
+			for d := 2; d < testDim; d++ {
+				v[d] = float32(rng.NormFloat64()) * 0.35
+			}
+			space.captured = append(space.captured, complexity.CapturedRequest{LogID: fmt.Sprintf("%s-%d", kind, j), Vector: unit(v), At: now.Add(-time.Hour)})
+		}
+	}
+	llm := &kindLLM{}
+	first, err := Run(ctx, space, store, texts, llm, settings("first", now))
+	require.NoError(t, err)
+	require.NotZero(t, first.Run.Created)
+
+	space.reversed = true
+	second, err := Run(ctx, space, store, texts, llm, settings("second", now.Add(time.Hour)))
+	require.NoError(t, err)
+	assert.Zero(t, second.Run.Superseded, "nothing it found before is superseded")
+	assert.Zero(t, second.Run.Created, "nor written again as new")
+	assert.Equal(t, first.Run.Created, second.Run.Refreshed)
 }

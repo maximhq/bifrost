@@ -571,3 +571,165 @@ func TestSuggestReadsTextsOnlyForShownMembers(t *testing.T) {
 		t.Errorf("an unreadable cluster must not reach the LLM")
 	}
 }
+
+// routedAs gives requests the tier a decision-model router logged for them,
+// the first few one tier and the rest another.
+func routedAs(reqs []Request, first int, firstTier, restTier string) []Request {
+	for i := range reqs {
+		reqs[i].RoutedTier = restTier
+		if i < first {
+			reqs[i].RoutedTier = firstTier
+		}
+	}
+	return reqs
+}
+
+// A decision router's examples, with vectors no request is near.
+var decisionLive = []Phrase{
+	{Tier: "SIMPLE", Text: "Answer a direct everyday question", Vector: anchor(3)},
+	{Tier: "COMPLEX", Text: "Design an efficient solution where tradeoffs matter", Vector: anchor(4)},
+}
+
+func examplesSuggester(llm LLM, tier TierDecider, instructions string) *Suggester {
+	return NewSuggester(decisionLive, testEmbedder, llm, Options{Mode: ModeExamples, Tier: tier, Instructions: instructions})
+}
+
+// In examples mode the tier is decided first, and a cluster the router
+// already routes reliably to that tier is covered: no example is asked for.
+func TestExamplesModeCoveredClusterAsksOnlyForTheTier(t *testing.T) {
+	rng := rand.New(rand.NewSource(30))
+	llm := &scriptedLLM{answers: map[string][]string{}}
+	tier := simpleTier()
+	reqs := routedAs(refundRequests(rng), 2, "MEDIUM", "SIMPLE") // 10 of 12 SIMPLE: reliable
+	sg, err := examplesSuggester(llm, tier, "").Suggest(context.Background(), clusterOf(t, reqs, decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryCovered || sg.Tier != "SIMPLE" || tier.calls != 1 || len(llm.calls) != 0 || sg.Attempts != 0 {
+		t.Fatalf("category %s tier %s tier calls %d example calls %d attempts %d", sg.Category, sg.Tier, tier.calls, len(llm.calls), sg.Attempts)
+	}
+}
+
+// A cluster the router sends elsewhere gets examples for the tier it belongs
+// in: written by the example step, which is shown that tier and its examples
+// so far (and no other tier's), kept as written, and categorized against the
+// logged routing. Nothing measures coverage.
+func TestExamplesModeWritesExamplesForAMisroutedCluster(t *testing.T) {
+	rng := rand.New(rand.NewSource(31))
+	llm := &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":true,"examples":["Check  the status of a refund"]}`}}}
+	tier := simpleTier()
+	reqs := routedAs(refundRequests(rng), 0, "", "COMPLEX")
+	sg, err := examplesSuggester(llm, tier, "").Suggest(context.Background(), clusterOf(t, reqs, decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryMisrouted || sg.Tier != "SIMPLE" || sg.Coverage != 0 || sg.Attempts != 1 || tier.calls != 1 {
+		t.Fatalf("category %s tier %s coverage %.2f attempts %d tier calls %d", sg.Category, sg.Tier, sg.Coverage, sg.Attempts, tier.calls)
+	}
+	if len(sg.Phrases) != 1 || sg.Phrases[0] != "Check the status of a refund" {
+		t.Fatalf("examples %v, want it as written with spacing collapsed", sg.Phrases)
+	}
+	sent := llm.calls["refund"][0]
+	if !strings.Contains(sent[0].Content, "abstract task") || !strings.HasSuffix(sent[0].Content, `{"coherent": true, "examples": ["..."]}`) {
+		t.Errorf("system prompt is not the example step's: %q", sent[0].Content)
+	}
+	user := sent[1].Content
+	if !strings.Contains(user, "Tier they belong in: SIMPLE") || !strings.Contains(user, "- Answer a direct everyday question") || strings.Contains(user, "Design an efficient solution") {
+		t.Errorf("the example step must see the tier and only its examples: %q", user)
+	}
+
+	// Split routing is mixed.
+	reqs = routedAs(refundRequests(rng), 6, "SIMPLE", "COMPLEX")
+	llm = &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":true,"examples":["Check the status of a refund"]}`}}}
+	sg, err = examplesSuggester(llm, simpleTier(), "").Suggest(context.Background(), clusterOf(t, reqs, decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryMixed || len(sg.Phrases) != 1 {
+		t.Fatalf("category %s examples %v, want mixed", sg.Category, sg.Phrases)
+	}
+}
+
+// An example that repeats one the tier has is dropped, however it is cased;
+// a cluster left with none is still misrouted, since the router does not
+// follow the example it has.
+func TestExamplesModeDropsExamplesTheTierHas(t *testing.T) {
+	rng := rand.New(rand.NewSource(32))
+	llm := &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":true,"examples":["answer a DIRECT everyday question"]}`}}}
+	sg, err := examplesSuggester(llm, simpleTier(), "").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryMisrouted || len(sg.Phrases) != 0 || len(sg.Duplicates) != 1 || sg.Attempts != 1 {
+		t.Fatalf("category %s examples %v duplicates %v attempts %d", sg.Category, sg.Phrases, sg.Duplicates, sg.Attempts)
+	}
+}
+
+// Examples pass the leak filter: an answer that only leaked is sent back once
+// and then sanitized, and an incoherent group gets none. A group with no
+// usable tier is incoherent without asking for examples.
+func TestExamplesModeFiltersLeaksAndIncoherentGroups(t *testing.T) {
+	rng := rand.New(rand.NewSource(33))
+	llm := &scriptedLLM{answers: map[string][]string{"refund": {
+		`{"coherent":true,"examples":["Check refund 12345 status"]}`,
+		`{"coherent":true,"examples":["Check refund 99812 status"]}`,
+	}}}
+	sg, err := examplesSuggester(llm, simpleTier(), "").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.calls["refund"]) != 2 {
+		t.Fatalf("the leaked answer was not sent back: %d example calls", len(llm.calls["refund"]))
+	}
+	second := llm.calls["refund"][1]
+	if !strings.Contains(second[len(second)-1].Content, "request-specific material") {
+		t.Errorf("leak retry did not explain the leak")
+	}
+	if !sg.Sanitized || len(sg.Phrases) != 1 || leaks(sg.Phrases[0]) {
+		t.Fatalf("sanitized %v examples %v", sg.Sanitized, sg.Phrases)
+	}
+
+	llm = &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":false,"examples":["Check a refund"]}`}}}
+	sg, err = examplesSuggester(llm, simpleTier(), "").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Category != CategoryIncoherent || len(sg.Phrases) != 0 {
+		t.Fatalf("category %s examples %v, want incoherent", sg.Category, sg.Phrases)
+	}
+
+	llm = &scriptedLLM{answers: map[string][]string{}}
+	_, err = examplesSuggester(llm, &markerTier{}, "").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive))
+	if err == nil {
+		t.Fatal("a tier decider error must fail the cluster")
+	}
+	blank := &blankTier{}
+	sg, err = examplesSuggester(llm, blank, "").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive))
+	if err != nil || sg.Category != CategoryIncoherent || len(llm.calls) != 0 {
+		t.Fatalf("err %v category %s example calls %d, want incoherent with no example call", err, sg.Category, len(llm.calls))
+	}
+}
+
+// blankTier answers with no usable tier.
+type blankTier struct{}
+
+func (blankTier) DecideTier(context.Context, TierInput) (TierVerdict, error) {
+	return TierVerdict{}, nil
+}
+
+// Edited instructions replace the example step's shipped text and keep its
+// fixed reinforcement; blank ones take the mode's default.
+func TestExampleInstructions(t *testing.T) {
+	if StepInstructions(ModeExamples, " ") != DefaultExampleInstructions() || StepInstructions(ModePhrases, "") != DefaultInstructions() {
+		t.Fatal("blank instructions must take the mode's default")
+	}
+	rng := rand.New(rand.NewSource(34))
+	llm := &scriptedLLM{answers: map[string][]string{"refund": {`{"coherent":true,"examples":["Check the status of a refund"]}`}}}
+	if _, err := examplesSuggester(llm, simpleTier(), "Write terse examples.").Suggest(context.Background(), clusterOf(t, routedAs(refundRequests(rng), 0, "", "COMPLEX"), decisionLive)); err != nil {
+		t.Fatal(err)
+	}
+	system := llm.calls["refund"][0][0].Content
+	if !strings.HasPrefix(system, "Write terse examples.") || strings.Contains(system, "abstract task") || !strings.Contains(system, `"examples"`) {
+		t.Errorf("edited instructions must replace the default and keep the reinforcement: %q", system)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -119,6 +120,14 @@ type Settings struct {
 	// run keeps only clusters holding at least this share of the requests it
 	// read. Zero takes DefaultMinClusterShare.
 	MinClusterShare float64
+	// Mode is what the run writes: phrases for a semantic router (the
+	// default), or tier examples for a decision-model router, whose requests
+	// carry the tier its decision model logged.
+	Mode suggest.Mode
+	// MaxPerTier is how many examples each tier may hold, for a
+	// decision-model router: a run suggests no more for a tier than it has
+	// room for (MaxPerTier less its live examples). Zero means no bound.
+	MaxPerTier int
 	// MaxPhrases is the phrase bank's capacity. A run suggests no more
 	// phrases than the bank has room for (MaxPhrases less the live phrases),
 	// keeping the heaviest clusters' phrases. Zero means no bound.
@@ -136,7 +145,10 @@ type Settings struct {
 	TierPrompt string
 	Model      string // the phrase model's provider/model, for the run record
 	Workers    int
-	Seed       int64
+	// Seed seeds sampling and clustering. A run on a schedule keeps it from
+	// run to run (the router's, say), so the same traffic forms the same
+	// clusters and its suggestions are refreshed rather than replaced.
+	Seed int64
 	// Cost reports what the model calls have cost so far, read when the run
 	// ends; nil records no cost.
 	Cost func() float64
@@ -202,7 +214,7 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 	}
 	run := logstore.ComplexitySuggestionRun{
 		ID: s.RunID, RouterID: s.RouterID, RouterVersion: s.RouterVersion, TriggeredBy: s.TriggeredBy, Status: logstore.ComplexitySuggestionRunRunning,
-		EmbeddingSignature: space.Namespace(), Model: s.Model, PromptHash: PromptHash(s.Instructions, s.TierPrompt),
+		EmbeddingSignature: space.Namespace(), Model: s.Model, PromptHash: PromptHash(stepInstructions(s), s.TierPrompt),
 		StartedAt: s.Now, WindowStart: s.Now.Add(-s.Window),
 	}
 	// Written on a context of its own, like the outcome below: a run whose
@@ -286,7 +298,7 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	if err := s.Traffic.EachRequest(ctx, from, to, func(page []complexity.CapturedRequest) error {
 		for _, r := range page {
 			seen++
-			req := suggest.Request{ID: r.LogID, Count: 1, Vector: unit(r.Vector)}
+			req := suggest.Request{ID: r.LogID, Count: 1, Vector: unit(r.Vector), RoutedTier: r.Tier}
 			if len(sample) < s.MaxClustered {
 				sample = append(sample, req)
 			} else if j := rng.Intn(seen); j < s.MaxClustered {
@@ -311,6 +323,12 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	//    requests past the assignment bound are in no cluster, so they do not
 	//    raise it.
 	minCluster := ClusterFloor(s.MinClusterRequests, s.MinClusterShare, representedRequests(seen, s.MaxClustered))
+	// In log ID order, not the order the store paged them in, which another
+	// walk of the store need not repeat: k-means seeds and batches by
+	// position, so the same requests with the same seed then form the same
+	// clusters, and a scheduled run refreshes the suggestions it made before
+	// rather than superseding them for near-copies.
+	slices.SortFunc(sample, func(a, b suggest.Request) int { return strings.Compare(a.ID, b.ID) })
 	clusterer := suggest.NewClusterer(suggest.ClusterOptions{MinRequests: minCluster, Seed: max(s.Seed, 1)}, live, matchFloor)
 	clusterer.Add(sample)
 	if seen > len(sample) {
@@ -330,7 +348,7 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 					result.Skipped++
 					continue
 				}
-				batch = append(batch, suggest.Request{ID: r.LogID, Count: 1, Vector: unit(r.Vector)})
+				batch = append(batch, suggest.Request{ID: r.LogID, Count: 1, Vector: unit(r.Vector), RoutedTier: r.Tier})
 			}
 			result.Unmatched += clusterer.Assign(batch)
 			result.Assigned += len(batch)
@@ -357,10 +375,13 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	// can come back covered or incoherent with no phrase at all. How many
 	// phrases a cluster yields is known only once it is asked, so suggestEach
 	// stops once the phrases written fill the room.
-	room := -1
+	room := Room{Total: -1}
 	limit := s.MaxSuggestedClusters
 	if s.MaxPhrases > 0 {
-		room = max(0, s.MaxPhrases-len(live))
+		room.Total = max(0, s.MaxPhrases-len(live))
+	}
+	if s.MaxPerTier > 0 {
+		room.Tiers = tierRoom(live, s.MaxPerTier)
 	}
 	var ask []*suggest.Cluster
 	for _, cl := range clusters {
@@ -396,13 +417,13 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		run.ClustersDone = int64(done)
 		_ = store.UpsertComplexitySuggestionRun(ctx, run)
 	}
-	opts := suggest.Options{MatchFloor: matchFloor, Instructions: s.Instructions, Tier: s.Tier, Texts: texts}
+	opts := suggest.Options{MatchFloor: matchFloor, Mode: s.Mode, Instructions: s.Instructions, Tier: s.Tier, Texts: texts}
 	suggestions, asked, failed, firstErr := suggestEach(ctx, suggest.NewSuggester(live, space, llm, opts), ask, s.Workers, room, progress)
 	run.ClustersOverLimit += int64(len(ask) - asked)
 	run.ClustersAsked, run.ClustersDone, run.ClustersFailed = int64(asked), int64(asked), int64(failed)
 	// Clusters still being asked when the room filled can overflow it; the
 	// lighter ones are left out like the clusters never asked.
-	suggestions = FitSuggestions(suggestions, room, &run.ClustersOverLimit)
+	suggestions = fitSuggestions(suggestions, room, &run.ClustersOverLimit)
 	for _, sg := range suggestions {
 		switch sg.Category {
 		case suggest.CategoryCovered:
@@ -461,10 +482,12 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 
 // suggestEach asks about clusters in order, heaviest first, on workers
 // goroutines. A cluster whose model call fails is counted and skipped rather
-// than failing the others. With a room of zero or more it starts no cluster
-// once the distinct phrases written so far fill the room; asked is how many
-// it started. done, when set, is called once per cluster as it finishes.
-func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*suggest.Cluster, workers, room int, done func()) (kept []suggest.Suggestion, asked, failed int, first error) {
+// than failing the others. With a bounded room it starts no cluster once the
+// distinct phrases written so far fill it (every tier of it, when it is
+// bounded per tier: a cluster's tier is known only once it is asked); asked
+// is how many it started. done, when set, is called once per cluster as it
+// finishes.
+func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*suggest.Cluster, workers int, room Room, done func()) (kept []suggest.Suggestion, asked, failed int, first error) {
 	if workers <= 0 {
 		workers = 4
 	}
@@ -472,11 +495,15 @@ func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*
 	ok := make([]bool, len(clusters))
 	errs := make([]error, len(clusters))
 	var mu sync.Mutex
-	written := map[string]bool{}
+	written := map[string]string{} // phrase key -> its tier
 	full := func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return room >= 0 && len(written) >= room
+		used := map[string]int{}
+		for _, tier := range written {
+			used[tier]++
+		}
+		return room.full(used)
 	}
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, workers)
@@ -504,7 +531,7 @@ func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*
 				mu.Lock()
 				for _, phrase := range sg.Phrases {
 					if key := normalizeText(phrase); key != "" {
-						written[key] = true
+						written[key] = sg.Tier
 					}
 				}
 				mu.Unlock()
@@ -803,9 +830,15 @@ func ClusterFloor(minRequests int, share float64, requests int) int {
 // phrases and are always kept, so reconciliation still sees them. A negative
 // room means no bound.
 func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) []suggest.Suggestion {
+	return fitSuggestions(suggestions, Room{Total: room}, dropped)
+}
+
+// fitSuggestions is FitSuggestions against a room that may be bounded per
+// tier, where a suggestion fits when its tier has room for its new phrases.
+func fitSuggestions(suggestions []suggest.Suggestion, room Room, dropped *int64) []suggest.Suggestion {
 	seen := map[string]string{} // phrase key -> the tier of the suggestion that kept it
 	kept := suggestions[:0]
-	used := 0
+	used := map[string]int{} // new phrases kept, by tier
 	for _, sg := range suggestions {
 		if !sg.Category.Actionable() || len(sg.Phrases) == 0 {
 			kept = append(kept, sg)
@@ -836,11 +869,11 @@ func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) 
 			kept = append(kept, sg)
 			continue
 		}
-		if room >= 0 && used+len(unique) > room {
+		if !room.fits(used, sg.Tier, len(unique)) {
 			*dropped++
 			continue
 		}
-		used += len(unique)
+		used[sg.Tier] += len(unique)
 		for _, key := range keys {
 			seen[key] = sg.Tier
 		}
@@ -872,6 +905,68 @@ func WithinRoom(suggestions []suggest.Suggestion, room int, dropped *int64) []su
 		kept = append(kept, sg)
 	}
 	return kept
+}
+
+// Room is how many new phrases a run may write: in all, for a semantic
+// router's phrase bank, and per tier, for a decision-model router's examples.
+// A negative Total is no overall bound, and nil Tiers no bound per tier; a
+// tier missing from Tiers has no room.
+type Room struct {
+	Total int
+	Tiers map[string]int
+}
+
+// fits reports whether n more phrases of tier fit beside those used.
+func (r Room) fits(used map[string]int, tier string, n int) bool {
+	total := 0
+	for _, u := range used {
+		total += u
+	}
+	if r.Total >= 0 && total+n > r.Total {
+		return false
+	}
+	return r.Tiers == nil || used[tier]+n <= r.Tiers[tier]
+}
+
+// full reports whether no phrase of any tier fits beside those used.
+func (r Room) full(used map[string]int) bool {
+	total := 0
+	for _, u := range used {
+		total += u
+	}
+	if r.Total >= 0 && total >= r.Total {
+		return true
+	}
+	if r.Tiers == nil {
+		return false
+	}
+	for tier, n := range r.Tiers {
+		if used[tier] < n {
+			return false
+		}
+	}
+	return true
+}
+
+// tierRoom is each tier's room for examples: perTier less the examples it has.
+func tierRoom(live []suggest.Phrase, perTier int) map[string]int {
+	room := map[string]int{complexity.TierSimple: perTier, complexity.TierMedium: perTier, complexity.TierComplex: perTier}
+	for _, p := range live {
+		if n, ok := room[p.Tier]; ok && n > 0 {
+			room[p.Tier] = n - 1
+		}
+	}
+	return room
+}
+
+// stepInstructions is what the run's phrase or example step is told, for its
+// prompt hash: an example run's blank instructions are the example step's
+// default, not the phrase step's that PromptHash falls back to.
+func stepInstructions(s Settings) string {
+	if s.Mode == suggest.ModeExamples {
+		return suggest.StepInstructions(s.Mode, s.Instructions)
+	}
+	return s.Instructions
 }
 
 // withoutRepeatedPhrases is FitSuggestions with no bound on the room.
