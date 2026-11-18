@@ -1307,6 +1307,9 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
+	if useVertexInteractions(ctx, request) {
+		return provider.interactionsResponses(ctx, key, request)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
@@ -1608,6 +1611,9 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+	}
+	if useVertexInteractions(ctx, request) {
+		return provider.interactionsResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
