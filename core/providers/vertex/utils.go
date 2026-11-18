@@ -184,15 +184,6 @@ func vertexRegionToPool(region string) (string, bool) {
 	return "", false
 }
 
-// getVertexModelListingAPIHost returns the Vertex API host used for Model Garden listing.
-// The multi-region prediction hosts reject publishers.models.list, so listing stays on the standard Vertex API host.
-func getVertexModelListingAPIHost(region string) string {
-	if region == "global" || isVertexMultiRegionEndpoint(region) {
-		return "aiplatform.googleapis.com"
-	}
-	return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
-}
-
 func getVertexAPIBaseURL(region string, apiVersion string) string {
 	return fmt.Sprintf("https://%s/%s", getVertexAPIHost(region), apiVersion)
 }

@@ -372,7 +372,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// No deployments configured - fetch from Model Garden API
-	host := getVertexModelListingAPIHost(region)
+	host := getVertexAPIHost(region)
 
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel

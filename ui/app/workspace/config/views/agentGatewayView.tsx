@@ -87,7 +87,7 @@ export default function AgentGatewayView() {
 
 	if (configError && !bifrostConfig) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="agent-gateway-settings-load-error">
+			<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="agent-gateway-settings-load-error">
 				<PageTitle title={t("agentGateway.title")}>{t("agentGateway.description")}</PageTitle>
 				<div className="border-destructive/30 bg-destructive/5 flex flex-col gap-3 rounded-sm border p-4">
 					<p className="text-destructive text-sm font-medium">{t("agentGateway.loadFailed")}</p>
@@ -103,7 +103,7 @@ export default function AgentGatewayView() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="agent-gateway-settings-view">
+		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="agent-gateway-settings-view">
 			<PageTitle title={t("agentGateway.title")}>{t("agentGateway.description")}</PageTitle>
 			<div className="space-y-4">
 				<div className="space-y-2 rounded-sm border p-4">
@@ -172,7 +172,7 @@ export default function AgentGatewayView() {
 					}}
 				/>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button
 					onClick={handleSave}
 					disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}

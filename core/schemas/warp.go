@@ -461,9 +461,18 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Action is what a confirmation card shows: the call without its token.
+	Action *WarpConfirmAction `json:"action,omitempty"`
 	// Pending is the management call a confirmation card is asking about. It is
 	// persisted with the card and never returned by the conversation API.
 	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpConfirmAction is the management write a confirmation card describes.
+type WarpConfirmAction struct {
+	Tool        string `json:"tool"`
+	Arguments   string `json:"arguments"`
+	Destructive bool   `json:"destructive,omitempty"`
 }
 
 // WarpPendingCall is a management write held until the person confirms it.

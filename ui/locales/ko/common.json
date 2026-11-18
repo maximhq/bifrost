@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "예산 사용량",
 		"override": "재정의",
-		"baseTooltip": "기본 {{base}} + 재정의 {{override}}"
+		"baseTooltip": "기본 {{base}} + 재정의 {{override}}",
+		"sharedTag": "공유"
 	},
 	"rateLimit": {
 		"tokens": "토큰",

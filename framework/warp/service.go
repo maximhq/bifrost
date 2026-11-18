@@ -108,6 +108,7 @@ type Service struct {
 	// management is the gateway's Bifrost MCP, nil until the server binds it
 	// with SetManagementTools. Guarded by mu.
 	management ManagementTools
+	bifrostMCP bool // Warp uses management; BifrostMCPEnabled unless WithBifrostMCP says otherwise
 	// usedConfirmations is the confirmation tokens this instance has seen
 	// claimed, by when; the durable claim is in the conversation store (see
 	// claimConfirmation).
@@ -147,8 +148,22 @@ func (s *Service) buildTopicReader() *TopicReader {
 	return NewTopicReader(s.store, topics)
 }
 
+// BifrostMCPEnabled is whether Warp reaches the gateway's /api through the
+// Bifrost MCP: configuration reads, confirmed writes, and refusing to answer
+// while the Bifrost MCP is not loaded. It is off for now, so Warp answers from
+// its own traffic tools only, as it did before the two were coupled. The wiring
+// stays in place - the gateway still binds its tools with SetManagementTools -
+// and turning this back on restores all of it.
+const BifrostMCPEnabled = false
+
 // Option configures a Service.
 type Option func(*Service)
+
+// WithBifrostMCP overrides BifrostMCPEnabled for one service, so the coupled
+// behaviour stays tested while it is switched off.
+func WithBifrostMCP(enabled bool) Option {
+	return func(s *Service) { s.bifrostMCP = enabled }
+}
 
 // WithLogger sets the logger used for warnings the service cannot surface to a
 // caller (a failed write after a successful answer, for example).
@@ -246,7 +261,7 @@ func WithCallerRestrictionResolver(resolver CallerRestrictionResolver) Option {
 // does not implement WarpStore is supported: the service then reports
 // ErrUnavailable from every configuration call.
 func NewService(store configstore.ConfigStore, opts ...Option) *Service {
-	service := &Service{}
+	service := &Service{bifrostMCP: BifrostMCPEnabled}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
 		service.backfillJobs, _ = store.(BackfillJobStore)
@@ -408,7 +423,8 @@ func (s *Service) managementTools() (ManagementTools, *ManagementCatalog) {
 	s.mu.RLock()
 	tools := s.management
 	s.mu.RUnlock()
-	if tools == nil {
+	// Decoupled: the binding is kept but nothing reads through it.
+	if tools == nil || !s.bifrostMCP {
 		return nil, nil
 	}
 	return tools, tools.Catalog()
@@ -420,7 +436,7 @@ func (s *Service) leaseManagementTools() (ManagementTools, *ManagementCatalog, f
 	s.mu.RLock()
 	tools := s.management
 	s.mu.RUnlock()
-	if tools == nil {
+	if tools == nil || !s.bifrostMCP {
 		return nil, nil, func() {}
 	}
 	if leaser, ok := tools.(ManagementLeaser); ok {
