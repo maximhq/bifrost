@@ -1549,6 +1549,16 @@ assert "ingress" not in nps["bifrost"]["spec"], "an API rule rendered: %r" % nps
 expect_render_failure "networkPolicy: schema rejects an empty ingressFrom peer" \
   "/networkPolicy/ingressFrom/0" \
   --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{}]'
+expect_render_failure "networkPolicy: schema rejects a null selector as a peer" \
+  "/networkPolicy/ingressFrom/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"podSelector":null}]'
+expect_render_failure "networkPolicy: schema rejects an egress.to ipBlock without cidr" \
+  "/networkPolicy/egress/to/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.to=[{"ipBlock":{}}]'
+check_workload "networkPolicy: an empty selector is a valid peer (all pods in the namespace)" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"podSelector": {}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"podSelector":{}}]'
 expect_render_failure "networkPolicy: schema rejects an egress.to peer with ipBlock and a selector" \
   "/networkPolicy/egress/to/0" \
   --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \

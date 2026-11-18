@@ -7477,7 +7477,21 @@
   "$defs": {
     "networkPolicyPeer": {
       "type": "object",
-      "description": "A NetworkPolicyPeer: podSelector and/or namespaceSelector, or ipBlock alone (Kubernetes rejects an empty peer and ipBlock with a selector).",
+      "description": "A NetworkPolicyPeer: podSelector and/or namespaceSelector, or ipBlock alone (Kubernetes rejects an empty peer, a null selector, ipBlock without cidr and ipBlock with a selector). {} as a selector selects all.",
+      "properties": {
+        "podSelector": { "type": "object" },
+        "namespaceSelector": { "type": "object" },
+        "ipBlock": {
+          "type": "object",
+          "properties": {
+            "cidr": { "type": "string", "minLength": 1 },
+            "except": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["cidr"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
       "anyOf": [
         { "required": ["podSelector"] },
         { "required": ["namespaceSelector"] },
