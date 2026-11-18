@@ -1,1 +1,2 @@
-- chore: upgraded core to v1.15.2 and framework to v1.12.2
+- fix: honor `SkipKeySelection` before catalog-based provider resolution, so bare model names work on keyless passthrough providers (thanks [@cgtarmenta](https://github.com/cgtarmenta)!)
+- chore: upgraded core to v1.16.0 and framework to v1.13.0
