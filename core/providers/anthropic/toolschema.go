@@ -91,6 +91,9 @@ func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*
 	out.Type = "object"
 	out.Properties = mergeAnthropicBranchProperties(branches)
 	out.Required = intersectAnthropicBranchRequired(branches)
+	if out.Required == nil && input.Required != nil {
+		out.Required = []string{}
+	}
 	if allAnthropicBranchesDisallowAdditionalProperties(branches) {
 		allow := false
 		out.AdditionalProperties = &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: &allow}

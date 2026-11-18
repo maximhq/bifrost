@@ -3166,3 +3166,33 @@ func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t
 		}
 	}
 }
+
+// TestToAnthropicChatRequest_PreservesExplicitEmptyRequired pins #6404 on the chat
+// route, which deep-copies the tool schema before normalizing it.
+func TestToAnthropicChatRequest_PreservesExplicitEmptyRequired(t *testing.T) {
+	var params schemas.ToolFunctionParameters
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), &params))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Take a screenshot.")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "take_screenshot", Parameters: &params, Strict: schemas.Ptr(true)},
+			}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+
+	out, err := schemas.MarshalSorted(result.Tools[0].InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"required":[]`)
+}
