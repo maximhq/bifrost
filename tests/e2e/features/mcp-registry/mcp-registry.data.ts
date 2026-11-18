@@ -202,6 +202,21 @@ export function createOAuthClientData(overrides: Partial<MCPClientConfig> = {}):
 }
 
 /**
+ * Create HTTP client with OAuth client credentials. The tests intercept the create
+ * call, since no local authorization server offers the grant.
+ */
+export function createClientCredentialsClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return createMCPClientData({
+    name: `cc_client_${Date.now()}`,
+    connectionType: 'http',
+    connectionUrl: 'https://mcp.example.com/mcp',
+    authType: 'client_credentials',
+    isPingAvailable: false,
+    ...overrides,
+  })
+}
+
+/**
  * Create HTTP client pointing at oauth-demo-server (port 3003) with Per-User OAuth 2.0.
  * Requires user consent via browser before tools are accessible.
  * Requires oauth-demo-server to be running: examples/mcps/oauth-demo-server

@@ -111,6 +111,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			{ value: "per_user_oauth", label: t("registry.filter.perUserOauth") },
 			{ value: "per_user_headers", label: t("registry.filter.perUserHeaders") },
 			{ value: "token_exchange", label: t("registry.filter.tokenExchange") },
+			{ value: "client_credentials", label: t("registry.clientCredentials.authType") },
 		],
 		[t],
 	);

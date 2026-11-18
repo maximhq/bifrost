@@ -25,6 +25,8 @@ import {
 } from "@/lib/store";
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
 import {
+	clientCredentialsResendMessage,
+	clientCredentialsResendRequired,
 	mcpClientUpdateSchema,
 	resourceCredentialResendMessage,
 	resourceCredentialResendRequired,
@@ -73,6 +75,7 @@ import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { CodeModeServerLabel, ServerTypeOnSlugLabel } from "./codeModeFields";
+import { ClientCredentialsFields, clientCredentialsFormValues, clientCredentialsPayload } from "./clientCredentialsFields";
 import { SectionHeader } from "./sectionHeader";
 import { ServerTypeOnSlugSelect } from "./serverTypeOnSlugSelect";
 import { TLSConfigFields } from "./tlsConfigFields";
@@ -177,6 +180,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	);
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
+	const supportsClientCredentialsUpdate = mcpClient.config.auth_type === "client_credentials";
 
 	// OpenAPI-backed servers: the stored document can be replaced from the
 	// General tab. The replacement is parsed through the same preview endpoint
@@ -424,6 +428,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 						...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 					}
 				: undefined,
+			client_credentials: supportsClientCredentialsUpdate ? clientCredentialsFormValues(mcpClient.config.client_credentials) : undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -507,6 +512,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 						...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 					}
 				: undefined,
+			client_credentials: supportsClientCredentialsUpdate ? clientCredentialsFormValues(mcpClient.config.client_credentials) : undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -514,7 +520,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					}
 				: undefined,
 		});
-	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
+	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate, supportsClientCredentialsUpdate]);
 
 	const initialOauthScopesRaw = (mcpClient.config.oauth_scopes || []).join(", ");
 	const oauthScopesDirty = oauthScopesRaw !== initialOauthScopesRaw;
@@ -568,6 +574,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		form.formState.dirtyFields.token_exchange?.resource_assertion_audience ||
 		tokenExchangeScopesDirty
 	);
+	// The server replaces client_credentials whole, so any change resends the block.
+	const clientCredentialsDirty = Object.keys(form.formState.dirtyFields.client_credentials ?? {}).length > 0;
+	// The server refuses a masked secret or key sent to a new token endpoint or audience.
+	const clientCredentialsRetargeted = !!(
+		form.formState.dirtyFields.client_credentials?.token_url || form.formState.dirtyFields.client_credentials?.assertion_audience
+	);
 	// Gates the "takes effect immediately" warning below the toggle — the
 	// backend applies a stickiness change live (opens or closes the shared
 	// connection) as part of the same update, not on some later reconnect.
@@ -594,6 +606,13 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					: undefined;
 			if (resendField) {
 				form.setError(`token_exchange.${resendField}`, { message: resourceCredentialResendMessage() });
+				return;
+			}
+			const ccResendField = supportsClientCredentialsUpdate
+				? clientCredentialsResendRequired(mcpClient.config.client_credentials, data.client_credentials)
+				: undefined;
+			if (ccResendField) {
+				form.setError(`client_credentials.${ccResendField}`, { message: clientCredentialsResendMessage() });
 				return;
 			}
 			// A replacement document must have been parsed (and not edited since)
@@ -765,6 +784,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								...tokenExchangeProfilePayload(data.token_exchange),
 							}
 						: undefined,
+					client_credentials:
+						supportsClientCredentialsUpdate && clientCredentialsDirty ? clientCredentialsPayload(data.client_credentials) : undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
@@ -1560,7 +1581,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											const showTLS = mcpClient.config.connection_type === "http" || mcpClient.config.connection_type === "sse";
 											const showOAuth = supportsOAuthCredentialUpdate;
 											const showTokenExchange = supportsTokenExchangeCredentialUpdate;
-											if (!showTLS && !showOAuth && !showTokenExchange) return null;
+											const showClientCredentials = supportsClientCredentialsUpdate;
+											if (!showTLS && !showOAuth && !showTokenExchange && !showClientCredentials) return null;
 
 											return (
 												<>
@@ -1628,6 +1650,36 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																		tokenUrlTestId="mcpclient-input-oauth-token-url"
 																		registrationUrlLabel={t("registry.sheet.registrationUrl")}
 																		registrationUrlTestId="mcpclient-input-oauth-registration-url"
+																	/>
+																</div>
+															</div>
+														</>
+													)}
+
+													{showClientCredentials && (
+														<>
+															<DottedSeparator />
+															<div className="space-y-4">
+																<SectionHeader
+																	title={t("registry.clientCredentials.sectionTitle")}
+																	description={t("registry.clientCredentials.sectionDesc")}
+																	testId="client-credentials-advanced-heading"
+																/>
+																<div className="space-y-4 rounded-md border p-4">
+																	{clientCredentialsRetargeted && (
+																		<div
+																			className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
+																			data-testid="client-credentials-retarget-warning"
+																		>
+																			<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+																			<p>{t("registry.clientCredentials.retargetWarning")}</p>
+																		</div>
+																	)}
+																	<ClientCredentialsFields
+																		control={form.control}
+																		disabled={!hasUpdateMCPClientAccess}
+																		maskNonEnvValue
+																		redactNonEnvValue={false}
 																	/>
 																</div>
 															</div>
