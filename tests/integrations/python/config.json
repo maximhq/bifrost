@@ -1836,6 +1836,9 @@
           },
           {
             "relay_name": "harness-relay-forced"
+          },
+          {
+            "relay_name": "harness-relay-jobs"
           }
         ]
       },
@@ -2083,6 +2086,87 @@
           "method": "POST",
           "path": "/v1/gated/disabled",
           "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "harness-relay-jobs",
+      "description": "Harness relay (relays-e2e): Textract-shaped async jobs. The start route charges a $0.01 fee and starts a job that settles once at DocumentMetadata.Pages x $0.05; the caller's own status checks are free. /v1/rest/jobs starts a job whose id lands in the poll path",
+      "base_url": "http://127.0.0.1:8783",
+      "auth": {
+        "type": "bearer"
+      },
+      "credential": {
+        "value": "sk-harness-relay-jobs"
+      },
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/v1/textract",
+          "headers": {
+            "X-Amz-Target": "Textract.Start*"
+          },
+          "usage": {
+            "cost_per_request": 0.01
+          },
+          "job": {
+            "id_path": "JobId",
+            "poll": {
+              "method": "POST",
+              "path": "/v1/textract",
+              "headers": {
+                "X-Amz-Target": "Textract.GetDocumentAnalysis"
+              },
+              "body": "{\"JobId\":\"{{job.id}}\"}",
+              "content_type": "application/x-amz-json-1.1"
+            },
+            "status_path": "JobStatus",
+            "succeeded": [
+              "SUCCEEDED",
+              "PARTIAL_SUCCESS"
+            ],
+            "failed": [
+              "FAILED"
+            ],
+            "interval_seconds": 2,
+            "timeout_seconds": 300,
+            "usage": {
+              "units_path": "DocumentMetadata.Pages",
+              "cost_per_unit": 0.05
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/textract",
+          "headers": {
+            "X-Amz-Target": "Textract.Get*"
+          },
+          "billable": false
+        },
+        {
+          "method": "POST",
+          "path": "/v1/rest/jobs",
+          "usage": {
+            "cost_per_request": 0.01
+          },
+          "job": {
+            "id_path": "id",
+            "poll": {
+              "method": "GET",
+              "path": "/v1/rest/jobs/{{job.id}}"
+            },
+            "status_path": "status",
+            "succeeded": [
+              "done"
+            ],
+            "interval_seconds": 2,
+            "timeout_seconds": 60
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/rest/jobs/**"
         }
       ]
     }

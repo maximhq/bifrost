@@ -299171,6 +299171,1068 @@
               }
             }
           ]
+        },
+        {
+          "name": "Async jobs: a Textract-shaped job is charged once when it finishes, never per status check",
+          "description": "harness-relay-jobs mirrors AWS Textract on the local fixture: POST /v1/textract with X-Amz-Target Textract.StartDocumentAnalysis charges a $0.01 fee and starts a job (job.id_path JobId); a route for Textract.Get* is billable: false, so the caller's own status checks are free. The sweeper polls GetDocumentAnalysis every 2s (it ticks every 10s) until JobStatus is terminal, then writes one job row to Relay Logs priced at DocumentMetadata.Pages x $0.05 and charges it to the start call's budgets. The fixture's Scenario field picks the outcome: ok (3 pages), failed (no charge), throttle (one 400 ThrottlingException, then 2 pages). A run-scoped key with a $10 daily budget proves the charge reaches governance. /v1/rest/jobs returns a job id that climbs out of the poll path, which must not be polled.",
+          "item": [
+            {
+              "name": "setup: create a run-scoped virtual key with a $10 daily budget, granted harness-relay-jobs - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('jobs key created: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var vk = (pm.response.json() || {}).virtual_key || {};",
+                      "pm.test('jobs key: has an id and a value', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('relayJobsVkId', vk.id);",
+                      "pm.collectionVariables.set('relayJobsVkValue', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/governance/virtual-keys",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"harness-relay-jobs-{{$timestamp}}\",\n  \"is_active\": true,\n  \"relay_grants\": [\n    {\n      \"relay_name\": \"harness-relay-jobs\"\n    }\n  ],\n  \"budgets\": [\n    {\n      \"max_limit\": 10,\n      \"reset_duration\": \"1d\"\n    }\n  ]\n}"
+                }
+              }
+            },
+            {
+              "name": "a start call is billed its fee and hands back the job id - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-1');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('start ok: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var jobId = pm.response.json().JobId;",
+                      "pm.test('start ok: the upstream answered with a job id', function () { pm.expect(jobId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('relayJobOk', jobId);",
+                      "relayLog(function (row) {",
+                      "  pm.test('start ok: the start call is one billed call carrying the route fee and the job id', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.kind, dump).to.eql('call');",
+                      "    pm.expect(row.billable, dump).to.eql(true);",
+                      "    pm.expect(near(row.cost, 0.01), 'cost should be 0.01: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_id, dump).to.eql(jobId);",
+                      "    pm.expect(row.job_status, dump).to.eql('started');",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.StartDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"DocumentLocation\": {\"S3Object\": {\"Bucket\": \"docs\", \"Name\": \"invoice.pdf\"}}, \"Scenario\": \"ok\", \"ClientRequestToken\": \"{{relayReqId}}\"}"
+                }
+              }
+            },
+            {
+              "name": "a caller's own status check is relayed but not charged - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('status check: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('status check: the upstream reports the job running', function () { pm.expect(pm.response.json().JobStatus, pm.response.text()).to.eql('IN_PROGRESS'); });",
+                      "relayLog(function (row) {",
+                      "  pm.test('status check: not billable and free', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.billable, dump).to.eql(false);",
+                      "    pm.expect(near(row.cost || 0, 0), dump).to.be.true;",
+                      "    pm.expect(row.route_path, dump).to.eql('/v1/textract');",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.GetDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"JobId\": \"{{relayJobOk}}\"}"
+                }
+              }
+            },
+            {
+              "name": "the job settles once at 3 pages x $0.05, charged to the start call's key - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "function jobRows(jobId, check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=job&job_id=' + encodeURIComponent(jobId) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs); }",
+                      "    if (attempt < 45) { setTimeout(function () { jobRows(jobId, check, attempt + 1); }, 2000); return; }",
+                      "    pm.test('a settlement row for job ' + jobId + ' was written within 90s', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "var jobId = pm.collectionVariables.get('relayJobOk');",
+                      "jobRows(jobId, function (rows) {",
+                      "  pm.test('settled ok: one settlement row, priced once from the terminal status', function () {",
+                      "    var dump = JSON.stringify(rows);",
+                      "    pm.expect(rows.length, dump).to.eql(1);",
+                      "    var row = rows[0];",
+                      "    pm.expect(row.kind, dump).to.eql('job');",
+                      "    pm.expect(row.job_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(near(row.cost, 0.15), 'cost should be 0.15: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "the key budget carries the start fee and the job charge, once each - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "function waitForKey(pred, cb, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('relayJobsVkId')), method: 'GET' }, function (err, res) {",
+                      "    var vk = (!err && res.code === 200) ? (res.json().virtual_key || {}) : null;",
+                      "    if (vk && pred(vk)) { return cb(vk, true); }",
+                      "    if (attempt < 20) { setTimeout(function () { waitForKey(pred, cb, attempt + 1); }, 500); return; }",
+                      "    cb(vk || {}, false);",
+                      "  });",
+                      "}",
+                      "function usage(vk) { return (vk.budgets || []).reduce(function (s, b) { return s + (b.current_usage || 0); }, 0); }",
+                      "waitForKey(function (vk) { return near(usage(vk), 0.16); }, function (vk, ok) {",
+                      "  pm.test('jobs key budget: $0.01 start fee + $0.15 job = $0.16, status checks add nothing', function () { pm.expect(ok, 'usage: ' + usage(vk) + ' ' + JSON.stringify(vk.budgets)).to.be.true; });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/governance/virtual-keys/{{relayJobsVkId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{relayJobsVkId}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a retried start with the same ClientRequestToken is billed its fee but opens no second job - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-3');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('first start: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var first = pm.response.json().JobId;",
+                      "pm.collectionVariables.set('relayJobRetry', first);",
+                      "pm.sendRequest({ url: BASE + '/relay/harness-relay-jobs/v1/textract', method: 'POST', header: { 'x-bf-vk': pm.collectionVariables.get('relayJobsVkValue'), 'X-Amz-Target': 'Textract.StartDocumentAnalysis', 'Content-Type': 'application/x-amz-json-1.1' }, body: { mode: 'raw', raw: JSON.stringify({ DocumentLocation: {}, Scenario: 'ok', ClientRequestToken: ID }) } }, function (err, res) {",
+                      "  pm.test('retried start: the upstream answers with the same job id', function () { pm.expect(!err && res.code, err ? String(err) : res.text()).to.eql(200); pm.expect(res.json().JobId).to.eql(first); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.StartDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"DocumentLocation\": {}, \"Scenario\": \"ok\", \"ClientRequestToken\": \"{{relayReqId}}\"}"
+                }
+              }
+            },
+            {
+              "name": "the retried job still settles exactly once - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "function jobRows(jobId, check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=job&job_id=' + encodeURIComponent(jobId) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs); }",
+                      "    if (attempt < 45) { setTimeout(function () { jobRows(jobId, check, attempt + 1); }, 2000); return; }",
+                      "    pm.test('a settlement row for job ' + jobId + ' was written within 90s', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "var jobId = pm.collectionVariables.get('relayJobRetry');",
+                      "jobRows(jobId, function (rows) {",
+                      "  pm.test('settled retry: one settlement row, priced once from the terminal status', function () {",
+                      "    var dump = JSON.stringify(rows);",
+                      "    pm.expect(rows.length, dump).to.eql(1);",
+                      "    var row = rows[0];",
+                      "    pm.expect(row.kind, dump).to.eql('job');",
+                      "    pm.expect(row.job_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(near(row.cost, 0.15), 'cost should be 0.15: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a job the upstream will fail is started like any other - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-4');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('start failed: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var jobId = pm.response.json().JobId;",
+                      "pm.test('start failed: the upstream answered with a job id', function () { pm.expect(jobId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('relayJobFailed', jobId);",
+                      "relayLog(function (row) {",
+                      "  pm.test('start failed: the start call is one billed call carrying the route fee and the job id', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.kind, dump).to.eql('call');",
+                      "    pm.expect(row.billable, dump).to.eql(true);",
+                      "    pm.expect(near(row.cost, 0.01), 'cost should be 0.01: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_id, dump).to.eql(jobId);",
+                      "    pm.expect(row.job_status, dump).to.eql('started');",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.StartDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"DocumentLocation\": {\"S3Object\": {\"Bucket\": \"docs\", \"Name\": \"invoice.pdf\"}}, \"Scenario\": \"failed\"}"
+                }
+              }
+            },
+            {
+              "name": "a failed job is recorded at no charge - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "function jobRows(jobId, check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=job&job_id=' + encodeURIComponent(jobId) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs); }",
+                      "    if (attempt < 45) { setTimeout(function () { jobRows(jobId, check, attempt + 1); }, 2000); return; }",
+                      "    pm.test('a settlement row for job ' + jobId + ' was written within 90s', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "var jobId = pm.collectionVariables.get('relayJobFailed');",
+                      "jobRows(jobId, function (rows) {",
+                      "  pm.test('settled failed: one settlement row, priced once from the terminal status', function () {",
+                      "    var dump = JSON.stringify(rows);",
+                      "    pm.expect(rows.length, dump).to.eql(1);",
+                      "    var row = rows[0];",
+                      "    pm.expect(row.kind, dump).to.eql('job');",
+                      "    pm.expect(row.job_status, dump).to.eql(\"FAILED\");",
+                      "    pm.expect(near(row.cost, 0), 'cost should be 0: ' + dump).to.be.true;",
+                      "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
+                      "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a job whose first status check is throttled is started - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-5');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('start throttle: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var jobId = pm.response.json().JobId;",
+                      "pm.test('start throttle: the upstream answered with a job id', function () { pm.expect(jobId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('relayJobThrottle', jobId);",
+                      "relayLog(function (row) {",
+                      "  pm.test('start throttle: the start call is one billed call carrying the route fee and the job id', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.kind, dump).to.eql('call');",
+                      "    pm.expect(row.billable, dump).to.eql(true);",
+                      "    pm.expect(near(row.cost, 0.01), 'cost should be 0.01: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_id, dump).to.eql(jobId);",
+                      "    pm.expect(row.job_status, dump).to.eql('started');",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.StartDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"DocumentLocation\": {\"S3Object\": {\"Bucket\": \"docs\", \"Name\": \"invoice.pdf\"}}, \"Scenario\": \"throttle\"}"
+                }
+              }
+            },
+            {
+              "name": "a throttled status check (AWS answers 400) is retried and the job still settles at 2 pages - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "function jobRows(jobId, check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=job&job_id=' + encodeURIComponent(jobId) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs); }",
+                      "    if (attempt < 45) { setTimeout(function () { jobRows(jobId, check, attempt + 1); }, 2000); return; }",
+                      "    pm.test('a settlement row for job ' + jobId + ' was written within 90s', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "var jobId = pm.collectionVariables.get('relayJobThrottle');",
+                      "jobRows(jobId, function (rows) {",
+                      "  pm.test('settled throttle: one settlement row, priced once from the terminal status', function () {",
+                      "    var dump = JSON.stringify(rows);",
+                      "    pm.expect(rows.length, dump).to.eql(1);",
+                      "    var row = rows[0];",
+                      "    pm.expect(row.kind, dump).to.eql('job');",
+                      "    pm.expect(row.job_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(near(row.cost, 0.1), 'cost should be 0.1: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.units, 2), 'units should be 2: ' + dump).to.be.true;",
+                      "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a job id that would climb out of the poll path is not recorded, so it is never polled - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-6');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    var logs = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('unsafe id: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "relayLog(function (row) {",
+                      "  pm.test('unsafe id: the call is billed its fee with no job attached', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(near(row.cost, 0.01), dump).to.be.true;",
+                      "    pm.expect(row.job_id == null, 'job_id: ' + dump).to.be.true;",
+                      "  });",
+                      "  setTimeout(function () {",
+                      "    pm.sendRequest({ url: UPSTREAM + '/__relay/escaped', method: 'GET' }, function (err, res) {",
+                      "      pm.test('unsafe id: nothing reached a path outside /v1/rest/jobs/ after two poll intervals', function () { pm.expect(!err && res.json().hits, err ? String(err) : res.text()).to.eql(0); });",
+                      "    });",
+                      "  }, 12000);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/rest/jobs?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "rest",
+                    "jobs"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"id\": \"../../../__relay/escaped\"}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a job whose status checks would be billed is refused at save time - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('billed checks: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('billed checks: the error names the route and the fix', function () { var t = pm.response.text(); pm.expect(t).to.include('routes[1]'); pm.expect(t).to.include('billable: false'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"harness-relay-jobs-billed-checks\",\n  \"base_url\": \"http://127.0.0.1:8783\",\n  \"auth\": {\n    \"type\": \"none\"\n  },\n  \"routes\": [\n    {\n      \"method\": \"POST\",\n      \"path\": \"/\",\n      \"headers\": {\n        \"X-Amz-Target\": \"Textract.Start*\"\n      },\n      \"job\": {\n        \"id_path\": \"JobId\",\n        \"poll\": {\n          \"path\": \"/\",\n          \"headers\": {\n            \"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"\n          },\n          \"body\": \"{\\\"JobId\\\":\\\"{{job.id}}\\\"}\"\n        },\n        \"status_path\": \"JobStatus\",\n        \"succeeded\": [\n          \"SUCCEEDED\"\n        ]\n      }\n    },\n    {\n      \"method\": \"POST\",\n      \"path\": \"/\"\n    }\n  ]\n}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a job that polls with a credential header is refused at save time - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('poll credential: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('poll credential: the error names the header', function () { pm.expect(pm.response.text()).to.include('Authorization'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"harness-relay-jobs-poll-credential\",\n  \"base_url\": \"http://127.0.0.1:8783\",\n  \"auth\": {\n    \"type\": \"none\"\n  },\n  \"routes\": [\n    {\n      \"method\": \"POST\",\n      \"path\": \"/start\",\n      \"job\": {\n        \"id_path\": \"id\",\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/jobs/{{job.id}}\",\n          \"headers\": {\n            \"Authorization\": \"Bearer sk-live\"\n          }\n        },\n        \"status_path\": \"status\",\n        \"succeeded\": [\n          \"done\"\n        ]\n      }\n    }\n  ]\n}"
+                }
+              }
+            },
+            {
+              "name": "cleanup: delete the run-scoped jobs key - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('cleanup: HTTP 200 or 204', function () { pm.expect([200, 204], 'got: ' + pm.response.code + ' ' + pm.response.text()).to.include(pm.response.code); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/governance/virtual-keys/{{relayJobsVkId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{relayJobsVkId}}"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },
