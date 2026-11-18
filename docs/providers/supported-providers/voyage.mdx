@@ -205,4 +205,4 @@ curl -X POST http://localhost:8080/v1/rerank \
 
 # 6. Errors
 
-Voyage returns `{"detail": "<message>"}` on failure; Bifrost surfaces the text as the error message with Voyage's status code. Requests that can never succeed are rejected with a 400 before they are sent.
+Voyage returns `{"detail": "<message>"}` on failure; Bifrost surfaces the text as the error message with Voyage's status code. Requests that can never succeed are rejected with a 400 before they are sent. This does not apply when a raw request body is passed through unparsed (large-payload passthrough): the converters and their checks are skipped there, and Voyage's own error comes back instead.
