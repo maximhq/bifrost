@@ -12,7 +12,7 @@ import {
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	KeywordListKey,
-	MAX_DECISION_CRITERIA_ITEMS,
+	maxDecisionListItems,
 	MAX_DECISION_DEFINITION_CHARACTERS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	MAX_LLM_PROMPT_CHARACTERS,
@@ -797,7 +797,8 @@ export function DecisionTierCard({
 					const fieldError = errors?.[listField];
 					const errorId = `${testIdPrefix}-${tier.toLowerCase()}-${listField}-error`;
 					const count = criteria?.[listField]?.length ?? 0;
-					const atLimit = count >= MAX_DECISION_CRITERIA_ITEMS;
+					const maxItems = maxDecisionListItems(listField);
+					const atLimit = count >= maxItems;
 					const edited = !isDefaultList(listField);
 					return (
 						<Controller
@@ -814,7 +815,7 @@ export function DecisionTierCard({
 										</div>
 										<div className="flex items-center gap-1">
 											<span className={cn("font-mono text-[11px] tabular-nums", atLimit ? "text-amber-600" : "text-muted-foreground")}>
-												{count} / {MAX_DECISION_CRITERIA_ITEMS}
+												{count} / {maxItems}
 											</span>
 											{/* Doubles as the edited marker: present only where this list differs from the default. */}
 											{edited && (
@@ -839,7 +840,7 @@ export function DecisionTierCard({
 										onValueChange={field.onChange}
 										listHeight={DECISION_LIST_HEIGHT}
 										submitOnComma={false}
-										placeholder={atLimit ? tcpx("listLimitReached", { max: MAX_DECISION_CRITERIA_ITEMS }) : tcpx(placeholderKey)}
+										placeholder={atLimit ? tcpx("listLimitReached", { max: maxItems }) : tcpx(placeholderKey)}
 										readOnly={!canUpdate}
 										disabled={!canUpdate || atLimit}
 										aria-label={tcpx("listAria", { tier: tierLabel, list: label.toLowerCase() })}

@@ -6496,7 +6496,7 @@
         },
         "examples": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 60,
           "items": { "type": "string", "maxLength": 300 },
           "description": "Replaces this tier's shipped examples. Omit to use the default."
         }
@@ -7865,7 +7865,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 12,
+                  "maxItems": 60,
                   "items": {
                     "type": "string",
                     "maxLength": 300
@@ -7895,7 +7895,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 12,
+                  "maxItems": 60,
                   "items": {
                     "type": "string",
                     "maxLength": 300
@@ -7925,7 +7925,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 12,
+                  "maxItems": 60,
                   "items": {
                     "type": "string",
                     "maxLength": 300

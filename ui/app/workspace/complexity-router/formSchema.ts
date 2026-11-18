@@ -6,7 +6,9 @@ import {
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
-	MAX_DECISION_CRITERIA_ITEMS,
+	MAX_DECISION_EXAMPLES,
+	MAX_DECISION_SIGNALS,
+	maxDecisionListItems,
 	MAX_DECISION_DEFINITION_CHARACTERS,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
@@ -112,11 +114,11 @@ const decisionCriteriaListSchema = (kind: "signal" | "example") => {
 			}),
 		)
 		.min(1, { error: () => (signal ? complexityT("criteriaSignalMin") : complexityT("criteriaExampleMin")) })
-		.max(MAX_DECISION_CRITERIA_ITEMS, {
+		.max(signal ? MAX_DECISION_SIGNALS : MAX_DECISION_EXAMPLES, {
 			error: () =>
 				signal
-					? complexityT("criteriaSignalMax", { count: MAX_DECISION_CRITERIA_ITEMS })
-					: complexityT("criteriaExampleMax", { count: MAX_DECISION_CRITERIA_ITEMS }),
+					? complexityT("criteriaSignalMax", { count: MAX_DECISION_SIGNALS })
+					: complexityT("criteriaExampleMax", { count: MAX_DECISION_EXAMPLES }),
 		});
 };
 
@@ -290,13 +292,13 @@ const suggestionsSchema = z
 				}
 				for (const field of ["signals", "examples"] as const) {
 					const list = criteria[field];
-					if (list.length > MAX_DECISION_CRITERIA_ITEMS) {
+					if (list.length > maxDecisionListItems(field)) {
 						ctx.addIssue({
 							code: "custom",
 							message:
 								field === "signals"
-									? complexityT("criteriaSignalMax", { count: MAX_DECISION_CRITERIA_ITEMS })
-									: complexityT("criteriaExampleMax", { count: MAX_DECISION_CRITERIA_ITEMS }),
+									? complexityT("criteriaSignalMax", { count: MAX_DECISION_SIGNALS })
+									: complexityT("criteriaExampleMax", { count: MAX_DECISION_EXAMPLES }),
 							path: ["tier_criteria", tier, field],
 						});
 					} else if (list.some((item) => item.length > MAX_DECISION_CRITERIA_ITEM_CHARACTERS)) {
