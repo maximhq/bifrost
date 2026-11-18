@@ -304,10 +304,10 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 	management := &ProviderHandler{modelsManager: manager, inMemoryStore: handler.config}
 	providerModels := [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
-		{},
+		{"elevenlabs/dictation"},
 		{"elevenlabs/eleven_turbo_v2_5"},
 		{},
-		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
+		{"elevenlabs/eleven_turbo_v2_5"},
 	}
 	for i, want := range [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/scribe_v1", "elevenlabs/scribe_v1_experimental", "elevenlabs/scribe_v2", "elevenlabs/dictation"},
