@@ -8407,6 +8407,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						})
 						continue
 					}
+					keys = narrowVertexInteractionsKeys(req.Context, baseProvider, req.RequestType, model, keys)
 				} else {
 					// Build the key pool for this request. Selection and rotation are deferred to
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
@@ -8438,6 +8439,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						})
 						continue
 					}
+
+					supportedKeys = narrowContinuationKeys(req.Context, provider, &req.BifrostRequest, supportedKeys)
 
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
@@ -11648,6 +11651,10 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
+	// A create on a Vertex path naming a location prefers a key for it. A pinned key was already
+	// returned above.
+	supportedKeys = narrowVertexInteractionsKeys(ctx, baseProviderType, requestType, model, supportedKeys)
+
 	// Single key: no rotation possible, so the session cannot choose. It is still asked, so it can
 	// drop a binding to a key that left the pool, except by a realtime pick, which never writes
 	// the session's bindings, and by a pool a second model or the batch and file APIs narrowed,
@@ -11690,6 +11697,41 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Normal case: return the full filtered pool with rotation enabled.
 	return supportedKeys, true, nil
+}
+
+// narrowVertexInteractionsKeys leaves out the Vertex keys that cannot reach a stored interaction: a call on
+// one names no model to choose a key by, only some locations serve Interactions, and Google's 400 for any
+// other would end the search across keys. A create is narrowed only when its path names a location. Every
+// other request gets keys back as they are.
+func narrowVertexInteractionsKeys(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, requestType schemas.RequestType, model string, keys []schemas.Key) []schemas.Key {
+	if baseProvider != schemas.Vertex || ctx == nil || len(keys) < 2 {
+		return keys
+	}
+	location, _ := ctx.Value(schemas.BifrostContextKeyInteractionsLocation).(string)
+	if location == "" && !isResponsesLifecycleRequestType(requestType) {
+		return keys
+	}
+	project, _ := ctx.Value(schemas.BifrostContextKeyInteractionsProject).(string)
+	return vertex.InteractionsKeys(keys, model, project, location)
+}
+
+// narrowContinuationKeys keeps the keys that reach the stored turn a Responses request continues, for a
+// provider that keeps one in the place that made it. Every other request gets keys back as they are.
+func narrowContinuationKeys(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostRequest, keys []schemas.Key) []schemas.Key {
+	if len(keys) < 2 || req.ResponsesRequest == nil {
+		return keys
+	}
+	params := req.ResponsesRequest.Params
+	if params == nil || params.PreviousResponseID == nil || *params.PreviousResponseID == "" {
+		return keys
+	}
+	placer, ok := provider.(interface {
+		ContinuationKeys(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, keys []schemas.Key) []schemas.Key
+	})
+	if !ok {
+		return keys
+	}
+	return placer.ContinuationKeys(ctx, req.ResponsesRequest, keys)
 }
 
 // keySupportsModel reports whether a key's allow list, deny list and vLLM served model admit model.

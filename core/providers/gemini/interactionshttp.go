@@ -369,6 +369,19 @@ func InteractionsResponses(ctx *schemas.BifrostContext, t *GeminiInteractionsTar
 	return decodeGeminiInteraction(ctx, t, body, respBody, latency, headers, jobCreate, request.Model)
 }
 
+// InteractionsExists reads a stored run and returns why it could not be read, or nil when it was.
+func InteractionsExists(ctx *schemas.BifrostContext, t *GeminiInteractionsTarget, id string) *schemas.BifrostError {
+	if isGenerateContentResponseID(id) {
+		return providerUtils.NewBifrostBadRequestError("a generateContent response is not a stored interaction")
+	}
+	suffix, bifrostErr := t.resourceSuffix(id)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+	_, _, _, bifrostErr = executeGeminiInteractionsUnary(ctx, t, http.MethodGet, t.url(suffix, nil), nil)
+	return bifrostErr
+}
+
 // InteractionsRetrieve reads a stored interaction (GET /interactions/{id}).
 func InteractionsRetrieve(ctx *schemas.BifrostContext, t *GeminiInteractionsTarget, req *schemas.BifrostResponsesRetrieveRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if req == nil || req.ResponseID == "" {
