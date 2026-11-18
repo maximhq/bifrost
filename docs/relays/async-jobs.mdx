@@ -1,0 +1,170 @@
+---
+title: "Async Jobs"
+description: "Charge an API that runs work in the background once per job, when it finishes, instead of on every status check."
+icon: "hourglass-half"
+---
+
+Some APIs do not answer with the result. They start a **job**, hand back its id, and the caller asks for the status until the job is done. AWS Textract works this way: `StartDocumentAnalysis` returns a `JobId`, and `GetDocumentAnalysis` reports the status and, once it is done, the pages.
+
+Priced as ordinary calls, such an API is charged on every status check, and the price of the work (the pages) is only known at the end. An **async job** on a route fixes both:
+
+1. The call that starts the job is charged as usual, with the route's fee.
+2. Bifrost reads the job id from the reply and checks the job itself, with the relay's credential, until it reports a final status.
+3. When the job succeeds, Bifrost prices that final reply (for example, pages times a price per page) and charges it **once** to the budgets the start call was charged to.
+4. The caller's own status checks go through a route with `billable: false`, so they cost nothing.
+
+## Set up a job
+
+<Tabs group="config-method">
+<Tab title="config.json">
+
+This Textract relay charges $0.01 to start an analysis and $0.0015 per page when it finishes. Status checks are free.
+
+```json
+{
+  "relays": [
+    {
+      "name": "textract",
+      "base_url": "https://textract.us-east-1.amazonaws.com",
+      "auth": { "type": "aws_sigv4", "aws": { "service": "textract" } },
+      "credential": { "aws": { "region": "us-east-1", "access_key": "env.AWS_ACCESS_KEY_ID", "secret_key": "env.AWS_SECRET_ACCESS_KEY" } },
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": { "X-Amz-Target": "Textract.Start*" },
+          "usage": { "cost_per_request": 0.01 },
+          "job": {
+            "id_path": "JobId",
+            "poll": {
+              "method": "POST",
+              "path": "/",
+              "headers": { "X-Amz-Target": "Textract.GetDocumentAnalysis" },
+              "body": "{\"JobId\":\"{{job.id}}\",\"MaxResults\":1}",
+              "content_type": "application/x-amz-json-1.1"
+            },
+            "status_path": "JobStatus",
+            "succeeded": ["SUCCEEDED", "PARTIAL_SUCCESS"],
+            "failed": ["FAILED"],
+            "interval_seconds": 30,
+            "timeout_seconds": 21600,
+            "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": { "X-Amz-Target": "Textract.Get*" },
+          "billable": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+The same relay under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: textract
+      base_url: "https://textract.us-east-1.amazonaws.com"
+      auth:
+        type: aws_sigv4
+        aws:
+          service: textract
+      credential:
+        aws:
+          region: us-east-1
+          access_key: "env.AWS_ACCESS_KEY_ID"
+          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+      routes:
+        - method: POST
+          path: /
+          headers:
+            X-Amz-Target: "Textract.Start*"
+          usage:
+            cost_per_request: 0.01
+          job:
+            id_path: JobId
+            poll:
+              method: POST
+              path: /
+              headers:
+                X-Amz-Target: Textract.GetDocumentAnalysis
+              body: '{"JobId":"{{job.id}}","MaxResults":1}'
+              content_type: application/x-amz-json-1.1
+            status_path: JobStatus
+            succeeded: [SUCCEEDED, PARTIAL_SUCCESS]
+            failed: [FAILED]
+            interval_seconds: 30
+            timeout_seconds: 21600
+            usage:
+              units_path: DocumentMetadata.Pages
+              cost_per_unit: 0.0015
+        - method: POST
+          path: /
+          headers:
+            X-Amz-Target: "Textract.Get*"
+          billable: false
+```
+
+</Tab>
+</Tabs>
+
+`MaxResults: 1` keeps each check small: Textract still reports `JobStatus` and `DocumentMetadata.Pages`, without the full results.
+
+## Fields
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `id_path` | Yes | Where the job id is in the start call's reply, such as `JobId`. |
+| `poll.method` | No | Method of the status check. Default `POST`. |
+| `poll.path` | Yes | Path of the status check below the base URL. `{{job.id}}` is replaced with the job id, as in `/jobs/{{job.id}}`. |
+| `poll.headers` | No | Headers of the status check. Values may contain `{{job.id}}`. Headers that carry a credential are refused: the relay adds its own. |
+| `poll.body` | No | Body of the status check. `{{job.id}}` is replaced, escaped for JSON in a JSON body. |
+| `poll.content_type` | No | Content type of the body. Default `application/json`. |
+| `status_path` | Yes | Where the status is in the status check's reply, such as `JobStatus`. |
+| `succeeded` | Yes | Statuses that end the job and charge it. Letter case is ignored. |
+| `failed` | No | Statuses that end the job without a charge. |
+| `interval_seconds` | No | Seconds between checks. Default `30`. Bifrost looks for due jobs every 10 seconds, and checks less often after many attempts. |
+| `timeout_seconds` | No | Stop checking after this long. Default `3600`, at most 7 days. |
+| `usage` | No | How the final reply is priced, over the route's and the relay's [pricing](./pricing). Only a `cost_per_request` set here is charged again: the route's fee was charged when the job started. |
+
+A route that starts a job must be billable and is never streamed, because Bifrost reads the job id from its reply.
+
+## What is charged
+
+| The job | Charged |
+| --- | --- |
+| Started | The start route's fee, like any call. |
+| Reports a `succeeded` status | Its final reply priced with the job's `usage`, once. |
+| Reports a `failed` status | Nothing more. |
+| Succeeds, but its reply has no units where `units_path` points | Nothing more. Check `units_path`. |
+| Still running after `timeout_seconds` | Nothing more. |
+| Unknown to the API (`404`, `410`), the credential is refused (`401`, `403`), or the check is refused with another `4xx` | Nothing more. |
+| A check is throttled or fails with `5xx` | Nothing yet. Bifrost tries again later. |
+
+A caller that retries a start and gets the same job id back (Textract does this for a repeated `ClientRequestToken`) pays the start fee again, but the job is charged only once.
+
+The final charge goes to the budgets of the virtual key, team and customer that started the job, even if they changed since. It counts no extra request against rate limits.
+
+## Status checks must be free
+
+Bifrost refuses to save a relay where a caller's status check would be charged: the job is already charged once, when it finishes. In the example, a status check is `POST /` with `X-Amz-Target: Textract.GetDocumentAnalysis`. Without the `Textract.Get*` route it matches no route, so callers cannot check their jobs (`404`); with a catch-all `POST /` route instead, every check would be charged. Add a route for the status check with `billable: false`, above any broader route that would match it.
+
+## In Relay Logs
+
+The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row.
+
+<Note>
+Jobs are recorded by request logging. With logging off, the start call is still charged its fee, but no job is followed or charged.
+</Note>
+
+## Job ids Bifrost will not follow
+
+The job id comes from the API's reply and goes into the status check's path. To keep it from reaching another path on the API with the relay's credential, Bifrost only follows an id of printable characters with no spaces, `\`, `?`, `#`, `.` or `..` path segments, at most 160 bytes. A reply with any other id is charged as an ordinary call and the job is not followed.
