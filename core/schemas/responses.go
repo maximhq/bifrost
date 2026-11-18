@@ -78,8 +78,9 @@ type BifrostResponsesRetrieveRequest struct {
 	StartingAfter      *int          `json:"starting_after,omitempty"`
 	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
 	// Stream replays the stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
-	Stream         *bool  `json:"stream,omitempty"`
-	RawRequestBody []byte `json:"-"`
+	Stream         *bool   `json:"stream,omitempty"`
+	LastEventID    *string `json:"last_event_id,omitempty"` // Gemini Interactions: resume a replayed stream after this event
+	RawRequestBody []byte  `json:"-"`
 }
 
 // GetRawRequestBody implements raw body passthrough when enabled on context.
@@ -279,6 +280,7 @@ type BifrostResponsesResponse struct {
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
+	ProviderJob          *BifrostPassthroughJob              `json:"-"` // a stored run (Gemini Interaction) this response reports on, settled once by job accounting
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`

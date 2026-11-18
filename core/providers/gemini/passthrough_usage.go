@@ -287,6 +287,9 @@ type geminiInteractionsUsage struct {
 	OutputTokens  int `json:"total_output_tokens"`
 	ThoughtTokens int `json:"total_thought_tokens"`
 	CachedTokens  int `json:"total_cached_tokens"`
+	ToolUseTokens int `json:"total_tool_use_tokens"`
+
+	GroundingToolCount []GeminiInteractionsGroundingToolCount `json:"grounding_tool_count"`
 }
 
 type geminiInteractionsRun struct {
@@ -328,6 +331,13 @@ func (i InteractionsPassthroughInfo) terminal() bool {
 // ParseInteractionsPassthrough decodes an Interactions response body or SSE event once, for its
 // run id, agent or model, status and usage.
 func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
+	return parseInteractionsPassthrough(body, "")
+}
+
+// parseInteractionsPassthrough is ParseInteractionsPassthrough with the model to price usage by
+// when the body names none, as a stream's completed frame may leave out the model its created
+// frame reported.
+func parseInteractionsPassthrough(body []byte, fallbackModel string) InteractionsPassthroughInfo {
 	var info InteractionsPassthroughInfo
 	if len(body) == 0 {
 		return info
@@ -357,7 +367,11 @@ func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
 	if w.Interaction != nil && w.Interaction.Usage != nil && w.Interaction.Usage.TotalTokens > 0 {
 		u, tier = w.Interaction.Usage, w.Interaction.ServiceTier
 	}
-	info.Usage = interactionsUsage(u, tier)
+	pricingModel := info.Model
+	if pricingModel == "" {
+		pricingModel = fallbackModel
+	}
+	info.Usage = interactionsUsage(u, tier, pricingModel)
 	return info
 }
 
@@ -365,13 +379,16 @@ func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsag
 	return ParseInteractionsPassthrough(body).Usage
 }
 
-func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.BifrostPassthroughUsage {
+// interactionsUsage maps a run's usage for billing. Tool use prompt tokens are input (Google
+// bills them at the input rate and counts them in total_tokens), and Google Search runs are the
+// per-query search fee; model decides the search unit (see geminiInteractionsSearchUnits).
+func interactionsUsage(u *geminiInteractionsUsage, tier *string, model string) *schemas.BifrostPassthroughUsage {
 	if u == nil || u.TotalTokens == 0 {
 		return nil
 	}
 
 	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     u.InputTokens,
+		PromptTokens:     u.InputTokens + u.ToolUseTokens,
 		CompletionTokens: u.OutputTokens + u.ThoughtTokens,
 		TotalTokens:      u.TotalTokens,
 	}
@@ -384,6 +401,13 @@ func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.Bifros
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.ThoughtTokens,
 		}
+	}
+	if n := geminiInteractionsSearchUnits(u.GroundingToolCount, model); n > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	result := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
@@ -484,7 +508,7 @@ func NewInteractionsStreamObserver(req *schemas.BifrostPassthroughRequest) *Inte
 
 // Observe records one event and returns its usage, if any.
 func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
-	info := ParseInteractionsPassthrough(event)
+	info := parseInteractionsPassthrough(event, o.last.Model)
 	if info.ID != "" {
 		o.last.ID = info.ID
 	}
