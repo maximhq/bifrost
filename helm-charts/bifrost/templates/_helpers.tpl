@@ -524,6 +524,13 @@ false
 {{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
 {{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "bifrostUrl" }}
+{{- $_ := set $client "bifrost_url" .Values.bifrost.client.bifrostUrl }}
+{{- end }}
+{{- /* hasKey: an explicit false must render, since the default is true */ -}}
+{{- if hasKey .Values.bifrost.client "bifrostMcpAllowWrites" }}
+{{- $_ := set $client "bifrost_mcp_allow_writes" .Values.bifrost.client.bifrostMcpAllowWrites }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "mcpOpenapiMaxSpecMb" }}
 {{- $_ := set $client "mcp_openapi_max_spec_mb" (.Values.bifrost.client.mcpOpenapiMaxSpecMb | int) }}
 {{- end }}
@@ -624,7 +631,11 @@ false
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
+{{- /* hasKey: "" must render (the build's default spec, clearing a stored override), since an omitted one keeps the stored value */ -}}
+{{- if hasKey .Values.bifrost.framework.pricing "openapiUrl" }}
+{{- $_ := set $pricing "openapi_url" .Values.bifrost.framework.pricing.openapiUrl }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") (hasKey $pricing "openapi_url") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
