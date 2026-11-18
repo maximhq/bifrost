@@ -2531,6 +2531,100 @@ export const relayHeaderPairSchema = z
 		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
 	});
 
+// Forced body fields are edited as path/JSON pairs, checked as core's validateBodyOverrides does.
+const relayBodyOverrideSegment = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isRelayBodyOverridePath(path: string): boolean {
+	// An all-digit key is an array index to the gateway's JSON setter, and -1 an array append.
+	return path.split(".").every((segment) => relayBodyOverrideSegment.test(segment) && !/^[0-9]+$/.test(segment) && segment !== "-1");
+}
+
+// JSON.parse reads 1e400 as Infinity, which the API request would send as null.
+export function hasNonFiniteNumber(value: unknown): boolean {
+	if (typeof value === "number") return !Number.isFinite(value);
+	if (Array.isArray(value)) return value.some(hasNonFiniteNumber);
+	if (value && typeof value === "object") return Object.values(value).some(hasNonFiniteNumber);
+	return false;
+}
+
+// Two paths that reach one parent key under different letter case (options.a, Options.b).
+function parentCaseClash(a: string, b: string): boolean {
+	const as = a.split(".");
+	const bs = b.split(".");
+	for (let i = 0; i < Math.min(as.length, bs.length) - 1; i++) {
+		if (as[i] === bs[i]) continue;
+		return as[i].toLowerCase() === bs[i].toLowerCase();
+	}
+	return false;
+}
+
+/** The first relay and route path the gateway refuses together once the route's fields are merged over the relay's. */
+export function bodyOverrideMergeClash(relayPaths: string[], routePaths: string[]): { relay: string; route: string } | undefined {
+	const route = routePaths.filter(isRelayBodyOverridePath);
+	for (const r of relayPaths) {
+		// The route's field replaces a relay field at exactly the same path.
+		if (!isRelayBodyOverridePath(r) || route.includes(r)) continue;
+		const rl = r.toLowerCase();
+		for (const p of route) {
+			const pl = p.toLowerCase();
+			if (rl === pl || rl.startsWith(pl + ".") || pl.startsWith(rl + ".") || parentCaseClash(r, p)) return { relay: r, route: p };
+		}
+	}
+	return undefined;
+}
+
+export function isJSONText(text: string): boolean {
+	if (!text.trim()) return false;
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export const relayBodyOverridesSchema = z
+	.array(z.object({ name: z.string().trim(), value: z.string().trim() }))
+	.superRefine((pairs, ctx) => {
+		const seen = new Map<string, number>();
+		pairs.forEach((pair, i) => {
+			if (!pair.name && !pair.value) return;
+			if (!pair.name) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsPath"), path: [i, "name"] });
+				return;
+			}
+			if (!pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsValue"), path: [i, "value"] });
+			else if (!isJSONText(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideValueJson"), path: [i, "value"] });
+			else if (hasNonFiniteNumber(JSON.parse(pair.value)))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideFiniteNumber"), path: [i, "value"] });
+			if (!isRelayBodyOverridePath(pair.name)) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverridePathFormat"), path: [i, "name"] });
+				return;
+			}
+			const lower = pair.name.toLowerCase();
+			if (seen.has(lower)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideDup"), path: [i, "name"] });
+			else seen.set(lower, i);
+			const clash = pairs.slice(0, i).find((other) => isRelayBodyOverridePath(other.name) && parentCaseClash(other.name, pair.name));
+			if (clash) {
+				const parent = clash.name.split(".").find((segment, j) => segment !== pair.name.split(".")[j]);
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideParentCase", { parent }), path: [i, "name"] });
+			}
+		});
+		seen.forEach((i, lower) => {
+			for (let prefix = lower; prefix.includes("."); ) {
+				prefix = prefix.slice(0, prefix.lastIndexOf("."));
+				const parent = seen.get(prefix);
+				if (parent !== undefined)
+					ctx.addIssue({
+						code: "custom",
+						message: i18n.t("validation.relays.bodyOverrideNested", { path: pairs[i].name, parent: pairs[parent].name }),
+						path: [i, "name"],
+					});
+			}
+		});
+	});
+
 // A route's async job block is set through config.json or the API; the form carries it untouched.
 export const relayJobSchema = z.object({
 	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
@@ -2570,6 +2664,8 @@ export const relayRouteFormSchema = z.object({
 	stream: z.boolean().optional(),
 	usage: relayUsageBaseSchema.optional(),
 	job: relayJobSchema.optional(),
+	body_overrides: relayBodyOverridesSchema.optional(),
+	inherit_body_overrides: z.boolean().optional(),
 });
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
@@ -2666,8 +2762,21 @@ export const relayFormSchema = z
 		routes: z.array(relayRouteFormSchema),
 		skip_route_check: z.boolean(),
 		ignore_upstream_cost: z.boolean(),
+		body_overrides: relayBodyOverridesSchema,
 	})
 	.superRefine((form, ctx) => {
+		// The gateway checks each route's fields merged over the relay's, so a relay field can clash with a route's.
+		const relayPaths = form.body_overrides.map((pair) => pair.name.trim()).filter(Boolean);
+		form.routes.forEach((route) => {
+			if (route.inherit_body_overrides === false) return;
+			const clash = bodyOverrideMergeClash(relayPaths, (route.body_overrides ?? []).map((pair) => pair.name.trim()).filter(Boolean));
+			if (!clash) return;
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.bodyOverrideRouteConflict", { other: clash.route, route: `${route.method} ${route.path}` }),
+				path: ["body_overrides", form.body_overrides.findIndex((pair) => pair.name.trim() === clash.relay), "name"],
+			});
+		});
 		const type = form.auth.type;
 		if (type === "aws_sigv4") {
 			if (!isSecretVarSet(form.aws?.region))
