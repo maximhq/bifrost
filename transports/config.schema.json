@@ -8208,7 +8208,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 3600,
-          "description": "Timeout when polling this provider for the model list in seconds. Default: 5."
+          "description": "Per-page timeout in seconds when polling this provider for models in ListAllModels. Default: 5."
         },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",
@@ -8295,7 +8295,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 3600,
-          "description": "Timeout when polling this provider for the model list in seconds. Default: 5."
+          "description": "Per-page timeout in seconds when polling this provider for models in ListAllModels. Default: 5."
         },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",

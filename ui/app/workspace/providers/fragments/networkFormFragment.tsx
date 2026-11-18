@@ -490,18 +490,18 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 													const value = e.target.value;
 													if (value === "") {
 														field.onChange(undefined);
+														form.trigger("network_config");
 														return;
 													}
 													const parsed = Number(value);
-													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed);
-													}
+													field.onChange(Number.isNaN(parsed) ? (value as unknown as number) : parsed);
 													form.trigger("network_config");
 												}}
 											/>
 										</FormControl>
 										<FormDescription>
-											{field.value ? secondsToHumanReadable(field.value, t) : ""} {t("providers.network.listModelsTimeoutHelp")}
+											{typeof field.value === "number" && !Number.isNaN(field.value) ? secondsToHumanReadable(field.value, t) : ""}{" "}
+											{t("providers.network.listModelsTimeoutHelp")}
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
@@ -690,7 +690,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+								<Button
+									type="submit"
+									disabled={!isDirty || !form.formState.isValid || !hasUpdateProviderAccess}
+									isLoading={isUpdatingProvider}
+								>
 									{t("providers.saveNetworkConfig")}
 								</Button>
 							</TooltipTrigger>

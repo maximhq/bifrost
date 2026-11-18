@@ -2,10 +2,14 @@
 package schemas
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"math"
+	"math/big"
 	"slices"
 	"strings"
 	"time"
@@ -112,7 +116,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`
-		ListModelsTimeoutInSeconds     int                  `json:"list_models_timeout_in_seconds,omitempty"`
+		ListModelsTimeoutInSeconds     json.RawMessage      `json:"list_models_timeout_in_seconds,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -134,7 +138,16 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.HTTP2PingIntervalInSeconds = alias.HTTP2PingIntervalInSeconds
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
-	nc.ListModelsTimeoutInSeconds = alias.ListModelsTimeoutInSeconds
+
+	// Parse ListModelsTimeoutInSeconds: accept whole-valued JSON numbers (e.g. 12 or 12.0)
+	// while rejecting fractional inputs like 12.5 without rounding.
+	if len(alias.ListModelsTimeoutInSeconds) > 0 && string(bytes.TrimSpace(alias.ListModelsTimeoutInSeconds)) != "null" {
+		timeoutSec, err := parseWholeJSONInt(alias.ListModelsTimeoutInSeconds, "list_models_timeout_in_seconds")
+		if err != nil {
+			return err
+		}
+		nc.ListModelsTimeoutInSeconds = timeoutSec
+	}
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -186,6 +199,48 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 		return 0, fmt.Errorf("invalid %s: expected a duration string (e.g. \"500ms\") or integer milliseconds: %w", fieldName, err)
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// parseWholeJSONInt decodes a JSON number that represents an exact integer (e.g. 12 or 12.0)
+// and rejects fractional numbers such as 12.5 or non-numeric JSON values.
+func parseWholeJSONInt(data json.RawMessage, fieldName string) (int, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return 0, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var tok any
+	if err := dec.Decode(&tok); err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", fieldName, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return 0, fmt.Errorf("invalid %s: unexpected trailing tokens", fieldName)
+	}
+	num, ok := tok.(json.Number)
+	if !ok {
+		return 0, fmt.Errorf("invalid %s: expected a whole number", fieldName)
+	}
+	if i, err := num.Int64(); err == nil {
+		if i < int64(math.MinInt) || i > int64(math.MaxInt) {
+			return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+		}
+		return int(i), nil
+	}
+	rat, ok := new(big.Rat).SetString(num.String())
+	if !ok || !rat.IsInt() {
+		return 0, fmt.Errorf("invalid %s: expected a whole number, got %s", fieldName, num.String())
+	}
+	numInt := rat.Num()
+	if !numInt.IsInt64() {
+		return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+	}
+	i := numInt.Int64()
+	if i < int64(math.MinInt) || i > int64(math.MaxInt) {
+		return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+	}
+	return int(i), nil
 }
 
 // extraHeadersAsStrings serializes header values the way CACertPEM is: an env.* or

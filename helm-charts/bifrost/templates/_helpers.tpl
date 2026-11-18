@@ -671,6 +671,9 @@ false
 {{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
 {{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
 {{- end }}
+{{- if hasKey $providerConfig.network_config "list_models_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "list_models_timeout_in_seconds" $providerConfig.network_config.list_models_timeout_in_seconds }}
+{{- end }}
 {{- if hasKey $providerConfig.network_config "keep_alive_timeout_in_seconds" }}
 {{- $_ := set $networkConfig "keep_alive_timeout_in_seconds" $providerConfig.network_config.keep_alive_timeout_in_seconds }}
 {{- end }}

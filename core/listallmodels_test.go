@@ -444,8 +444,11 @@ func TestListAllModelsRespectsProviderListModelsTimeout(t *testing.T) {
 	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
 	tuneProviderForTest(t, account, schemas.Groq)
 
-	// Configure a short custom timeout on the provider's NetworkConfig (1 second).
+	// Configure a short custom timeout on the provider's NetworkConfig (1 second)
+	// while keeping the HTTP read timeout above the 5-second fallback so that
+	// returning under 3 seconds proves the 1-second page deadline fired.
 	cfg := account.configs[schemas.Groq]
+	cfg.NetworkConfig.DefaultRequestTimeoutInSeconds = 10
 	cfg.NetworkConfig.ListModelsTimeoutInSeconds = 1
 
 	// Ensure the default timeout is distinctly higher (5 seconds) so we can assert
@@ -460,14 +463,21 @@ func TestListAllModelsRespectsProviderListModelsTimeout(t *testing.T) {
 	defer ctx.Cancel()
 
 	start := time.Now()
-	_, _ = client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
 	elapsed := time.Since(start)
 
+	if ctx.Err() != nil {
+		t.Fatalf("caller context unexpectedly canceled: %v", ctx.Err())
+	}
 	if elapsed >= 3*time.Second {
 		t.Fatalf("ListAllModels waited %v; expected custom timeout around 1s, well under default 5s", elapsed)
 	}
 	if elapsed < 800*time.Millisecond {
 		t.Fatalf("ListAllModels returned too fast (%v); expected to wait ~1s for custom timeout", elapsed)
+	}
+	// When the single provider hits the 1s page deadline, no models are returned.
+	if resp != nil && len(resp.Data) > 0 {
+		t.Fatalf("expected no models when hanging provider hits 1s page deadline, got %v (err=%v)", modelIDs(resp), bfErr)
 	}
 }
 

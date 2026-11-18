@@ -346,6 +346,71 @@ test.describe("Provider Settings", () => {
       await providerSettingsPage.fillNumberInput(retriesInput, originalValue);
       await providerSettingsPage.saveNetworkConfig();
     });
+
+    test("should validate, persist, and reset list models timeout", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      const page = providerSettingsPage.page;
+      const openNetworkTab = async () => {
+        await providersPage.goto();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("network");
+      };
+
+      await providerSettingsPage.selectConfigTab("network");
+
+      // Ensure backoff fields are valid (minimum 100ms) so form validation passes
+      const initialBackoff = page.getByLabel(/Initial Backoff/i);
+      const maxBackoff = page.getByLabel(/Max Backoff/i);
+      if (Number(await initialBackoff.inputValue()) < 100) {
+        await providerSettingsPage.fillNumberInput(initialBackoff, "500");
+      }
+      if (Number(await maxBackoff.inputValue()) < 100) {
+        await providerSettingsPage.fillNumberInput(maxBackoff, "10000");
+      }
+
+      const timeoutInput = page.getByTestId("network-config-list-models-timeout-input");
+      const saveBtn = providerSettingsPage.getConfigSaveBtn("network");
+      const originalValue = await timeoutInput.inputValue();
+
+      try {
+        // Invalid text stays in the input, surfaces validation error, and blocks Save
+        await providerSettingsPage.fillNumberInput(timeoutInput, "10s");
+        await expect(timeoutInput).toHaveValue("10s");
+        await expect(page.getByText("List models timeout must be a number")).toBeVisible();
+        await expect(saveBtn).toBeDisabled();
+
+        // Save a non-default numeric value and confirm it persists across reload
+        await providerSettingsPage.fillNumberInput(timeoutInput, "10");
+        await expect(timeoutInput).toHaveValue("10");
+        await expect(saveBtn).toBeEnabled();
+        await providerSettingsPage.saveNetworkConfig();
+
+        await page.reload();
+        await openNetworkTab();
+        await expect(page.getByTestId("network-config-list-models-timeout-input")).toHaveValue("10");
+
+        // Clear the field and save to restore the 5-second default after reload
+        const reloadedInput = page.getByTestId("network-config-list-models-timeout-input");
+        await reloadedInput.click();
+        await reloadedInput.fill("");
+        await reloadedInput.blur();
+        await expect(providerSettingsPage.getConfigSaveBtn("network")).toBeEnabled();
+        await providerSettingsPage.saveNetworkConfig();
+
+        await page.reload();
+        await openNetworkTab();
+        await expect(page.getByTestId("network-config-list-models-timeout-input")).toHaveValue("5");
+      } finally {
+        await openNetworkTab();
+        const cleanupInput = page.getByTestId("network-config-list-models-timeout-input");
+        if ((await cleanupInput.inputValue()) !== originalValue) {
+          await providerSettingsPage.fillNumberInput(cleanupInput, originalValue || "5");
+          await providerSettingsPage.saveNetworkConfig();
+        }
+      }
+    });
   });
 
   test.describe("Governance (Budget & Rate Limits)", () => {
