@@ -181,7 +181,9 @@
 			"day_other": "{{count}} days",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0 seconds"
+			"zeroSeconds": "0 seconds",
+			"listModelsTimeout": "List Models Timeout (seconds)",
+			"listModelsTimeoutHelp": "Timeout when polling this provider for models list in /v1/models (default: 5s)."
 		},
 		"proxy": "Proxy",
 		"apiKeys": "API Keys",

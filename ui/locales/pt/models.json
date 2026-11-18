@@ -181,7 +181,9 @@
 			"day_other": "{{count}} dias",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0 segundos"
+			"zeroSeconds": "0 segundos",
+			"listModelsTimeout": "Tempo limite da lista de modelos (segundos)",
+			"listModelsTimeoutHelp": "Tempo limite ao consultar este provedor pela lista de modelos em /v1/models (padrão: 5s)."
 		},
 		"proxy": "Proxy",
 		"apiKeys": "Chaves API",

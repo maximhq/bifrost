@@ -181,7 +181,9 @@
 			"day_other": "{{count}}일",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0초"
+			"zeroSeconds": "0초",
+			"listModelsTimeout": "모델 목록 시간 초과(초)",
+			"listModelsTimeoutHelp": "/v1/models에서 이 공급자의 모델 목록을 조회할 때의 시간 초과(기본값: 5초)."
 		},
 		"proxy": "프록시",
 		"apiKeys": "API 키",

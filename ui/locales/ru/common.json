@@ -606,7 +606,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "Базовый URL должен начинаться с http:// или https://",
 		"atLeastOneApiKeyIsRequired": "Необходимо указать хотя бы один API-ключ",
 		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым",
-		"deploymentPatternInvalid": "Шаблон развёртывания недействителен или ID модели использует группу захвата, которой нет в шаблоне"
+		"deploymentPatternInvalid": "Шаблон развёртывания недействителен или ID модели использует группу захвата, которой нет в шаблоне",
+		"listModelsTimeoutMustBeANumber": "Тайм-аут списка моделей должен быть числом",
+		"listModelsTimeoutMustBeAWholeNumberOf": "Тайм-аут списка моделей должен быть целым числом секунд",
+		"listModelsTimeoutMustBeAtLeast1Second": "Тайм-аут списка моделей должен составлять не менее 1 секунды",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "Тайм-аут списка моделей не должен превышать 3600 секунд, то есть 60 минут"
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",

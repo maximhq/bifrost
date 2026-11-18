@@ -1181,6 +1181,30 @@ func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	assert.Equal(t, HTTP2PingIntervalUpperBoundSeconds, cfgOverflow.NetworkConfig.HTTP2PingIntervalInSeconds)
 }
 
+// TestNetworkConfig_ListModelsTimeout verifies JSON round-tripping, defaulting,
+// and upper-bound clamping for NetworkConfig.ListModelsTimeoutInSeconds.
+func TestNetworkConfig_ListModelsTimeout(t *testing.T) {
+	nc := NetworkConfig{ListModelsTimeoutInSeconds: 12}
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 12, decoded.ListModelsTimeoutInSeconds, "list_models_timeout_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"list_models_timeout_in_seconds":12`)
+
+	cfgDefault := &ProviderConfig{}
+	cfgDefault.CheckAndSetDefaults()
+	assert.Equal(t, DefaultListModelsTimeoutInSeconds, cfgDefault.NetworkConfig.ListModelsTimeoutInSeconds)
+
+	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{ListModelsTimeoutInSeconds: 2}}
+	cfgExplicit.CheckAndSetDefaults()
+	assert.Equal(t, 2, cfgExplicit.NetworkConfig.ListModelsTimeoutInSeconds)
+
+	cfgOverflow := &ProviderConfig{NetworkConfig: NetworkConfig{ListModelsTimeoutInSeconds: ListModelsTimeoutUpperBoundSeconds + 1}}
+	cfgOverflow.CheckAndSetDefaults()
+	assert.Equal(t, ListModelsTimeoutUpperBoundSeconds, cfgOverflow.NetworkConfig.ListModelsTimeoutInSeconds)
+}
+
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
 // strings are normalized to their canonical ResponsesToolType values.
 func TestNormalizeResponsesToolType(t *testing.T) {

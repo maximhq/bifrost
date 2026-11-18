@@ -665,10 +665,22 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 	}}
 }
 
+// resolveListModelsProviderTimeout returns the per-page timeout for ListAllModels,
+// honoring NetworkConfig.ListModelsTimeoutInSeconds clamped to ListModelsTimeoutUpperBoundSeconds,
+// and falling back to listAllModelsProviderTimeout when unset or non-positive.
+func resolveListModelsProviderTimeout(config *schemas.ProviderConfig) time.Duration {
+	if config != nil && config.NetworkConfig.ListModelsTimeoutInSeconds > 0 {
+		timeoutSecs := min(config.NetworkConfig.ListModelsTimeoutInSeconds, schemas.ListModelsTimeoutUpperBoundSeconds)
+		return time.Duration(timeoutSecs) * time.Second
+	}
+	return listAllModelsProviderTimeout
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
-// Each page of a provider poll is bounded by listAllModelsProviderTimeout so one unreachable
-// provider cannot block the aggregate, while a reachable provider still gets every page.
+// Each page of a provider poll is bounded by the provider's NetworkConfig.ListModelsTimeoutInSeconds
+// (defaulting to listAllModelsProviderTimeout when unset) so one unreachable provider cannot block
+// the aggregate, while a reachable provider still gets every page.
 // A provider whose poll fails contributes its last-known models from the model catalog (when one with per-provider listings is configured) instead; that
 // list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
 // A poll still running at the deadline contributes nothing, since no post-hook has seen it.
@@ -733,15 +745,22 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		// Custom providers can disable list_models via allowed_requests; the call would
 		// only bounce with "unsupported operation", so don't spend a request on it here.
 		// Scoped to the fan-out: a direct ListModelsRequest still returns the error.
-		if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
+		config, cfgErr := bifrost.account.GetConfigForProvider(providerKey)
+		if cfgErr == nil && config != nil &&
 			config.CustomProviderConfig != nil &&
 			!config.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
 			bifrost.logger.Debug("skipping provider %s in list all models: list_models is disabled via allowed_requests", providerKey)
 			continue
 		}
+		var providerTimeout time.Duration
+		if cfgErr == nil {
+			providerTimeout = resolveListModelsProviderTimeout(config)
+		} else {
+			providerTimeout = listAllModelsProviderTimeout
+		}
 
 		wg.Add(1)
-		go func(providerKey schemas.ModelProvider) {
+		go func(providerKey schemas.ModelProvider, timeout time.Duration) {
 			defer wg.Done()
 
 			requestID := uuid.New().String()
@@ -777,7 +796,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				// aggregate until the shared request timeout: at the deadline
 				// tryRequest stops waiting on the worker (the in-flight HTTP call
 				// is abandoned, not cancelled) and wg.Wait() finishes.
-				pageCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
+				pageCtx := schemas.NewBifrostContext(ctx, time.Now().Add(timeout))
 				pageCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 				pageCtx.SetValue(listAllModelsFallbackKey, true)
 				response, bifrostErr := bifrost.ListModelsRequest(pageCtx, providerRequest)
@@ -821,7 +840,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				keyStatuses: providerKeyStatuses,
 				err:         providerErr,
 			}
-		}(providerKey)
+		}(providerKey, providerTimeout)
 	}
 
 	// Wait for all goroutines to complete
