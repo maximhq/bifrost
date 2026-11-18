@@ -386,7 +386,16 @@ test.describe("Relays", () => {
     // Saved fields come back in key order.
     await expect(page.page.getByTestId("relay-route-body-override-name-0")).toHaveValue("options.max_results");
     await expect(page.page.getByTestId("relay-route-body-override-value-1")).toHaveValue('"advanced"');
-    await page.closeSheets();
+
+    // Turning the relay's fields off on this route is saved and shown in the table.
+    await expect(page.page.getByTestId("relay-route-inherit-body-overrides")).toBeChecked();
+    await page.page.getByTestId("relay-route-inherit-body-overrides").click();
+    await expect(page.page.getByTestId("relay-route-body-override-inherited")).toHaveCount(0);
+    await page.saveRoute();
+    await expect(page.page.getByTestId("relay-route-body-off-badge-0")).toBeVisible();
+    relay = await getRelay(request, name);
+    expect(relay.routes[0].inherit_body_overrides).toBe(false);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
 
     // A route edit made from the table (the enabled switch) keeps the route's body overrides.
     await page.routeEnabledSwitch(0).click();
@@ -394,6 +403,7 @@ test.describe("Relays", () => {
     relay = await getRelay(request, name);
     expect(relay.routes[0].enabled).toBe(false);
     expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+    expect(relay.routes[0].inherit_body_overrides).toBe(false);
 
     // A field set twice under different letter case is refused on the relay too.
     await page.openConfigTab("advanced");

@@ -2086,6 +2086,19 @@
           "method": "POST",
           "path": "/v1/gated/disabled",
           "enabled": false
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/raw",
+          "inherit_body_overrides": false
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/own",
+          "inherit_body_overrides": false,
+          "body_overrides": {
+            "options.depth": "advanced"
+          }
         }
       ]
     },

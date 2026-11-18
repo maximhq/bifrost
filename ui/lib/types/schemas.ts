@@ -2623,6 +2623,7 @@ export const relayRouteFormSchema = z.object({
 	usage: relayUsageBaseSchema.optional(),
 	job: relayJobSchema.optional(),
 	body_overrides: relayBodyOverridesSchema.optional(),
+	inherit_body_overrides: z.boolean().optional(),
 });
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.

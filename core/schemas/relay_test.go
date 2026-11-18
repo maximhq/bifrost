@@ -117,6 +117,27 @@ func TestRelayBodyOverridesValidate(t *testing.T) {
 	}
 }
 
+// A route that turns the relay's fields off keeps only its own, and is not checked against the relay's.
+func TestRelayRouteInheritBodyOverrides(t *testing.T) {
+	relayFields := map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	own := map[string]json.RawMessage{"INCLUDE_USAGE": json.RawMessage("false")}
+	off := RelayRouteConfig{Method: "POST", Path: "/x", InheritBodyOverrides: Ptr(false), BodyOverrides: own}
+	assert.Equal(t, own, off.EffectiveBodyOverrides(relayFields))
+	assert.Nil(t, RelayRouteConfig{InheritBodyOverrides: Ptr(false)}.EffectiveBodyOverrides(relayFields), "off with no fields of its own sends nothing")
+	assert.Equal(t, relayFields, RelayRouteConfig{}.EffectiveBodyOverrides(relayFields), "unset inherits")
+
+	cfg := &RelayConfig{BodyOverrides: relayFields, Routes: []RelayRouteConfig{off}}
+	require.NoError(t, cfg.Validate(), "a case variant of a field the route does not inherit is not a conflict")
+	dst := cfg.Clone()
+	*dst.Routes[0].InheritBodyOverrides = true
+	assert.False(t, *cfg.Routes[0].InheritBodyOverrides, "a clone shares no pointer")
+
+	var parsed RelayRouteConfig
+	require.NoError(t, Unmarshal([]byte(`{"method":"POST","path":"/x","inherit_body_overrides":false}`), &parsed))
+	require.NotNil(t, parsed.InheritBodyOverrides)
+	assert.False(t, *parsed.InheritBodyOverrides)
+}
+
 func TestRelayBodyOverridesMergeAndClone(t *testing.T) {
 	endpoint := map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "depth": json.RawMessage(`"basic"`)}
 	route := map[string]json.RawMessage{"depth": json.RawMessage(`"advanced"`)}

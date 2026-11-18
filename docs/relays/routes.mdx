@@ -75,6 +75,7 @@ This gives the `web-search` relay four routes: search, extract, read a result, a
 | `stream` | No | `true` always streams, `false` never streams. Leave it out for **Auto**. |
 | `usage` | No | A different price for this route. See [Pricing](./pricing#price-one-route-differently). |
 | `body_overrides` | No | Fields forced into every request body. See [Force fields in the request body](#force-fields-in-the-request-body). |
+| `inherit_body_overrides` | No | `false` leaves the relay's `body_overrides` out of this route. Default `true`. |
 
 </Tab>
 <Tab title="Helm">
@@ -234,13 +235,13 @@ You can set them on the relay, for every call, and on a route, for the calls tha
 For every call through the relay:
 
 1. Open the relay, select **Edit Relay Config**, and open the **Advanced** tab.
-2. Under **Body Overrides**, enter the **Name** (`include_usage`) and the **Value** (`true`).
+2. Under **Enforced Body Fields**, enter the **Name** (`include_usage`) and the **Value** (`true`).
 3. Select **Save Advanced Configuration**.
 
 <Frame>
   <img
     src="/media/relays/ui-relay-body-overrides.png"
-    alt="The Advanced tab with Body Overrides setting include_usage to true"
+    alt="The Advanced tab with Enforced Body Fields setting include_usage to true"
     style={{ maxHeight: "560px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
   />
 </Frame>
@@ -248,13 +249,13 @@ For every call through the relay:
 For one route:
 
 1. Open the route, or select **Add Route**.
-2. Under **Body Overrides**, enter each field. Fields the relay already sets are listed below the table.
+2. Under **Enforced Body Fields**, enter each field. Fields the relay already enforces are listed below the table.
 3. Select **Save Route**. The route table marks the route with **sets body**.
 
 <Frame>
   <img
     src="/media/relays/ui-route-body-overrides.png"
-    alt="The route sheet with Body Overrides setting search_depth to advanced, and include_usage listed as set by the relay"
+    alt="The route sheet with Enforced Body Fields setting search_depth to advanced, and include_usage listed as enforced by the relay"
     style={{ maxHeight: "600px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
   />
 </Frame>
@@ -340,7 +341,13 @@ Compressed bodies (`Content-Encoding: gzip`, `br`, `deflate` or `zstd`) work: Bi
 Do not put credentials in body overrides. Values are stored as plain text, returned by the relays API to anyone who can read the relay, and recorded in Relay Logs with the request body. If the API also accepts its key in a header or the query string, use the relay's [credential](./configuration#authentication) there instead.
 </Warning>
 
-To stop forcing a field, remove it. A route cannot drop a field the relay sets; it can only set the same path to another value, such as `"include_usage": false`.
+To stop forcing a field everywhere, remove it from the relay. To leave the relay's fields out of one route, turn off **Apply the Relay's Enforced Fields** on that route (`"inherit_body_overrides": false`). The route then sends only its own fields, or the caller's body unchanged if it has none. This is for a route the relay's fields would break, such as an endpoint that refuses a field it does not know:
+
+```json
+{ "method": "POST", "path": "/usage", "inherit_body_overrides": false }
+```
+
+The switch is shown only when the relay enforces at least one field, and the route table marks such a route with **relay fields off**.
 
 ---
 

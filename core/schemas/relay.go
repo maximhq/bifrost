@@ -193,15 +193,28 @@ func RelayUpstreamJobID(scoped string) string {
 
 // RelayRouteConfig overrides the endpoint defaults for one upstream operation.
 type RelayRouteConfig struct {
-	Method        string                     `json:"method"`                   // GET | POST | PUT | PATCH | DELETE | HEAD
-	Path          string                     `json:"path"`                     // segment glob; a trailing /** matches the prefix and everything below
-	Headers       map[string]string          `json:"headers,omitempty"`        // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
-	Enabled       *bool                      `json:"enabled,omitempty"`        // false: requests matching the route are refused with 404; nil is enabled
-	Billable      *bool                      `json:"billable,omitempty"`       // false: the call is relayed but not counted or charged
-	Stream        *bool                      `json:"stream,omitempty"`         // forces the streaming or buffered handler
-	Usage         *RelayUsageConfig          `json:"usage,omitempty"`          // field-by-field override of the endpoint usage mapping
-	Job           *RelayJobConfig            `json:"job,omitempty"`            // the matched call starts an upstream job, billed once when it finishes
-	BodyOverrides map[string]json.RawMessage `json:"body_overrides,omitempty"` // request body fields forced on every call: dotted path to JSON value, over the endpoint's
+	Method               string                     `json:"method"`                           // GET | POST | PUT | PATCH | DELETE | HEAD
+	Path                 string                     `json:"path"`                             // segment glob; a trailing /** matches the prefix and everything below
+	Headers              map[string]string          `json:"headers,omitempty"`                // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
+	Enabled              *bool                      `json:"enabled,omitempty"`                // false: requests matching the route are refused with 404; nil is enabled
+	Billable             *bool                      `json:"billable,omitempty"`               // false: the call is relayed but not counted or charged
+	Stream               *bool                      `json:"stream,omitempty"`                 // forces the streaming or buffered handler
+	Usage                *RelayUsageConfig          `json:"usage,omitempty"`                  // field-by-field override of the endpoint usage mapping
+	Job                  *RelayJobConfig            `json:"job,omitempty"`                    // the matched call starts an upstream job, billed once when it finishes
+	BodyOverrides        map[string]json.RawMessage `json:"body_overrides,omitempty"`         // request body fields forced on every call: dotted path to JSON value, over the endpoint's
+	InheritBodyOverrides *bool                      `json:"inherit_body_overrides,omitempty"` // false: the relay's body_overrides are not applied here, only the route's own
+}
+
+// EffectiveBodyOverrides returns the fields this route forces: its own over the relay's, or its own
+// alone when it turns the relay's off.
+func (r RelayRouteConfig) EffectiveBodyOverrides(relay map[string]json.RawMessage) map[string]json.RawMessage {
+	if r.InheritBodyOverrides != nil && !*r.InheritBodyOverrides {
+		if len(r.BodyOverrides) == 0 {
+			return nil
+		}
+		return r.BodyOverrides
+	}
+	return MergeRelayBodyOverrides(relay, r.BodyOverrides)
 }
 
 // RelayConfig is one relay: a raw HTTP relay to a non-LLM API served at
@@ -449,7 +462,7 @@ func (c *RelayConfig) Validate() error {
 				return err
 			}
 			// The merged set must still be unambiguous.
-			if err := validateBodyOverrides(field+" (with the endpoint's)", MergeRelayBodyOverrides(c.BodyOverrides, route.BodyOverrides)); err != nil {
+			if err := validateBodyOverrides(field+" (with the endpoint's)", route.EffectiveBodyOverrides(c.BodyOverrides)); err != nil {
 				return err
 			}
 		}
@@ -743,6 +756,9 @@ func (c *RelayConfig) Clone() *RelayConfig {
 			}
 			if route.Billable != nil {
 				out.Routes[i].Billable = Ptr(*route.Billable)
+			}
+			if route.InheritBodyOverrides != nil {
+				out.Routes[i].InheritBodyOverrides = Ptr(*route.InheritBodyOverrides)
 			}
 			if route.Enabled != nil {
 				out.Routes[i].Enabled = Ptr(*route.Enabled)

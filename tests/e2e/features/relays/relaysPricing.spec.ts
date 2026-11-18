@@ -36,7 +36,7 @@ function startUpstream(): Promise<void> {
     });
     req.on("end", () => {
       const path = (req.url ?? "").split("?")[0];
-      if (path === "/v1/forced") {
+      if (path === "/v1/forced" || path === "/v1/forced-off") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, usage: { credits: 1 } }));
         return;
@@ -106,6 +106,7 @@ test.describe("Relays relay and pricing", () => {
           { method: "POST", path: "/v1/stream", stream: true },
           { method: "POST", path: "/v1/disabled", enabled: false },
           { method: "POST", path: "/v1/forced", body_overrides: { "options.depth": "advanced" } },
+          { method: "POST", path: "/v1/forced-off", inherit_body_overrides: false },
         ],
         body_overrides: { include_usage: true },
       },
@@ -283,6 +284,17 @@ test.describe("Relays relay and pricing", () => {
     expect(empty.status(), await empty.text()).toBe(200);
     expect(JSON.parse(seen[0].body)).toEqual({ include_usage: true, options: { depth: "advanced" } });
     expect(seen[0].headers["content-type"]).toContain("application/json");
+  });
+
+  test("leaves the relay's body fields out on a route that turns them off", async ({ request }) => {
+    seen.length = 0;
+    const res = await request.post(`/relay/${name}/v1/forced-off`, {
+      headers: { "x-bf-vk": grantedKey, "Content-Type": "application/json" },
+      data: { query: "bifrost", include_usage: false },
+    });
+    expect(res.status(), await res.text()).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(seen[0].body)).toEqual({ query: "bifrost", include_usage: false });
   });
 
   test("refuses a body that names a forced field twice, without calling the upstream", async ({ request }) => {

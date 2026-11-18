@@ -5219,3 +5219,18 @@ func TestValidateConfigSchema_RelayJob(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateConfigSchema_RelayInheritBodyOverrides pins the route switch that turns the relay's
+// body_overrides off.
+func TestValidateConfigSchema_RelayInheritBodyOverrides(t *testing.T) {
+	cfg := func(v string) []byte {
+		return []byte(`{"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "tvly-x"},
+			"body_overrides": {"include_usage": true}, "routes": [{"method": "POST", "path": "/usage", "inherit_body_overrides": ` + v + `}]}]}`)
+	}
+	if err := ValidateConfigSchema(cfg("false"), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected inherit_body_overrides: false to pass validation: %v", err)
+	}
+	if err := ValidateConfigSchema(cfg(`"no"`), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected a non-boolean inherit_body_overrides to fail validation")
+	}
+}

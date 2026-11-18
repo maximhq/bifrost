@@ -7876,6 +7876,10 @@
           "$ref": "#/$defs/relay_body_overrides",
           "description": "Request body fields this route forces, over the relay's body_overrides for the same path"
         },
+        "inherit_body_overrides": {
+          "type": "boolean",
+          "description": "false stops the relay's body_overrides being applied on this route; only the route's own body_overrides are sent. Defaults to true"
+        },
         "job": {
           "$ref": "#/$defs/relay_job_config"
         }

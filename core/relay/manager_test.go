@@ -953,6 +953,7 @@ func TestServeRelayBodyOverridePricesCallersThatOmitTheField(t *testing.T) {
 	cfg.Routes = []schemas.RelayRouteConfig{
 		{Method: "POST", Path: "/search"},
 		{Method: "POST", Path: "/off", BodyOverrides: map[string]json.RawMessage{"include_usage": json.RawMessage("false")}},
+		{Method: "POST", Path: "/raw", InheritBodyOverrides: schemas.Ptr(false)},
 	}
 	m, _ := newTestManager(t, cfg)
 	jsonHeaders := map[string]string{"content-type": "application/json"}
@@ -974,9 +975,15 @@ func TestServeRelayBodyOverridePricesCallersThatOmitTheField(t *testing.T) {
 		})
 	}
 
-	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: "/off", Headers: jsonHeaders, Body: []byte(`{"query":"x","include_usage":true}`)})
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: "/raw", Headers: jsonHeaders, Body: []byte(`{"query":"x","include_usage":false}`)})
 	require.Nil(t, bErr)
 	sent := bodies()
+	assert.Equal(t, `{"query":"x","include_usage":false}`, sent[len(sent)-1], "a route that turns the relay's fields off forwards the caller's body as sent")
+	assert.InDelta(t, 0, res.Response.Usage.Cost, 1e-12)
+
+	res, bErr = m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: "/off", Headers: jsonHeaders, Body: []byte(`{"query":"x","include_usage":true}`)})
+	require.Nil(t, bErr)
+	sent = bodies()
 	assert.Equal(t, "false", providerUtils.GetJSONField([]byte(sent[len(sent)-1]), "include_usage").Raw, "a route's value replaces the relay's")
 	assert.InDelta(t, 0, res.Response.Usage.Cost, 1e-12)
 }

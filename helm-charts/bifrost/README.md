@@ -31,6 +31,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.bifrostMcpAllowWrites` (`client.bifrost_mcp_allow_writes`) to stop `/v1/mcp` serving configuration changes as tools. On by default.
 - Added `bifrost.framework.pricing.openapiUrl` (`framework.pricing.openapi_url`) to point `/v1/mcp` at a local OpenAPI spec on air-gapped installs.
 - Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
+- Added `bifrost.relays[].routes[].inherit_body_overrides` (`relays[].routes[].inherit_body_overrides`): `false` leaves the relay's `body_overrides` out of that route.
 - Added `bifrost.relays[].routes[].job` (`relays[].routes[].job`): the route starts an upstream async job, such as AWS Textract's StartDocumentAnalysis, which Bifrost polls and charges once when it finishes instead of on every status check.
 
 ### 2.1.48

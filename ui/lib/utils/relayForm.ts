@@ -226,6 +226,7 @@ export function toRelayForm(e: Relay): RelayFormValues {
 			usage: r.usage ? { ...r.usage } : undefined,
 			job: r.job,
 			body_overrides: toBodyOverridePairs(r.body_overrides),
+			inherit_body_overrides: r.inherit_body_overrides,
 		})),
 		skip_route_check: e.skip_route_check ?? false,
 		ignore_upstream_cost: e.ignore_upstream_cost ?? false,
@@ -358,6 +359,7 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 					...(usage ? { usage } : {}),
 					...(r.job ? { job: cleanJob(r.job) } : {}),
 					...(bodyOverrides ? { body_overrides: bodyOverrides } : {}),
+					...(r.inherit_body_overrides === false ? { inherit_body_overrides: false } : {}),
 				};
 			})
 			.sort(compareRoutes),

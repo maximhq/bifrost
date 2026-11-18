@@ -62,6 +62,20 @@ describe("relay form", () => {
 		expect(toRelayConfig(toRelayForm(stored)).body_overrides).toBeUndefined();
 	});
 
+	it("saves a route's switch that turns the relay's enforced fields off, and leaves it out when on", () => {
+		const relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST" as const, path: "/off", inherit_body_overrides: false },
+				{ method: "POST" as const, path: "/on", inherit_body_overrides: true },
+			],
+		};
+		const back = toRelayConfig(toRelayForm(relay));
+		expect(back.routes?.find((r) => r.path === "/off")?.inherit_body_overrides).toBe(false);
+		expect(back.routes?.find((r) => r.path === "/on")).not.toHaveProperty("inherit_body_overrides");
+	});
+
 	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
 		const back = toRelayConfig(toRelayForm(stored));
 		const route = (path: string) => back.routes?.find((r) => r.path === path);

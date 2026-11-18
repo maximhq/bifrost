@@ -256,7 +256,7 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 			stream:   route.Stream,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
 
-			bodyOverrides: compileBodyOverrides(schemas.MergeRelayBodyOverrides(cfg.BodyOverrides, route.BodyOverrides)),
+			bodyOverrides: compileBodyOverrides(route.EffectiveBodyOverrides(cfg.BodyOverrides)),
 		}
 		if route.Job != nil {
 			// Validate ran on the config, so the snapshot marshals; a failure here would be a

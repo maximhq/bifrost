@@ -27,8 +27,8 @@ describe("relay form validation", () => {
 		expect(messages([{ name: "depth", value: "advanced" }])).toEqual([
 			'Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)',
 		]);
-		expect(messages([{ name: "depth", value: "" }])).toEqual(["A body override needs a JSON value"]);
-		expect(messages([{ name: "", value: "true" }])).toEqual(["A body override needs a path"]);
+		expect(messages([{ name: "depth", value: "" }])).toEqual(["An enforced field needs a JSON value"]);
+		expect(messages([{ name: "", value: "true" }])).toEqual(["An enforced field needs a path"]);
 		expect(messages([{ name: "items.0", value: "1" }])[0]).toContain("no key made only of digits");
 		expect(messages([{ name: "items.#.id", value: "1" }])[0]).toContain("object keys separated by dots");
 		expect(

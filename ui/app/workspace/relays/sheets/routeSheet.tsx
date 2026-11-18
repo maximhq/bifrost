@@ -59,6 +59,7 @@ export function RouteSheet({
 	}, [route, form]);
 	const method = form.watch("method");
 	const job = form.watch("job");
+	const inheritBodyOverrides = form.watch("inherit_body_overrides") !== false;
 	const usage = form.watch("usage");
 	// A route that is not billed has nothing to price, so its override is hidden.
 	const billableNow = form.watch("billable") ?? routeBillableByDefault(method);
@@ -177,7 +178,7 @@ export function RouteSheet({
 											disabled={disabled}
 											testIdPrefix="relay-route-body-override"
 										/>
-										{!!endpointBodyOverridePaths?.length && (
+										{!!endpointBodyOverridePaths?.length && inheritBodyOverrides && (
 											<p className="text-muted-foreground text-sm" data-testid="relay-route-body-override-inherited">
 												{t("relays.routeSheet.bodyOverridesInherited", { paths: endpointBodyOverridePaths.join(", ") })}
 											</p>
@@ -185,6 +186,31 @@ export function RouteSheet({
 									</FormItem>
 								)}
 							/>
+
+							{!!endpointBodyOverridePaths?.length && (
+								<FormField
+									control={form.control}
+									name="inherit_body_overrides"
+									render={({ field }) => (
+										<FormItem className="flex flex-row items-center justify-between">
+											<div className="space-y-0.5">
+												<InfoLabel
+													label={t("relays.routeSheet.inheritBodyOverridesLabel")}
+													info={t("relays.routeSheet.inheritBodyOverridesInfo", { paths: endpointBodyOverridePaths.join(", ") })}
+												/>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value ?? true}
+													onCheckedChange={(on) => field.onChange(on ? undefined : false)}
+													disabled={disabled}
+													data-testid="relay-route-inherit-body-overrides"
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+							)}
 
 							<FormField
 								control={form.control}

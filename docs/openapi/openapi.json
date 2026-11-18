@@ -162710,6 +162710,11 @@
               "include_usage": true
             }
           },
+          "inherit_body_overrides": {
+            "type": "boolean",
+            "default": true,
+            "description": "false stops the relay's body_overrides being applied on this route; only the route's own body_overrides are sent."
+          },
           "job": {
             "type": "object",
             "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status checks (the poll request) must not match a billable route.",

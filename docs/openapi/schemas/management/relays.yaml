@@ -202,6 +202,10 @@ RelayRouteConfig:
       $ref: '#/RelayUsageConfig'
     body_overrides:
       $ref: '#/RelayBodyOverrides'
+    inherit_body_overrides:
+      type: boolean
+      default: true
+      description: false stops the relay's `body_overrides` being applied on this route; only the route's own are sent.
     job:
       $ref: '#/RelayJobConfig'
   required:

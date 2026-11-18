@@ -118,7 +118,9 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 		});
 		const kept = new Set(imported.map((r) => key(r.method, r.path, r.headers)));
 		const dropped = routes.filter(
-			(r) => !kept.has(key(r.method, r.path, r.headers)) && (r.job || cleanUsage(r.usage, true) || r.body_overrides?.some((o) => o.name)),
+			(r) =>
+				!kept.has(key(r.method, r.path, r.headers)) &&
+				(r.job || cleanUsage(r.usage, true) || r.body_overrides?.some((o) => o.name) || r.inherit_body_overrides === false),
 		);
 		setPendingImport({ routes: imported, dropped: dropped.map((r) => key(r.method, r.path, r.headers)) });
 	};
@@ -211,6 +213,11 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 											{!!route.body_overrides?.some((o) => o.name) && (
 												<Badge variant="outline" data-testid={`relay-route-body-badge-${index}`}>
 													{t("relays.routes.bodyBadge")}
+												</Badge>
+											)}
+											{route.inherit_body_overrides === false && (
+												<Badge variant="outline" data-testid={`relay-route-body-off-badge-${index}`}>
+													{t("relays.routes.relayBodyOffBadge")}
 												</Badge>
 											)}
 										</div>
