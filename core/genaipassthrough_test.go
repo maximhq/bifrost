@@ -13,7 +13,8 @@ import (
 // TestClearGenAIPassthroughForNonGoogleProvider pins which attempts of a GenAI-integration request
 // keep the caller's Gemini body. Gemini does. Vertex does for the models it serves with a Google body
 // (Gemini, Gemma, Imagen, Veo and numeric tuned endpoints), for batch jobs, which Vertex runs for
-// Claude and Llama too, and for file and cached-content requests, which name no model or a Gemini one;
+// Claude and Llama too, for file and cached-content requests, which name no model or a Gemini one, and
+// for Interactions agents, which Vertex runs on /interactions with the caller's body;
 // a Claude, Mistral or other Model Garden model gets it converted, as does any other provider.
 // Requests from other integrations are left alone.
 func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
@@ -43,6 +44,11 @@ func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
 		{"genai cached content create on vertex keeps the raw body", "genai", schemas.Vertex, schemas.CachedContentCreateRequest, "gemini-2.5-flash", nil, false},
 		{"genai cached content update naming no model on vertex keeps the raw body", "genai", schemas.Vertex, schemas.CachedContentUpdateRequest, "", nil, false},
 		{"genai file upload on vertex keeps the raw body", "genai", schemas.Vertex, schemas.FileUploadRequest, "", nil, false},
+		{"genai interactions agent on vertex keeps the raw body", "genai", schemas.Vertex, schemas.ResponsesRequest, "deep-research-preview-04-2026", nil, false},
+		{"genai interactions retrieve on vertex keeps the raw body", "genai", schemas.Vertex, schemas.ResponsesRetrieveRequest, "", nil, false},
+		{"genai interactions replay on vertex keeps the raw body", "genai", schemas.Vertex, schemas.ResponsesRetrieveStreamRequest, "", nil, false},
+		{"genai interactions cancel on vertex keeps the raw body", "genai", schemas.Vertex, schemas.ResponsesCancelRequest, "", nil, false},
+		{"genai interactions delete on vertex keeps the raw body", "genai", schemas.Vertex, schemas.ResponsesDeleteRequest, "", nil, false},
 		{"genai to openai converts", "genai", schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", nil, true},
 		{"genai to anthropic converts", "genai", schemas.Anthropic, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
 		{"genai to bedrock converts", "genai", schemas.Bedrock, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
@@ -69,6 +75,45 @@ func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
 				t.Fatalf("raw body on=%v rewriter=%v, want cleared=%v", raw, hasRewriter, tc.wantCleared)
 			}
 		})
+	}
+}
+
+// TestClearGenAIPassthroughRestoredForGoogleAttempt pins that a Google attempt after a non-Google
+// one gets the caller's body and the guardrail rewriter back: the first attempt cleared them, and
+// the native response path reads the same flag.
+func TestClearGenAIPassthroughRestoredForGoogleAttempt(t *testing.T) {
+	for _, google := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{{"gemini", schemas.Gemini, "gemini-3.8-flash"}, {"vertex", schemas.Vertex, "gemini-3.8-flash"}} {
+		t.Run(google.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, schemas.RawRequestBodyTextRewriter(func(body []byte, _ map[string]string) ([]byte, error) { return body, nil }))
+
+			clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.OpenAI, schemas.ResponsesRequest, "gpt-5")
+			if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+				t.Fatal("the OpenAI attempt must be converted")
+			}
+
+			clearGenAIPassthroughForNonGoogleProvider(ctx, google.provider, schemas.ResponsesRequest, google.model)
+			raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			_, hasRewriter := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			if !raw || !hasRewriter {
+				t.Fatalf("after a %s attempt: raw body on=%v rewriter=%v, want both restored", google.name, raw, hasRewriter)
+			}
+		})
+	}
+
+	// A request that never had the raw body on is not turned on by a Google attempt.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.OpenAI, schemas.ResponsesRequest, "gpt-5")
+	clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.Gemini, schemas.ResponsesRequest, "gemini-3.8-flash")
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+		t.Fatal("a request that never used the raw body must not gain it")
 	}
 }
 
@@ -114,4 +159,37 @@ func TestGenAIFallbackToAnotherProviderIsConverted(t *testing.T) {
 	}
 	// The upstream reads "model" from the body: a converted request carries m, the Gemini body none.
 	requireHits(t, u, map[string]int{"sk-b1|m": 1, "sk-b1|": 0})
+}
+
+// TestGenAIInteractionsNativeCapturesRawResponse pins that the native Interactions path gets
+// Google's raw response whatever the provider's send_back_raw_response says, as the Anthropic native
+// path does: the route marks its override as a passthrough one. A non-Google attempt in the chain
+// captures nothing, and a Google attempt after it captures again.
+func TestGenAIInteractionsNativeCapturesRawResponse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+	config := &schemas.ProviderConfig{} // send_back_raw_response off, per-request override not allowed
+	captured := func() bool {
+		v, _ := ctx.Value(schemas.BifrostContextKeyCaptureRawResponse).(bool)
+		return v
+	}
+
+	clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.Gemini, schemas.ResponsesRequest, "gemini-3.8-flash")
+	applyRawCaptureSignals(ctx, config)
+	if !captured() {
+		t.Fatal("the native Gemini attempt must capture Google's raw response")
+	}
+	clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.OpenAI, schemas.ResponsesRequest, "gpt-5")
+	applyRawCaptureSignals(ctx, config)
+	if captured() {
+		t.Fatal("a translated OpenAI attempt must not capture a raw response it will not send back")
+	}
+	clearGenAIPassthroughForNonGoogleProvider(ctx, schemas.Vertex, schemas.ResponsesRequest, "gemini-3.8-flash")
+	applyRawCaptureSignals(ctx, config)
+	if !captured() {
+		t.Fatal("a Google attempt after a translated one must capture again")
+	}
 }

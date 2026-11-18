@@ -1812,3 +1812,36 @@ func TestGeminiInteractionsFileSearchResults(t *testing.T) {
 	require.NotNil(t, done)
 	check(t, *done)
 }
+
+// TestGeminiResponsesStreamViaInteractionsTagsRawFormat pins that each raw Interactions event
+// attached to a chunk declares its format, so a post-hook that redacts the normalized text can
+// rewrite the frame the native route replays to the client.
+func TestGeminiResponsesStreamViaInteractionsTagsRawFormat(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: interaction.created", `data: {"event_type":"interaction.created","interaction":{"id":"v1_f","status":"in_progress","model":"gemini-3.8-flash"}}`, "",
+		"event: step.start", `data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}`, "",
+		"event: step.delta", `data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Hi"}}`, "",
+		"event: interaction.completed", `data: {"event_type":"interaction.completed","interaction":{"id":"v1_f","status":"completed"}}`, "",
+	}, "\n")
+	server, _ := newInteractionsTestServer(t, "text/event-stream", func(interactionsCall) string { return sse })
+	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	postHook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.ResponsesStream(ctx, postHook, nil, key, &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}})
+	require.Nil(t, bifrostErr)
+	tagged := 0
+	for chunk := range stream {
+		resp := chunk.BifrostResponsesStreamResponse
+		if resp == nil || resp.ExtraFields.RawResponse == nil {
+			continue
+		}
+		assert.Equal(t, schemas.RawResponseFormatGeminiInteractionsStreamEvent, resp.ExtraFields.RawResponseFormat, "raw on a %s chunk", resp.Type)
+		tagged++
+	}
+	assert.Equal(t, 4, tagged)
+}

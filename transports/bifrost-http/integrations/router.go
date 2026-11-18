@@ -201,6 +201,9 @@ type AsyncChatResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.
 // It takes a BifrostResponsesResponse and returns the format expected by the specific integration.
 type ResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error)
 
+// ResponsesDeleteResponseConverter renders a Responses delete result in an integration's shape.
+type ResponsesDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesDeleteResponse) (interface{}, error)
+
 // AsyncResponsesResponseConverter is a function that converts an async job response to an integration-specific format.
 // It takes an async job response and a method to convert the responses response, and returns the integration-specific format, extra headers, and an error.
 type AsyncResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error)
@@ -518,6 +521,7 @@ type RouteConfig struct {
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	AsyncChatResponseConverter             AsyncChatResponseConverter             // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
 	ResponsesResponseConverter             ResponsesResponseConverter             // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
+	ResponsesDeleteResponseConverter       ResponsesDeleteResponseConverter       // Optional: converts a Responses delete result; the Bifrost shape is sent when nil
 	AsyncResponsesResponseConverter        AsyncResponsesResponseConverter        // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
 	EmbeddingResponseConverter             EmbeddingResponseConverter             // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
 	RerankResponseConverter                RerankResponseConverter                // Function to convert BifrostRerankResponse to integration format
@@ -1726,7 +1730,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
-		response = responsesDeleteResponse
+		if config.ResponsesDeleteResponseConverter != nil {
+			response, err = config.ResponsesDeleteResponseConverter(bifrostCtx, responsesDeleteResponse)
+		} else {
+			response = responsesDeleteResponse
+		}
 		bifrostExtraFields = responsesDeleteResponse.ExtraFields
 
 	case bifrostReq.ResponsesCancelRequest != nil:

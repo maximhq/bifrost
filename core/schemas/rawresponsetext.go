@@ -34,6 +34,8 @@ const (
 	RawResponseFormatCohereChatStreamEvent RawResponseFormat = "cohere.chat.stream_event"
 	// RawResponseFormatGeminiStreamChunk is one Gemini generateContent stream chunk.
 	RawResponseFormatGeminiStreamChunk RawResponseFormat = "gemini.generate_content.chunk"
+	// RawResponseFormatGeminiInteractionsStreamEvent is the JSON data of one Gemini Interactions API stream event.
+	RawResponseFormatGeminiInteractionsStreamEvent RawResponseFormat = "gemini.interactions.stream_event"
 	// RawResponseFormatReplicateStreamEvent is one Replicate prediction stream event encoded as {"Data","Event","ID"}.
 	RawResponseFormatReplicateStreamEvent RawResponseFormat = "replicate.stream_event"
 )
@@ -101,6 +103,10 @@ var rawTextFormats = map[RawResponseFormat]rawTextFormat{
 	RawResponseFormatCohereChatStreamEvent:        eventFormat(rawTextLayout{carries: isStreamedTextPath, slots: cohereTextSlots}, true),
 	RawResponseFormatGeminiStreamChunk:            eventFormat(rawTextLayout{carries: isStreamedTextPath, slots: geminiTextSlots, objects: geminiArgumentObjects}, false),
 	RawResponseFormatReplicateStreamEvent:         eventFormat(rawTextLayout{carries: isStreamedTextPath, slots: replicateTextSlots}, true),
+	// Interactions events back Responses chunks only; their text sits in step.delta events.
+	RawResponseFormatGeminiInteractionsStreamEvent: {layouts: map[rawPayloadKind]rawTextLayout{
+		rawPayloadResponses: {carries: isStreamedTextPath, slots: geminiInteractionsTextSlots},
+	}, deltaOnly: true},
 }
 
 // eventFormat is a provider event format whose one layout serves every payload type, since the same provider events
@@ -771,14 +777,15 @@ type rawTextMatch struct {
 // tool-call arguments, whether streamed in pieces or repeated whole on a closing event. Reasoning and signature deltas
 // are not collected, since redaction leaves reasoning text alone.
 var rawStreamedTextFields = map[RawResponseFormat]func(frame gjson.Result, pieces rawStreamedPieces){
-	RawResponseFormatOpenAIChatCompletionChunk:    openAIChatStreamedText,
-	RawResponseFormatOpenAITextCompletionChunk:    openAITextStreamedText,
-	RawResponseFormatOpenAIResponsesStreamEvent:   openAIResponsesStreamedText,
-	RawResponseFormatAnthropicMessagesStreamEvent: anthropicStreamedText,
-	RawResponseFormatBedrockConverseStreamEvent:   bedrockStreamedText,
-	RawResponseFormatCohereChatStreamEvent:        cohereStreamedText,
-	RawResponseFormatGeminiStreamChunk:            geminiStreamedText,
-	RawResponseFormatReplicateStreamEvent:         replicateStreamedText,
+	RawResponseFormatOpenAIChatCompletionChunk:     openAIChatStreamedText,
+	RawResponseFormatOpenAITextCompletionChunk:     openAITextStreamedText,
+	RawResponseFormatOpenAIResponsesStreamEvent:    openAIResponsesStreamedText,
+	RawResponseFormatAnthropicMessagesStreamEvent:  anthropicStreamedText,
+	RawResponseFormatBedrockConverseStreamEvent:    bedrockStreamedText,
+	RawResponseFormatCohereChatStreamEvent:         cohereStreamedText,
+	RawResponseFormatGeminiStreamChunk:             geminiStreamedText,
+	RawResponseFormatReplicateStreamEvent:          replicateStreamedText,
+	RawResponseFormatGeminiInteractionsStreamEvent: geminiInteractionsStreamedText,
 }
 
 // RedactRawResponseText applies literal replacements to the text a declared format streams in pieces, so a value
@@ -1100,6 +1107,44 @@ func addWholeStrings(value gjson.Result, pieces rawStreamedPieces) {
 			addWholeStrings(child, pieces)
 			return true
 		})
+	}
+}
+
+// geminiInteractionsDeltaTextPath is the field of a Gemini Interactions step.delta that holds its
+// streamed text: answer text, a thought summary, or a function call's argument fragment. Built-in
+// tool deltas carry whole objects, not streamed text.
+func geminiInteractionsDeltaTextPath(frame gjson.Result) string {
+	if frame.Get("event_type").String() != "step.delta" {
+		return ""
+	}
+	switch frame.Get("delta.type").String() {
+	case "text":
+		return "delta.text"
+	case "thought_summary":
+		return "delta.content.text"
+	case "arguments_delta":
+		if frame.Get("delta.arguments").Type == gjson.String {
+			return "delta.arguments"
+		}
+	}
+	return ""
+}
+
+// geminiInteractionsTextSlots maps a Responses event delta to the step.delta event backing it.
+func geminiInteractionsTextSlots(frame []byte, path []string) []string {
+	if len(path) != 1 || path[0] != "delta" {
+		return nil
+	}
+	if slot := geminiInteractionsDeltaTextPath(gjson.ParseBytes(frame)); slot != "" {
+		return []string{slot}
+	}
+	return nil
+}
+
+// geminiInteractionsStreamedText collects each step's streamed text, keyed by step index and kind.
+func geminiInteractionsStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	if path := geminiInteractionsDeltaTextPath(frame); path != "" {
+		pieces.add(rawStreamedValue{kind: frame.Get("delta.type").String(), index: rawStreamIndex(frame, "index")}, frame.Get(path))
 	}
 }
 
