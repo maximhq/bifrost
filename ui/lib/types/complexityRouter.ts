@@ -110,6 +110,15 @@ export interface SuggestionsConfig {
 	model?: string;
 	instructions?: string;
 	tier?: SuggestionsTierConfig;
+	// Decision classifier only: the embedding model a run embeds the router's
+	// logged requests and tier examples with. A semantic router clusters in its
+	// own embedding space, and the gateway refuses this there.
+	embedding?: SuggestionsEmbedding;
+}
+
+export interface SuggestionsEmbedding {
+	provider: string;
+	model: string;
 }
 
 // The classifiers a suggestion run can decide tiers with. Phrases are always

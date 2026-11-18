@@ -598,6 +598,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
 	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
 	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
+	{IDs: []string{"add_model_router_suggestions_embedding_columns"}, run: migrationAddModelRouterSuggestionEmbeddingColumns},
 	{IDs: []string{"add_mcp_client_server_type_on_slug_column"}, run: migrationAddMCPClientServerTypeOnSlugColumn},
 	{IDs: []string{"add_mcp_client_metadata_url_columns"}, run: migrationAddMCPClientMetadataURLColumns},
 	{IDs: []string{"add_client_config_mcp_openapi_max_spec_mb_column"}, run: migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn},
@@ -13895,6 +13896,49 @@ func migrationAddModelRouterSuggestionTierColumns(ctx context.Context, db *gorm.
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for _, column := range modelRouterSuggestionTierColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// modelRouterSuggestionEmbeddingColumns hold a decision-model router's
+// suggestions embedding block: the model its runs embed requests with.
+var modelRouterSuggestionEmbeddingColumns = []string{"SuggestionsEmbeddingProvider", "SuggestionsEmbeddingModel"}
+
+// migrationAddModelRouterSuggestionEmbeddingColumns adds the suggestions
+// embedding block's columns. A router without them reads as having no
+// embedding block, which is what every router saved before had: only a
+// decision-model router uses one. Two nullable columns, so the change is
+// metadata-only on Postgres and does not rewrite the table.
+func migrationAddModelRouterSuggestionEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_suggestions_embedding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRouterSuggestionEmbeddingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("add %s column to model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range modelRouterSuggestionEmbeddingColumns {
 				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
 					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
 				}

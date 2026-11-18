@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -766,13 +767,18 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 	return &ComplexitySessionConfig{Enabled: c.Enabled}
 }
 
-// ComplexitySuggestionsConfig controls phrase suggestions for the semantic
-// router. Enabling it samples the vectors the semantic classifier already
-// computes for classified requests and keeps them for LookbackDays, so
-// suggestions can cluster real traffic in the router's own embedding space.
-// Only the vector and routing metadata are kept, under the request's log ID;
-// the text stays in the logs. A run on Schedule clusters that traffic and asks
-// the suggestion model for phrases.
+// ComplexitySuggestionsConfig controls suggestions for a model router: phrases
+// for a semantic router, tier examples for a decision-model router.
+//
+// For a semantic router, enabling it samples the vectors the semantic
+// classifier already computes for classified requests and keeps them for
+// LookbackDays, so suggestions can cluster real traffic in the router's own
+// embedding space. A decision-model router computes no vectors, so a run
+// embeds a sample of the router's logged requests with Embedding instead, and
+// keeps those vectors the same way. Only the vector and routing metadata are
+// kept, under the request's log ID; the text stays in the logs. A run on
+// Schedule clusters that traffic and asks the suggestion model for phrases or
+// examples.
 //
 // The block is persisted as a top-level key of the semantic row, never inside
 // the semantic block: released binaries decode that block strictly, so a new
@@ -806,6 +812,43 @@ type ComplexitySuggestionsConfig struct {
 	// Tier is how each suggestion's tier is decided. Nil normalizes to the
 	// llm classifier on the phrase model.
 	Tier *ComplexitySuggestionsTierConfig `json:"tier,omitempty"`
+	// Embedding is the embedding model a decision-model router's requests
+	// are clustered with; required there, and refused for a semantic router,
+	// which clusters in its own embedding space.
+	Embedding *ComplexitySuggestionsEmbedding `json:"embedding,omitempty"`
+}
+
+// ComplexitySuggestionsEmbedding names the embedding model a decision-model
+// router's suggestion runs embed its requests and examples with.
+type ComplexitySuggestionsEmbedding struct {
+	Provider schemas.ModelProvider `json:"provider"`
+	Model    string                `json:"model"`
+}
+
+// UnmarshalJSON rejects unknown fields so a misspelled setting cannot be
+// accepted while silently doing nothing.
+func (e *ComplexitySuggestionsEmbedding) UnmarshalJSON(data []byte) error {
+	type plain ComplexitySuggestionsEmbedding
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var decoded plain
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("complexity suggestions embedding: %w", err)
+	}
+	*e = ComplexitySuggestionsEmbedding(decoded)
+	return nil
+}
+
+// normalized trims the names; a block naming nothing is no block.
+func (e *ComplexitySuggestionsEmbedding) normalized() *ComplexitySuggestionsEmbedding {
+	if e == nil {
+		return nil
+	}
+	out := ComplexitySuggestionsEmbedding{Provider: normalizeComplexityProvider(e.Provider), Model: strings.TrimSpace(e.Model)}
+	if out.Provider == "" && out.Model == "" {
+		return nil
+	}
+	return &out
 }
 
 // Tier classifiers a suggestion run can decide tiers with.
@@ -997,7 +1040,7 @@ func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
 	for field := range fields {
 		switch field {
 		case "enabled", "sample_rate", "lookback_days", "schedule", "max_clustered_requests",
-			"min_cluster_requests", "provider", "model", "instructions", "tier":
+			"min_cluster_requests", "provider", "model", "instructions", "tier", "embedding":
 		default:
 			return fmt.Errorf("unknown complexity suggestions field %q", field)
 		}
@@ -1013,6 +1056,7 @@ func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
 		Model                string                           `json:"model"`
 		Instructions         string                           `json:"instructions"`
 		Tier                 *ComplexitySuggestionsTierConfig `json:"tier"`
+		Embedding            *ComplexitySuggestionsEmbedding  `json:"embedding"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
@@ -1039,6 +1083,7 @@ func (c *ComplexitySuggestionsConfig) UnmarshalJSON(data []byte) error {
 	*c = ComplexitySuggestionsConfig{
 		Enabled: *decoded.Enabled, Schedule: decoded.Schedule,
 		Provider: decoded.Provider, Model: decoded.Model, Instructions: decoded.Instructions, Tier: decoded.Tier,
+		Embedding: decoded.Embedding,
 	}
 	if decoded.SampleRate != nil {
 		c.SampleRate = *decoded.SampleRate
@@ -1079,6 +1124,7 @@ func (c *ComplexitySuggestionsConfig) normalized() *ComplexitySuggestionsConfig 
 		out.Instructions = ""
 	}
 	out.Schedule = out.Schedule.normalized()
+	out.Embedding = out.Embedding.normalized()
 	out.Tier = out.Tier.normalized()
 	if out.Tier.Classifier == ComplexitySuggestionsTierLLM && out.Tier.Provider == "" && out.Tier.Model == "" {
 		out.Tier.Provider, out.Tier.Model = out.Provider, out.Model
@@ -1136,6 +1182,9 @@ func (c *ComplexitySuggestionsConfig) Validate() error {
 	}
 	if n := utf8.RuneCountInString(c.Instructions); n > MaxComplexitySuggestionsInstructionsChars {
 		return fmt.Errorf("suggestions instructions must be at most %d characters, got %d", MaxComplexitySuggestionsInstructionsChars, n)
+	}
+	if c.Embedding != nil && (c.Embedding.Provider == "" || c.Embedding.Model == "") {
+		return fmt.Errorf("suggestions embedding provider and model must be set together")
 	}
 	if err := c.Tier.Validate(); err != nil {
 		return err
@@ -1418,15 +1467,61 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.SessionRoutingEnabled() && c.Semantic == nil && (c.Classifier == "" || c.Classifier == ComplexityClassifierSemantic) {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
+	if c.Suggestions != nil {
+		if err := c.validateSuggestionsForClassifier(); err != nil {
+			return err
+		}
+	}
 	if c.SuggestionsEnabled() {
-		// Suggestions capture the semantic classifier's vectors and cluster in
-		// its embedding space, so they need it to be the primary classifier.
-		if c.Semantic == nil || (c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic) {
-			return fmt.Errorf("complexity suggestions require the semantic classifier: a semantic config block, with classifier %q", ComplexityClassifierSemantic)
+		// A semantic router's suggestions capture its classifier's vectors and
+		// cluster in its embedding space; a decision-model router's embed its
+		// logged requests with their own model. The llm classifier has neither.
+		switch c.Classifier {
+		case "", ComplexityClassifierSemantic:
+			if c.Semantic == nil {
+				return fmt.Errorf("complexity suggestions for the semantic classifier require a semantic config block")
+			}
+		case ComplexityClassifierDecision:
+			if c.Suggestions.Embedding == nil {
+				return fmt.Errorf("complexity suggestions for the decision classifier need an embedding model: set suggestions embedding provider and model")
+			}
+		default:
+			return fmt.Errorf("complexity suggestions require the %q or %q classifier, got %q", ComplexityClassifierSemantic, ComplexityClassifierDecision, c.Classifier)
 		}
 		if c.Suggestions.Provider == "" && c.LLM == nil {
 			return fmt.Errorf("complexity suggestions need a model: set suggestions provider and model, or an llm config block")
 		}
+	}
+	return nil
+}
+
+// validateSuggestionsForClassifier refuses suggestion settings that the
+// router's classifier would ignore or that would make a run circular. It holds
+// whether or not suggestions are enabled, since a run can be started on
+// demand with them off.
+//
+//   - embedding is for a decision-model router only: a semantic router
+//     clusters in its own embedding space, so the setting would do nothing.
+//   - a decision-model router's tiers cannot be judged by its own decision
+//     model: the judge would agree with every tier the router logged, so no
+//     cluster would ever read as misrouted.
+func (c *ComplexityAnalyzerConfig) validateSuggestionsForClassifier() error {
+	s := c.Suggestions
+	if c.Classifier != ComplexityClassifierDecision {
+		if s.Embedding != nil {
+			return fmt.Errorf("suggestions embedding is for the %q classifier only; a %q router clusters in its own embedding space", ComplexityClassifierDecision, ComplexityClassifierSemantic)
+		}
+		return nil
+	}
+	if s.Tier == nil || s.Tier.Classifier != ComplexitySuggestionsTierDecision {
+		return nil
+	}
+	provider, model := DefaultComplexityDecisionProvider, DefaultComplexityDecisionModel
+	if c.Decision != nil && c.Decision.Provider != "" && c.Decision.Model != "" {
+		provider, model = c.Decision.Provider, c.Decision.Model
+	}
+	if s.Tier.Provider == provider && s.Tier.Model == model {
+		return fmt.Errorf("suggestions tier for a decision router cannot use the router's own decision model (%s/%s): its tiers are what the suggestions check, so pick another tier model or the %q classifier", provider, model, ComplexitySuggestionsTierLLM)
 	}
 	return nil
 }

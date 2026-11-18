@@ -214,6 +214,29 @@ describe("Decision complexity configuration", () => {
 		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
 	});
 
+	test("keeps a decision router's suggestions embedding model through the form", () => {
+		const saved: AnalyzerConfig = {
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			classifier: "decision",
+			decision: { previous_message_count: 1, timeout: "1500ms" },
+			suggestions: {
+				enabled: true,
+				sample_rate: 0.1,
+				lookback_days: 7,
+				schedule: { every: "1d" },
+				provider: "openai",
+				model: "gpt-5",
+				tier: { classifier: "llm", provider: "openai", model: "gpt-5" },
+				embedding: { provider: "openai", model: "text-embedding-3-small" },
+			},
+		};
+		const payload = toSuggestionsPayload(toFormValues(saved).suggestions, saved.suggestions);
+		expect(payload.embedding).toEqual({ provider: "openai", model: "text-embedding-3-small" });
+		expect(toSuggestionsPayload(toFormValues(saved).suggestions, { ...saved.suggestions!, embedding: undefined })).not.toHaveProperty(
+			"embedding",
+		);
+	});
+
 	test("keeps a small sample rate through the form instead of rounding it to zero", () => {
 		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
 		for (const rate of [0.000001, 0.00012345, 0.1, 0.333, 1]) {
