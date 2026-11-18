@@ -355,6 +355,13 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	return discoverOAuthMetadata(ctx, serverURL, hasAuthorizationEndpoint)
 }
 
+// DiscoverTokenEndpointMetadata is DiscoverOAuthMetadata for a token-endpoint-only
+// grant such as client_credentials: the authorization server need not publish an
+// authorization endpoint.
+func DiscoverTokenEndpointMetadata(ctx context.Context, serverURL string) (*OAuthMetadata, error) {
+	return discoverOAuthMetadata(ctx, serverURL, hasTokenEndpoint)
+}
+
 // discoverOAuthMetadata runs discovery, accepting the first authorization server
 // metadata usable accepts.
 func discoverOAuthMetadata(ctx context.Context, serverURL string, usable func(*OAuthMetadata) bool) (*OAuthMetadata, error) {

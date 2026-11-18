@@ -78,6 +78,10 @@ type OAuthConfig struct {
 	// MetadataDocumentsViaHosts overrides MetadataDocumentsVia per document host, so one host can be
 	// unreachable (a closed port) while another, a hosted copy, is served.
 	MetadataDocumentsViaHosts map[string]string `json:"metadata_documents_via_hosts,omitempty"`
+	// ClientCredentials accepts the client_credentials grant and advertises it,
+	// with private_key_jwt client authentication and the ES256 and RS256
+	// algorithms it verifies.
+	ClientCredentials bool `json:"client_credentials,omitempty"`
 }
 
 // validate rejects a configuration the server would otherwise misread.
@@ -117,6 +121,8 @@ type OAuthClient struct {
 	AuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 	Scope      string `json:"scope,omitempty"`
 	Dynamic    bool   `json:"dynamic,omitempty"`
+	// PublicKeyPEM verifies the client's private_key_jwt assertions (PKIX "PUBLIC KEY", EC P-256 or RSA).
+	PublicKeyPEM string `json:"public_key_pem,omitempty"`
 }
 
 // allows reports whether redirectURI may be used with this client.
@@ -154,8 +160,10 @@ type OAuthCounters struct {
 	Authorize    int64 `json:"authorize"`
 	TokenCode    int64 `json:"token_code"`
 	TokenRefresh int64 `json:"token_refresh"`
-	TokenErrors  int64 `json:"token_errors"`
-	Rejected     int64 `json:"rejected"`
+	// TokenClientCredentials counts client_credentials token requests.
+	TokenClientCredentials int64 `json:"token_client_credentials"`
+	TokenErrors            int64 `json:"token_errors"`
+	Rejected               int64 `json:"rejected"`
 	// MetadataDocumentFetches counts Client ID Metadata Documents fetched,
 	// whether or not they were accepted.
 	MetadataDocumentFetches int64 `json:"metadata_document_fetches"`
@@ -177,7 +185,8 @@ type OAuthLogEntry struct {
 	State              string `json:"state,omitempty"`
 	LoginHint          string `json:"login_hint,omitempty"`
 	Identity           string `json:"identity,omitempty"`
-	PKCE               string `json:"pkce,omitempty"` // ok, missing or mismatch
+	PKCE               string `json:"pkce,omitempty"`        // ok, missing or mismatch
+	ClientAuth         string `json:"client_auth,omitempty"` // client_secret_basic, client_secret_post or private_key_jwt
 	RefreshToken       string `json:"refresh_token,omitempty"`
 	IssuedAccessToken  string `json:"issued_access_token,omitempty"`
 	IssuedRefreshToken string `json:"issued_refresh_token,omitempty"`
@@ -646,6 +655,11 @@ func (s *Server) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http
 	if cfg.MetadataDocuments == "advertised" {
 		meta["client_id_metadata_document_supported"] = true
 	}
+	if cfg.ClientCredentials {
+		meta["grant_types_supported"] = []string{"authorization_code", "refresh_token", "client_credentials"}
+		meta["token_endpoint_auth_methods_supported"] = []string{"none", "client_secret_post", "client_secret_basic", "private_key_jwt"}
+		meta["token_endpoint_auth_signing_alg_values_supported"] = []string{"ES256", "RS256"}
+	}
 	writeJSON(w, http.StatusOK, meta)
 }
 
@@ -967,8 +981,15 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		Resource:     form.Get("resource"),
 		RefreshToken: form.Get("refresh_token"),
 	}
-	if id, secret, ok := r.BasicAuth(); ok {
+	switch id, secret, basic := r.BasicAuth(); {
+	case form.Get("client_assertion_type") == clientAssertionTypeJWTBearer:
+		entry.ClientAuth = "private_key_jwt"
+		entry.ClientID = assertionSubject(form.Get("client_assertion"))
+	case basic:
+		entry.ClientAuth = "client_secret_basic"
 		entry.ClientID, entry.ClientSecret = id, secret
+	case entry.ClientSecret != "":
+		entry.ClientAuth = "client_secret_post"
 	}
 
 	s.oauth.mu.Lock()
@@ -977,6 +998,8 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		s.oauth.counters.TokenCode++
 	case "refresh_token":
 		s.oauth.counters.TokenRefresh++
+	case "client_credentials":
+		s.oauth.counters.TokenClientCredentials++
 	}
 	s.oauth.mu.Unlock()
 
@@ -1001,7 +1024,16 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 	}
 
 	client, known := s.oauth.clients[entry.ClientID]
-	if !known || (client.ClientSecret != "" && entry.ClientSecret != client.ClientSecret) {
+	if entry.ClientAuth == "private_key_jwt" {
+		if !known || client.PublicKeyPEM == "" {
+			fail(http.StatusUnauthorized, "invalid_client", "unknown client or no key registered for it")
+			return
+		}
+		if err := verifyClientAssertion(form.Get("client_assertion"), *client, s.issuer(r)+"/token"); err != nil {
+			fail(http.StatusUnauthorized, "invalid_client", err.Error())
+			return
+		}
+	} else if !known || (client.ClientSecret != "" && entry.ClientSecret != client.ClientSecret) {
 		fail(http.StatusUnauthorized, "invalid_client", "unknown client or wrong client_secret")
 		return
 	}
@@ -1072,6 +1104,15 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 			return
 		}
 		issueRefresh = cfg.RotateRefresh
+	case "client_credentials":
+		if !cfg.ClientCredentials {
+			fail(http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
+			return
+		}
+		// The client acts as itself: its identity is its client_id, and no refresh token is issued.
+		g = &oauthGrant{identity: client.ClientID, clientID: client.ClientID, scope: form.Get("scope"), resource: entry.Resource}
+		s.oauth.grants = append(s.oauth.grants, g)
+		issueRefresh = false
 	default:
 		fail(http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
 		return

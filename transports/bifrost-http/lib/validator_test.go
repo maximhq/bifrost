@@ -1070,6 +1070,27 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports: client_credentials is a
+// shared credential, so SSE takes it like HTTP; a STDIO subprocess has nothing to send it to.
+func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports(t *testing.T) {
+	client := func(transport string) string {
+		target := `"connection_string": "https://mcp.example.com/mcp"`
+		if transport == "stdio" {
+			target = `"stdio_config": {"command": "npx", "args": []}`
+		}
+		return `{"mcp": {"client_configs": [{"name": "cc", "connection_type": "` + transport + `", ` + target +
+			`, "auth_type": "client_credentials", "client_credentials": {"client_id": "svc", "client_secret": "env.CC_SECRET"}}]}}`
+	}
+	for _, transport := range []string{"http", "sse"} {
+		if err := ValidateConfigSchema([]byte(client(transport)), loadLocalSchema(t)); err != nil {
+			t.Errorf("expected client_credentials on %s to pass validation, got error: %v", transport, err)
+		}
+	}
+	if err := ValidateConfigSchema([]byte(client("stdio")), loadLocalSchema(t)); err == nil {
+		t.Error("expected client_credentials on stdio to fail validation")
+	}
+}
+
 // TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
 // use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
 func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {

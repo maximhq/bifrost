@@ -2,7 +2,14 @@ package chaosmock_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -643,5 +650,74 @@ func TestAuthorizationServerTakesClientMetadataDocuments(t *testing.T) {
 		if resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": bad}}); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%v: status %d, want 400", bad, resp.StatusCode)
 		}
+	}
+}
+
+// signES256 signs claims as an ES256 JWT with key.
+func signES256(t *testing.T, key *ecdsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	enc := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	signingInput := enc(map[string]string{"alg": "ES256", "typ": "JWT"}) + "." + enc(claims)
+	digest := sha256.Sum256([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// TestAuthorizationServerIssuesClientCredentialsTokens: with client_credentials
+// on, a pre-registered client gets a token that the MCP endpoint accepts, with a
+// secret or with a private_key_jwt assertion; a wrong audience or a disabled
+// grant is refused.
+func TestAuthorizationServerIssuesClientCredentialsTokens(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	fleet, _ := oauthFleet(t, map[string]any{"client_credentials": true, "clients": []map[string]any{
+		{"client_id": "svc", "client_secret": "S1"},
+		{"client_id": "keyed", "public_key_pem": publicPEM},
+	}})
+	tokenURL := fleet.URL() + "/s/alpha/as/token"
+
+	status, out := token(t, fleet, url.Values{"grant_type": {"client_credentials"}, "client_id": {"svc"}, "client_secret": {"S1"}, "scope": {"read"}})
+	if status != http.StatusOK || out["refresh_token"] != nil {
+		t.Fatalf("secret: expected a token without a refresh token, got %d %v", status, out)
+	}
+	if code, body := mcpStatus(t, fleet, out["access_token"].(string)); code != http.StatusOK {
+		t.Fatalf("the issued token must open the MCP endpoint, got %d: %s", code, body)
+	}
+
+	assertion := func(aud string) string {
+		return signES256(t, key, map[string]any{"iss": "keyed", "sub": "keyed", "aud": aud, "exp": time.Now().Add(time.Minute).Unix(), "jti": "j1"})
+	}
+	form := func(a string) url.Values {
+		return url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"}, "client_assertion": {a}}
+	}
+	if status, out := token(t, fleet, form(assertion(tokenURL))); status != http.StatusOK {
+		t.Fatalf("private_key_jwt: expected a token, got %d %v", status, out)
+	}
+	if status, out := token(t, fleet, form(assertion("https://elsewhere.example/token"))); status != http.StatusUnauthorized || out["error"] != "invalid_client" {
+		t.Fatalf("wrong aud: expected invalid_client, got %d %v", status, out)
+	}
+
+	plain, _ := oauthFleet(t, map[string]any{"clients": []map[string]any{{"client_id": "svc", "client_secret": "S1"}}})
+	if status, out := token(t, plain, url.Values{"grant_type": {"client_credentials"}, "client_id": {"svc"}, "client_secret": {"S1"}}); status != http.StatusBadRequest || out["error"] != "unsupported_grant_type" {
+		t.Fatalf("grant off: expected unsupported_grant_type, got %d %v", status, out)
 	}
 }

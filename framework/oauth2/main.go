@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -113,6 +114,11 @@ type OAuth2Provider struct {
 	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
 	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
 	idjagGrants *idjagGrantCache
+
+	// clientCredentialsCache holds the shared token of each client_credentials
+	// MCP client; see clientCredentialsTokens.
+	clientCredentialsCache *tokencache.Cache[string]
+	clientCredentialsOnce  sync.Once
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -523,6 +529,8 @@ func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, co
 		p.EvictExchangedToken(mode, identity, config.ID)
 		_, err := p.GetExchangedAccessToken(ctx, config)
 		return err
+	case schemas.MCPAuthTypeClientCredentials:
+		return p.forceRefreshClientCredentials(ctx, config)
 	default:
 		return fmt.Errorf("force-refresh is not supported for MCP auth type %q", config.AuthType)
 	}

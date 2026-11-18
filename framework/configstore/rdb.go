@@ -1850,6 +1850,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					DiscoveredInstructions: dbClient.DiscoveredInstructions,
 					PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 					TokenExchange:          dbClient.TokenExchange,
+					ClientCredentials:      dbClient.ClientCredentials,
 					PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 					OpenAPIConfig:          dbClient.OpenAPIConfig,
 					// ConfigHash must round-trip so config-file reconciliation
@@ -1919,6 +1920,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			DiscoveredInstructions: dbClient.DiscoveredInstructions,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
+			ClientCredentials:      dbClient.ClientCredentials,
 			PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
@@ -2381,6 +2383,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		DiscoveredInstructions: dbClient.DiscoveredInstructions,
 		PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 		TokenExchange:          dbClient.TokenExchange,
+		ClientCredentials:      dbClient.ClientCredentials,
 		PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 		OpenAPIConfig:          dbClient.OpenAPIConfig,
 
@@ -2588,6 +2591,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// invalid for per_user_headers), leaving the client orphaned.
 			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
 			TokenExchange:      clientConfigCopy.TokenExchange,
+			ClientCredentials:  clientConfigCopy.ClientCredentials,
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
@@ -2829,6 +2833,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if tokenExchangeJSON != nil {
 			updates["token_exchange_json"] = tokenExchangeJSON
 		}
+		clientCredentialsJSON, clientCredentialsErr := marshalEncryptedJSON(clientConfig.ClientCredentials, "client_credentials")
+		if clientCredentialsErr != nil {
+			return clientCredentialsErr
+		}
+		if clientCredentialsJSON != nil {
+			updates["client_credentials_json"] = clientCredentialsJSON
+		}
 		// openapi_config follows the same PATCH convention: nil preserves the
 		// stored spec and credentials, non-nil replaces both columns.
 		openAPISpec, openAPIConfigJSON, openAPIErr := marshalOpenAPIConfigColumns(clientConfig.OpenAPIConfig)
@@ -2866,6 +2877,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			// Config-file mode syncs the full auth metadata, so nil here
 			// means "clear", not "preserve".
 			updates["token_exchange_json"] = tokenExchangeJSON
+			updates["client_credentials_json"] = clientCredentialsJSON
 			// Mirror BeforeSave: nil → NULL; non-nil → serialised JSON,
 			// encrypted at rest (the stash can carry an inline OAuth
 			// client_secret).

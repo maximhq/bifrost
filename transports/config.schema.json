@@ -10600,9 +10600,79 @@
             "oauth",
             "per_user_oauth",
             "per_user_headers",
-            "token_exchange"
+            "token_exchange",
+            "client_credentials"
           ],
           "description": "Authentication type for MCP connection"
+        },
+        "client_credentials": {
+          "type": "object",
+          "description": "OAuth client_credentials grant for auth_type 'client_credentials' (MCP OAuth Client Credentials extension): Bifrost obtains one access token for this server with credentials registered at its authorization server, shared by every caller. No user signs in. When token_url is empty, the token endpoint is discovered from the server at load and stored.",
+          "properties": {
+            "token_url": {
+              "type": "string",
+              "description": "Token endpoint (https). Empty: discovered from the MCP server's OAuth metadata at load; the authorization server must then advertise the client_credentials grant. Set it to skip discovery."
+            },
+            "client_id": {
+              "type": "string",
+              "description": "Client ID registered for Bifrost. Can use env. or vault. prefix."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Client secret. Cannot be combined with private_key. Can use env. or vault. prefix."
+            },
+            "auth_method": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "How client_secret is sent. Empty (default): HTTP Basic unless the discovered metadata admits only client_secret_post. Requires client_secret."
+            },
+            "private_key": {
+              "type": "string",
+              "description": "PEM RSA or EC private key. When set, Bifrost authenticates with private_key_jwt (a client assertion signed with this key) instead of a client secret. Cannot be combined with client_secret. Can use env. or vault. prefix."
+            },
+            "key_id": {
+              "type": "string",
+              "description": "kid header of the client assertion, when the authorization server selects keys by ID. Requires private_key."
+            },
+            "signing_algorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "Client assertion signing algorithm. Empty (default): chosen from the key, the ES algorithm for an EC key's curve, or for an RSA key the first RSA algorithm the authorization server advertises, else RS256. Requires private_key."
+            },
+            "assertion_audience": {
+              "type": "string",
+              "description": "aud of the client assertion. Empty (default): the token endpoint. Set the issuer for servers that require it. Requires private_key."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Scopes to request, sent space-joined."
+            },
+            "resource": {
+              "type": "string",
+              "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the MCP server URL. Empty string: not sent, for authorization servers that reject it."
+            }
+          },
+          "required": [
+            "client_id"
+          ],
+          "allOf": [
+            {
+              "$comment": "Bifrost authenticates with a client secret or a private key, not both.",
+              "not": {
+                "required": ["client_secret", "private_key"]
+              }
+            },
+            {
+              "anyOf": [
+                { "required": ["client_secret"] },
+                { "required": ["private_key"] }
+              ]
+            }
+          ],
+          "additionalProperties": false
         },
         "token_exchange": {
           "type": "object",
@@ -10961,14 +11031,36 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "$comment": "The per-user auth types open a new streamable HTTP connection for each call, which an SSE stream or a STDIO subprocess cannot serve, so SSE and STDIO take the shared auth types only. Bifrost skips such a client at boot with an error naming it.",
+          "$comment": "The per-user auth types open a new streamable HTTP connection for each call, which an SSE stream cannot serve, so SSE takes the shared auth types only. Bifrost skips such a client at boot with an error naming it.",
           "if": {
             "properties": {
               "connection_type": {
+                "const": "sse"
+              }
+            },
+            "required": [
+              "connection_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "auth_type": {
                 "enum": [
-                  "sse",
-                  "stdio"
+                  "none",
+                  "headers",
+                  "oauth",
+                  "client_credentials"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A STDIO subprocess is one connection for every caller with no HTTP request to authenticate, so STDIO takes none, headers and oauth only.",
+          "if": {
+            "properties": {
+              "connection_type": {
+                "const": "stdio"
               }
             },
             "required": [
