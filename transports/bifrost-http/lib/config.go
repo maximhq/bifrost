@@ -2286,6 +2286,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					RapidMLXKeyConfig:      dbKey.RapidMLXKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
@@ -2380,6 +2381,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					RapidMLXKeyConfig:      dbKey.RapidMLXKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
@@ -10155,6 +10157,12 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				// The URL is a service address, not a credential — surface it in plaintext.
 				cfg.URL = *cfg.URL.RedactedIfSecret()
 				configStoreKey.OllamaKeyConfig = &cfg
+			}
+			if key.RapidMLXKeyConfig != nil {
+				cfg := *key.RapidMLXKeyConfig // safe copy
+				// The URL is a service address, not a credential — surface it in plaintext.
+				cfg.URL = *cfg.URL.RedactedIfSecret()
+				configStoreKey.RapidMLXKeyConfig = &cfg
 			}
 			if key.SGLKeyConfig != nil {
 				cfg := *key.SGLKeyConfig // safe copy

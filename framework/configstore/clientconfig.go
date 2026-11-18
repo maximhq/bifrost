@@ -1001,6 +1001,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
+		if key.RapidMLXKeyConfig != nil {
+			rapidmlxConfig := &schemas.RapidMLXKeyConfig{}
+			// The URL is a service address, not a credential — surface it in plaintext.
+			rapidmlxConfig.URL = *key.RapidMLXKeyConfig.URL.RedactedIfSecret()
+			redactedConfig.Keys[i].RapidMLXKeyConfig = rapidmlxConfig
+		}
+
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}
 			// The URL is a service address, not a credential — surface it in plaintext.
@@ -1531,6 +1538,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash OllamaKeyConfig
 	if key.OllamaKeyConfig != nil {
 		data, err := sonic.Marshal(key.OllamaKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash RapidMLXKeyConfig
+	if key.RapidMLXKeyConfig != nil {
+		data, err := sonic.Marshal(key.RapidMLXKeyConfig)
 		if err != nil {
 			return "", err
 		}

@@ -64,6 +64,7 @@ const (
 	Vertex        ModelProvider = "vertex"
 	Mistral       ModelProvider = "mistral"
 	Ollama        ModelProvider = "ollama"
+	RapidMLX      ModelProvider = "rapidmlx"
 	OpencodeGo    ModelProvider = "opencode-go"
 	OpencodeZen   ModelProvider = "opencode-zen"
 	Groq          ModelProvider = "groq"
@@ -123,6 +124,7 @@ var StandardProviders = []ModelProvider{
 	Groq,
 	Mistral,
 	Ollama,
+	RapidMLX,
 	OpencodeGo,
 	OpencodeZen,
 	OpenAI,

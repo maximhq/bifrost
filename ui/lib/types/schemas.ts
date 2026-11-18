@@ -707,6 +707,16 @@ export const ollamaKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Rapid-MLX key config schema
+export const rapidmlxKeyConfigSchema = z
+	.object({
+		url: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.url), {
+		error: () => i18n.t("validation.serverUrlIsRequired"),
+		path: ["url"],
+	});
+
 // SGL key config schema
 export const sglKeyConfigSchema = z
 	.object({
@@ -858,6 +868,7 @@ export const modelProviderKeySchema = z
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
+		rapidmlx_key_config: rapidmlxKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
@@ -870,7 +881,7 @@ export const modelProviderKeySchema = z
 	})
 	.refine(
 		(data) => {
-			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
+			if (data.vllm_key_config || data.ollama_key_config || data.rapidmlx_key_config || data.sgl_key_config) {
 				return true;
 			}
 			// An OAuth-minted key needs no value. Decided from the credentials when the UI

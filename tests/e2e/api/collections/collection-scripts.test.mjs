@@ -803,7 +803,7 @@ const redactionMask = "synt" + "*".repeat(24) + "6789";
 // Key server URLs are validated as http(s) URLs once resolved, so they use a URL canary.
 const redactionUrlRef = "env.BIFROST_SECRET_REDACTION_URL_CANARY";
 const redactionUrlMask = "http" + "*".repeat(24) + "6789";
-const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "VLLMKeyConfig.url"]);
+const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "RapidMLXKeyConfig.url", "VLLMKeyConfig.url"]);
 
 test("redaction folder authenticates the initial request as well as callback requests", () => {
   let header;

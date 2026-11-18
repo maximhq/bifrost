@@ -98,6 +98,9 @@ type TableKey struct {
 	// Ollama config fields (embedded)
 	OllamaUrl *schemas.SecretVar `gorm:"type:text" json:"ollama_url,omitempty"`
 
+	// Rapid-MLX config fields (embedded)
+	RapidMLXUrl *schemas.SecretVar `gorm:"column:rapidmlx_url;type:text" json:"rapidmlx_url,omitempty"`
+
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
@@ -154,6 +157,7 @@ type TableKey struct {
 	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
+	RapidMLXKeyConfig      *schemas.RapidMLXKeyConfig      `gorm:"-" json:"rapidmlx_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
@@ -577,6 +581,13 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.OllamaUrl = nil
 	}
 
+	if k.RapidMLXKeyConfig != nil && k.RapidMLXKeyConfig.URL.IsSet() {
+		u := k.RapidMLXKeyConfig.URL
+		k.RapidMLXUrl = &u
+	} else {
+		k.RapidMLXUrl = nil
+	}
+
 	if k.SGLKeyConfig != nil && k.SGLKeyConfig.URL.IsSet() {
 		u := k.SGLKeyConfig.URL
 		k.SGLUrl = &u
@@ -826,6 +837,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to encrypt ollama url: %w", err)
 		}
+		// Rapid-MLX
+		if err := encryptSecretVarPtr(&k.RapidMLXUrl); err != nil {
+			return fmt.Errorf("failed to encrypt rapidmlx url: %w", err)
+		}
 		// SGL
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
@@ -1008,6 +1023,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// Ollama
 		if err := decryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to decrypt ollama url: %w", err)
+		}
+		// Rapid-MLX
+		if err := decryptSecretVarPtr(&k.RapidMLXUrl); err != nil {
+			return fmt.Errorf("failed to decrypt rapidmlx url: %w", err)
 		}
 		// SGL
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
@@ -1262,6 +1281,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.OllamaKeyConfig = nil
+	}
+	// Reconstruct Rapid-MLX config if fields are present
+	if k.RapidMLXUrl != nil {
+		k.RapidMLXKeyConfig = &schemas.RapidMLXKeyConfig{
+			URL: *k.RapidMLXUrl,
+		}
+	} else {
+		k.RapidMLXKeyConfig = nil
 	}
 	// Reconstruct SGL config if fields are present
 	if k.SGLUrl != nil {

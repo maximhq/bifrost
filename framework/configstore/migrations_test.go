@@ -6068,3 +6068,40 @@ func TestMigrationAddModelRoutersTable(t *testing.T) {
 	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
 	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
 }
+
+func TestMigrationAddRapidMLXKeyConfigColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.Exec("CREATE TABLE config_keys (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_keys (id) VALUES ('existing')").Error)
+	require.NoError(t, migrationAddRapidMLXKeyConfigColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "rapidmlx_url"))
+	require.NoError(t, migrationAddRapidMLXKeyConfigColumn(ctx, db, testMigrationLogger))
+	var count int64
+	require.NoError(t, db.Table("config_keys").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}
+
+func TestMigrationAddRapidMLXKeyConfigColumnLockTimeout(t *testing.T) {
+	store := trySetupPostgresSchemaStore(t, "configstore_rapidmlx_migration_test")
+	if store == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	db := store.DB()
+	require.NoError(t, db.Exec("CREATE TABLE config_keys (id TEXT PRIMARY KEY)").Error)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	writer, err := sqlDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer writer.Rollback()
+	_, err = writer.ExecContext(ctx, "LOCK TABLE config_keys IN ACCESS SHARE MODE")
+	require.NoError(t, err)
+	err = migrationAddRapidMLXKeyConfigColumn(ctx, db, testMigrationLogger)
+	require.ErrorContains(t, err, "lock timeout")
+	// A failed migration must not be recorded; releasing the lock permits a retry.
+	require.NoError(t, writer.Rollback())
+	require.NoError(t, migrationAddRapidMLXKeyConfigColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "rapidmlx_url"))
+}

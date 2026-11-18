@@ -788,6 +788,18 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// Official app mark from raullenchai/Rapid-MLX, RapidLogo.imageset/RapidLogo.png.
+	rapidmlx: ({ size = "md", className = "" }: IconProps) => (
+		<img
+			src={withBasePath("/images/rapidmlx.png")}
+			alt="Rapid-MLX"
+			width={resolveSize(size)}
+			height={resolveSize(size)}
+			loading="lazy"
+			decoding="async"
+			className={cn("object-contain", className)}
+		/>
+	),
 	vllm: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (
