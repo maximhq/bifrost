@@ -1092,6 +1092,13 @@
               ],
               "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Publish the document Bifrost serves at /api/oauth/client-metadata.json there unchanged. Unset, the document is served under mcpExternalClientUrl. Supports env var and vault references. Maps to client.mcp_client_metadata_url."
             },
+            "mcpOpenapiMaxSpecMb": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256,
+              "default": 0,
+              "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, specFile or fetched from specUrl). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory. Maps to client.mcp_openapi_max_spec_mb."
+            },
             "skillsExternalClientUrl": {
               "anyOf": [
                 {
@@ -1174,11 +1181,11 @@
             },
             "oauth2ServerConfig": {
               "type": "object",
-              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "description": "OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is 'both' or 'oauth') and for client gateways (gateways.<client>.enabled). Maps to client.oauth2_server_config.",
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or any client gateway is enabled: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1213,6 +1220,82 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "gateways": {
+                  "type": "object",
+                  "description": "Client gateways, one block per coding client, each served at <issuerUrl>/gateway/<client>. Independent of mcpServerAuthMode. Maps to client.oauth2_server_config.gateways.",
+                  "properties": {
+                    "claudeCode": {
+                      "type": "object",
+                      "description": "Claude Code gateway at <issuerUrl>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in. Requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.gateways.claude_code.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Serve the Claude Code gateway protocol under /gateway/claude-code.",
+                          "default": false
+                        },
+                        "managedSettings": {
+                          "type": "object",
+                          "description": "Claude Code managed-settings.json document served to every signed-in client. Omit for no managed policy."
+                        },
+                        "telemetry": {
+                          "type": "object",
+                          "description": "Forward Claude Code's OTLP telemetry (metrics, logs, traces), stamped with the Bifrost identity, to OTLP/HTTP collectors instead of discarding it. Maps to client.oauth2_server_config.gateways.claude_code.telemetry.",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean",
+                              "default": false,
+                              "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                            },
+                            "destinations": {
+                              "type": "array",
+                              "description": "OTLP/HTTP collectors; each signal is posted to <endpoint>/v1/{metrics|logs|traces}. At least one is required when enabled.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "endpoint": {
+                                    "type": "string",
+                                    "description": "Collector base URL (http or https). Supports env.VAR_NAME."
+                                  },
+                                  "headers": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "string",
+                                      "pattern": "\\S"
+                                    },
+                                    "description": "Headers sent with every export. Values can be plain or env./vault. references, like provider keys, and must not be empty."
+                                  }
+                                },
+                                "required": [
+                                  "endpoint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "dropAttributes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": "Attribute keys removed at every level before forwarding, e.g. prompt."
+                            }
+                          },
+                          "if": {
+                            "properties": { "enabled": { "const": true } },
+                            "required": ["enabled"]
+                          },
+                          "then": {
+                            "required": ["destinations"],
+                            "properties": { "destinations": { "minItems": 1 } }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -3251,7 +3334,7 @@
                 },
                 "llm": {
                   "type": "object",
-                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when semantic.fallback selects 'llm', where it runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
                   "properties": {
                     "provider": {
                       "type": "string",
@@ -3261,7 +3344,7 @@
                     "model": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                      "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                     },
                     "timeout": {
                       "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
@@ -4609,12 +4692,24 @@
                     "default": "enforce",
                     "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
+                  "input_timing": {
+                    "type": "string",
+                    "enum": ["pre_call", "parallel"],
+                    "default": "pre_call",
+                    "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+                  },
+                  "profile_execution_mode": {
+                    "type": "string",
+                    "enum": ["independent", "chained"],
+                    "default": "independent",
+                    "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
                       "type": "integer"
                     },
-                    "description": "IDs of provider configurations to use with this rule"
+                    "description": "IDs of provider configurations to use with this rule, in execution order"
                   }
                 },
                 "required": ["id", "name", "enabled", "cel_expression", "apply_to"],

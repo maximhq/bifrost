@@ -605,6 +605,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_framework_config_openapi_url_column"}, run: migrationAddFrameworkConfigOpenAPIURLColumn},
 	{IDs: []string{"add_warp_management_writes_column"}, run: migrationAddWarpManagementWritesColumn},
 	{IDs: []string{"add_client_config_entity_access_profile_mode_column"}, run: migrationAddClientConfigEntityAccessProfileModeColumn},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
+	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16983,6 +16986,28 @@ func mcpMaxProtocolVersionColumnsMigration(ctx context.Context, migrationName st
 	}
 }
 
+// migrationAddClientConfigMCPServerMaxProtocolVersionColumn adds the cap on the protocol version
+// Bifrost's own /mcp serves. Existing rows read "", which is uncapped, as before.
+func migrationAddClientConfigMCPServerMaxProtocolVersionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_server_max_protocol_version_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column /mcp serves every version, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+	})
+}
+
 var mcpClientDiscoveredListColumns = []string{"discovered_resources_json", "discovered_resource_templates_json", "discovered_prompts_json"}
 
 // migrationAddMCPClientDiscoveredResourcesPromptsColumns adds the config_mcp_clients columns that
@@ -17600,4 +17625,95 @@ func migrationAddClientConfigEntityAccessProfileModeColumn(ctx context.Context, 
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeColumns are the device-grant columns and their tag index names.
+var oauth2AuthorizeRequestsDeviceCodeColumns = []struct{ column, index string }{
+	{"device_code_hash", "idx_oauth2_authorize_requests_device_code_hash"},
+	{"user_code_hash", "idx_oauth2_authorize_requests_user_code_hash"},
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns adds the nullable device-grant columns to
+// oauth2_authorize_requests, with a bounded lock wait. Indexes come from the next migration.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeColumnsMigration is the column migration, shared with tests.
+func oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx context.Context, id string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Only short-lived sign-in state; nothing durable is lost.
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes builds the device-grant unique indexes
+// concurrently (no transaction), so upgrades never block writes.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeIndexesMigration is the index migration, shared with tests.
+func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id string) *migrator.Migration {
+	const table = "oauth2_authorize_requests"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := ensureIndexConcurrently(tx, table, c.index, c.column, true); err != nil {
+					return fmt.Errorf("failed to create index on %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := dropIndexConcurrently(tx, table, c.index); err != nil {
+					return fmt.Errorf("failed to drop index on %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+	}
 }

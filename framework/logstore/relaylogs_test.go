@@ -366,3 +366,24 @@ func TestUpdateRelayLogClearsColumnsWithNilPointers(t *testing.T) {
 	assert.Nil(t, got.UpstreamLatency)
 	assert.Equal(t, RelayLogStatusSuccess, got.Status)
 }
+
+// TestRelayFilterDataSkipsOldRows checks that the filter sidebar only offers values from recent
+// relay rows, as the LLM and MCP filter data do, on both the plain and the fanned-out dimensions.
+func TestRelayFilterDataSkipsOldRows(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	old := now.AddDate(0, 0, -(defaultFilterDataCutoffDays + 5))
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "new", RequestID: "new", Timestamp: now, RelayName: "tavily", Method: "POST", Path: "/", Status: RelayLogStatusSuccess, TeamID: schemas.Ptr("t-new"), TeamName: schemas.Ptr("New")},
+		{ID: "old", RequestID: "old", Timestamp: old, RelayName: "legacy", Method: "GET", Path: "/", Status: RelayLogStatusSuccess, TeamID: schemas.Ptr("t-old"), TeamName: schemas.Ptr("Old")},
+	})
+	require.NoError(t, err)
+
+	data, err := store.GetRelayFilterData(ctx, []string{"relay_names", "teams"}, 10, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tavily"}, data.EndpointNames)
+	require.Len(t, data.Teams, 1)
+	assert.Equal(t, "t-new", data.Teams[0].ID)
+}

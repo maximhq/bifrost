@@ -1338,11 +1338,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			for i, b := range vk.Budgets {
 				ids[i] = b.ID
 			}
-			if err := tx.Model(&configstoreTables.TableBudget{}).
+			// Only the owner moves. Skip hooks: TableBudget.BeforeSave would validate the zero-value
+			// model passed to Model() and reject its empty ResetDuration.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).
 				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
 				Updates(map[string]interface{}{
 					"model_config_id": mc.ID,
 					"virtual_key_id":  nil,
+					"updated_at":      time.Now(),
 				}).Error; err != nil {
 				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
 			}
@@ -4479,13 +4482,24 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Non-paginated path: return all model configs
-	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve model configs: %v", err)
-		SendError(ctx, 500, "Failed to retrieve model configs")
-		return
+	// Non-paginated path: return every model config the caller may see. It pages through the
+	// paginated read, which applies the caller's row-visibility scope; GetModelConfigs does not.
+	modelConfigs := []configstoreTables.TableModelConfig{}
+	for offset := 0; ; {
+		page, total, err := h.configStore.GetModelConfigsPaginated(ctx, configstore.ModelConfigsQueryParams{Limit: 100, Offset: offset})
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		modelConfigs = append(modelConfigs, page...)
+		offset += len(page)
+		if len(page) == 0 || int64(offset) >= total {
+			break
+		}
 	}
+	// Pages come newest first; this route has always answered in id order.
+	sort.Slice(modelConfigs, func(i, j int) bool { return modelConfigs[i].ID < modelConfigs[j].ID })
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
 	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{

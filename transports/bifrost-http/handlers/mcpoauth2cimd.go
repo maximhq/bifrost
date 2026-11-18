@@ -16,6 +16,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -266,6 +267,14 @@ func clientMetadataTTL(cacheControl string) time.Duration {
 		}
 	}
 	return min(max(ttl, minClientMetadataTTL), maxClientMetadataTTL)
+}
+
+// clientMetadataDocumentsAllowed reports whether /mcp's protocol version cap still offers Client ID
+// Metadata Documents (2025-11-25 and later).
+func clientMetadataDocumentsAllowed(store *lib.Config) bool {
+	store.Mu.RLock()
+	defer store.Mu.RUnlock()
+	return store.ClientConfig == nil || schemas.MCPAllowsClientMetadataDocuments(store.ClientConfig.MCPServerMaxProtocolVersion)
 }
 
 // lookupOAuth2Client resolves clientID as a Client ID Metadata Document URL or a registered client.

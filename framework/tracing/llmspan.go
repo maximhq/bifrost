@@ -1254,7 +1254,13 @@ func PopulateFileUploadRequestAttributes(req *schemas.BifrostFileUploadRequest, 
 	if req.Purpose != "" {
 		attrs[schemas.AttrFilePurpose] = string(req.Purpose)
 	}
-	if len(req.File) > 0 {
+	// FileSource is uploaded instead of File when both are set, so its size is the upload's; an
+	// unknown source size is not reported rather than reporting File's length.
+	if req.FileSource != nil {
+		if size := req.FileSource.Size(); size >= 0 {
+			attrs[schemas.AttrFileBytes] = int(size)
+		}
+	} else if len(req.File) > 0 {
 		attrs[schemas.AttrFileBytes] = len(req.File)
 	}
 	// ExtraParams

@@ -1751,7 +1751,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
@@ -5366,6 +5366,9 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		if !acquired {
 			return ErrRetentionBusy
 		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
 		result := tx.Exec(stmt, cutoff, batchSize)
 		if result.Error != nil {
 			return result.Error
@@ -5377,6 +5380,16 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
 }
 
 // RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
@@ -5466,6 +5479,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5473,8 +5489,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})

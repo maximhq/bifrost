@@ -524,6 +524,9 @@ false
 {{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
 {{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpOpenapiMaxSpecMb" }}
+{{- $_ := set $client "mcp_openapi_max_spec_mb" (.Values.bifrost.client.mcpOpenapiMaxSpecMb | int) }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
 {{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
 {{- end }}
@@ -548,6 +551,22 @@ false
 {{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "allowedRedirectUris" }}{{- $_ := set $oauth2 "allowed_redirect_uris" (default (list) .Values.bifrost.client.oauth2ServerConfig.allowedRedirectUris) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.gateways }}
+{{- $gateways := dict }}
+{{- with .claudeCode }}
+{{- if and .enabled (not $.Values.bifrost.client.oauth2ServerConfig.issuerUrl) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.oauth2ServerConfig.gateways.claudeCode.enabled is true. Bifrost exits at startup without it." }}{{- end }}
+{{- $claudeCode := dict "enabled" (.enabled | default false) }}
+{{- if hasKey . "managedSettings" }}{{- $_ := set $claudeCode "managed_settings" .managedSettings }}{{- end }}
+{{- with .telemetry }}
+{{- $telemetry := dict "enabled" (.enabled | default false) }}
+{{- with .destinations }}{{- $_ := set $telemetry "destinations" . }}{{- end }}
+{{- with .dropAttributes }}{{- $_ := set $telemetry "drop_attributes" . }}{{- end }}
+{{- $_ := set $claudeCode "telemetry" $telemetry }}
+{{- end }}
+{{- $_ := set $gateways "claude_code" $claudeCode }}
+{{- end }}
+{{- if $gateways }}{{- $_ := set $oauth2 "gateways" $gateways }}{{- end }}
+{{- end }}
 {{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
@@ -1014,6 +1033,8 @@ false
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
 {{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
+{{- if .input_timing }}{{- $_ := set $rule "input_timing" .input_timing }}{{- end }}
+{{- if .profile_execution_mode }}{{- $_ := set $rule "profile_execution_mode" .profile_execution_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}

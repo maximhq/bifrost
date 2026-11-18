@@ -67,6 +67,7 @@
 		"caching": "Caching",
 		"security": "Security",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "API Keys",
 		"performanceTuning": "Performance Tuning",
@@ -150,6 +151,7 @@
 		"caching": "Caching configuration",
 		"security": "Security settings",
 		"warp": "Warp agent configuration",
+		"gateways": "Coding-client sign-in",
 		"proxy": "Proxy configuration",
 		"apiKeys": "API keys management",
 		"performanceTuning": "Performance tuning settings",
@@ -457,7 +459,15 @@
 			"label": "Question",
 			"skip": "Skip",
 			"orType": "Or type your own answer below.",
-			"skipAnswer": "Use your best judgement and say what you assumed."
+			"skipAnswer": "Use your best judgement and say what you assumed.",
+			"confirm": {
+				"subtitle": "Warp will make this change once you confirm.",
+				"destructiveSubtitle": "Warp will make this change once you confirm. Check it carefully.",
+				"cannotUndo": "This cannot be undone.",
+				"noArguments": "No arguments.",
+				"cancel": "Cancel",
+				"confirm": "Confirm"
+			}
 		},
 		"message": {
 			"whatThisCovers": "What this covers",

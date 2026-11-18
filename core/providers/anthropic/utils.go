@@ -450,6 +450,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
 	}
+	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
+	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
+		req.Thinking.BlockBinding = nil
+	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
 	}
@@ -1040,6 +1046,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.display", "omitted")
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
+		}
+	}
+
+	// thinking.block_binding — mirrors the typed path. Placed here, after the
+	// thinking.type rewrites above, so it sees the type that is actually sent.
+	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)
 		}
 	}
 
@@ -1686,6 +1702,13 @@ func SupportsThinkingDisplayUpdates(caps schemas.ModelCaps) bool {
 	return caps.SupportsThinkingDisplayUpdates(
 		ProviderFeatures[caps.Provider()].ThinkingDisplayUpdates &&
 			DefaultSupportsThinkingDisplayUpdates(caps.Model()))
+}
+
+// thinkingTypeTakesBlockBinding reports whether thinking.block_binding is valid on a
+// thinking mode: it governs signed thinking blocks, so it is a 400 with thinking off
+// ("disabled", "between_tools") and meaningless without a type.
+func thinkingTypeTakesBlockBinding(thinkingType string) bool {
+	return thinkingType == "adaptive" || thinkingType == "enabled"
 }
 
 // DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
@@ -2660,6 +2683,13 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicThinkingDisplayUpdatesBetaHeader)
 		}
 	}
+	// thinking.block_binding is a 400 without its beta, and SDK clients on the neutral
+	// routes cannot set anthropic-beta themselves.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil && thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		if !hasProvider || features.ThinkingBinding {
+			headers = appendUniqueHeader(headers, AnthropicThinkingBindingControlsBetaHeader)
+		}
+	}
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
 	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
@@ -2836,6 +2866,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
+	AnthropicThinkingBindingControlsBetaHeaderPrefix,
 }
 
 // stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
@@ -3446,6 +3477,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.ThinkingDisplayUpdates },
+	AnthropicThinkingBindingControlsBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.ThinkingBinding },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -5249,9 +5281,61 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 	return argumentsJSON
 }
 
+// anthropicServerToolUseIDPrefix starts every id Anthropic gives a server_tool_use block.
+const anthropicServerToolUseIDPrefix = "srvtoolu_"
+
+// isWebSearchPendingCall reports whether a web_search_call is a search Anthropic has not
+// run yet (deferred beside a client tool, or a paused turn): it is replayed as a bare
+// server_tool_use.
+func isWebSearchPendingCall(msg *schemas.ResponsesMessage) bool {
+	return msg.Status != nil && *msg.Status == "in_progress"
+}
+
+// isWebSearchResultOnlyCall reports whether a web_search_call carries only the result of a
+// search whose server_tool_use was sent in an earlier assistant message. Anthropic returns
+// a deferred search's web_search_tool_result at the start of the next assistant message;
+// newWebSearchResultOnlyCall represents it as a finished web_search_call with the same id
+// and no query. An Anthropic server_tool_use always has a query (its input requires one),
+// so a finished Anthropic search (srvtoolu_ id) with none can only be a result. Other
+// providers' calls (OpenAI ws_ ids) may legitimately omit the query and are never
+// result-only: they keep the server_tool_use plus result rebuild.
+func isWebSearchResultOnlyCall(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		msg.ID == nil || !strings.HasPrefix(*msg.ID, anthropicServerToolUseIDPrefix) ||
+		msg.Status == nil || isWebSearchPendingCall(msg) ||
+		msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && action.Type == "search" &&
+		(action.Query == nil || *action.Query == "") && len(action.Queries) == 0
+}
+
+// newWebSearchResultOnlyCall builds the web_search_call for a web_search_tool_result whose
+// server_tool_use is not in the same message (see isWebSearchResultOnlyCall).
+func newWebSearchResultOnlyCall(toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) schemas.ResponsesMessage {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	if resultBlock.Content != nil && len(resultBlock.Content.ContentBlocks) > 0 {
+		action.Sources = extractWebSearchSources(resultBlock.Content.ContentBlocks, includeExtendedFields)
+	}
+	toolMsg := &schemas.ResponsesToolMessage{
+		Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
+	}
+	if resultBlock.Caller != nil {
+		toolMsg.Caller = &schemas.ResponsesToolCaller{Type: string(resultBlock.Caller.Type), ToolID: resultBlock.Caller.ToolID}
+	}
+	return schemas.ResponsesMessage{
+		ID:                   schemas.Ptr(toolUseID),
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		Status:               schemas.Ptr("completed"),
+		ResponsesToolMessage: toolMsg,
+	}
+}
+
 // attachWebSearchSourcesToCall finds a web_search_call by tool_use_id and attaches sources to it.
-// It searches backwards through bifrostMessages to find the matching call and updates its action.
-func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) {
+// It searches backwards through bifrostMessages to find the matching call and updates its action,
+// and reports whether it found one.
+func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) bool {
 	// Search backwards to find matching web_search_call
 	for i := len(bifrostMessages) - 1; i >= 0; i-- {
 		msg := &bifrostMessages[i]
@@ -5261,6 +5345,12 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 
 			if msg.ResponsesToolMessage == nil {
 				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+
+			// The result is here, so the search is no longer pending. Written in place:
+			// the status was allocated for this item when its server_tool_use was converted.
+			if msg.Status != nil && *msg.Status == "in_progress" {
+				*msg.Status = "completed"
 			}
 
 			// Found the matching web_search_call, add sources
@@ -5278,9 +5368,10 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 				}
 				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
-			break
+			return true
 		}
 	}
+	return false
 }
 
 // attachToolSearchReferencesToCall finds the tool_search_call emitted for this

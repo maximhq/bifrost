@@ -124,6 +124,16 @@ ClientConfig:
         omitting it or sending "" keeps the stored value. Deployments upgraded
         with existing MCP servers start at "2025-06-18"; fresh installs start
         on "auto". A change reconnects affected servers at the new version.
+    mcp_server_max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: >
+        Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves
+        to clients. "auto", or an empty value, serves every version Bifrost
+        supports. Below "2025-11-25", sign-in with Client ID Metadata
+        Documents is turned off and clients register dynamically instead;
+        sign-ins already granted keep working. On update, omitting it or
+        sending "" keeps the stored value. Applies without a restart.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
@@ -162,46 +172,6 @@ ClientConfig:
         document itself; the dashboard, however, saves a URL import as the
         inline document its preview fetched, so a URL import larger than
         max_request_body_size_mb fails there.
-    bifrost_url:
-      anyOf:
-      - type: string
-      - type: object
-        properties:
-          value:
-            type: string
-          ref:
-            type: string
-          type:
-            type: string
-            enum:
-            - plain_text
-            - env
-            - vault
-          env_var:
-            type: string
-          from_env:
-            type: boolean
-        additionalProperties: false
-      description: >
-        The gateway's public base URL (scheme, host and any base path), as
-        clients reach it through your proxy, at most 512 characters. Required
-        for /v1/mcp: its tool calls take their host and scheme from it, never
-        from the Host the client sent, so the URLs their routes build point
-        here. Unset (or an empty string), the Bifrost MCP does not load and
-        /v1/mcp answers 503. Supports env var syntax and vault refs. Must
-        include server.base_path when Bifrost is mounted under one. Omit the
-        field to keep the stored value.
-    bifrost_mcp_allow_writes:
-      type: boolean
-      nullable: true
-      default: true
-      description: >
-        Whether /v1/mcp serves the non-GET /api operations (gateway
-        configuration changes) as tools. Inference, batch and file routes
-        outside /api are served either way. Every call is still authorized by
-        the caller's own credential, and destructive tools carry
-        destructiveHint. Unset or null is true. Omit the field to keep the
-        stored value.
     mcp_oauth_private_allowlist:
       type: array
       items:
@@ -451,8 +421,9 @@ ClientConfig:
     oauth2_server_config:
       type: object
       description: >
-        OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode
-        is 'both' or 'oauth'.
+        OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or
+        'oauth') and for client gateways (oauth2_server_config.gateways, in any
+        mcp_server_auth_mode).
       properties:
         issuer_url:
           oneOf:
@@ -469,7 +440,7 @@ ClientConfig:
               additionalProperties: false
           description: >
             Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the
-            JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A
+            JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled. A
             config.json that enables one of those modes without it fails validation at startup;
             a PUT /api/config that does the same is refused with HTTP 400. The issuer is never
             derived from the request Host header while OAuth is enabled. Supports env var
@@ -499,6 +470,83 @@ ClientConfig:
             flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh.
             Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is
             configured. Anonymous session identity is governed separately by enforce_auth_on_inference.
+        gateways:
+          type: object
+          description: >
+            Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>.
+            Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.
+          properties:
+            claude_code:
+              type: object
+              description: Claude Code gateway at <issuer_url>/gateway/claude-code.
+              properties:
+                enabled:
+                  type: boolean
+                  default: false
+                  description: >
+                    Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused).
+                managed_settings:
+                  type: [object, "null"]
+                  description: >
+                    Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy.
+                telemetry:
+                  type: object
+                  description: >
+                    Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces)
+                    instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as and
+                    forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and
+                    enduser.id attributes are removed first.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                      description: Forward telemetry. Off, exports are acknowledged and discarded.
+                    destinations:
+                      type: array
+                      description: OTLP/HTTP collectors. Required (at least one) when enabled.
+                      items:
+                        type: object
+                        required: [endpoint]
+                        properties:
+                          endpoint:
+                            oneOf:
+                              - type: string
+                                description: Collector URL or an env. reference (requests).
+                              - $ref: '#/SecretVarObject'
+                            description: >
+                              Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}.
+                              Supports env var syntax ("env.MY_VAR"). Responses return it as an object.
+                          headers:
+                            type: object
+                            description: >
+                              Headers sent with every export, for example authorization. Values can be plain or env. or
+                              vault. references, like provider keys, and must not be empty. Responses return each value as
+                              an object, with plain values redacted.
+                            additionalProperties:
+                              oneOf:
+                                - type: string
+                                  pattern: '\S'
+                                - $ref: '#/SecretVarObject'
+                        additionalProperties: false
+                    drop_attributes:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                      description: Attribute keys removed at every level before forwarding, for example "prompt".
+                  if:
+                    properties:
+                      enabled:
+                        const: true
+                    required: [enabled]
+                  then:
+                    required: [destinations]
+                    properties:
+                      destinations:
+                        minItems: 1
+                  additionalProperties: false
+              additionalProperties: false
+          additionalProperties: false
       additionalProperties: false
 
 FrameworkConfig:
@@ -535,23 +583,6 @@ FrameworkConfig:
         - const: 0
         - minimum: 60
       description: How often each provider's list-models response is re-fetched in the background, in seconds. 0 disables the refresher; otherwise at least 60.
-    openapi_url:
-      type: string
-      maxLength: 2048
-      description: >
-        OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path
-        relative to the app directory (for air-gapped installs). Empty reads the
-        default spec, dev's docs/openapi/openapi-oss.json. Saving a new value
-        rebuilds /v1/mcp. If the new spec cannot be loaded, the previous tools
-        stay in service and the new spec is tried again on a later settings save
-        or on restart. A save that also turns off
-        client_config.bifrost_mcp_allow_writes or clears
-        client_config.bifrost_url applies that change first, against the spec
-        already in use: turning writes off can leave a read-only server on the
-        previous spec running, so /v1/mcp keeps answering and does not move to
-        the new spec on its own. Only when that first rebuild fails are the
-        previous tools unloaded, /v1/mcp answers 503, and the load is retried in
-        the background. Omit the field to keep the stored value.
 
 AuthConfig:
   type: object
@@ -731,3 +762,15 @@ FeatureFlagStatus:
       type: integer
       format: int64
       description: When the override was last changed, in Unix nanoseconds
+
+SecretVarObject:
+  type: object
+  description: A secret-bearing value as returned in responses; value is redacted when it comes from a reference.
+  properties:
+    value:
+      type: string
+    ref:
+      type: string
+    type:
+      type: string
+  additionalProperties: false

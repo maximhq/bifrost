@@ -301,6 +301,19 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 		usage := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usageJSON+`}`))
 		require.NotNil(t, usage)
 		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
+	case "passthrough_stream":
+		// The stream accumulator sees the cumulative iterations list on message_delta (twice here, as a
+		// replayed delta would) and must still report it once at message_stop.
+		extra.RequestType = schemas.PassthroughStreamRequest
+		extra.PassthroughPath = "/v1/messages"
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}}`))
+		delta := []byte(`{"type":"message_delta","usage":` + usageJSON + `}`)
+		acc.ObserveEvent(delta)
+		acc.ObserveEvent(delta)
+		usage := acc.ObserveEvent([]byte(`{"type":"message_stop"}`))
+		require.NotNil(t, usage)
+		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
 	}
 	var native anthropic.AnthropicUsage
 	require.NoError(t, json.Unmarshal([]byte(usageJSON), &native))
@@ -319,7 +332,7 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 func TestCalculateCost_AnthropicAdvisorIterations(t *testing.T) {
 	const executorCost = 1000*0.000001 + 500*0.000005 // 0.0035
 	const advisorPass = `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`
-	for _, route := range []string{"responses", "responses_stream", "passthrough"} {
+	for _, route := range []string{"responses", "responses_stream", "passthrough", "passthrough_stream"} {
 		t.Run(route+": advisor pass priced at the advisor rate", func(t *testing.T) {
 			store, result := advisorCostFixture(t, route, advisorPass)
 			assert.InDelta(t, executorCost+2000*0.000005+1000*0.000025, store.CalculateCost(result, nil), 1e-12)
@@ -356,6 +369,58 @@ func TestCalculateCost_AnthropicAdvisorPassIgnoresExecutorPriorityTier(t *testin
 	const executorAtPriority = 1000*0.000002 + 500*0.00001
 	const advisorAtStandard = 2000*0.000005 + 1000*0.000025
 	assert.InDelta(t, executorAtPriority+advisorAtStandard, store.CalculateCost(result, nil), 1e-12)
+}
+
+// The flat per-request fee is charged once, for the request's own model. An advisor pass is part of
+// the same upstream request, so neither its model's fee nor the executor's is added again per pass.
+func TestCalculateCost_AnthropicAdvisorPassChargesNoRequestFee(t *testing.T) {
+	const executorFee, advisorFee = 0.01, 0.02
+	for _, route := range []string{"responses", "passthrough"} {
+		t.Run(route, func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			for key, fee := range map[string]float64{
+				makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): executorFee,
+				makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  advisorFee,
+			} {
+				row := store.pricingData[key]
+				row.CostPerRequest = bifrost.Ptr(fee)
+				store.pricingData[key] = row
+			}
+			const executorCost = 1000*0.000001 + 500*0.000005
+			const advisorPasses = 2 * (2000*0.000005 + 1000*0.000025)
+			assert.InDelta(t, executorCost+executorFee+advisorPasses, store.CalculateCost(result, nil), 1e-12)
+		})
+	}
+}
+
+// Fast mode and US data residency are properties of how the whole request was served, unlike a
+// Priority Tier commitment, so the advisor pass is priced at its model's fast rates and US multiplier.
+func TestCalculateCost_AnthropicAdvisorPassKeepsFastModeAndUSGeo(t *testing.T) {
+	store, result := advisorCostFixture(t, "passthrough", `,"speed":"fast","inference_geo":"us","iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+	for key, rates := range map[string][2]float64{
+		makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): {0.000006, 0.00003},
+		makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  {0.00003, 0.00015},
+	} {
+		row := store.pricingData[key]
+		row.InputCostPerTokenFast, row.OutputCostPerTokenFast = bifrost.Ptr(rates[0]), bifrost.Ptr(rates[1])
+		row.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
+		store.pricingData[key] = row
+	}
+	const executorFastUS = (1000*0.000006 + 500*0.00003) * 1.1
+	const advisorFastUS = (2000*0.00003 + 1000*0.00015) * 1.1
+	assert.InDelta(t, executorFastUS+advisorFastUS, store.CalculateCost(result, nil), 1e-12)
+}
+
+// A semantic-cache hit replays the original payload, iterations included, without calling the
+// provider. Neither the executor nor the replayed advisor passes are billed for it.
+func TestCalculateCost_AnthropicAdvisorPassNotBilledOnCacheHit(t *testing.T) {
+	for _, hitType := range []string{"direct", "semantic"} {
+		t.Run(hitType, func(t *testing.T) {
+			store, result := advisorCostFixture(t, "responses", `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			result.ResponsesResponse.ExtraFields.CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: schemas.Ptr(hitType)}
+			assert.Zero(t, store.CalculateCost(result, nil))
+		})
+	}
 }
 
 // A Responses stream cut after message_delta is billed from a bare usage (BifrostError BilledUsage),

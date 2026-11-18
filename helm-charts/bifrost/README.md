@@ -26,6 +26,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.datasheetOverrides` for pricing and model-parameter overrides that survive datasheet syncs. With config.json as the source of truth, `[]` removes stored overrides.
 - Baseten keys now accept a per-alias `deployment_url`.
 - The semantic cache now accepts `byteplus` and `baseten` as providers.
+- Added `bifrost.client.mcpOpenapiMaxSpecMb` (`client.mcp_openapi_max_spec_mb`) to raise or lower the size limit on an openapi MCP client's spec. 0 keeps the 32 MiB default.
 
 ### 2.1.48
 
