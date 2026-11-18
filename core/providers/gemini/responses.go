@@ -4975,9 +4975,7 @@ func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.Bif
 	// The converter normalizes Model in place and callers read it back for the
 	// upstream URL, so it has to change on their request and not only on the copy.
 	request.Model = NormalizeModelName(request.Model)
-	// The same model the converter gates tool output media on.
-	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, request.Model))
-	toolOutputMedia := schemas.ResolveModelCaps(request.Provider, capModel).SupportsMultimodalToolOutput(isGemini3Plus(capModel))
+	toolOutputMedia := ResponsesToolOutputMediaSupported(ctx, request.Provider, request.Model)
 	input, err := resolveResponsesAudioURLs(ctx, request.Input, toolOutputMedia, NewAudioURLBudget())
 	if err != nil {
 		return nil, err
@@ -4985,6 +4983,14 @@ func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.Bif
 	resolved := *request
 	resolved.Input = input
 	return &resolved, nil
+}
+
+// ResponsesToolOutputMediaSupported reports whether the Responses converter sends
+// media in function tool output for model, resolved the way the converter resolves
+// it. When it is false the converter sends a text placeholder instead.
+func ResponsesToolOutputMediaSupported(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, NormalizeModelName(model)))
+	return schemas.ResolveModelCaps(provider, capModel).SupportsMultimodalToolOutput(isGemini3Plus(capModel))
 }
 
 func responsesBlocksHaveAudioURL(blocks []schemas.ResponsesMessageContentBlock) bool {

@@ -735,6 +735,9 @@ func chatBlocksForwardGCSAudio(blocks []schemas.ChatContentBlock, isAnthropicFam
 }
 
 // forwardGCSAudioResponses is the Responses-API analogue of forwardGCSAudioChat.
+// It also rewrites gs:// audio in function tool output blocks, but only for a model
+// that takes media in tool output; for any other model the converter sends a text
+// placeholder, so the block is left as it is.
 func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if request == nil || request.Input == nil {
 		return request
@@ -743,37 +746,62 @@ func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.Bifr
 		return request
 	}
 	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
-	if !responsesInputForwardsGCSAudio(request.Input, isAnthropicFamily) {
+	toolOutputMedia := !isAnthropicFamily && gemini.ResponsesToolOutputMediaSupported(ctx, request.Provider, request.Model)
+	if !responsesInputForwardsGCSAudio(request.Input, isAnthropicFamily, toolOutputMedia) {
 		return request
 	}
 	copied := *request
 	copied.Input = slices.Clone(request.Input)
 	for mi := range copied.Input {
 		msg := &copied.Input[mi]
-		if msg.Content == nil || !responsesBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
-			continue
+		if msg.Content != nil && responsesBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
+			content := *msg.Content
+			content.ContentBlocks = forwardGCSAudioResponsesBlocks(content.ContentBlocks, isAnthropicFamily)
+			msg.Content = &content
 		}
-		content := *msg.Content
-		content.ContentBlocks = slices.Clone(content.ContentBlocks)
-		msg.Content = &content
-		for bi := range content.ContentBlocks {
-			block := &content.ContentBlocks[bi]
-			audio := block.Audio
-			if audio == nil || audio.Data != "" || audio.URL == "" || !forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
-				continue
-			}
-			fileURL := audio.URL
-			block.Type = schemas.ResponsesInputMessageContentBlockTypeFile
-			block.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL, FileType: audioFileType(audio.Format)}
-			block.Audio = nil
+		if toolOutputMedia && responsesBlocksForwardGCSAudio(responsesToolOutputBlocks(msg), isAnthropicFamily) {
+			toolMessage := *msg.ResponsesToolMessage
+			output := *toolMessage.Output
+			output.ResponsesFunctionToolCallOutputBlocks = forwardGCSAudioResponsesBlocks(output.ResponsesFunctionToolCallOutputBlocks, isAnthropicFamily)
+			toolMessage.Output = &output
+			msg.ResponsesToolMessage = &toolMessage
 		}
 	}
 	return &copied
 }
 
-func responsesInputForwardsGCSAudio(input []schemas.ResponsesMessage, isAnthropicFamily bool) bool {
+// forwardGCSAudioResponsesBlocks returns a copy of blocks with every qualifying gs://
+// audio block rewritten as a file reference. blocks itself is not modified.
+func forwardGCSAudioResponsesBlocks(blocks []schemas.ResponsesMessageContentBlock, isAnthropicFamily bool) []schemas.ResponsesMessageContentBlock {
+	copied := slices.Clone(blocks)
+	for bi := range copied {
+		block := &copied[bi]
+		audio := block.Audio
+		if audio == nil || audio.Data != "" || audio.URL == "" || !forwardsAudioURLAsFileURI(audio.URL, isAnthropicFamily) {
+			continue
+		}
+		fileURL := audio.URL
+		block.Type = schemas.ResponsesInputMessageContentBlockTypeFile
+		block.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL, FileType: audioFileType(audio.Format)}
+		block.Audio = nil
+	}
+	return copied
+}
+
+// responsesToolOutputBlocks returns msg's function tool output blocks, or nil.
+func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
+		return nil
+	}
+	return msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+}
+
+func responsesInputForwardsGCSAudio(input []schemas.ResponsesMessage, isAnthropicFamily, toolOutputMedia bool) bool {
 	for i := range input {
 		if input[i].Content != nil && responsesBlocksForwardGCSAudio(input[i].Content.ContentBlocks, isAnthropicFamily) {
+			return true
+		}
+		if toolOutputMedia && responsesBlocksForwardGCSAudio(responsesToolOutputBlocks(&input[i]), isAnthropicFamily) {
 			return true
 		}
 	}
