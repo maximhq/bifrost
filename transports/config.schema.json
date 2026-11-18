@@ -603,45 +603,6 @@
           ],
           "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. Required to enable Agent Gateway protocol endpoints. When unset, agent traffic is rejected while management APIs remain available. Supports env var syntax: \"env.MY_VAR\"."
         },
-        "bifrost_url": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "object",
-              "properties": {
-                "value": {
-                  "type": "string"
-                },
-                "ref": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "plain_text",
-                    "env",
-                    "vault"
-                  ]
-                },
-                "env_var": {
-                  "type": "string"
-                },
-                "from_env": {
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": false
-            }
-          ],
-          "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset, the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax (\"env.MY_VAR\") and vault refs. Must include server.base_path when Bifrost is mounted under one."
-        },
-        "bifrost_mcp_allow_writes": {
-          "type": "boolean",
-          "default": true,
-          "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint."
-        },
         "mcp_server_auth_mode": {
           "type": "string",
           "enum": [
@@ -681,7 +642,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -700,10 +661,87 @@
               "type": "boolean",
               "default": false,
               "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            },
+            "gateways": {
+              "type": "object",
+              "properties": {
+                "claude_code": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
+                    },
+                    "managed_settings": {
+                      "type": ["object", "null"],
+                      "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                    },
+                    "telemetry": {
+                      "type": "object",
+                      "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                        },
+                        "destinations": {
+                          "type": "array",
+                          "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "endpoint": {
+                                "type": "string",
+                                "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                              },
+                              "headers": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string",
+                                  "pattern": "\\S",
+                                  "description": "A plain value or an env. or vault. reference; it must not be empty. Use a reference to keep the credential out of config.json."
+                                },
+                                "description": "Headers sent with every export, for example authorization. Values can be plain or env./vault. references, like provider keys."
+                              }
+                            },
+                            "required": [
+                              "endpoint"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "drop_attributes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                        }
+                      },
+                      "if": {
+                        "properties": { "enabled": { "const": true } },
+                        "required": ["enabled"]
+                      },
+                      "then": {
+                        "required": ["destinations"],
+                        "properties": { "destinations": { "minItems": 1 } }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Claude Code gateway at <issuer_url>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in, Anthropic Messages inference, managed settings and telemetry."
+                }
+              },
+              "additionalProperties": false,
+              "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. A client signs in with its own /login flow through the OAuth consent page instead of a hand-configured virtual key. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url."
             }
           },
           "additionalProperties": false,
-          "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
+          "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways)."
         }
       },
       "additionalProperties": false,
@@ -726,6 +764,48 @@
             "required": [
               "oauth2_server_config"
             ],
+            "properties": {
+              "oauth2_server_config": {
+                "required": [
+                  "issuer_url"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "oauth2_server_config": {
+                "properties": {
+                  "gateways": {
+                    "properties": {
+                      "claude_code": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "enabled"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "claude_code"
+                    ]
+                  }
+                },
+                "required": [
+                  "gateways"
+                ]
+              }
+            },
+            "required": [
+              "oauth2_server_config"
+            ]
+          },
+          "then": {
             "properties": {
               "oauth2_server_config": {
                 "required": [
@@ -2505,6 +2585,10 @@
         "max_protocol_version": {
           "$ref": "#/$defs/mcp_max_protocol_version",
           "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
+        },
+        "server_max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. 'auto' serves every version Bifrost supports. Below '2025-11-25', sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead. Omitted keeps the stored value."
         },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
@@ -6294,15 +6378,6 @@
           },
           "default": 100,
           "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
-        },
-        "management_writes": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["create", "update", "delete", "action"]
-          },
-          "uniqueItems": true,
-          "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs, such as tests and cache flushes). Reads are always offered. Empty, the default, is reads only. Every kind adds its tools to every Warp request, so turning on more grows each request's context. client.bifrost_mcp_allow_writes is the ceiling: with it off no write is offered. Omitting it keeps the stored value."
         }
       },
       "additionalProperties": false
@@ -8069,12 +8144,6 @@
               "minimum": 60
             }
           ]
-        },
-        "openapi_url": {
-          "type": "string",
-          "maxLength": 2048,
-          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, dev's docs/openapi/openapi-oss.json.",
-          "optional": true
         }
       },
       "additionalProperties": false
@@ -8085,7 +8154,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
+          "description": "Base URL for the provider (optional, required for Ollama). For Bedrock, only the host is used: it replaces the bedrock-runtime host for all inference, a key's bedrock_key_config.endpoints.runtime still wins over it, and the other Bedrock services keep their per-key endpoints or public hosts. Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -13287,12 +13356,30 @@
                 "default": "enforce",
                 "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
+              "input_timing": {
+                "type": "string",
+                "enum": [
+                  "pre_call",
+                  "parallel"
+                ],
+                "default": "pre_call",
+                "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+              },
+              "profile_execution_mode": {
+                "type": "string",
+                "enum": [
+                  "independent",
+                  "chained"
+                ],
+                "default": "independent",
+                "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
                   "type": "integer"
                 },
-                "description": "IDs of provider configurations to use with this rule"
+                "description": "IDs of provider configurations to use with this rule, in execution order"
               }
             },
             "required": [

@@ -113,4 +113,61 @@ test("a wally/ template body stays in the wally partition only", () => {
   assert.ok(!templatePartitions.deepseek.includes("Template bodies / chat stream"), "Wally row claimed by the deepseek partition");
 });
 
+// A Files API call on the OpenAI-compatible route names its real provider in a "provider" form
+// field (upload) or query parameter (delete). The URL still contains "/openai", so without reading
+// the declared provider an openai run would claim the Azure pair too: it runs twice, and the openai
+// fork needs Azure credentials. The delete consumes the upload's id, so if it stayed in the openai
+// partition, chain expansion would pull the upload back in with it.
+const declaredProviderFixture = {
+  info: { name: "declared provider fixture", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+  item: [
+    {
+      name: "Files on the OpenAI-compatible route",
+      item: [
+        {
+          name: "upload a file to the openai route",
+          event: [{ listen: "test", script: { exec: ["pm.collectionVariables.set('fxOpenaiFileId', pm.response.json().id);"] } }],
+          request: { method: "POST", url: { raw: "{{baseUrl}}/openai/v1/files" }, body: { mode: "formdata", formdata: [{ key: "purpose", value: "user_data", type: "text" }] } },
+        },
+        {
+          name: "upload a file to azure through the openai route",
+          event: [{ listen: "test", script: { exec: ["pm.collectionVariables.set('fxAzureFileId', pm.response.json().id);"] } }],
+          request: {
+            method: "POST",
+            url: { raw: "{{baseUrl}}/openai/v1/files" },
+            body: { mode: "formdata", formdata: [{ key: "purpose", value: "user_data", type: "text" }, { key: "provider", value: "azure", type: "text" }] },
+          },
+        },
+        {
+          name: "delete the azure file through the openai route",
+          request: {
+            method: "DELETE",
+            url: { raw: "{{baseUrl}}/openai/v1/files/{{fxAzureFileId}}?provider=azure", query: [{ key: "provider", value: "azure" }] },
+          },
+        },
+      ],
+    },
+  ],
+};
+
+const declaredPartitions = {};
+const declaredScratch = mkdtempSync(join(tmpdir(), "filter-collection-declared-"));
+try {
+  const source = join(declaredScratch, "fixture.json");
+  writeFileSync(source, JSON.stringify(declaredProviderFixture));
+  for (const provider of ["openai", "azure"]) {
+    const out = join(declaredScratch, `${provider}.json`);
+    execFileSync("node", [FILTER, "--source", source, "--out", out, "--provider", provider], { stdio: "pipe" });
+    declaredPartitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8"))).map((n) => n.split(" / ")[1]);
+  }
+} finally {
+  rmSync(declaredScratch, { recursive: true, force: true });
+}
+
+test("a declared provider puts an upload and its delete only in that provider's partition", () => {
+  const azurePair = ["upload a file to azure through the openai route", "delete the azure file through the openai route"];
+  assert.deepEqual(declaredPartitions.azure, azurePair, "the azure partition must hold the azure upload and its delete");
+  assert.deepEqual(declaredPartitions.openai, ["upload a file to the openai route"], "the openai partition must not claim the azure pair");
+});
+
 console.log(`${passed} passed`);

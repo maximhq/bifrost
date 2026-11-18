@@ -49408,6 +49408,10 @@
                     },
                     "offset": {
                       "type": "integer"
+                    },
+                    "access_token_ttl": {
+                      "type": "integer",
+                      "description": "Configured access token lifetime in seconds, for estimating when a grant's current access token expires."
                     }
                   }
                 }
@@ -93628,6 +93632,7 @@
           "typesafe",
           "minimax",
           "byteplus",
+          "machgen",
           "baseten",
           "kimchi",
           "soniox"
@@ -108035,6 +108040,17 @@
                 ],
                 "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
+              "mcp_server_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. \"auto\", or an empty value, serves every version Bifrost supports. Below \"2025-11-25\", sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead; sign-ins already granted keep working. On update, omitting it or sending \"\" keeps the stored value. Applies without a restart.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -108057,46 +108073,6 @@
                 "maximum": 256,
                 "default": 0,
                 "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
-              },
-              "bifrost_url": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "value": {
-                        "type": "string"
-                      },
-                      "ref": {
-                        "type": "string"
-                      },
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "plain_text",
-                          "env",
-                          "vault"
-                        ]
-                      },
-                      "env_var": {
-                        "type": "string"
-                      },
-                      "from_env": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                ],
-                "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
-              },
-              "bifrost_mcp_allow_writes": {
-                "type": "boolean",
-                "nullable": true,
-                "default": true,
-                "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
@@ -108402,7 +108378,7 @@
               },
               "oauth2_server_config": {
                 "type": "object",
-                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways, in any mcp_server_auth_mode).\n",
                 "properties": {
                   "issuer_url": {
                     "oneOf": [
@@ -108426,7 +108402,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -108453,6 +108429,138 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  },
+                  "gateways": {
+                    "type": "object",
+                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.\n",
+                    "properties": {
+                      "claude_code": {
+                        "type": "object",
+                        "description": "Claude Code gateway at <issuer_url>/gateway/claude-code.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused).\n"
+                          },
+                          "managed_settings": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy.\n"
+                          },
+                          "telemetry": {
+                            "type": "object",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.\n",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Forward telemetry. Off, exports are acknowledged and discarded."
+                              },
+                              "destinations": {
+                                "type": "array",
+                                "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "endpoint"
+                                  ],
+                                  "properties": {
+                                    "endpoint": {
+                                      "oneOf": [
+                                        {
+                                          "type": "string",
+                                          "description": "Collector URL or an env. reference (requests)."
+                                        },
+                                        {
+                                          "type": "object",
+                                          "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                          "properties": {
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "ref": {
+                                              "type": "string"
+                                            },
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ],
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax (\"env.MY_VAR\"). Responses return it as an object.\n"
+                                    },
+                                    "headers": {
+                                      "type": "object",
+                                      "description": "Headers sent with every export, for example authorization. Values can be plain or env. or vault. references, like provider keys, and must not be empty. Responses return each value as an object, with plain values redacted.\n",
+                                      "additionalProperties": {
+                                        "oneOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "\\S"
+                                          },
+                                          {
+                                            "type": "object",
+                                            "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                            "properties": {
+                                              "value": {
+                                                "type": "string"
+                                              },
+                                              "ref": {
+                                                "type": "string"
+                                              },
+                                              "type": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              },
+                              "drop_attributes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Attribute keys removed at every level before forwarding, for example \"prompt\"."
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "enabled": {
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "enabled"
+                              ]
+                            },
+                            "then": {
+                              "required": [
+                                "destinations"
+                              ],
+                              "properties": {
+                                "destinations": {
+                                  "minItems": 1
+                                }
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -108509,11 +108617,6 @@
                   }
                 ],
                 "description": "How often each provider's list-models response is re-fetched in the background, in seconds. 0 disables the refresher; otherwise at least 60."
-              },
-              "openapi_url": {
-                "type": "string",
-                "maxLength": 2048,
-                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, dev's docs/openapi/openapi-oss.json. Saving a new value rebuilds /v1/mcp. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url applies that change first, against the spec already in use: turning writes off can leave a read-only server on the previous spec running, so /v1/mcp keeps answering and does not move to the new spec on its own. Only when that first rebuild fails are the previous tools unloaded, /v1/mcp answers 503, and the load is retried in the background. Omit the field to keep the stored value.\n"
               }
             }
           },
@@ -108785,6 +108888,17 @@
                 ],
                 "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
+              "mcp_server_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. \"auto\", or an empty value, serves every version Bifrost supports. Below \"2025-11-25\", sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead; sign-ins already granted keep working. On update, omitting it or sending \"\" keeps the stored value. Applies without a restart.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -108807,46 +108921,6 @@
                 "maximum": 256,
                 "default": 0,
                 "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
-              },
-              "bifrost_url": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "value": {
-                        "type": "string"
-                      },
-                      "ref": {
-                        "type": "string"
-                      },
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "plain_text",
-                          "env",
-                          "vault"
-                        ]
-                      },
-                      "env_var": {
-                        "type": "string"
-                      },
-                      "from_env": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                ],
-                "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
-              },
-              "bifrost_mcp_allow_writes": {
-                "type": "boolean",
-                "nullable": true,
-                "default": true,
-                "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
@@ -109152,7 +109226,7 @@
               },
               "oauth2_server_config": {
                 "type": "object",
-                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways, in any mcp_server_auth_mode).\n",
                 "properties": {
                   "issuer_url": {
                     "oneOf": [
@@ -109176,7 +109250,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -109203,6 +109277,138 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  },
+                  "gateways": {
+                    "type": "object",
+                    "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url.\n",
+                    "properties": {
+                      "claude_code": {
+                        "type": "object",
+                        "description": "Claude Code gateway at <issuer_url>/gateway/claude-code.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused).\n"
+                          },
+                          "managed_settings": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy.\n"
+                          },
+                          "telemetry": {
+                            "type": "object",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.\n",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Forward telemetry. Off, exports are acknowledged and discarded."
+                              },
+                              "destinations": {
+                                "type": "array",
+                                "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "endpoint"
+                                  ],
+                                  "properties": {
+                                    "endpoint": {
+                                      "oneOf": [
+                                        {
+                                          "type": "string",
+                                          "description": "Collector URL or an env. reference (requests)."
+                                        },
+                                        {
+                                          "type": "object",
+                                          "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                          "properties": {
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "ref": {
+                                              "type": "string"
+                                            },
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ],
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax (\"env.MY_VAR\"). Responses return it as an object.\n"
+                                    },
+                                    "headers": {
+                                      "type": "object",
+                                      "description": "Headers sent with every export, for example authorization. Values can be plain or env. or vault. references, like provider keys, and must not be empty. Responses return each value as an object, with plain values redacted.\n",
+                                      "additionalProperties": {
+                                        "oneOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "\\S"
+                                          },
+                                          {
+                                            "type": "object",
+                                            "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                            "properties": {
+                                              "value": {
+                                                "type": "string"
+                                              },
+                                              "ref": {
+                                                "type": "string"
+                                              },
+                                              "type": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              },
+                              "drop_attributes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Attribute keys removed at every level before forwarding, for example \"prompt\"."
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "enabled": {
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "enabled"
+                              ]
+                            },
+                            "then": {
+                              "required": [
+                                "destinations"
+                              ],
+                              "properties": {
+                                "destinations": {
+                                  "minItems": 1
+                                }
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -109259,11 +109465,6 @@
                   }
                 ],
                 "description": "How often each provider's list-models response is re-fetched in the background, in seconds. 0 disables the refresher; otherwise at least 60."
-              },
-              "openapi_url": {
-                "type": "string",
-                "maxLength": 2048,
-                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the default spec, dev's docs/openapi/openapi-oss.json. Saving a new value rebuilds /v1/mcp. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off client_config.bifrost_mcp_allow_writes or clears client_config.bifrost_url applies that change first, against the spec already in use: turning writes off can leave a read-only server on the previous spec running, so /v1/mcp keeps answering and does not move to the new spec on its own. Only when that first rebuild fails are the previous tools unloaded, /v1/mcp answers 503, and the load is retried in the background. Omit the field to keep the stored value.\n"
               }
             }
           },
@@ -125899,62 +126100,6 @@
             "type": "boolean",
             "readOnly": true,
             "description": "Whether the shared runtime vector store is connected."
-          },
-          "management_writes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "create",
-                "update",
-                "delete",
-                "action"
-              ],
-              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
-            },
-            "description": "Kinds of configuration change Warp may offer through the Bifrost MCP,\neach run only after the person confirms it. Reads are always offered;\nempty, the default, is reads only.\n"
-          },
-          "management_writes_available": {
-            "type": "boolean",
-            "readOnly": true,
-            "description": "Whether the Bifrost MCP serves writes at all. It is the ceiling: with\nclient.bifrost_mcp_allow_writes off, no kind of write is offered,\nwhatever management_writes says.\n"
-          },
-          "management_tool_sizes": {
-            "type": "array",
-            "readOnly": true,
-            "description": "Per kind, how many management tools Warp could be offered and roughly\nhow many tokens their declarations add to every Warp request. Absent\nwhile the Bifrost MCP is not loaded.\n",
-            "items": {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "read",
-                    "create",
-                    "update",
-                    "delete",
-                    "action"
-                  ]
-                },
-                "tools": {
-                  "type": "integer"
-                },
-                "estimated_tokens": {
-                  "type": "integer",
-                  "description": "Rough estimate (declaration characters / 3)."
-                }
-              },
-              "required": [
-                "kind",
-                "tools",
-                "estimated_tokens"
-              ]
-            }
-          },
-          "bifrost_mcp_available": {
-            "type": "boolean",
-            "readOnly": true,
-            "description": "Whether the gateway's Bifrost MCP is loaded. Warp reads configuration\nthrough it and does not answer without it: chat returns 503 with reason\n`no_bifrost_mcp`. False when `client.bifrost_url` is unset or the\nOpenAPI spec could not be read.\n"
           }
         },
         "required": [
@@ -125972,10 +126117,7 @@
           "semantic_search_threshold",
           "semantic_search_limit",
           "topic_discovery_min_requests",
-          "vector_store_connected",
-          "management_writes",
-          "management_writes_available",
-          "bifrost_mcp_available"
+          "vector_store_connected"
         ]
       },
       "WarpConfigInput": {
@@ -126136,21 +126278,6 @@
               }
             ],
             "description": "How many requests that matched no topic have to be waiting before an\nhourly pass clusters them into new topics, from 10 to 20000. Omitted\nkeeps the stored value; zero means \"use the default\", resolved before\nvalidation. 1 to 9 are refused.\n"
-          },
-          "management_writes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "create",
-                "update",
-                "delete",
-                "action"
-              ],
-              "description": "A kind of configuration change: create (POST create operations), update\n(PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests\nand cache flushes).\n"
-            },
-            "uniqueItems": true,
-            "description": "Kinds of configuration change Warp may offer, each run only after the\nperson confirms it. Reads are always offered and are not a kind. Omitted\nkeeps the stored value; [] is reads only.\n"
           }
         }
       },
@@ -126428,15 +126555,14 @@
       },
       "WarpUnavailable": {
         "type": "object",
-        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n- `no_bifrost_mcp`: the Bifrost MCP is not loaded (no `client.bifrost_url`,\n  or its OpenAPI spec could not be read). Warp does not answer without it.\n  Show administrators the setup step and everyone else an ask-an-admin\n  message, in place of the composer.\n",
+        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n",
         "properties": {
           "reason": {
             "type": "string",
             "enum": [
               "not_configured",
               "no_log_store",
-              "no_vector_store",
-              "no_bifrost_mcp"
+              "no_vector_store"
             ]
           },
           "message": {

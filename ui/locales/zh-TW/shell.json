@@ -67,6 +67,7 @@
 		"caching": "快取",
 		"security": "安全",
 		"warp": "Warp",
+		"gateways": "閘道",
 		"proxy": "代理",
 		"apiKeys": "API 金鑰",
 		"performanceTuning": "效能調優",
@@ -150,6 +151,7 @@
 		"caching": "快取配置",
 		"security": "安全設定",
 		"warp": "Warp 代理設定",
+		"gateways": "程式設計用戶端登入",
 		"proxy": "代理配置",
 		"apiKeys": "API 金鑰管理",
 		"performanceTuning": "效能調優設定",
@@ -457,7 +459,15 @@
 			"label": "問題",
 			"skip": "跳過",
 			"orType": "或在下方輸入你自己的回答。",
-			"skipAnswer": "請自行判斷，並說明你的假設。"
+			"skipAnswer": "請自行判斷，並說明你的假設。",
+			"confirm": {
+				"subtitle": "確認後，Warp 將執行此變更。",
+				"destructiveSubtitle": "確認後，Warp 將執行此變更。請仔細檢查。",
+				"cannotUndo": "此操作無法復原。",
+				"noArguments": "無參數。",
+				"cancel": "取消",
+				"confirm": "確認"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵蓋內容",

@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
-import { buildHaystack } from "./lib/haystack.mjs";
+import { buildHaystack, declaredProviderOf } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
@@ -304,6 +304,11 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
 // rather than the global is what keeps the planner's cells identical to the shards' own selection.
 const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (!provider) return true;
+  // A request that names a known provider in a "provider" form field belongs to that provider
+  // only. Its URL can match another provider's route keyword (an Azure upload posts to
+  // /openai/v1/files), and that keyword must not pull it into the other partition.
+  const declared = declaredProviderOf(item);
+  if (declared && Object.hasOwn(PROVIDER_KEYWORDS, declared)) return declared === provider;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like

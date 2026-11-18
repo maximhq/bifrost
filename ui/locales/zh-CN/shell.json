@@ -67,6 +67,7 @@
 		"caching": "缓存",
 		"security": "安全",
 		"warp": "Warp",
+		"gateways": "网关",
 		"proxy": "代理",
 		"apiKeys": "API 密钥",
 		"performanceTuning": "性能调优",
@@ -150,6 +151,7 @@
 		"caching": "缓存配置",
 		"security": "安全设置",
 		"warp": "Warp 代理配置",
+		"gateways": "编码客户端登录",
 		"proxy": "代理配置",
 		"apiKeys": "API 密钥管理",
 		"performanceTuning": "性能调优设置",
@@ -457,7 +459,15 @@
 			"label": "问题",
 			"skip": "跳过",
 			"orType": "或在下方输入你自己的回答。",
-			"skipAnswer": "请自行判断，并说明你的假设。"
+			"skipAnswer": "请自行判断，并说明你的假设。",
+			"confirm": {
+				"subtitle": "确认后，Warp 将执行此更改。",
+				"destructiveSubtitle": "确认后，Warp 将执行此更改。请仔细检查。",
+				"cannotUndo": "此操作无法撤销。",
+				"noArguments": "无参数。",
+				"cancel": "取消",
+				"confirm": "确认"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",

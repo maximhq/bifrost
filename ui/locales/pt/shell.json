@@ -67,6 +67,7 @@
 		"caching": "Cache",
 		"security": "Segurança",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "Chaves API",
 		"performanceTuning": "Ajuste de desempenho",
@@ -150,6 +151,7 @@
 		"caching": "Configuração de cache",
 		"security": "Definições de segurança",
 		"warp": "Configuração do agente Warp",
+		"gateways": "Início de sessão de clientes de programação",
 		"proxy": "Configuração de proxy",
 		"apiKeys": "Gestão de chaves API",
 		"performanceTuning": "Definições de ajuste de desempenho",
@@ -457,7 +459,15 @@
 			"label": "Pergunta",
 			"skip": "Ignorar",
 			"orType": "Ou escreva a sua própria resposta abaixo.",
-			"skipAnswer": "Use seu melhor julgamento e diga o que você presumiu."
+			"skipAnswer": "Use seu melhor julgamento e diga o que você presumiu.",
+			"confirm": {
+				"subtitle": "O Warp fará esta alteração assim que você confirmar.",
+				"destructiveSubtitle": "O Warp fará esta alteração assim que você confirmar. Revise com cuidado.",
+				"cannotUndo": "Esta ação não pode ser desfeita.",
+				"noArguments": "Sem argumentos.",
+				"cancel": "Cancelar",
+				"confirm": "Confirmar"
+			}
 		},
 		"message": {
 			"whatThisCovers": "O que isto abrange",

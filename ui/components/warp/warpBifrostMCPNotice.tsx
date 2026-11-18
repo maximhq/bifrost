@@ -51,10 +51,13 @@ export interface WarpBifrostMCPNoticeState {
  * interrupt when Warp cannot answer.
  */
 export function useWarpBifrostMCPNotice({
+	bifrostMCPEnabled,
 	warpEnabled,
 	bifrostMCPAvailable,
 	setupOnly = false,
 }: {
+	/** Whether Warp uses the Bifrost MCP at all; off, the notice never shows. */
+	bifrostMCPEnabled: boolean;
 	warpEnabled: boolean;
 	bifrostMCPAvailable: boolean;
 	setupOnly?: boolean;
@@ -71,11 +74,11 @@ export function useWarpBifrostMCPNotice({
 		setAcknowledged(readWarpBifrostMCPNoticeAcknowledged());
 	}, []);
 
-	const setup = !bifrostMCPAvailable;
+	const setup = bifrostMCPEnabled && !bifrostMCPAvailable;
 	const mode =
 		acknowledged === null || (setupOnly && !setup)
 			? "hidden"
-			: warpBifrostMCPNoticeMode({ warpEnabled, canUpdateWarp, bifrostMCPAvailable, acknowledged, laterCount });
+			: warpBifrostMCPNoticeMode({ bifrostMCPEnabled, warpEnabled, canUpdateWarp, bifrostMCPAvailable, acknowledged, laterCount });
 	const open = reviewing || (mode === "dialog" && !dismissed);
 	const close = () => {
 		setReviewing(false);
@@ -284,8 +287,16 @@ export function WarpBifrostMCPNoticeDialog({ notice }: { notice: WarpBifrostMCPN
 }
 
 /** The settings page's notice: the banner in the page flow and the dialog over it. */
-export default function WarpBifrostMCPNotice({ warpEnabled, bifrostMCPAvailable }: { warpEnabled: boolean; bifrostMCPAvailable: boolean }) {
-	const notice = useWarpBifrostMCPNotice({ warpEnabled, bifrostMCPAvailable });
+export default function WarpBifrostMCPNotice({
+	bifrostMCPEnabled,
+	warpEnabled,
+	bifrostMCPAvailable,
+}: {
+	bifrostMCPEnabled: boolean;
+	warpEnabled: boolean;
+	bifrostMCPAvailable: boolean;
+}) {
+	const notice = useWarpBifrostMCPNotice({ bifrostMCPEnabled, warpEnabled, bifrostMCPAvailable });
 	return (
 		<>
 			{notice.mode === "banner" && <WarpBifrostMCPNoticeBanner setup={notice.setup} onReview={notice.review} />}

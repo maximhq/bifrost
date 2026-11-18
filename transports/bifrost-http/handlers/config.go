@@ -573,6 +573,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if effectiveAuthMode == "" {
 		effectiveAuthMode = currentConfig.MCPServerAuthMode
 	}
+	// The config API redacts plain telemetry header values; a value sent back still redacted
+	// keeps the stored one, as provider proxy and MCP credentials do.
+	restoreRedactedTelemetryHeaders(payload.ClientConfig.OAuth2ServerConfig, currentConfig.OAuth2ServerConfig)
+	// A redacted value that matched nothing (its collector's endpoint or the header's name
+	// changed) would be saved as the credential itself, so it must be typed again.
+	if endpoint, name, ok := unrestoredRedactedTelemetryHeader(payload.ClientConfig.OAuth2ServerConfig); ok {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("re-enter the value of the %s header for collector %s: a redacted value can only be kept as it is", name, endpoint))
+		return
+	}
 	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
 	if payload.ClientConfig.OAuth2ServerConfig != nil {
 		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
@@ -582,6 +591,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		if isAuthBypassed(ctx) && !slices.Equal(previousRedirects, effectiveOAuth2Config.AllowedRedirectURIs) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDestinationsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayEnabled(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "enabling the client gateway requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayManagedSettingsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway managed settings requires an authenticated admin session")
+			return
+		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDropAttributesChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry drop_attributes requires an authenticated admin session")
 			return
 		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
@@ -609,6 +634,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		effectiveOAuth2Config.DisableVKIdentity &&
 		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
 		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Client gateways derive every URL and token claim they issue from
+	// issuer_url, independently of mcp_server_auth_mode, so they need one pinned
+	// just as OAuth discovery does below. Evaluated on the merged config so a
+	// partial update cannot clear the issuer while a gateway stays on.
+	if effectiveOAuth2Config.AnyClientGatewayEnabled() &&
+		(!effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
+		return
+	}
+	if err := effectiveOAuth2Config.ValidateClientGateways(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -730,6 +769,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Checked before any live change below. Omitted keeps the current cap, so a caller unaware of
+	// the field never lifts it; "auto" lifts it.
+	if err := setMCPProtocolCap("mcp_max_protocol_version", payload.ClientConfig.MCPMaxProtocolVersion, &updatedConfig.MCPMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setMCPProtocolCap("mcp_server_max_protocol_version", payload.ClientConfig.MCPServerMaxProtocolVersion, &updatedConfig.MCPServerMaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -796,14 +846,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
-	}
-	// Omitted keeps the current cap, so a caller unaware of the field never lifts it; "auto" lifts it.
-	if v := payload.ClientConfig.MCPMaxProtocolVersion; v != "" {
-		if err := schemas.ValidateMCPMaxProtocolVersion("mcp_max_protocol_version", v); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
-		}
-		updatedConfig.MCPMaxProtocolVersion = v
 	}
 	// 0 means the built-in default, so compare against the current value
 	// instead of the > 0 guard used by other numeric fields.
@@ -1891,4 +1933,135 @@ func effectiveGlobalProxyType(t network.GlobalProxyType) network.GlobalProxyType
 		return network.GlobalProxyTypeHTTP
 	}
 	return t
+}
+
+// setMCPProtocolCap validates v and stores it in dst; "" leaves dst as it is.
+func setMCPProtocolCap(field, v string, dst *string) error {
+	if v == "" {
+		return nil
+	}
+	if err := schemas.ValidateMCPMaxProtocolVersion(field, v); err != nil {
+		return err
+	}
+	*dst = v
+	return nil
+}
+
+// clientGatewayEnabled reports whether the save switches the client gateway on. Switching it
+// off needs no admin session, as pausing telemetry does not.
+func clientGatewayEnabled(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := before.ClaudeCodeGateway(), after.ClaudeCodeGateway()
+	return a != nil && a.Enabled && (b == nil || !b.Enabled)
+}
+
+// clientGatewayManagedSettingsChanged reports whether the managed settings pushed to every
+// signed-in client change.
+func clientGatewayManagedSettingsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	var b, a map[string]any
+	if g := before.ClaudeCodeGateway(); g != nil {
+		b = g.ManagedSettings
+	}
+	if g := after.ClaudeCodeGateway(); g != nil {
+		a = g.ManagedSettings
+	}
+	bj, _ := json.Marshal(b)
+	aj, _ := json.Marshal(a)
+	return !bytes.Equal(bj, aj)
+}
+
+// clientGatewayTelemetryDropAttributesChanged reports whether the attributes dropped before
+// forwarding change; removing one would start forwarding it.
+func clientGatewayTelemetryDropAttributesChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	return !slices.Equal(clientGatewayTelemetryDropAttributes(before), clientGatewayTelemetryDropAttributes(after))
+}
+
+func clientGatewayTelemetryDropAttributes(c *configstoreTables.OAuth2ServerConfig) []string {
+	g := c.ClaudeCodeGateway()
+	if g == nil || g.Telemetry == nil {
+		return nil
+	}
+	return g.Telemetry.DropAttributes
+}
+
+// clientGatewayTelemetryDestinationsChanged reports whether the Claude Code telemetry
+// destinations differ: any endpoint or header whose value, reference or type changed.
+func clientGatewayTelemetryDestinationsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := clientGatewayTelemetryDestinations(before), clientGatewayTelemetryDestinations(after)
+	if len(b) != len(a) {
+		return true
+	}
+	for i := range b {
+		if !b[i].Endpoint.Equals(a[i].Endpoint) || len(b[i].Headers) != len(a[i].Headers) {
+			return true
+		}
+		for name, v := range b[i].Headers {
+			if w, ok := a[i].Headers[name]; !ok || !v.Equals(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// restoreRedactedTelemetryHeaders puts the stored value back for each telemetry header sent
+// back exactly as GET /api/config redacted it. Headers are matched by their collector's
+// endpoint and name, not position, so removing a collector cannot shift a secret onto another.
+func restoreRedactedTelemetryHeaders(next, stored *configstoreTables.OAuth2ServerConfig) {
+	storedDests := clientGatewayTelemetryDestinations(stored)
+	if len(storedDests) == 0 {
+		return
+	}
+	redactedDests := clientGatewayTelemetryDestinations(stored.Redacted())
+	nextDests := clientGatewayTelemetryDestinations(next)
+	matches := func(d configstoreTables.ClientGatewayTelemetryDestination, i int) bool {
+		return d.Endpoint.Equals(storedDests[i].Endpoint) || d.Endpoint.Equals(redactedDests[i].Endpoint)
+	}
+	for _, d := range nextDests {
+		// Only an endpoint listed once on both sides identifies its collector; otherwise the
+		// placeholder stays and the save is refused rather than guessing which secret is meant.
+		match, storedCount, nextCount := -1, 0, 0
+		for i := range storedDests {
+			if matches(d, i) {
+				match = i
+				storedCount++
+			}
+		}
+		for _, other := range nextDests {
+			if other.Endpoint.Equals(d.Endpoint) {
+				nextCount++
+			}
+		}
+		if storedCount != 1 || nextCount != 1 {
+			continue
+		}
+		for name, v := range d.Headers {
+			if v.IsMaskedPlaceholder() && v.Equals(redactedDests[match].Headers[name]) {
+				d.Headers[name] = storedDests[match].Headers[name]
+			}
+		}
+	}
+}
+
+// unrestoredRedactedTelemetryHeader reports a telemetry header still holding a redaction
+// placeholder after restoreRedactedTelemetryHeaders, with its collector's endpoint.
+func unrestoredRedactedTelemetryHeader(c *configstoreTables.OAuth2ServerConfig) (endpoint, name string, ok bool) {
+	for _, d := range clientGatewayTelemetryDestinations(c) {
+		for n, v := range d.Headers {
+			if v.IsMaskedPlaceholder() {
+				if d.Endpoint.IsFromSecret() {
+					return d.Endpoint.GetRawRef(), n, true
+				}
+				return d.Endpoint.GetValue(), n, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func clientGatewayTelemetryDestinations(c *configstoreTables.OAuth2ServerConfig) []configstoreTables.ClientGatewayTelemetryDestination {
+	cc := c.ClaudeCodeGateway()
+	if cc == nil || cc.Telemetry == nil {
+		return nil
+	}
+	return cc.Telemetry.Destinations
 }

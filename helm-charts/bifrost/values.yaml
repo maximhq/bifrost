@@ -478,19 +478,31 @@ bifrost:
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
     # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
+    # mcpOpenapiMaxSpecMb: 32                # Size limit in MiB on an openapi MCP client's spec (inline, specFile or fetched from specUrl); 0 = built-in default (32), max 256. Parsing holds several times the spec's size in memory
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
     # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
-    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and client gateways (gateways.<client>.enabled)
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when any client gateway is enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
+    #   gateways:                 # Client gateways at <issuerUrl>/gateway/<client>; each needs issuerUrl, any mcpServerAuthMode
+    #     claudeCode:             # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code
+    #       enabled: false
+    #       managedSettings: {}   # Optional Claude Code managed-settings.json pushed to signed-in clients
+    #       telemetry:            # Forward Claude Code's OTLP telemetry, stamped with the Bifrost identity
+    #         enabled: false
+    #         destinations:       # OTLP/HTTP collectors; signals go to <endpoint>/v1/{metrics,logs,traces}
+    #           - endpoint: "https://otel-collector.example.com"
+    #             headers:
+    #               authorization: "env.OTEL_COLLECTOR_TOKEN"   # a plain value or an env./vault. reference
+    #         dropAttributes: []  # e.g. ["prompt"] to strip prompt text before forwarding
 
   # Server configuration
   server:

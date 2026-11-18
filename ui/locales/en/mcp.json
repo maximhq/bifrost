@@ -1074,7 +1074,7 @@
 		"refreshesOnNextUse": "Refreshes on next use",
 		"unknown": "Unknown",
 		"revokeTitle": "Revoke this OAuth grant?",
-		"revokeDescription": "The refresh token for this grant stops rotating right away, so the MCP client can no longer renew its access. Its current access token is a short-lived JWT that keeps working on the /mcp endpoint until it expires (default 10 minutes), after which the client is fully cut off and must reconnect via the OAuth consent flow.",
+		"revokeDescription": "The refresh token for this grant stops rotating right away, so the client can no longer renew its access. Its current access token is a short-lived JWT that keeps working until it expires, after which the client is fully cut off and must sign in again through the OAuth consent flow.",
 		"filter": {
 			"identity": "Identity",
 			"virtualKey": "Virtual Key",

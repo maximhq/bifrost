@@ -1074,7 +1074,7 @@
 		"refreshesOnNextUse": "Se renueva en el próximo uso",
 		"unknown": "Desconocido",
 		"revokeTitle": "¿Revocar esta concesión OAuth?",
-		"revokeDescription": "El refresh token de esta concesión deja de rotar de inmediato, así que el cliente MCP ya no puede renovar su acceso. Su token de acceso actual es un JWT de corta duración que sigue funcionando en el endpoint /mcp hasta que caduca (10 minutos por defecto); después el cliente queda desconectado y debe volver a conectarse mediante el flujo de consentimiento de OAuth.",
+		"revokeDescription": "El refresh token de esta concesión deja de rotar de inmediato, así que el cliente ya no puede renovar su acceso. Su token de acceso actual es un JWT de corta duración que sigue funcionando hasta que caduca; después el cliente queda desconectado y debe volver a iniciar sesión mediante el flujo de consentimiento de OAuth.",
 		"filter": {
 			"identity": "Identidad",
 			"virtualKey": "Clave virtual",

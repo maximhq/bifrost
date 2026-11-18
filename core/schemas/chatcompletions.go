@@ -45,7 +45,7 @@ type BifrostChatResponse struct {
 	Choices             []BifrostResponseChoice    `json:"choices"`
 	Created             int                        `json:"created"` // The Unix timestamp (in seconds).
 	Model               string                     `json:"model"`
-	Object              string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	Object              string                     `json:"object"` // "chat.completion", "chat.completion.chunk", or Perplexity's passthrough terminal "chat.completion.done"
 	ServiceTier         *BifrostServiceTier        `json:"service_tier,omitempty"`
 	Speed               *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo        *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier

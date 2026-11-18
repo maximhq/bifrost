@@ -1074,7 +1074,7 @@
 		"refreshesOnNextUse": "Wird bei nächster Verwendung aktualisiert",
 		"unknown": "Unbekannt",
 		"revokeTitle": "Diese OAuth-Autorisierung widerrufen?",
-		"revokeDescription": "Das Refresh-Token für diese Autorisierung wird sofort ungültig, sodass der MCP-Client seinen Zugriff nicht mehr erneuern kann. Das aktuelle Zugriffstoken ist ein kurzlebiges JWT, das am /mcp-Endpunkt bis zu seinem Ablauf (standardmäßig 10 Minuten) gültig bleibt. Danach wird der Client vollständig getrennt und muss sich erneut über den OAuth-Zustimmungs-Flow verbinden.",
+		"revokeDescription": "Das Refresh-Token für diese Autorisierung wird sofort ungültig, sodass der Client seinen Zugriff nicht mehr erneuern kann. Das aktuelle Zugriffstoken ist ein kurzlebiges JWT, das bis zu seinem Ablauf gültig bleibt. Danach wird der Client vollständig getrennt und muss sich erneut über den OAuth-Zustimmungs-Flow anmelden.",
 		"filter": {
 			"identity": "Identität",
 			"virtualKey": "Virtueller Schlüssel",
