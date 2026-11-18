@@ -132792,6 +132792,114 @@
           ]
         },
         {
+          "name": "52.C3 /genai fileData https:// audio + prompt -> gemini/gemini-2.5-flash (answered, not routed to transcription)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"fileData\": {\n            \"fileUri\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"mimeType\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"text\": \"Which product is discussed in this audio? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An audio fileData part used to classify the call as transcription, which carries bytes only,",
+                  "// so Bifrost rejected it with 400 'transcription input not provided' before reaching Gemini.",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var parts = ((((j.candidates || [])[0] || {}).content || {}).parts || []);",
+                  "var txt = parts.filter(function (p) { return p && !p.thought && typeof p.text === 'string'; }).map(function (p) { return p.text; }).join('');",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply: ' + pm.response.text().slice(0, 500)).to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "  // A model that got only the prompt cannot name the product, so a silently dropped file fails here.",
+                  "  pm.expect(String(txt), 'reply does not name the product from the audio: ' + String(txt).slice(0, 300)).to.match(/pixel/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.C4 /genai fileData https:// audio + prompt -> vertex/gemini-2.5-flash (answered, not routed to transcription)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"fileData\": {\n            \"fileUri\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"mimeType\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"text\": \"Which product is discussed in this audio? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An audio fileData part used to classify the call as transcription, which carries bytes only,",
+                  "// so Bifrost rejected it with 400 'transcription input not provided' before reaching Gemini.",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var parts = ((((j.candidates || [])[0] || {}).content || {}).parts || []);",
+                  "var txt = parts.filter(function (p) { return p && !p.thought && typeof p.text === 'string'; }).map(function (p) { return p.text; }).join('');",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply: ' + pm.response.text().slice(0, 500)).to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "  // A model that got only the prompt cannot name the product, so a silently dropped file fails here.",
+                  "  pm.expect(String(txt), 'reply does not name the product from the audio: ' + String(txt).slice(0, 300)).to.match(/pixel/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "[EXPECT-4XX] 52.D1 s3:// document -> vertex/gemini-2.5-flash (forwarded, provider rejects)",
           "request": {
             "method": "POST",
