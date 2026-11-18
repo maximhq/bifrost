@@ -1104,6 +1104,39 @@ func TestChatCompletionRequiresMessageRole(t *testing.T) {
 	}
 }
 
+// TestChatCompletionPreservesPreparationErrorShape verifies non-role validation errors
+// retain their existing JSON 400 response without an error.type field.
+func TestChatCompletionPreservesPreparationErrorShape(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, fields, message string
+		}{
+			{"empty messages", `,"messages":[]}`, "messages is required for chat completion"},
+			{"missing messages", `}`, "messages is required for chat completion"},
+			{"null messages", `,"messages":null}`, "messages is required for chat completion"},
+			{"malformed JSON", `,"messages":[`, "Invalid request payload"},
+			{"invalid messages type", `,"messages":42}`, "Invalid request payload"},
+		} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"openai/gpt-4o-mini","stream":%t%s`, stream, tc.fields))
+				// A nil client proves preparation errors do not reach provider dispatch.
+				(&CompletionHandler{}).chatCompletion(&ctx)
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+				var response struct {
+					Error map[string]json.RawMessage `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+				require.NotContains(t, response.Error, "type")
+				var message string
+				require.NoError(t, json.Unmarshal(response.Error["message"], &message))
+				require.Equal(t, tc.message, message)
+			})
+		}
+	}
+}
+
 // TestPrepareChatCompletionPreservesNonemptyRoles verifies standard and custom roles survive
 // request preparation, including assistant messages containing only tool calls.
 func TestPrepareChatCompletionPreservesNonemptyRoles(t *testing.T) {

@@ -342639,6 +342639,124 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "370. Native chat preparation error compatibility (#9298) (chat-message-role-validation)",
+      "description": "The role-validation fix must only add error.type for missing message roles. Existing native chat preparation failures keep their JSON 400 envelope without error.type. Empty messages and malformed JSON are checked with stream false and true; all four requests fail before provider dispatch.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('non-role preparation errors preserve their response shape', function () {",
+              "  var detail = 'response: ' + pm.response.text();",
+              "  pm.expect(pm.response.code, detail).to.equal(400);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), detail).to.include('application/json');",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error, detail).to.be.an('object');",
+              "  pm.expect(body.error, detail).to.not.have.property('type');",
+              "  var message = pm.info.requestName.indexOf('malformed JSON') !== -1 ? 'Invalid request payload' : 'messages is required for chat completion';",
+              "  pm.expect(body.error.message, detail).to.equal(message);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "370.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=false - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": false,\n  \"messages\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "370.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=true - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"messages\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "370.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=false - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": false,\n  \"messages\": [",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "370.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=true - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"messages\": [",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
