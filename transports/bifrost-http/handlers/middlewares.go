@@ -1471,7 +1471,7 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	case pluginBodySkip:
 		return
 	case pluginBodySource:
-		req.BodySource = multipartFormBodySource{req: &ctx.Request}
+		req.BodySource = multipartFormBodySource{ctx: ctx}
 		return
 	}
 	body := ctx.Request.Body()
@@ -1520,21 +1520,23 @@ func pluginRequestBodyMode(ctx *fasthttp.RequestCtx) pluginBodyMode {
 
 // multipartFormBodySource streams a request's multipart form for transport plugins, through
 // schemas.NewMultipartFormBodySource: the parsed form is serialized as it is read, its files from
-// their temp files, so it is never held in memory as one body. The form is the one fasthttp parsed
-// while reading the request, or is parsed on the first Open and cached on the request, where the
-// handler reuses it. Nothing is parsed until a plugin opens the body, so Size is unknown (-1).
+// their temp files, so it is never held in memory as one body. The form is the request's shared
+// parse (lib.SharedMultipartForm): the one fasthttp parsed while reading the request, the one the
+// passthrough route already parsed, or one parsed on the first Open and cached on the request,
+// where the handler reuses it. Nothing is parsed until a plugin opens the body, so Size is unknown
+// (-1).
 type multipartFormBodySource struct {
-	req *fasthttp.Request
+	ctx *fasthttp.RequestCtx
 }
 
 func (s multipartFormBodySource) Size() int64 { return -1 }
 
 func (s multipartFormBodySource) Open() (io.ReadCloser, error) {
-	form, err := s.req.MultipartForm()
+	form, types, err := lib.SharedMultipartForm(s.ctx)
 	if err != nil {
 		return nil, err
 	}
-	src, err := schemas.NewMultipartFormBodySource(form, string(s.req.Header.MultipartFormBoundary()))
+	src, err := schemas.NewMultipartFormBodySource(form, string(s.ctx.Request.Header.MultipartFormBoundary()), types)
 	if err != nil {
 		return nil, err
 	}
@@ -1568,6 +1570,8 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	// would read the very body the copy was skipped for.
 	if req.Body != nil && (bodyMode != pluginBodyCopy || !bytes.Equal(req.Body, ctx.Request.Body())) {
 		ctx.Request.SetBody(req.Body)
+		// A form parsed from the old body (a plugin read the upload) describes bytes that are gone.
+		lib.ResetMultipartForm(ctx)
 	}
 	return true
 }

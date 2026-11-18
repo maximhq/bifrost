@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/textproto"
 	"slices"
+	"strings"
 )
 
 // BodySource is a read-only handle to a request body or uploaded file that may be too large to
@@ -80,15 +82,37 @@ func ReadBodySource(src BodySource) ([]byte, error) {
 // from its source (memory or temp file) on Open. Size is exact, so the body can be sent with a
 // Content-Length. Fields and files are written in name order, so the bytes are the same on every
 // Open. The form must stay valid (its temp files not removed) while the source is in use.
-func NewMultipartFormBodySource(form *multipart.Form, boundary string) (BodySource, error) {
+//
+// valueTypes, when set, is the Content-Type each form.Value part arrived with, by name and index
+// (the parsed form has lost it). A part with a type is written with it; a name whose list does not
+// line up with its values, or a part without a type, is written as a plain field.
+func NewMultipartFormBodySource(form *multipart.Form, boundary string, valueTypes map[string][]string) (BodySource, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	if err := w.SetBoundary(boundary); err != nil {
 		return nil, fmt.Errorf("invalid multipart boundary: %w", err)
 	}
 	for _, name := range sortedFormKeys(form.Value) {
-		for _, v := range form.Value[name] {
-			if err := w.WriteField(name, v); err != nil {
+		values := form.Value[name]
+		types := valueTypes[name]
+		if len(types) != len(values) {
+			types = nil
+		}
+		for i, v := range values {
+			var err error
+			if types != nil && types[i] != "" {
+				var part io.Writer
+				part, err = w.CreatePart(textproto.MIMEHeader{
+					"Content-Disposition": {`form-data; name="` + formFieldNameEscaper.Replace(name) + `"`},
+					"Content-Type":        {types[i]},
+				})
+				if err == nil {
+					_, err = io.WriteString(part, v)
+				}
+			} else {
+				err = w.WriteField(name, v)
+			}
+			if err != nil {
 				return nil, fmt.Errorf("failed to write %s field: %w", name, err)
 			}
 		}
@@ -197,6 +221,10 @@ func (r *multipartFormReader) closeFile() error {
 	r.file = nil
 	return err
 }
+
+// formFieldNameEscaper escapes a field name inside a quoted Content-Disposition parameter, as
+// multipart.Writer.WriteField does.
+var formFieldNameEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 
 // sortedFormKeys returns a form map's keys in order.
 func sortedFormKeys[V any](m map[string]V) []string {

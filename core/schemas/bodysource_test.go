@@ -122,7 +122,7 @@ func TestMultipartFormBodySource(t *testing.T) {
 	}
 	defer form.RemoveAll()
 
-	src, err := NewMultipartFormBodySource(form, "stream-boundary")
+	src, err := NewMultipartFormBodySource(form, "stream-boundary", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +162,49 @@ func TestMultipartFormBodySource(t *testing.T) {
 	}
 }
 
+// TestMultipartFormBodySourceKeepsValueContentType asserts a part without a filename is forwarded
+// with the Content-Type it arrived with (valueTypes), which the parsed form alone has lost, and a
+// plain field stays a plain field. Size stays exact.
+func TestMultipartFormBodySourceKeepsValueContentType(t *testing.T) {
+	form := &multipart.Form{Value: map[string][]string{"mask": {"mask-bytes"}, "model": {"whisper-1"}, `we"ird`: {"v"}}}
+	types := map[string][]string{"mask": {"application/octet-stream"}, "model": {""}, `we"ird`: {"text/plain"}}
+	src, err := NewMultipartFormBodySource(form, "b", types)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := ReadBodySource(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(body)) != src.Size() {
+		t.Fatalf("read %d bytes, Size says %d", len(body), src.Size())
+	}
+	got := map[string]string{}
+	values := map[string]string{}
+	r := multipart.NewReader(bytes.NewReader(body), "b")
+	for {
+		p, err := r.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(p)
+		got[p.FormName()] = p.Header.Get("Content-Type")
+		values[p.FormName()] = string(data)
+	}
+	want := map[string]string{"mask": "application/octet-stream", "model": "", `we"ird`: "text/plain"}
+	for name, ct := range want {
+		if got[name] != ct {
+			t.Errorf("part %q forwarded with Content-Type %q, want %q", name, got[name], ct)
+		}
+	}
+	if values["mask"] != "mask-bytes" || values["model"] != "whisper-1" || values[`we"ird`] != "v" {
+		t.Errorf("part values changed: %v", values)
+	}
+}
+
 // openFDs counts this process's open file descriptors (Linux /proc).
 func openFDs(t *testing.T) int {
 	t.Helper()
@@ -190,7 +233,7 @@ func TestMultipartFormBodySourceOpensFilesOneAtATime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer form.RemoveAll()
-	src, err := NewMultipartFormBodySource(form, "b")
+	src, err := NewMultipartFormBodySource(form, "b", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

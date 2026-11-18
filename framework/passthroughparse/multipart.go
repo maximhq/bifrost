@@ -3,6 +3,7 @@ package passthroughparse
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"maps"
 	"mime"
 	"mime/multipart"
@@ -138,22 +139,78 @@ func SummarizeMultipart(contentType string, body []byte) (summary []byte, ok boo
 	return out, true
 }
 
+// ReadMultipartForm parses a multipart/form-data body exactly as multipart.Reader.ReadForm does,
+// and also returns the Content-Type each part without a filename arrived with, which ReadForm
+// drops: valueTypes[name][i] is the type of form.Value[name][i], "" for a part that had none.
+//
+// The body is read once. ReadForm reads it through a tee into a pipe, where MultipartValueTypes
+// reads only the part headers on its own goroutine and discards the part contents, so nothing more
+// than ReadForm's own buffers is held. The goroutine always drains the pipe, so it never stalls
+// ReadForm, and it has finished when ReadMultipartForm returns.
+func ReadMultipartForm(r io.Reader, boundary string, maxMemory int64) (form *multipart.Form, valueTypes map[string][]string, err error) {
+	pr, pw := io.Pipe()
+	done := make(chan map[string][]string, 1)
+	go func() {
+		done <- MultipartValueTypes(pr, boundary)
+		io.Copy(io.Discard, pr) //nolint:errcheck // keep the tee unblocked after a scan error
+	}()
+	form, err = multipart.NewReader(io.TeeReader(r, pw), boundary).ReadForm(maxMemory)
+	pw.Close()
+	valueTypes = <-done
+	if err != nil {
+		return nil, nil, err
+	}
+	return form, valueTypes, nil
+}
+
+// MultipartValueTypes reads a multipart/form-data body's part headers and returns the Content-Type
+// of every part that has a form name and no filename (the parts ReadForm stores under Value), by
+// name in body order, "" for a part without one. Part contents are discarded. It stops at the
+// first malformed part and returns what it read until then.
+func MultipartValueTypes(r io.Reader, boundary string) map[string][]string {
+	types := map[string][]string{}
+	mr := multipart.NewReader(r, boundary)
+	for {
+		p, err := mr.NextPart()
+		if err != nil {
+			return types
+		}
+		if name := p.FormName(); name != "" && p.FileName() == "" {
+			types[name] = append(types[name], p.Header.Get("Content-Type"))
+		}
+		io.Copy(io.Discard, p) //nolint:errcheck // NextPart reports a read error
+	}
+}
+
 // SummarizeMultipartForm is SummarizeMultipart for a form already parsed by the transport, as a
 // streamed multipart passthrough upload carries it: the same summary, with the same bounds, built
 // from the form's values and file headers, so file contents are never read. Fields and files are
 // recorded in name order.
-func SummarizeMultipartForm(form *multipart.Form) (summary []byte, ok bool) {
+//
+// The parser files every part without a filename under Value and drops its Content-Type, so a
+// file sent without a filename arrives as a value. valueTypes (from ReadMultipartForm) restores
+// that type: a value whose type is not textual is recorded like a file, by the same rule as
+// SummarizeMultipart. A value whose type is unknown (valueTypes nil, or not lined up with the
+// values) is recorded like a file when its content is not text.
+func SummarizeMultipartForm(form *multipart.Form, valueTypes map[string][]string) (summary []byte, ok bool) {
 	if form == nil {
 		return nil, false
 	}
 	result := MultipartSummary{Fields: map[string]any{}}
 	fieldParts, fieldBytes := 0, 0
 	for _, name := range slices.Sorted(maps.Keys(form.Value)) {
-		for _, value := range form.Value[name] {
-			if !isTextFormValue(value) {
-				// The parser files every part without a filename under Value and drops its
-				// Content-Type, so a binary part arrives here too: record it like a file.
-				result.Files = append(result.Files, MultipartFile{Field: name, Bytes: int64(len(value))})
+		values := form.Value[name]
+		types := valueTypes[name]
+		if len(types) != len(values) {
+			types = nil
+		}
+		for i, value := range values {
+			partType := ""
+			if types != nil {
+				partType = types[i]
+			}
+			if !isTextualPartType(partType) || !isTextFormValue(value) {
+				result.Files = append(result.Files, MultipartFile{Field: name, ContentType: partType, Bytes: int64(len(value))})
 				continue
 			}
 			if len(value) > maxMultipartFieldBytes {

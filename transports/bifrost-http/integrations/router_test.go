@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -1790,6 +1792,8 @@ type passthroughRewritingPlugin struct {
 	baseProvider schemas.ModelProvider
 	provider     schemas.ModelProvider
 	hasRewriter  bool
+	formTypes    map[string][]string
+	summary      string // the multipart log summary the logging plugin would store
 }
 
 // GetName identifies the test plugin.
@@ -1809,6 +1813,11 @@ func (p *passthroughRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req
 	defer p.mu.Unlock()
 	passthrough := req.PassthroughRequest
 	p.baseProvider, p.provider = passthrough.BaseProvider, passthrough.Provider
+	p.formTypes = passthrough.FormTypes
+	p.summary = ""
+	if summary, ok := passthroughparse.SummarizeMultipartForm(passthrough.Form, passthrough.FormTypes); ok {
+		p.summary = string(summary)
+	}
 	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
 	p.hasRewriter = rewriter != nil
 	if rewriter == nil {
@@ -1947,6 +1956,83 @@ func TestHandlePassthrough_MultipartUploadStreamed(t *testing.T) {
 			if tc.streams {
 				assert.Less(t, allocated, uint64(fileSize), "a %d-byte upload allocated %d bytes in the gateway; the form must be streamed, not held in memory", fileSize, allocated)
 			}
+		})
+	}
+}
+
+// TestHandlePassthrough_MultipartValueTypesKept asserts a passthrough upload keeps the Content-Type of
+// a part sent without a filename, which the parsed form alone has lost: the upstream receives the
+// part with it, and plugins (the logging summary) get it in FormTypes, so a file sent without a
+// filename is not logged as a text field. Streamed and buffered bodies behave the same.
+func TestHandlePassthrough_MultipartValueTypesKept(t *testing.T) {
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	plugin := &passthroughRewritingPlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughRewriteAccount{baseURL: server.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	// pluginReadsFirst stands in for a transport plugin that opens the upload before the route runs
+	// (multipartFormBodySource.Open), on the same route middleware chain.
+	var pluginReadsFirst bool
+	readsBody := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if pluginReadsFirst {
+				if _, _, err := lib.SharedMultipartForm(ctx); err != nil {
+					t.Errorf("plugin read of the upload: %v", err)
+				}
+			}
+			next(ctx)
+		}
+	}
+	r := router.New()
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, readsBody)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	require.NoError(t, w.WriteField("purpose", "batch"))
+	part, err := w.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}})
+	require.NoError(t, err)
+	_, err = part.Write([]byte("printable file bytes sent without a filename"))
+	require.NoError(t, err)
+	part, err = w.CreateFormFile("file", "batch.jsonl")
+	require.NoError(t, err)
+	_, err = part.Write([]byte(`{"custom_id":"r"}`))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	for _, tc := range []struct{ streamed, pluginFirst bool }{{true, false}, {false, false}, {true, true}, {false, true}} {
+		streamed := tc.streamed
+		t.Run(fmt.Sprintf("streamed=%v/plugin-reads-first=%v", tc.streamed, tc.pluginFirst), func(t *testing.T) {
+			pluginReadsFirst = tc.pluginFirst
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+			ctx.Request.Header.SetContentType(w.FormDataContentType())
+			if streamed {
+				ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+			} else {
+				ctx.Request.SetBody(body.Bytes())
+			}
+			defer ctx.Request.Reset()
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+
+			upstream.mu.Lock()
+			assert.Equal(t, "application/octet-stream", upstream.fieldTypes["mask"], "the upstream must get the part's Content-Type")
+			assert.Equal(t, "", upstream.fieldTypes["purpose"], "a plain field stays a plain field")
+			assert.Equal(t, "printable file bytes sent without a filename", upstream.fields["mask"])
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			upstream.mu.Unlock()
+			plugin.mu.Lock()
+			assert.Equal(t, map[string][]string{"purpose": {""}, "mask": {"application/octet-stream"}}, plugin.formTypes)
+			assert.NotContains(t, plugin.summary, "printable file bytes", "the log summary must not hold the part's bytes")
+			assert.Contains(t, plugin.summary, `"content_type":"application/octet-stream"`, "the log summary must record the part like a file")
+			plugin.mu.Unlock()
 		})
 	}
 }

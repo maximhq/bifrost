@@ -4123,7 +4123,7 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 		initialData.Params = passthroughParams
 		if len(req.PassthroughRequest.Body) == 0 && req.PassthroughRequest.Form != nil {
 			// A streamed multipart upload: summarize its parsed form, never the file contents.
-			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form); ok {
+			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form, req.PassthroughRequest.FormTypes); ok {
 				initialData.PassthroughRequestBody = string(summary)
 				passthroughParams.MultipartSummary = true
 			}
