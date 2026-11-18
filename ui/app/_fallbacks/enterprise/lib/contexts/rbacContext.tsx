@@ -31,6 +31,7 @@ export enum RbacResource {
 	RBAC = "RBAC",
 	Governance = "Governance",
 	RoutingRules = "RoutingRules",
+	Routers = "Routers",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
 	AccessProfiles = "AccessProfiles",
@@ -49,6 +50,7 @@ export enum RbacResource {
 	WarpSession = "WarpSession",
 	BackgroundJobs = "BackgroundJobs",
 	Alerting = "Alerting",
+	Datasheet = "Datasheet",
 }
 
 // RBAC Operation Names (must match backend definitions)

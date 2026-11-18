@@ -15,6 +15,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 - **Request conversion** - Conversion to underlying provider format (Gemini or Anthropic)
 - **Embeddings support** - Vector generation with task type and truncation options
 - **Model discovery** - Paginated model listing with deployment information
+- **Realtime** - Gemini Live models over WebSocket, translated to OpenAI Realtime events, see [Realtime](#realtime)
 
 ### Supported Operations
 
@@ -29,15 +30,16 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Image Variation      | ❌            | -         | Not supported                             |
 | List Models          | ✅            | -         | `/publishers/{publisher}/models`          |
 | Text Completions     | ❌            | ❌        | -                                         |
-| Speech (TTS)         | ❌            | ❌        | -                                         |
+| Speech (TTS)         | ✅            | ✅ (Gemini TTS) | `/text:synthesize` (Cloud Text-to-Speech), `:generateContent` (Gemini TTS) |
 | Transcriptions (STT) | ❌            | ❌        | -                                         |
+| Realtime (Gemini Live) | -           | ✅        | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` (WebSocket) |
 | Files                | ❌            | ❌        | -                                         |
 | Batch                | ❌            | ❌        | -                                         |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
 
-**Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
+**Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models. Speech is served by Cloud Text-to-Speech rather than Vertex AI, see [Speech](#speech).
 
 </Note>
 
@@ -1345,7 +1347,7 @@ Image variation is not supported by Vertex AI.
 
 ## Request Parameters
 
-None required. The key's `region` picks the Model Garden host (`aiplatform.googleapis.com` for `global` and multi-region endpoints, `{region}-aiplatform.googleapis.com` otherwise).
+None required. The key's `region` picks the Model Garden host (`aiplatform.googleapis.com` for `global`, `aiplatform.{region}.rep.googleapis.com` for the `us` and `eu` multi-region endpoints, `{region}-aiplatform.googleapis.com` otherwise).
 
 ## How Models Are Listed
 
@@ -1517,3 +1519,104 @@ Vertex AI routes video generation through Gemini's Veo models using the `predict
 | Delete    | ❌        | Not supported                 |
 | List      | ❌        | Not supported                 |
 | Remix     | ❌        | Not supported                 |
+
+## Speech
+
+Vertex speech is served by [Cloud Text-to-Speech](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd) at `texttospeech.googleapis.com`, not by Vertex AI. It is authenticated with the key's Google credentials (service account JSON, Application Default Credentials or workload identity federation); API keys are not accepted. It serves Chirp 3 HD and the other Google voices.
+
+Gemini TTS models are the exception, see [Gemini TTS](#gemini-tts).
+
+The voice name carries the model and the locale (`hi-IN-Chirp3-HD-Erinome`), so the request model only selects pricing. Use `chirp-3-hd`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/chirp-3-hd",
+    "input": "नमस्ते, आप कैसे हैं?",
+    "voice": "hi-IN-Chirp3-HD-Erinome",
+    "response_format": "mp3"
+  }' --output speech.mp3
+```
+
+The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech`, and the same path under `/litellm`, `/langchain` and `/pydanticai`). On the GenAI route, send it as a `generateContent` call with `speechConfig` to `/genai/v1beta/models/vertex/chirp-3-hd:generateContent`; the audio comes back as `inlineData`.
+
+With the OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/openai", api_key="dummy-key")  # use your Bifrost virtual key if the gateway enforces them
+
+audio = client.audio.speech.create(
+    model="vertex/chirp-3-hd",
+    voice="hi-IN-Chirp3-HD-Erinome",
+    input="नमस्ते, आप कैसे हैं?",
+    response_format="mp3",
+)
+audio.write_to_file("speech.mp3")
+```
+
+**Parameter Mapping**
+
+| Bifrost                              | Cloud Text-to-Speech           | Notes                                                                                              |
+| ------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `input`                              | `input.text`                   | Input that starts with `<speak` is sent as `input.ssml`                                            |
+| `voice`                              | `voice.name`                   | Required. `/v1/audio/speech` returns a 400 without it                                              |
+| `language_code`                      | `voice.languageCode`           | Defaults to the locale at the start of the voice name. It must match the voice's locale            |
+| `response_format`                    | `audioConfig.audioEncoding`    | `mp3` (default) is `MP3`, `wav` is `LINEAR16`, `opus` is `OGG_OPUS`. Any other value returns a 400 |
+| `speed`                              | `audioConfig.speakingRate`     | -                                                                                                  |
+| Extra parameter `pitch`              | `audioConfig.pitch`            | Chirp 3 HD voices reject it                                                                        |
+| Extra parameter `volume_gain_db`     | `audioConfig.volumeGainDb`     | -                                                                                                  |
+| Extra parameter `sample_rate_hertz`  | `audioConfig.sampleRateHertz`  | -                                                                                                  |
+| Extra parameter `effects_profile_id` | `audioConfig.effectsProfileId` | List of strings                                                                                    |
+
+`instructions` is ignored.
+
+On `/v1/audio/speech`, extra parameters go at the top level of the request body, next to `input` and `voice`:
+
+```json
+{
+  "model": "vertex/chirp-3-hd",
+  "input": "नमस्ते, आप कैसे हैं?",
+  "voice": "hi-IN-Chirp3-HD-Erinome",
+  "volume_gain_db": -6
+}
+```
+
+### Gemini TTS
+
+Gemini TTS models (`gemini-2.5-flash-tts`, `gemini-2.5-pro-tts` and the other `gemini-*-tts` models) are served by Vertex `generateContent`, and by `streamGenerateContent` for `stream_format: "sse"`. They are authenticated like Vertex chat, with an API key or the key's Google credentials, and they return the token usage billing reads.
+
+The request and parameters match the [Gemini provider](/providers/supported-providers/gemini): a prebuilt voice name such as `Kore`, optional multi-speaker voices, and `response_format` of `wav` (or none, which returns raw 24 kHz PCM).
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/gemini-2.5-flash-tts",
+    "input": "Hello there, this is a short test.",
+    "voice": "Kore",
+    "response_format": "wav"
+  }' --output speech.wav
+```
+
+The same request works on the OpenAI-compatible routes and on the GenAI route (`/genai/v1beta/models/vertex/gemini-2.5-flash-tts:generateContent`).
+
+## Realtime
+
+Gemini Live models such as `gemini-3.8-live` run on Vertex AI over a WebSocket. Bifrost serves them on two routes:
+
+| Route | Protocol | Use it for |
+| ----- | -------- | ---------- |
+| `/v1/realtime?model=vertex/gemini-3.8-live` | OpenAI Realtime | Apps written for the OpenAI Realtime API. Bifrost translates the events to Live and back, the same translation it does for Gemini Live on the Gemini API |
+| `/genai/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` | Google Live | Clients that already speak Live to Vertex AI, such as the Google GenAI SDK in Vertex mode. Frames are relayed as they are |
+
+Authenticate with your Bifrost virtual key, as on any other route. After the first message, a `session.update` can still change `output_modalities` (or `modalities`) and `audio.input.format` on any Live model, and `instructions`, `tools` and `tool_choice` on Gemini 3 and later. The other settings are fixed when the session opens, so changes to them are ignored.
+
+| Part | On Vertex AI |
+| ---- | ------------ |
+| Endpoint | `wss://{host}/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent`. The host follows the key's region: `us` and `eu` use `aiplatform.{region}.rep.googleapis.com`, `global` uses `aiplatform.googleapis.com`, and any other region uses `{region}-aiplatform.googleapis.com` |
+| Authentication | An OAuth bearer token from the key's service account or workload identity credentials. A key that carries only an API key is refused for realtime |
+| Model | The setup frame names the model as `projects/{project}/locations/{region}/publishers/google/models/{model}`. The project and region are the key's, or those of the model alias the connection resolved through |
+| Usage | Vertex names the response token fields `candidates*` where the Gemini API names them `response*`. Bifrost reads both, so output, audio and thinking tokens are counted the same way on either |

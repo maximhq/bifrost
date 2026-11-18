@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,11 +25,13 @@ import (
 //
 // Instead the child is deliberately thin: it reads newline-delimited JSON-RPC
 // from stdin, forwards each message to the fleet over HTTP, and writes the
-// reply back to stdout. Every control verb keeps working unchanged, counters
-// stay in one place, and what is actually under test here (subprocess
-// lifecycle, pipe framing, respawn after death) is exercised for real, because
-// the process really is a subprocess and really does speak the protocol over
-// pipes.
+// reply back to stdout. Once the fleet issues a session it also holds that
+// session's GET stream open and writes what the server pushes on it, such as
+// tools/list_changed, to stdout between replies. Every control verb keeps
+// working unchanged, counters stay in one place, and what is actually under
+// test here (subprocess lifecycle, pipe framing, respawn after death) is
+// exercised for real, because the process really is a subprocess and really
+// does speak the protocol over pipes.
 //
 // The child registers its process id with the fleet on startup so a scenario
 // can kill it, which is the fault that matters most on this transport and
@@ -85,6 +88,11 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		fmt.Fprintf(os.Stderr, "chaosmock: could not register pid: %v\n", err)
 	}
 
+	// Replies and relayed notifications share stdout, so each line is written whole.
+	stdout := &lineWriter{w: out}
+	relay := &notificationRelay{endpoint: endpoint, out: stdout}
+	defer relay.stop()
+
 	sessionID := ""
 	scanner := bufio.NewScanner(in)
 	// MCP messages can carry large tool schemas, so the default 64KB line
@@ -110,6 +118,9 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		if err != nil {
 			return fmt.Errorf("stdio bridge lost the fleet: %w", err)
 		}
+		if newSession != "" && newSession != sessionID {
+			relay.follow(ctx, newSession)
+		}
 		if newSession != "" {
 			sessionID = newSession
 		}
@@ -118,11 +129,83 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 			// framing expects.
 			continue
 		}
-		if _, err := out.Write(append(bytes.TrimSpace(respBody), '\n')); err != nil {
+		if err := stdout.writeLine(respBody); err != nil {
 			return fmt.Errorf("stdio bridge could not write: %w", err)
 		}
 	}
 	return scanner.Err()
+}
+
+// lineWriter writes whole newline-terminated lines, one at a time.
+type lineWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lineWriter) writeLine(msg []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, err := l.w.Write(append(bytes.TrimSpace(msg), '\n'))
+	return err
+}
+
+// notificationRelay holds the fleet's GET stream for the bridge's session open
+// and writes each message it carries to stdout, which is how a real STDIO
+// server sends a notification such as tools/list_changed: unprompted, between
+// replies.
+type notificationRelay struct {
+	endpoint string
+	out      *lineWriter
+	cancel   context.CancelFunc
+}
+
+// follow moves the relay to sessionID: a new session gets its own stream, and
+// the old session is gone, so its stream is closed with it.
+func (r *notificationRelay) follow(ctx context.Context, sessionID string) {
+	r.stop()
+	streamCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	go relayNotifications(streamCtx, r.endpoint, sessionID, r.out)
+}
+
+func (r *notificationRelay) stop() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
+// relayNotifications streams sessionID's GET stream to out until ctx ends or
+// the fleet closes the stream. A stream that cannot be opened is left closed:
+// the bridge still serves requests, and only server-initiated messages are
+// lost.
+func relayNotifications(ctx context.Context, endpoint, sessionID string, out *lineWriter) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(HeaderStdioBridge, "1")
+	req.Header.Set(HeaderSessionID, sessionID)
+	// No client timeout: the stream is meant to stay open for the session.
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data:")
+		if !ok || strings.TrimSpace(data) == "" {
+			continue
+		}
+		if err := out.writeLine([]byte(data)); err != nil {
+			return
+		}
+	}
 }
 
 // forward sends one JSON-RPC message to the fleet and returns the reply plus

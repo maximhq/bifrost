@@ -163,7 +163,7 @@ export function RelayHeaderView({
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/relay-logs-header:flex-none"
 				onClick={onRefresh}
 				disabled={loading}
 				data-testid="relay-logs-header-refresh-btn"
@@ -174,7 +174,7 @@ export function RelayHeaderView({
 			<Button
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/relay-logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 				data-testid="relay-logs-header-live-btn"
 			>
@@ -234,7 +234,8 @@ export function RelayHeaderView({
 				</DropdownMenu>
 			</div>
 			<DateTimePickerWithRange
-				buttonClassName="w-auto"
+				className="flex-1 @4xl/relay-logs-header:flex-none"
+				buttonClassName="w-full @4xl/relay-logs-header:w-auto"
 				triggerTestId="relay-logs-filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}

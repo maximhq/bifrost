@@ -669,7 +669,7 @@ export default function AgentLogsPage() {
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
-						<div className="p-4 pb-0">
+						<div className="@container/agent-logs-header p-4 pb-0">
 							<AgentHeaderView
 								filters={filters}
 								onSearchChange={handleSearchChange}

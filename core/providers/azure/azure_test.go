@@ -58,6 +58,7 @@ func TestAzure(t *testing.T) {
 		VideoGenerationModel:    "sora-2",
 		PassthroughModel:        "gpt-4o",
 		ExternalCompactionModel: "gpt-4o",
+		WebSearchChatModel:      "claude-sonnet-4-5",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:               false, // Not supported
 			SimpleChat:                   true,

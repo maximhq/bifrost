@@ -28,8 +28,8 @@ const (
 )
 
 // HeaderStdioBridge marks a request the stdio bridge forwarded. Stdio has no HTTP headers to
-// check, and the bridge answers one message at a time, so it cannot hold a listen stream open:
-// bridged requests stay on initialize.
+// check, and the bridge answers one message at a time, so it cannot hold a subscriptions/listen
+// stream open (it relays the session's GET stream instead): bridged requests stay on initialize.
 const HeaderStdioBridge = "X-Chaos-Stdio-Bridge"
 
 // modernParams is what a sessionless request carries besides its method's own parameters.

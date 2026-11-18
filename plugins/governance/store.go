@@ -52,6 +52,9 @@ type LocalGovernanceStore struct {
 	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
 	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
 	virtualMCPAssignMu sync.Mutex // serializes the assignment-slice read-modify-write in attach/detach
+	// virtualKeyWriteMu serializes writers of virtualKeys and virtualKeysByID, so a key's value, ID and
+	// grace-period entries change together and a stale copy cannot outlive a delete. Reads stay lock-free.
+	virtualKeyWriteMu sync.Mutex
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -100,9 +103,10 @@ type GovernanceData struct {
 	Providers    []*configstoreTables.TableProvider            `json:"providers"`
 }
 
-// BusinessUnitGovernance holds in-memory budget and rate limit data for a business unit
+// BusinessUnitGovernance names the budgets and rate limit a business unit holds itself, as the
+// in-memory store publishes them. BudgetIDs carries one id per reset window, like a team's.
 type BusinessUnitGovernance struct {
-	BudgetID    *string
+	BudgetIDs   []string
 	RateLimitID *string
 }
 
@@ -157,7 +161,9 @@ type GovernanceStore interface {
 	// may not. Which of those happened is not this store's to report: the funnel refuses a request
 	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
 	// credential nothing granted.
-	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
+	//
+	// levelMode says how the caller's levels combine (see grant.NewAccess), separately from mode.
+	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, levelMode grant.CompositionMode, scoping schemas.Permit, mode grant.CompositionMode)
 	// GatherLimits assembles every limit an attempt answers to, once its provider and model are
 	// known: the deployment's own for the pair, what funds each holder the request carries, and what
 	// funds their use of the provider. Which holders pay is the store's to say: a store that composes
@@ -1268,23 +1274,23 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 
 // ResolvePermits reports the permits a request carries. This store knows only about virtual keys,
 // so the presented key's permit is the whole answer and nothing scopes it.
-func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, schemas.Permit, grant.CompositionMode) {
+func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, grant.CompositionMode, schemas.Permit, grant.CompositionMode) {
 	virtualKeyValue := PresentedVirtualKey(ctx)
 	if virtualKeyValue == "" {
 		// A key is the only thing this store resolves permits from, so no key means nothing granted
 		// this request anything. It carries no access, which is what a request with no credential has
 		// always been: unrestricted, and still bound by the deployment's own limits, which are gathered
 		// for it whether or not it carries a permit.
-		return nil, nil, ""
+		return nil, "", nil, ""
 	}
 	virtualKey, ok := gs.GetVirtualKey(ctx, virtualKeyValue)
 	if !ok || virtualKey == nil {
 		// A credential was presented and resolves to nothing. That is refused, not widened: the
 		// funnel's identity step tells the two apart by what was presented.
-		return nil, nil, ""
+		return nil, "", nil, ""
 	}
 	StampVirtualKeyScope(ctx, virtualKey)
-	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, nil, ""
+	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, "", nil, ""
 }
 
 // PresentedVirtualKey is the virtual key the request presented, read off the identity the
@@ -2408,6 +2414,162 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 	return request.Model, provider
 }
 
+type limitsContextKey struct{}
+
+// literalLimitsContextKey marks a context whose model runs at the provider exactly as written, so
+// no key alias is applied to it and no alias target's limits may be added.
+var literalLimitsContextKey = limitsContextKey{}
+
+type chargedKeyContextKey struct{}
+
+// chargedKeyContext marks a limit walk made at charge time for the key that ran: alias targets are
+// then the ones that key maps the name to, not every eligible key's. See limitsForKeyThatRan.
+var chargedKeyContext = chargedKeyContextKey{}
+
+type aliasLimitTargetsContextKey struct{}
+
+// aliasLimitTargetsContext holds a settledAliasTargets on the request once GatherLimits has added
+// alias targets' limits to it.
+var aliasLimitTargetsContext = aliasLimitTargetsContextKey{}
+
+// settledAliasTargets records that the limits settled for (provider, model) include the limits of
+// targets, the models the eligible keys map the name to. A handful of model names, not stream data.
+type settledAliasTargets struct {
+	provider schemas.ModelProvider
+	model    string
+	targets  []string
+}
+
+// runsAsWritten reports whether the model on ctx reaches the provider exactly as the client named
+// it: the caller marked it literal, or the credential skips key selection, so no key alias is
+// ever applied.
+func runsAsWritten(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if literal, _ := ctx.Value(literalLimitsContextKey).(bool); literal {
+		return true
+	}
+	if _, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); direct {
+		return true
+	}
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	return skip
+}
+
+// aliasTargets returns the models the provider's eligible keys map the requested name to, or nil
+// when the lookup has no provider, the store cannot see provider config, or no key carries an
+// alias. It is resolved once per attempt and handed to the model-config walks, so the provider
+// lookup (a shared read lock in production) and the alias scan are not repeated per scope.
+func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *string, model string) []string {
+	if provider == nil || gs.inMemoryStore == nil {
+		return nil
+	}
+	// The context reads come after HasKeyAliases and MayBeKeyAlias: each takes the context's lock,
+	// and a provider without aliases, or a name that is no alias, must not pay for them.
+	cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider))
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(*provider), model, cfg.Keys) || runsAsWritten(ctx) {
+		return nil
+	}
+	keys, ok := pinnedKeys(ctx, cfg.Keys)
+	if !ok {
+		return nil
+	}
+	// At charge time only the key that ran counts: a model another key would have run never ran.
+	if keyID, charging := ctx.Value(chargedKeyContext).(string); charging {
+		if keys, ok = keyByID(keys, keyID); !ok {
+			return nil
+		}
+	}
+	var targets []string
+	collect := func(target string) {
+		if !slices.Contains(targets, target) {
+			targets = append(targets, target)
+		}
+	}
+	modelcatalog.KeyAliasTargets(model, keys, allKeyIDs, collect)
+	// Key selection picks only among the keys the request's access allows. Asked only once the name
+	// is an alias at all, so a provider whose aliases do not cover the name pays nothing for it.
+	if len(targets) > 0 {
+		if keyIDs, restricted := accessKeysForModel(ctx, *provider, model); restricted {
+			targets = targets[:0]
+			modelcatalog.KeyAliasTargets(model, keys, keyIDs, collect)
+		}
+	}
+	return targets
+}
+
+// allKeyIDs is the key restriction that restricts nothing.
+var allKeyIDs = schemas.WhiteList{"*"}
+
+// accessKeysForModel is the key restriction the access on ctx's grant places on (provider, model),
+// as Evaluate publishes it to key selection. No grant, no access, or no restriction answers false.
+func accessKeysForModel(ctx context.Context, provider, model string) (schemas.WhiteList, bool) {
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || bctx == nil {
+		return nil, false
+	}
+	g := bctx.Grant()
+	if g == nil {
+		return nil, false
+	}
+	access := g.Access()
+	if access == nil {
+		return nil, false
+	}
+	// KeysForModel re-runs the model checks; an access none of whose permits restricts the
+	// provider's keys answers without them.
+	if ga, ok := access.(*grant.Access); ok && !ga.RestrictsKeys(provider) {
+		return nil, false
+	}
+	keyIDs, restricted := access.KeysForModel(provider, model)
+	return schemas.WhiteList(keyIDs), restricted
+}
+
+// keyByID is the one-key subslice of keys whose ID is id, and false when no key has it.
+func keyByID(keys []schemas.Key, id string) ([]schemas.Key, bool) {
+	for i := range keys {
+		if keys[i].ID == id {
+			return keys[i : i+1], true
+		}
+	}
+	return nil, false
+}
+
+// pinnedKeys narrows keys to the one a pinned request is served from, in core's order: a routing-rule
+// pin, then the caller's key id, then the caller's key name. Unpinned, keys is returned as is. A pin
+// that names no key returns false: core refuses that request, so no alias of it applies. The result
+// is a subslice, so nothing is allocated.
+func pinnedKeys(ctx context.Context, keys []schemas.Key) ([]schemas.Key, bool) {
+	if ctx == nil {
+		return keys, true
+	}
+	byID := func(id string) ([]schemas.Key, bool) {
+		for i := range keys {
+			if keys[i].ID == id {
+				return keys[i : i+1], true
+			}
+		}
+		return nil, false
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); strings.TrimSpace(pin) != "" {
+		return byID(strings.TrimSpace(pin))
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(pin) != "" {
+		return byID(strings.TrimSpace(pin))
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(pin) != "" {
+		name := strings.TrimSpace(pin)
+		for i := range keys {
+			if keys[i].Name == name {
+				return keys[i : i+1], true
+			}
+		}
+		return nil, false
+	}
+	return keys, true
+}
+
 // collectModelConfigsFor returns every model config that applies to a request for
 // (model, provider) within a single scope, across six tiers (most → least specific),
 // deduped by config ID. The model is canonicalised by modelConfigKeys, the same way it
@@ -2419,10 +2581,14 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 //  5. ("*", provider)              all models on this provider  (provider-level governance)
 //  6. ("*", nil)                   all models on all providers
 //
+// When targets is non-nil (the models a key alias resolves to), tiers 1-4 are repeated for each
+// target after the six tiers above, deduped by config ID, so a limit on the aliased model also
+// applies to a request that names the alias.
+//
 // This is the single source of truth for "which model configs apply"; every budget /
 // rate-limit check and usage-tracking site iterates it so the wildcard tiers are matched
 // consistently everywhere.
-func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scope, scopeID, model string, provider *string) []*configstoreTables.TableModelConfig {
+func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scope, scopeID, model string, provider *string, targets []string) []*configstoreTables.TableModelConfig {
 	var out []*configstoreTables.TableModelConfig
 	seen := make(map[string]bool)
 	add := func(mc *configstoreTables.TableModelConfig) {
@@ -2452,6 +2618,21 @@ func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scop
 		add(loadKey(modelConfigWildcard, provider)) // tier 5: all models on this provider
 	}
 	add(loadKey(modelConfigWildcard, nil)) // tier 6: all models, all providers
+	// A key alias is resolved only at key selection, after this lookup, so a limit set on the model
+	// an alias stands for would never meet a request that names the alias. targets are the models the
+	// eligible keys map the name to (see aliasTargets), resolved once per attempt by the caller; each
+	// is looked up the same way the name itself was, and the dedupe above keeps a limit reached twice
+	// as one.
+	for _, target := range targets {
+		if provider != nil {
+			targetCanonical, targetBase := gs.modelConfigKeys(target, provider)
+			add(loadKey(targetCanonical, provider))
+			add(loadKey(targetBase, provider))
+		}
+		targetCanonical, targetBase := gs.modelConfigKeys(target, nil)
+		add(loadKey(targetCanonical, nil))
+		add(loadKey(targetBase, nil))
+	}
 	return out
 }
 
@@ -3587,10 +3768,12 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	}
 
 	// Build virtual keys map and track active VKs
+	gs.virtualKeyWriteMu.Lock()
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
 	}
+	gs.virtualKeyWriteMu.Unlock()
 
 	// Stamp team-owned budget and rate-limit entries in the flat caches so
 	// calendar-aligned resets survive restarts and reloads. GORM runs AfterFind
@@ -3732,6 +3915,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		}
 	}
 
+	targets := gs.aliasTargets(ctx, providerStr, model)
 	scopes := []struct{ name, id string }{
 		{configstoreTables.ModelConfigScopeGlobal, ""},
 		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
@@ -3740,7 +3924,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		if scope.name != configstoreTables.ModelConfigScopeGlobal && scope.id == "" {
 			continue
 		}
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr, targets) {
 			addModelConfigIDs(mc)
 		}
 	}
@@ -3748,7 +3932,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 	// budgets, keyed by a user-access-profile association ID rather than the raw
 	// user/VK ID) — see RegisterExtraScopedIDsResolver.
 	for _, pair := range collectExtraScopedIDs(ctx, virtualKeyID, userID) {
-		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr, targets) {
 			addModelConfigIDs(mc)
 		}
 	}
@@ -3810,11 +3994,18 @@ func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []S
 
 // PUBLIC API METHODS
 
-// CreateVirtualKeyInMemory adds a new virtual key to the in-memory store (lock-free)
+// CreateVirtualKeyInMemory adds a new virtual key to the in-memory store
 func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return // Nothing to create
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
+	gs.createVirtualKeyLocked(ctx, vk)
+}
+
+// createVirtualKeyLocked is CreateVirtualKeyInMemory for a caller already holding virtualKeyWriteMu.
+func (gs *LocalGovernanceStore) createVirtualKeyLocked(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 
 	clone := *vk
 
@@ -3851,14 +4042,17 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		}
 	}
 
+	gs.linkCachedTeam(&clone)
 	gs.storeVirtualKey(clone.Value.GetValue(), &clone)
 }
 
-// UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
+// UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store
 func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64) {
 	if vk == nil {
 		return // Nothing to update
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
@@ -4047,9 +4241,10 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				gs.deleteVirtualKeyAlias(oldKey, clone.ID)
 			}
 		}
+		gs.linkCachedTeam(&clone)
 		gs.storeVirtualKey(newValue, &clone)
 	} else {
-		gs.CreateVirtualKeyInMemory(ctx, vk)
+		gs.createVirtualKeyLocked(ctx, vk)
 	}
 }
 
@@ -4058,6 +4253,8 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	if vkID == "" {
 		return // Nothing to delete
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
 
 	// Find and delete the VK by ID (lock-free)
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
@@ -4162,6 +4359,8 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 	}
 
 	gs.teams.Store(clone.ID, &clone)
+	// A key can reach this node before its team does (gossip order), so it may hold an older copy.
+	gs.refreshVirtualKeysOfTeam(&clone)
 }
 
 // UpdateTeamInMemory updates an existing team in the in-memory store (lock-free)
@@ -4231,9 +4430,48 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 		}
 
 		gs.teams.Store(team.ID, &clone)
+		gs.refreshVirtualKeysOfTeam(&clone)
 	} else {
 		gs.CreateTeamInMemory(ctx, team)
 	}
+}
+
+// linkCachedTeam points a key being written at its team's cached record, so a key edit carrying a
+// copy of its team from before a concurrent team update cannot put the old customer back. Called
+// with virtualKeyWriteMu held.
+func (gs *LocalGovernanceStore) linkCachedTeam(vk *configstoreTables.TableVirtualKey) {
+	if vk.TeamID == nil {
+		return
+	}
+	if cached, ok := gs.teams.Load(*vk.TeamID); ok {
+		if team, ok := cached.(*configstoreTables.TableTeam); ok && team != nil {
+			vk.Team = team
+		}
+	}
+}
+
+// refreshVirtualKeysOfTeam points a team's cached keys at its latest record, so a changed or cleared
+// customer is charged and logged from the next request rather than after each key reloads.
+func (gs *LocalGovernanceStore) refreshVirtualKeysOfTeam(team *configstoreTables.TableTeam) {
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
+	// Re-read under the lock: of two concurrent team updates, whichever refreshes last sees the newer record.
+	if cached, ok := gs.teams.Load(team.ID); ok {
+		if latest, ok := cached.(*configstoreTables.TableTeam); ok && latest != nil {
+			team = latest
+		}
+	}
+	gs.virtualKeys.Range(func(key, value interface{}) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		// Only the current-value entry: storeVirtualKey re-registers a grace-period alias with it.
+		if !ok || vk == nil || vk.TeamID == nil || *vk.TeamID != team.ID || key.(string) != vk.Value.GetValue() {
+			return true // continue
+		}
+		clone := *vk
+		clone.Team = team
+		gs.storeVirtualKey(key.(string), &clone)
+		return true // continue iteration
+	})
 }
 
 // DeleteTeamInMemory removes a team from the in-memory store (lock-free)
@@ -4258,6 +4496,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 
 	// Set team_id to null for all virtual keys associated with the team
 	// Iterate through all VKs since team.VirtualKeys may not be populated
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4271,6 +4510,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 		}
 		return true // continue iteration
 	})
+	gs.virtualKeyWriteMu.Unlock()
 
 	gs.teams.Delete(teamID)
 }
@@ -4374,6 +4614,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 	}
 	// Set customer_id to null for all virtual keys associated with the customer
 	// Iterate through all VKs since customer.VirtualKeys may not be populated
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4387,6 +4628,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 		}
 		return true // continue iteration
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Set customer_id to null for all teams associated with the customer
 	// Iterate through all teams since customer.Teams may not be populated
 	gs.teams.Range(func(key, value interface{}) bool {
@@ -4635,6 +4877,7 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		}
 	}
 	// Update VKs that reference these budgets
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4696,56 +4939,53 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Update teams that reference these budgets
 	gs.teams.Range(func(key, value interface{}) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil {
-			return true // continue
-		}
-		matched := false
-		for i := range team.Budgets {
-			if resets[team.Budgets[i].ID] != nil {
-				matched = true
-				break
+		patchCached(&gs.teams, key, value, func(team *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+			matched := false
+			for i := range team.Budgets {
+				if resets[team.Budgets[i].ID] != nil {
+					matched = true
+					break
+				}
 			}
-		}
-		if !matched {
-			return true // continue
-		}
-		clone := *team
-		clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
-		for i := range clone.Budgets {
-			if b := resets[clone.Budgets[i].ID]; b != nil {
-				clone.Budgets[i] = *b
+			if !matched {
+				return nil
 			}
-		}
-		gs.teams.Store(key, &clone)
+			clone := *team
+			clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
+			for i := range clone.Budgets {
+				if b := resets[clone.Budgets[i].ID]; b != nil {
+					clone.Budgets[i] = *b
+				}
+			}
+			return &clone
+		})
 		return true // continue
 	})
 	// Update customers that own these budgets
 	gs.customers.Range(func(key, value interface{}) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil {
-			return true // continue
-		}
-		matched := false
-		for i := range customer.Budgets {
-			if resets[customer.Budgets[i].ID] != nil {
-				matched = true
-				break
+		patchCached(&gs.customers, key, value, func(customer *configstoreTables.TableCustomer) *configstoreTables.TableCustomer {
+			matched := false
+			for i := range customer.Budgets {
+				if resets[customer.Budgets[i].ID] != nil {
+					matched = true
+					break
+				}
 			}
-		}
-		if !matched {
-			return true // continue
-		}
-		clone := *customer
-		clone.Budgets = append([]configstoreTables.TableBudget(nil), customer.Budgets...)
-		for i := range clone.Budgets {
-			if b := resets[clone.Budgets[i].ID]; b != nil {
-				clone.Budgets[i] = *b
+			if !matched {
+				return nil
 			}
-		}
-		gs.customers.Store(key, &clone)
+			clone := *customer
+			clone.Budgets = append([]configstoreTables.TableBudget(nil), customer.Budgets...)
+			for i := range clone.Budgets {
+				if b := resets[clone.Budgets[i].ID]; b != nil {
+					clone.Budgets[i] = *b
+				}
+			}
+			return &clone
+		})
 		return true // continue
 	})
 }
@@ -4767,6 +5007,7 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 		}
 	}
 	// Update VKs that reference these rate limits
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4800,36 +5041,50 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Update teams that reference these rate limits
 	gs.teams.Range(func(key, value interface{}) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil {
-			return true // continue
-		}
-		if team.RateLimitID != nil {
-			if rl := resets[*team.RateLimitID]; rl != nil {
-				clone := *team
-				clone.RateLimit = rl
-				gs.teams.Store(key, &clone)
+		patchCached(&gs.teams, key, value, func(team *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+			if team.RateLimitID == nil || resets[*team.RateLimitID] == nil {
+				return nil
 			}
-		}
+			clone := *team
+			clone.RateLimit = resets[*team.RateLimitID]
+			return &clone
+		})
 		return true // continue
 	})
 	// Update customers that reference these rate limits
 	gs.customers.Range(func(key, value interface{}) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil {
-			return true // continue
-		}
-		if customer.RateLimitID != nil {
-			if rl := resets[*customer.RateLimitID]; rl != nil {
-				clone := *customer
-				clone.RateLimit = rl
-				gs.customers.Store(key, &clone)
+		patchCached(&gs.customers, key, value, func(customer *configstoreTables.TableCustomer) *configstoreTables.TableCustomer {
+			if customer.RateLimitID == nil || resets[*customer.RateLimitID] == nil {
+				return nil
 			}
-		}
+			clone := *customer
+			clone.RateLimit = resets[*customer.RateLimitID]
+			return &clone
+		})
 		return true // continue
 	})
+}
+
+// patchCached replaces a cached team or customer with patch's copy only if the entry still holds the
+// one read, and otherwise patches the latest copy, as the budget updates do. A reset therefore never
+// puts back a team or customer that a concurrent edit has replaced. patch returns nil for no change.
+func patchCached[T any](m *sync.Map, key, value any, patch func(*T) *T) {
+	for {
+		current, ok := value.(*T)
+		if !ok || current == nil {
+			return
+		}
+		next := patch(current)
+		if next == nil || m.CompareAndSwap(key, value, next) {
+			return
+		}
+		if value, ok = m.Load(key); !ok {
+			return
+		}
+	}
 }
 
 // GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
@@ -4854,7 +5109,13 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	// tier is where a key's own budget and rate limit live since the model-config migration.
 	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
-	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	targets := gs.aliasTargets(ctx, providerPtrFor(provider), model)
+	// Recorded for limitsForKeyThatRan, but not by its own charge-time walk: the record is what the
+	// check answered to.
+	if len(targets) > 0 && ctx != nil && ctx.Value(chargedKeyContext) == nil {
+		ctx.SetValue(aliasLimitTargetsContext, settledAliasTargets{provider: provider, model: model, targets: targets})
+	}
+	globalModelBudgets, globalModelRateLimits := gs.globalModelLimits(ctx, provider, model, targets)
 	budgets = append(budgets, globalModelBudgets...)
 	rateLimits = append(rateLimits, globalModelRateLimits...)
 	if access == nil {
@@ -4871,7 +5132,7 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 
 		// The holder's own model limits, gathered per permit because they are keyed by the
 		// permit's identity.
-		modelBudgets, modelRateLimits := gs.PermitModelLimits(ctx, permit, provider, model)
+		modelBudgets, modelRateLimits := gs.permitModelLimits(ctx, permit, provider, model, targets)
 		budgets = append(budgets, modelBudgets...)
 		rateLimits = append(rateLimits, modelRateLimits...)
 	}
@@ -4962,7 +5223,7 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
-	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
@@ -4975,17 +5236,17 @@ func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Con
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
 // provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
 // configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
 // funnel's.
-func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string, targets []string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
 	for _, scope := range scopes {
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName, targets) {
 			if mc == nil || mc.Provider == nil {
 				continue
 			}
@@ -5004,14 +5265,14 @@ func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Co
 // all-models budget covers a request whatever it runs. Batch creation is the case that carries no
 // top-level model, and skipping the walk there left the unscoped budget a key was created with
 // unchecked and never bumped.
-func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string, targets []string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
 	var providerArg *string
 	if providerName != "" {
 		providerArg = &providerName
 	}
 	for _, scope := range scopes {
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg, targets) {
 			if mc == nil {
 				continue
 			}
@@ -5031,7 +5292,22 @@ func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes 
 // into the attempt's settled limits rather than storing them anywhere longer-lived, so one
 // attempt's limits are never charged to the next.
 func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
-	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model)
+	return gs.globalModelLimits(ctx, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
+}
+
+// globalModelLimits is GlobalModelLimits with the alias targets already resolved, so a caller
+// gathering several scopes for one attempt resolves them once.
+func (gs *LocalGovernanceStore) globalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string, targets []string) ([]schemas.Limit, []schemas.Limit) {
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model, targets)
+}
+
+// providerPtrFor is the provider argument of a model-config lookup: nil when no provider is named.
+func providerPtrFor(provider schemas.ModelProvider) *string {
+	if provider == "" {
+		return nil
+	}
+	name := string(provider)
+	return &name
 }
 
 // PermitModelLimits reports the permit holder's own model-config limits covering the pair, in the
@@ -5040,11 +5316,19 @@ func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider 
 // for the reasons on GlobalModelLimits.
 func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
 	if permit == nil || permit.ID() == "" {
+		return nil, nil
+	}
+	return gs.permitModelLimits(ctx, permit, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
+}
+
+// permitModelLimits is PermitModelLimits with the alias targets already resolved.
+func (gs *LocalGovernanceStore) permitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string, targets []string) ([]schemas.Limit, []schemas.Limit) {
+	if permit == nil || permit.ID() == "" {
 		// A permit selects the scope, so no permit selects nothing: falling through would answer
 		// with the deployment's rows under a method that promised one holder's.
 		return nil, nil
 	}
-	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, targets)
 }
 
 // ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
@@ -5058,7 +5342,7 @@ func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, sc
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // limitScope is one model-config scope to resolve limits from, with the holder kind its limits are
