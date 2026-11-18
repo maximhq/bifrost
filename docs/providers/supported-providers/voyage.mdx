@@ -10,7 +10,7 @@ icon: "v"
 
 - **Embeddings** - `/v1/embeddings` for text models, `/v1/contextualizedembeddings` for `voyage-context-*`, `/v1/multimodalembeddings` for `voyage-multimodal-*`. Bifrost picks the endpoint from the model name; clients always call `/v1/embeddings`.
 - **Rerank** - `/v1/rerank` for `rerank-*` models, called through Bifrost's `/v1/rerank`.
-- **No default model** - every request must name its model. A missing model, an unknown model, another provider's model, or a model of the wrong kind (for example a reranker sent to `/v1/embeddings`) is rejected with a 400 before anything reaches Voyage. For embeddings the model is checked before the request body is read, so this holds in every mode. For rerank the model check lives in the request converter, which large-payload passthrough skips when it streams the body unparsed; Voyage's own error comes back there instead.
+- **No default model** - every request must name its model. A missing model, an unknown model, another provider's model, or a model of the wrong kind (for example a reranker sent to `/v1/embeddings`) is rejected with a 400 before anything reaches Voyage. This check and the request-shape checks below run on the typed request. When the body is sent unparsed (a raw request body, or large-payload passthrough) the converters are skipped: for embeddings Bifrost still checks the request's `model`, but not a model named inside the raw body, and for rerank nothing is checked locally. Voyage's own error comes back if it rejects the request.
 - **Fail-closed billing** - in normal response mode, a Voyage response without a usage block is turned into an error instead of being priced at zero. A response large enough to be streamed through unparsed (large-response mode) is not inspected, so this check does not apply to it.
 
 ### Supported Operations
@@ -132,7 +132,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 | `auto_truncate` (the typed `AutoTruncate` field) or `truncation` (extra param) | `truncation` | Voyage truncates by default. Only these two set the field; `auto_truncate` passed as an extra param is not read. |
 | `encoding_format` | `output_dtype` / `encoding_format` | `float`, `int8`, `uint8`, `binary`, `ubinary` select the dtype; `base64` selects base64 transport. `output_dtype` (extra param) sets the dtype next to `base64`. |
 
-Every input item must be a single text part, and items cannot carry their own params. Quantized dtypes are returned as integer arrays labelled with `encoding_format`. With `encoding_format: "base64"` each embedding is instead a base64 string labelled `base64`, whatever the dtype.
+Every input item must be a single text part, and items cannot carry their own params. Quantized dtypes are returned as integer arrays labelled with `encoding_format`. With `encoding_format: "base64"` each embedding is instead a base64 string labelled `base64`, whatever the dtype. When the request parameters are not parsed (large-payload passthrough), a quantized response is labelled `float`; read its values as integers.
 
 ---
 
@@ -205,4 +205,4 @@ curl -X POST http://localhost:8080/v1/rerank \
 
 # 6. Errors
 
-Voyage returns `{"detail": "<message>"}` on failure; Bifrost surfaces the text as the error message with Voyage's status code. Requests that can never succeed are rejected with a 400 before they are sent. This does not apply when a raw request body is passed through unparsed (large-payload passthrough): the converters and their checks are skipped there, and Voyage's own error comes back instead.
+Voyage returns `{"detail": "<message>"}` on failure; Bifrost surfaces the text as the error message with Voyage's status code. Requests that can never succeed are rejected with a 400 before they are sent. This does not apply when the body is sent unparsed (a raw request body, or large-payload passthrough): the converters and their checks are skipped there, and Voyage's own error comes back if it rejects the request.
