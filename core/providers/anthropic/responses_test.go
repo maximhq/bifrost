@@ -39,6 +39,14 @@ func TestWebSearchStreamQueryVariants(t *testing.T) {
 					events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
 						Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: &i,
 					})...)
+					// A finished search is followed by its web_search_tool_result, also when it
+					// found nothing (Anthropic sends one for every finished search).
+					if n := len(events); n < 2 || events[n-2].Type != AnthropicStreamEventTypeContentBlockStart ||
+						events[n-2].ContentBlock.Type != AnthropicContentBlockTypeWebSearchToolResult ||
+						events[n-1].Type != AnthropicStreamEventTypeContentBlockStop {
+						t.Fatalf("finished search must end with a web_search_tool_result start and stop, got %d events", n)
+					}
+					events = events[:len(events)-2]
 					var input strings.Builder
 					index, stops := -1, 0
 					for _, event := range events {

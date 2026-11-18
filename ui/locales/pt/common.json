@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilização do orçamento",
 		"override": "sobreposição",
-		"baseTooltip": "Base {{base}} + {{override}} de sobreposição"
+		"baseTooltip": "Base {{base}} + {{override}} de sobreposição",
+		"sharedTag": "compartilhado"
 	},
 	"rateLimit": {
 		"tokens": "tokens",

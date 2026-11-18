@@ -1,14 +1,17 @@
 package integrations
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -572,6 +575,155 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
 			require.Contains(t, string(ctx.Response.Header.ContentType()), "audio/", "body: %.200s", ctx.Response.Body())
 			require.Equal(t, audio, ctx.Response.Body())
+		})
+	}
+}
+
+// fileUploadUpstream is a fake OpenAI/Azure Files API that streams the uploaded file into a hash,
+// so the upstream itself allocates almost nothing and does not distort allocation counts.
+type fileUploadUpstream struct {
+	mu            sync.Mutex
+	path          string
+	contentLength int64
+	fields        map[string]string
+	filename      string
+	fileSize      int64
+	fileSum       [sha256.Size]byte
+}
+
+func (u *fileUploadUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.path = r.URL.Path
+	u.contentLength = r.ContentLength
+	u.fields = map[string]string{}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if part.FileName() == "" {
+			v, _ := io.ReadAll(part)
+			u.fields[part.FormName()] = string(v)
+			continue
+		}
+		h := sha256.New()
+		u.filename = part.FileName()
+		u.fileSize, _ = io.Copy(h, part)
+		copy(u.fileSum[:], h.Sum(nil))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"id":"file-abc","object":"file","bytes":%d,"created_at":1,"filename":%q,"purpose":"batch","status":"processed"}`, u.fileSize, u.filename)
+}
+
+// fileUploadTestAccount is speechTestAccount with its keys enabled for the batch and files APIs.
+type fileUploadTestAccount struct {
+	speechTestAccount
+}
+
+func (a fileUploadTestAccount) GetKeysForProvider(ctx context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	keys, err := a.speechTestAccount.GetKeysForProvider(ctx, p)
+	for i := range keys {
+		keys[i].UseForBatchAPI = schemas.Ptr(true)
+	}
+	return keys, err
+}
+
+// TestOpenAIFileUploadRouteStreamsFile pins the Files API upload path for OpenAI and Azure: the
+// upstream receives the exact file and form fields with a Content-Length, and the gateway never
+// holds the file in memory. A 17 MB upload (over fasthttp's 16 MB in-memory limit, so the server
+// keeps it in a temp file) must allocate less than the file's size end to end. Before the fix
+// the route read the file into a []byte and the provider rebuilt the multipart body in a buffer
+// and copied it into the request, allocating ~5x the file.
+func TestOpenAIFileUploadRouteStreamsFile(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte(`{"custom_id":"r","method":"POST"}`+"\n"), fileSize/34+1)[:fileSize]
+	wantSum := sha256.Sum256(file)
+
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: fileUploadTestAccount{speechTestAccount{baseURL: server.URL}},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		provider   string
+		fields     map[string]string
+		wantPath   string
+		wantFields map[string]string
+	}{
+		{
+			provider:   "openai",
+			fields:     map[string]string{"purpose": "batch", "expires_after[anchor]": "created_at", "expires_after[seconds]": "3600"},
+			wantPath:   "/v1/files",
+			wantFields: map[string]string{"purpose": "batch", "expires_after[anchor]": "created_at", "expires_after[seconds]": "3600"},
+		},
+		{
+			provider:   "azure",
+			fields:     map[string]string{"purpose": "batch", "provider": "azure"},
+			wantPath:   "/openai/v1/files",
+			wantFields: map[string]string{"purpose": "batch"},
+		},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			for k, v := range tc.fields {
+				require.NoError(t, w.WriteField(k, v))
+			}
+			part, err := w.CreateFormFile("file", "batch.jsonl")
+			require.NoError(t, err)
+			_, err = part.Write(file)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST /openai/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())), body.Bytes()...)
+			body.Reset()
+
+			// Read the request the way the server does: the form is parsed while reading
+			// and the file lands in a temp file.
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			raw = nil
+			defer ctx.Request.Reset()
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			r.Handler(ctx)
+			runtime.ReadMemStats(&after)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			assert.Equal(t, "file-abc", gjson.GetBytes(ctx.Response.Body(), "id").String())
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			assert.Equal(t, tc.wantPath, upstream.path)
+			assert.Greater(t, upstream.contentLength, int64(fileSize), "upstream must get a Content-Length, not a chunked body")
+			for k, v := range tc.wantFields {
+				assert.Equal(t, v, upstream.fields[k], "form field %s", k)
+			}
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			assert.Equal(t, int64(fileSize), upstream.fileSize)
+			assert.Equal(t, wantSum, upstream.fileSum, "upstream file content differs from the upload")
+			allocated := after.TotalAlloc - before.TotalAlloc
+			t.Logf("%d-byte upload allocated %d bytes in the gateway", fileSize, allocated)
+			assert.Less(t, allocated, uint64(fileSize), "a %d-byte upload allocated %d bytes in the gateway; the file must be streamed, not held in memory", fileSize, allocated)
 		})
 	}
 }
