@@ -310,7 +310,8 @@ func TestNaceListModels(t *testing.T) {
 }
 
 // TestToNaceDecisionRequestStructuredText checks that structured instructions and criteria become
-// sorted JSON text and that null descriptions stay null.
+// sorted JSON text. Null predicate and choice descriptions stay null; a null score level becomes
+// its index.
 func TestToNaceDecisionRequestStructuredText(t *testing.T) {
 	for _, kind := range []string{"noul", "choice", "score"} {
 		t.Run(kind, func(t *testing.T) {
