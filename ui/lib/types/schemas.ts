@@ -2537,6 +2537,184 @@ export const relayHeaderPairSchema = z
 		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
 	});
 
+// Forced body fields are edited as path/JSON pairs, checked as core's validateBodyOverrides does.
+const relayBodyOverrideSegment = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isRelayBodyOverridePath(path: string): boolean {
+	// An all-digit key is an array index to the gateway's JSON setter, and -1 an array append.
+	return path.split(".").every((segment) => relayBodyOverrideSegment.test(segment) && !/^[0-9]+$/.test(segment) && segment !== "-1");
+}
+
+// JSON.parse reads 1e400 as Infinity, which the API request would send as null.
+export function hasNonFiniteNumber(value: unknown): boolean {
+	if (typeof value === "number") return !Number.isFinite(value);
+	if (Array.isArray(value)) return value.some(hasNonFiniteNumber);
+	if (value && typeof value === "object") return Object.values(value).some(hasNonFiniteNumber);
+	return false;
+}
+
+// Two paths that reach one parent key under different letter case (options.a, Options.b).
+function parentCaseClash(a: string, b: string): boolean {
+	const as = a.split(".");
+	const bs = b.split(".");
+	for (let i = 0; i < Math.min(as.length, bs.length) - 1; i++) {
+		if (as[i] === bs[i]) continue;
+		return as[i].toLowerCase() === bs[i].toLowerCase();
+	}
+	return false;
+}
+
+/** The non-blank field paths of a body overrides list. */
+export const bodyOverridePaths = (pairs: { name: string }[] | undefined) => (pairs ?? []).map((pair) => pair.name.trim()).filter(Boolean);
+
+/** The first relay and route path the gateway refuses together once the route's fields are merged over the relay's. */
+export function bodyOverrideMergeClash(relayPaths: string[], routePaths: string[]): { relay: string; route: string } | undefined {
+	const route = routePaths.filter(isRelayBodyOverridePath);
+	for (const r of relayPaths) {
+		// The route's field replaces a relay field at exactly the same path.
+		if (!isRelayBodyOverridePath(r) || route.includes(r)) continue;
+		const rl = r.toLowerCase();
+		for (const p of route) {
+			const pl = p.toLowerCase();
+			if (rl === pl || rl.startsWith(pl + ".") || pl.startsWith(rl + ".") || parentCaseClash(r, p)) return { relay: r, route: p };
+		}
+	}
+	return undefined;
+}
+
+/** Whether JSON text holds a whole number JavaScript cannot keep exactly, which a save would round. */
+type RawJSON = { readonly rawJSON: string };
+const jsonWithRaw = JSON as unknown as { rawJSON?: (text: string) => RawJSON };
+
+/** Whether this browser can send a number's exact digits (JSON.rawJSON and the reviver's source text). */
+export const exactJSONNumbers = typeof jsonWithRaw.rawJSON === "function";
+
+/**
+ * JSON.parse that keeps a number JSON would round (past 2^53, or written in more digits than a double
+ * holds) as its exact digits; JSON.stringify writes them back unchanged. Without browser support it is
+ * plain JSON.parse.
+ */
+export function parseJSONExact(text: string): unknown {
+	if (!exactJSONNumbers) return JSON.parse(text);
+	const reviver = (_key: string, value: unknown, context?: { source?: string }) =>
+		typeof value === "number" && context?.source !== undefined && roundsWholeNumber(context.source)
+			? jsonWithRaw.rawJSON!(context.source)
+			: value;
+	return JSON.parse(text, reviver as (key: string, value: unknown) => unknown);
+}
+
+/**
+ * Whether a JSON number denotes a whole number that JSON.parse cannot hold exactly, in any spelling
+ * (1.0, 1e3). Past 1e21 a number is written as a float anyway (1e300), so it is left alone.
+ */
+export function roundsWholeNumber(token: string): boolean {
+	const m = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
+	if (!m) return false;
+	const [, sign, whole, frac = "", exp = "0"] = m;
+	const digits = whole + frac;
+	const shift = Number(exp) - frac.length;
+	let exact: string;
+	if (shift >= 0) {
+		// A number typed in exponent form past 21 digits (1e300) is a float on purpose; one typed in full is checked.
+		if (m[4] !== undefined && digits.replace(/^0+/, "").length + shift > 21) return false;
+		exact = digits + "0".repeat(shift);
+	} else {
+		if (digits.length + shift <= 0) return false; // the point moves past every digit: below 1 (100e-4)
+		if (!/^0*$/.test(digits.slice(digits.length + shift))) return false; // a fraction, not a whole number
+		exact = digits.slice(0, digits.length + shift) || "0";
+	}
+	// Compared with the digits JSON writes out, not the double: 1000000000000000128 is exact but is sent as ...100.
+	const sent = String(Number(token));
+	// One that overflows to Infinity cannot be sent as typed either (a key written twice still reaches here).
+	if (!Number.isFinite(Number(token))) return true;
+	// A whole number that rounds to 1e21 or more is sent in exponent form (1e+21), so it changes too.
+	if (/e/i.test(sent)) return true;
+	return BigInt(sent) !== BigInt(sign + exact);
+}
+
+export function hasUnsafeInteger(text: string): boolean {
+	return someNumberToken(text, roundsWholeNumber);
+}
+
+/** Whether a non-zero number in this JSON text reads as 0 (1e-400): saving it would send 0. */
+export function hasVanishingNumber(text: string): boolean {
+	return someNumberToken(text, (token) => Number(token) === 0 && /[1-9]/.test(token.split(/[eE]/)[0]));
+}
+
+// Tests each number written in JSON text, as written, skipping strings.
+function someNumberToken(text: string, test: (token: string) => boolean): boolean {
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (c === '"') {
+			for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+			continue;
+		}
+		if (c === "-" || (c >= "0" && c <= "9")) {
+			const token = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(text.slice(i))?.[0] ?? c;
+			if (test(token)) return true;
+			i += token.length - 1;
+		}
+	}
+	return false;
+}
+
+export function isJSONText(text: string): boolean {
+	if (!text.trim()) return false;
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export const relayBodyOverridesSchema = z
+	.array(z.object({ name: z.string().trim(), value: z.string().trim() }))
+	.superRefine((pairs, ctx) => {
+		const seen = new Map<string, number>();
+		pairs.forEach((pair, i) => {
+			if (!pair.name && !pair.value) return;
+			if (!pair.name) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsPath"), path: [i, "name"] });
+				return;
+			}
+			if (!pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsValue"), path: [i, "value"] });
+			else if (!isJSONText(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideValueJson"), path: [i, "value"] });
+			else if (hasNonFiniteNumber(JSON.parse(pair.value)))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideFiniteNumber"), path: [i, "value"] });
+			else if (hasVanishingNumber(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideTinyNumber"), path: [i, "value"] });
+			// Where the browser can keep the digits (JSON.rawJSON) they are sent exactly, so nothing to refuse.
+			else if (!exactJSONNumbers && hasUnsafeInteger(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideUnsafeInteger"), path: [i, "value"] });
+			if (!isRelayBodyOverridePath(pair.name)) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverridePathFormat"), path: [i, "name"] });
+				return;
+			}
+			const lower = pair.name.toLowerCase();
+			if (seen.has(lower)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideDup"), path: [i, "name"] });
+			else seen.set(lower, i);
+			const clash = pairs.slice(0, i).find((other) => isRelayBodyOverridePath(other.name) && parentCaseClash(other.name, pair.name));
+			if (clash) {
+				const parent = clash.name.split(".").find((segment, j) => segment !== pair.name.split(".")[j]);
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideParentCase", { parent }), path: [i, "name"] });
+			}
+		});
+		seen.forEach((i, lower) => {
+			for (let prefix = lower; prefix.includes("."); ) {
+				prefix = prefix.slice(0, prefix.lastIndexOf("."));
+				const parent = seen.get(prefix);
+				if (parent !== undefined)
+					ctx.addIssue({
+						code: "custom",
+						message: i18n.t("validation.relays.bodyOverrideNested", { path: pairs[i].name, parent: pairs[parent].name }),
+						path: [i, "name"],
+					});
+			}
+		});
+	});
+
 // A route's async job block is set through config.json or the API; the form carries it untouched.
 export const relayJobSchema = z.object({
 	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
@@ -2576,6 +2754,8 @@ export const relayRouteFormSchema = z.object({
 	stream: z.boolean().optional(),
 	usage: relayUsageBaseSchema.optional(),
 	job: relayJobSchema.optional(),
+	body_overrides: relayBodyOverridesSchema.optional(),
+	inherit_body_overrides: z.boolean().optional(),
 });
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
@@ -2587,6 +2767,21 @@ export const relayNetworkFormSchema = z.object({
 	insecure_skip_verify: z.boolean().optional(),
 	ca_cert_pem: z.string().optional(),
 });
+
+/** The route form schema inside a relay: the gateway refuses a route field that clashes with an inherited relay field. */
+export function relayRouteFormSchemaFor(relayPaths: string[] | undefined) {
+	return relayRouteFormSchema.superRefine((route, ctx) => {
+		if (route.inherit_body_overrides === false || !relayPaths?.length) return;
+		const pairs = route.body_overrides ?? [];
+		const clash = bodyOverrideMergeClash(relayPaths, bodyOverridePaths(pairs));
+		if (!clash) return;
+		ctx.addIssue({
+			code: "custom",
+			message: i18n.t("validation.relays.bodyOverrideRelayConflict", { other: clash.relay }),
+			path: ["body_overrides", pairs.findIndex((pair) => pair.name.trim() === clash.route), "name"],
+		});
+	});
+}
 
 export const relayFormSchema = z
 	.object({
@@ -2672,8 +2867,21 @@ export const relayFormSchema = z
 		routes: z.array(relayRouteFormSchema),
 		skip_route_check: z.boolean(),
 		ignore_upstream_cost: z.boolean(),
+		body_overrides: relayBodyOverridesSchema,
 	})
 	.superRefine((form, ctx) => {
+		// The gateway checks each route's fields merged over the relay's, so a relay field can clash with a route's.
+		const relayPaths = bodyOverridePaths(form.body_overrides);
+		form.routes.forEach((route) => {
+			if (route.inherit_body_overrides === false) return;
+			const clash = bodyOverrideMergeClash(relayPaths, bodyOverridePaths(route.body_overrides));
+			if (!clash) return;
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.bodyOverrideRouteConflict", { other: clash.route, route: `${route.method} ${route.path}` }),
+				path: ["body_overrides", form.body_overrides.findIndex((pair) => pair.name.trim() === clash.relay), "name"],
+			});
+		});
 		const type = form.auth.type;
 		if (type === "aws_sigv4") {
 			if (!isSecretVarSet(form.aws?.region))

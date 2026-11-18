@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
-import { relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
+import { parseJSONExact, relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
 import {
+	hasRoundedBodyOverride,
 	cleanJob,
 	cleanUsage,
 	compareRoutes,
@@ -10,6 +11,8 @@ import {
 	emptyRelayForm,
 	emptyUsageForm,
 	mergeUsage,
+	toBodyOverridePairs,
+	toBodyOverrides,
 	toRelayConfig,
 	toRelayForm,
 	relayGatewayPath,
@@ -30,6 +33,56 @@ const stored: Relay = {
 };
 
 describe("relay form", () => {
+	it("round-trips body overrides on the relay and its routes as JSON values", () => {
+		const withOverrides: Relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST", path: "/search", body_overrides: { "options.depth": "advanced", limits: { max: 3 }, tags: [1, 2], none: null } },
+				{ method: "POST", path: "/extract" },
+			],
+		};
+		const form = toRelayForm(withOverrides);
+		expect(form.body_overrides).toEqual([{ name: "include_usage", value: "true" }]);
+		expect(form.routes[0].body_overrides).toContainEqual({ name: "options.depth", value: '"advanced"' });
+		const back = toRelayConfig(form);
+		expect(back.body_overrides).toEqual({ include_usage: true });
+		expect(back.routes?.find((r) => r.path === "/search")?.body_overrides).toEqual({
+			"options.depth": "advanced",
+			limits: { max: 3 },
+			tags: [1, 2],
+			none: null,
+		});
+		expect(back.routes?.find((r) => r.path === "/extract")).not.toHaveProperty("body_overrides");
+	});
+
+	it("keeps a __proto__ path as a field", () => {
+		const out = toBodyOverrides([{ name: "__proto__", value: "true" }]);
+		expect(out && Object.keys(out)).toEqual(["__proto__"]);
+		expect(JSON.stringify(out)).toBe('{"__proto__":true}');
+	});
+
+	it("saves no body_overrides when every row is blank", () => {
+		expect(toBodyOverrides([{ name: "", value: "" }])).toBeUndefined();
+		expect(toBodyOverrides(undefined)).toBeUndefined();
+		expect(toBodyOverridePairs(undefined)).toEqual([]);
+		expect(toRelayConfig(toRelayForm(stored)).body_overrides).toBeUndefined();
+	});
+
+	it("saves a route's switch that turns the relay's enforced fields off, and leaves it out when on", () => {
+		const relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST" as const, path: "/off", inherit_body_overrides: false },
+				{ method: "POST" as const, path: "/on", inherit_body_overrides: true },
+			],
+		};
+		const back = toRelayConfig(toRelayForm(relay));
+		expect(back.routes?.find((r) => r.path === "/off")?.inherit_body_overrides).toBe(false);
+		expect(back.routes?.find((r) => r.path === "/on")).not.toHaveProperty("inherit_body_overrides");
+	});
+
 	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
 		const back = toRelayConfig(toRelayForm(stored));
 		const route = (path: string) => back.routes?.find((r) => r.path === path);
@@ -333,5 +386,35 @@ describe("relayGatewayPath", () => {
 		vi.stubGlobal("window", { __BIFROST_BASE_PATH__: "/bifrost" });
 		expect(relayGatewayPath({ name: "tavily", url: "/relay/tavily" })).toBe("/bifrost/relay/tavily");
 		expect(relayGatewayPath({ name: "tavily" })).toBe("/bifrost/relay/tavily");
+	});
+});
+
+describe("exact body override numbers", () => {
+	it("keeps digits a double cannot hold, from the API and from the form", () => {
+		const loaded = parseJSONExact('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		expect(JSON.stringify(loaded)).toBe('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		const pairs = toBodyOverridePairs(loaded as { tenant: unknown; limit: unknown } as Record<string, unknown>);
+		expect(pairs.find((p) => p.name === "tenant")?.value).toBe("9007199254740993");
+		expect(JSON.stringify(toBodyOverrides(pairs))).toContain('"tenant":9007199254740993');
+	});
+});
+
+describe("hasRoundedBodyOverride", () => {
+	const relay = (overrides: Record<string, unknown>, routeOverrides?: Record<string, unknown>) =>
+		({
+			name: "r",
+			body_overrides: overrides,
+			routes: routeOverrides ? [{ method: "POST", path: "/", body_overrides: routeOverrides }] : [],
+		}) as unknown as Relay;
+	it("flags a whole number past 2^53 read by a browser without JSON.rawJSON", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), false)).toBe(true);
+		expect(hasRoundedBodyOverride(relay({}, { nested: { ids: [1, 9007199254740992] } }), false)).toBe(true);
+	});
+	it("leaves ordinary numbers alone", () => {
+		expect(hasRoundedBodyOverride(relay({ max: 50, ratio: 0.5, big: 9007199254740991 }), false)).toBe(false);
+		expect(hasRoundedBodyOverride(relay({ huge: Infinity }), false), "a number past a double's range").toBe(true);
+	});
+	it("never flags in a browser that keeps exact digits", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), true)).toBe(false);
 	});
 });

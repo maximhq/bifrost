@@ -12,10 +12,16 @@ export interface RouteHeaderMatcher {
   value: string;
 }
 
+export interface BodyOverride {
+  path: string;
+  value: string;
+}
+
 export interface RouteInput {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
   path: string;
   headers?: RouteHeaderMatcher[];
+  bodyOverrides?: BodyOverride[];
 }
 
 /** Page object for /workspace/relays. */
@@ -163,6 +169,16 @@ export class RelaysPage extends BasePage {
       const trailing = (await this.page.locator('[data-testid^="relay-route-header-name-"]').count()) - 1;
       await this.page.getByTestId(`relay-route-header-name-${trailing}`).fill(header.name);
       await this.page.getByTestId(`relay-route-header-value-${trailing}`).fill(header.value);
+    }
+    await this.fillBodyOverrides("relay-route-body-override", route.bodyOverrides ?? []);
+  }
+
+  /** Fills body overrides into the trailing empty row of the table with this test id prefix. */
+  async fillBodyOverrides(prefix: "relay-route-body-override" | "relay-body-override", overrides: BodyOverride[]): Promise<void> {
+    for (const override of overrides) {
+      const trailing = (await this.page.locator(`[data-testid^="${prefix}-name-"]`).count()) - 1;
+      await this.page.getByTestId(`${prefix}-name-${trailing}`).fill(override.path);
+      await this.page.getByTestId(`${prefix}-value-${trailing}`).fill(override.value);
     }
   }
 

@@ -16,6 +16,7 @@ import type {
 import type { LatencyHistogramResponse } from "@/lib/types/logs";
 import { buildRelayLogQuery } from "@/lib/utils/relayLogQuery";
 import { baseApi } from "./baseApi";
+import { exactJSON } from "./responseHandlers";
 
 // The query builder is a pure helper (lib/utils/relayLogQuery.ts) so it can be unit tested without
 // the store; it is re-exported here so callers keep importing it from the API module.
@@ -25,19 +26,27 @@ export const relaysApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Without params every relay is listed; the selector passes search and a page.
 		getRelays: builder.query<GetRelaysResponse, GetRelaysParams | void>({
-			query: (params) => ({ url: "/relays", params: params ?? undefined }),
+			query: (params) => ({ url: "/relays", params: params ?? undefined, responseHandler: exactJSON }),
 			providesTags: (result) => ["Relays", ...(result?.relays ?? []).map((e) => ({ type: "Relays" as const, id: e.name }))],
+			// Structural sharing would rebuild an exact number (JSON.rawJSON) as a plain object on refetch.
+			structuralSharing: false,
 		}),
 		getRelay: builder.query<Relay, string>({
-			query: (name) => ({ url: `/relays/${encodeURIComponent(name)}` }),
+			query: (name) => ({ url: `/relays/${encodeURIComponent(name)}`, responseHandler: exactJSON }),
 			providesTags: (_r, _e, name) => [{ type: "Relays", id: name }],
+			structuralSharing: false,
 		}),
 		createRelay: builder.mutation<Relay, Relay>({
-			query: (body) => ({ url: "/relays", method: "POST", body }),
+			query: (body) => ({ url: "/relays", method: "POST", body, responseHandler: exactJSON }),
 			invalidatesTags: ["Relays"],
 		}),
 		updateRelay: builder.mutation<Relay, { name: string; data: Relay }>({
-			query: ({ name, data }) => ({ url: `/relays/${encodeURIComponent(name)}`, method: "PUT", body: data }),
+			query: ({ name, data }) => ({
+				url: `/relays/${encodeURIComponent(name)}`,
+				method: "PUT",
+				body: data,
+				responseHandler: exactJSON,
+			}),
 			invalidatesTags: (_r, _e, { name }) => [{ type: "Relays", id: name }],
 		}),
 		deleteRelay: builder.mutation<void, string>({

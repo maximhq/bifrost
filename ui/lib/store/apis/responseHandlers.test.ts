@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { textOrJSONError } from "./responseHandlers";
+import { exactJSON, textOrJSONError } from "./responseHandlers";
 
 describe("textOrJSONError", () => {
 	it("reads a successful response as text", async () => {
@@ -13,5 +13,18 @@ describe("textOrJSONError", () => {
 	});
 	it("falls back to the raw text for a non-JSON error body", async () => {
 		expect(await textOrJSONError(new Response("bad gateway", { status: 502 }))).toBe("bad gateway");
+	});
+});
+
+describe("exactJSON", () => {
+	it("keeps a whole number past 2^53 exact", async () => {
+		const out = await exactJSON(new Response(`{"seed":9007199254740993}`, { status: 200 }));
+		expect(JSON.stringify(out)).toBe(`{"seed":9007199254740993}`);
+	});
+	it("leaves a successful reply that is not JSON as a parsing error", async () => {
+		await expect(exactJSON(new Response("<html>proxy</html>", { status: 200 }))).rejects.toThrow();
+	});
+	it("keeps a non-JSON error body as text", async () => {
+		expect(await exactJSON(new Response("bad gateway", { status: 502 }))).toBe("bad gateway");
 	});
 });

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	hasUnsafeInteger,
+	relayBodyOverridesSchema,
+	exactJSONNumbers,
 	relayFormSchema,
 	relayOpenAPISpecUrlSchema,
 	relayRouteFormSchema,
@@ -12,6 +15,75 @@ import { emptyRelayForm } from "@/lib/utils/relayForm";
 // toast after a failed save.
 describe("relay form validation", () => {
 	const route = (path: string) => relayRouteFormSchema.safeParse({ method: "POST", path, headers: [], enabled: true });
+
+	it("refuses body overrides the gateway would refuse", () => {
+		const messages = (pairs: { name: string; value: string }[]) =>
+			(relayBodyOverridesSchema.safeParse(pairs).error?.issues ?? []).map((i) => i.message);
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "options.depth", value: '"advanced"' },
+				{ name: "", value: "" },
+			]),
+		).toEqual([]);
+		expect(messages([{ name: "depth", value: "advanced" }])).toEqual([
+			'Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)',
+		]);
+		expect(messages([{ name: "depth", value: "" }])).toEqual(["An enforced field needs a JSON value"]);
+		expect(messages([{ name: "", value: "true" }])).toEqual(["An enforced field needs a path"]);
+		expect(messages([{ name: "items.0", value: "1" }])[0]).toContain("no key made only of digits");
+		expect(messages([{ name: "items.#.id", value: "1" }])[0]).toContain("object keys separated by dots");
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "Include_Usage", value: "false" },
+			]),
+		).toEqual(["This field is already set (paths ignore letter case)"]);
+		expect(
+			messages([
+				{ name: "options", value: "{}" },
+				{ name: "options.depth", value: "1" },
+			]),
+		).toEqual(["options.depth is inside options, which is also set"]);
+		expect(messages([{ name: "options.-1", value: "true" }])[0]).toContain("no key -1");
+		expect(messages([{ name: "options.-x", value: "true" }])).toEqual([]);
+		expect(
+			messages([
+				{ name: "options.depth", value: "1" },
+				{ name: "Options.mode", value: "2" },
+			]),
+		).toEqual(["options is spelled with different letter case in another field; use one spelling"]);
+		expect(messages([{ name: "limit", value: "1e400" }])[0]).toContain("too large to send");
+		expect(messages([{ name: "limits", value: '{"max":[1, -1e400]}' }])[0]).toContain("too large to send");
+		// A non-zero number the browser reads as 0 would be sent as 0.
+		expect(messages([{ name: "eps", value: "1e-400" }])[0]).toContain("too small to send");
+		expect(messages([{ name: "limits", value: '{"min":[0.5, -2.5e-999]}' }])[0]).toContain("too small to send");
+		expect(messages([{ name: "zero", value: '[0, 0.0, 0e5, -0, "1e-400"]' }])).toEqual([]);
+		expect(messages([{ name: "limit", value: "1e300" }])).toEqual([]);
+	});
+
+	it("refuses a relay field that clashes with a route's once they are merged", () => {
+		const relay = (fields: { name: string; value: string }[], routeFields: { name: string; value: string }[], inherit?: boolean) =>
+			(
+				relayFormSchema.safeParse({
+					...emptyRelayForm(),
+					name: "r",
+					base_url: "https://api.example.com",
+					auth: { type: "none" },
+					body_overrides: fields,
+					routes: [{ method: "POST", path: "/search", headers: [], body_overrides: routeFields, inherit_body_overrides: inherit }],
+				}).error?.issues ?? []
+			).filter((i) => i.path[0] === "body_overrides");
+		const clash = relay([{ name: "options", value: "{}" }], [{ name: "options.depth", value: "1" }]);
+		expect(clash.map((i) => i.path)).toEqual([["body_overrides", 0, "name"]]);
+		expect(clash[0].message).toContain("options.depth on route POST /search");
+		expect(relay([{ name: "options.mode", value: "1" }], [{ name: "Options.depth", value: "1" }])).toHaveLength(1);
+		expect(relay([{ name: "include_usage", value: "true" }], [{ name: "INCLUDE_USAGE", value: "true" }])).toHaveLength(1);
+		expect(relay([{ name: "include_usage", value: "true" }], [{ name: "include_usage", value: "false" }]), "same path is replaced").toEqual(
+			[],
+		);
+		expect(relay([{ name: "options", value: "{}" }], [{ name: "options.depth", value: "1" }], false), "route opted out").toEqual([]);
+	});
 
 	it("accepts the gateway's segment globs and rejects ** before the last segment", () => {
 		expect(route("/v1/*/status").success).toBe(true);
@@ -100,5 +172,40 @@ describe("relay form validation", () => {
 		expect(relayOpenAPISpecUrlSchema.safeParse(" https://exa.ai/docs/exa-spec.json ").data).toBe("https://exa.ai/docs/exa-spec.json");
 		expect(relayOpenAPISpecUrlSchema.safeParse("http://127.0.0.1:8080/openapi.yaml").success).toBe(true);
 		expect(relayOpenAPISpecUrlSchema.safeParse("http://[::1]/spec.json").success).toBe(true);
+	});
+});
+
+describe("body override numbers", () => {
+	it("refuses a whole number a save would round, and keeps safe or quoted ones", () => {
+		expect(hasUnsafeInteger("9007199254740993")).toBe(true);
+		expect(hasUnsafeInteger('{"n":[1,-9007199254740993]}')).toBe(true);
+		expect(hasUnsafeInteger("9007199254740991")).toBe(false);
+		expect(hasUnsafeInteger("1000000000000000128")).toBe(true);
+		expect(hasUnsafeInteger("999999999999999999999")).toBe(true);
+		expect(hasUnsafeInteger("12345678901234567890123")).toBe(true);
+		expect(hasUnsafeInteger("1e300")).toBe(false);
+		expect(hasUnsafeInteger("100000000000000000000")).toBe(false);
+		expect(hasUnsafeInteger("-0")).toBe(false);
+		expect(hasUnsafeInteger('"9007199254740993"')).toBe(false);
+		expect(hasUnsafeInteger('{"a\\"9007199254740993":1}')).toBe(false);
+		expect(hasUnsafeInteger("1.5e300")).toBe(false);
+		// The same whole number spelled with a decimal point or an exponent rounds the same way.
+		expect(hasUnsafeInteger("9007199254740993.0")).toBe(true);
+		expect(hasUnsafeInteger("9007199254740993e0")).toBe(true);
+		expect(hasUnsafeInteger("90071992547409930e-1")).toBe(true);
+		expect(hasUnsafeInteger("9007199254740992.0")).toBe(false);
+		expect(hasUnsafeInteger("1e20")).toBe(false);
+		expect(hasUnsafeInteger("0.5")).toBe(false);
+		// Exponents that move the point past every digit are small fractions, not whole numbers.
+		expect(hasUnsafeInteger("100e-4")).toBe(false);
+		expect(hasUnsafeInteger("10e-3")).toBe(false);
+		expect(hasUnsafeInteger('{"rate":[1e-9, 100e-4]}')).toBe(false);
+		expect(relayBodyOverridesSchema.safeParse([{ name: "rate", value: "100e-4" }]).success).toBe(true);
+		// This runtime keeps exact digits (JSON.rawJSON), so the value is accepted and sent unchanged.
+		expect(exactJSONNumbers).toBe(true);
+		expect(relayBodyOverridesSchema.safeParse([{ name: "seed", value: "9007199254740993" }]).success).toBe(true);
+		// A 400-digit token that a duplicate key overwrites is reported, not thrown on.
+		expect(hasUnsafeInteger(`{"n":${"9".repeat(400)},"n":0}`)).toBe(true);
+		expect(() => relayBodyOverridesSchema.safeParse([{ name: "n", value: `{"n":${"9".repeat(400)},"n":0}` }])).not.toThrow();
 	});
 });

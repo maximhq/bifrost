@@ -24,7 +24,8 @@ export interface CellRenderParams {
 
 interface HeadersTableProps<T extends HeaderValue> {
 	value: Record<string, T>;
-	onChange: (value: Record<string, T>) => void;
+	/** `order` is the on-screen row order, which an object cannot keep for integer-like names. */
+	onChange: (value: Record<string, T>, order: readonly string[]) => void;
 	keyPlaceholder?: string;
 	valuePlaceholder?: string;
 	label?: string;
@@ -54,8 +55,9 @@ interface HeadersTableProps<T extends HeaderValue> {
 	 * change, and with the headers those indices refer to (after a delete, the remaining rows). The table
 	 * keeps such a row's last valid name in `value`; a caller that validates names can use this to block
 	 * saving until the conflict is resolved. With keepClearedNames, deleting a conflicted row removes it.
+	 * `order` is the row order the indices count in.
 	 */
-	onConflictsChange?: (conflicts: ReadonlyMap<number, string>, headers: Record<string, T>) => void;
+	onConflictsChange?: (conflicts: ReadonlyMap<number, string>, headers: Record<string, T>, order: readonly string[]) => void;
 }
 
 /**
@@ -77,8 +79,9 @@ export function renameHeaderKeepingCleared<T>(
 	rowIndex: number,
 	newKey: string,
 	currentValue: T,
+	order: string[] = Object.keys(value),
 ): Record<string, T> | undefined {
-	const entries = Object.entries(value);
+	const entries = order.map((k): [string, T] => [k, value[k]]);
 	if (rowIndex >= entries.length) return newKey === "" ? value : { ...value, [newKey]: currentValue };
 	if (newKey === "" && entries.some(([k], i) => k === "" && i !== rowIndex)) return undefined;
 	return Object.fromEntries(entries.map(([k, v], i) => (i === rowIndex ? [newKey, currentValue] : [k, v])));
@@ -93,13 +96,14 @@ export function deleteHeaderRow<T>(
 	value: Record<string, T>,
 	conflicts: ReadonlyMap<number, string>,
 	rowIndex: number,
+	order: string[] = Object.keys(value),
 ): { value: Record<string, T>; conflicts: Map<number, string> } {
 	const shifted = new Map<number, string>();
 	conflicts.forEach((name, i) => {
 		if (i < rowIndex) shifted.set(i, name);
 		else if (i > rowIndex) shifted.set(i - 1, name);
 	});
-	return { value: Object.fromEntries(Object.entries(value).filter((_, i) => i !== rowIndex)), conflicts: shifted };
+	return { value: Object.fromEntries(order.filter((_, i) => i !== rowIndex).map((k) => [k, value[k]])), conflicts: shifted };
 }
 
 // Empty SecretVar for new rows
@@ -125,6 +129,26 @@ const isValueEmpty = (val: HeaderValue): boolean => {
 	}
 	return !val;
 };
+
+/** A row's value input in the same table: a form can show several tables with the same row numbers. */
+export function valueInputInTable(from: HTMLElement, rowIndex: number): HTMLInputElement | null {
+	return from.closest("table")?.querySelector<HTMLInputElement>(`input[data-row="${rowIndex}"][data-column="value"]`) ?? null;
+}
+
+/**
+ * The row order for `value`: `previous` with removed names dropped and new ones appended. A plain
+ * object lists integer-like names ("3") first, so without this a row renamed to one would jump above
+ * the rows before it while the user is still typing.
+ */
+export function rowOrder(value: Record<string, unknown>, previous: readonly string[]): string[] {
+	const order = previous.filter((k) => Object.hasOwn(value, k));
+	for (const k of Object.keys(value)) if (!order.includes(k)) order.push(k);
+	return order;
+}
+
+/** `order` with the name at `index` replaced, or appended for the trailing add row. */
+const renameAt = (order: readonly string[], index: number, name: string) =>
+	index < order.length ? order.map((k, i) => (i === index ? name : k)) : [...order, name];
 
 export function HeadersTable<T extends HeaderValue>({
 	value,
@@ -160,7 +184,7 @@ export function HeadersTable<T extends HeaderValue>({
 		}
 		const next = update(duplicateConflicts);
 		setDuplicateConflicts(next);
-		onConflictsChange(next, headers);
+		onConflictsChange(next, headers, rowOrder(headers, keyOrder.current));
 	};
 	// Track which row to highlight (for scroll-to-existing behavior)
 	const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
@@ -177,9 +201,10 @@ export function HeadersTable<T extends HeaderValue>({
 
 	const isFixedKeys = Array.isArray(fixedKeys);
 
-	// Convert headers object to array format for table display
-	// Filter out any empty string keys from stored headers
-	const headerEntries = Object.entries(value || {});
+	// Rows keep the order they were typed in (see rowOrder); every index below refers to it.
+	const keyOrder = useRef<string[]>([]);
+	keyOrder.current = rowOrder(value || {}, keyOrder.current);
+	const headerEntries = keyOrder.current.map((k): [string, T] => [k, value[k]]);
 	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
 	// no trailing add-row). Otherwise show one empty row at the bottom, unless a
 	// cleared row already holds the empty name (see showsAddRow).
@@ -213,9 +238,11 @@ export function HeadersTable<T extends HeaderValue>({
 		});
 
 		if (keepClearedNames) {
-			const next = renameHeaderKeepingCleared(value, rowIndex, newKey, currentValue);
-			if (next) onChange(next);
-			else updateConflicts((prev) => new Map(prev).set(rowIndex, ""));
+			const next = renameHeaderKeepingCleared(value, rowIndex, newKey, currentValue, keyOrder.current);
+			if (next) {
+				keyOrder.current = renameAt(keyOrder.current, rowIndex, newKey);
+				onChange(next, keyOrder.current);
+			} else updateConflicts((prev) => new Map(prev).set(rowIndex, ""));
 			return;
 		}
 
@@ -237,7 +264,8 @@ export function HeadersTable<T extends HeaderValue>({
 			newHeaders[newKey] = currentValue;
 		}
 
-		onChange(newHeaders);
+		if (newKey !== "") keyOrder.current = renameAt(keyOrder.current, rowIndex, newKey);
+		onChange(newHeaders, rowOrder(newHeaders, keyOrder.current));
 	};
 
 	const handleValueChange = (currentKey: string, newValue: string | SecretVar, rowIndex: number) => {
@@ -255,14 +283,15 @@ export function HeadersTable<T extends HeaderValue>({
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;
 		}
 
-		onChange(newHeaders);
+		onChange(newHeaders, keyOrder.current);
 	};
 
 	const handleDelete = (key: string, rowIndex: number) => {
 		if (keepClearedNames) {
-			const next = deleteHeaderRow(value, duplicateConflicts, rowIndex);
+			const next = deleteHeaderRow(value, duplicateConflicts, rowIndex, keyOrder.current);
+			keyOrder.current = keyOrder.current.filter((_, i) => i !== rowIndex);
 			updateConflicts(() => next.conflicts, next.value);
-			onChange(next.value);
+			onChange(next.value, keyOrder.current);
 			return;
 		}
 
@@ -294,15 +323,14 @@ export function HeadersTable<T extends HeaderValue>({
 			return next;
 		});
 
-		onChange(newHeaders);
+		onChange(newHeaders, rowOrder(newHeaders, keyOrder.current));
 	};
 
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, rowIndex: number, column: "key" | "value") => {
 		if (e.key === "Tab" && !e.shiftKey) {
 			if (column === "key") {
 				e.preventDefault();
-				const valueInput = document.querySelector(`input[data-row="${rowIndex}"][data-column="value"]`) as HTMLInputElement;
-				valueInput?.focus();
+				valueInputInTable(e.currentTarget, rowIndex)?.focus();
 			}
 		}
 	};
