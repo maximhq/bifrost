@@ -1185,7 +1185,8 @@ func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
 // whole rather than parsed for URLs. The aws_workload_identity block is not listed: its
 // exchange goes to Google's fixed STS endpoint and it holds no URL.
 //
-// An Anthropic workload identity_source path is listed for the same reason as a Vertex
+// An Anthropic workload identity_source path and an oauth_key_config subject_token_file are
+// listed for the same reason as a Vertex
 // credential_source file: Bifrost reads that local file and posts it to the token endpoint, so
 // choosing the path chooses which local secret leaves the machine.
 func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
@@ -1222,6 +1223,11 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.OAuthKeyConfig; c != nil {
 		add("oauth_key_config.token_url", &c.TokenURL)
+		// token_exchange reads this local file and posts it to token_url, so the path chooses
+		// which local credential leaves the machine, like an Anthropic identity_source path.
+		if f := strings.TrimSpace(c.SubjectTokenFile); f != "" {
+			add("oauth_key_config.subject_token_file", schemas.NewSecretVar(f))
+		}
 	}
 	if c := key.VertexKeyConfig; c != nil {
 		add("vertex_key_config.auth_credentials", &c.AuthCredentials)

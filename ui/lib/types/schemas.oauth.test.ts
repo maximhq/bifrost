@@ -13,6 +13,58 @@ const issues = (result: { success: boolean; error?: { issues: { path: PropertyKe
 	result.success ? [] : (result.error?.issues.map((issue) => issue.path.join(".")) ?? []);
 
 describe("oauthKeyConfigSchema", () => {
+	it.each(["urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:id_token"])(
+		"accepts and preserves a complete token exchange block with %s",
+		(subject_token_type) => {
+			const config = {
+				_auth_type: "oauth",
+				grant_type: "token_exchange",
+				token_url: tokenUrl,
+				subject_token_file: "/var/run/secrets/identity/token",
+				subject_token_type,
+				request_encoding: "json",
+				extra_params: { identity_provider_id: "idp-1", service_account_id: "svc-1" },
+			};
+			expect(oauthKeyConfigSchema.parse(config)).toEqual(config);
+		},
+	);
+
+	it.each([undefined, "", "   ", "relative/token"])("rejects an invalid token exchange subject token file: %s", (subject_token_file) => {
+		const result = oauthKeyConfigSchema.safeParse({
+			_auth_type: "oauth",
+			grant_type: "token_exchange",
+			token_url: tokenUrl,
+			subject_token_file,
+		});
+		expect(result.success).toBe(false);
+		expect(issues(result)).toEqual(["subject_token_file"]);
+	});
+
+	it("accepts token exchange with the default token type and encoding omitted", () => {
+		expect(
+			oauthKeyConfigSchema.safeParse({
+				grant_type: "token_exchange",
+				token_url: tokenUrl,
+				subject_token_file: "/var/run/secrets/identity/token",
+			}).success,
+		).toBe(true);
+	});
+
+	it.each([
+		["subject_token_type", "urn:ietf:params:oauth:token-type:access_token"],
+		["request_encoding", "xml"],
+	])("rejects an unsupported token exchange %s", (field, value) => {
+		const result = oauthKeyConfigSchema.safeParse({
+			_auth_type: "oauth",
+			grant_type: "token_exchange",
+			token_url: tokenUrl,
+			subject_token_file: "/var/run/secrets/identity/token",
+			[field]: value,
+		});
+		expect(result.success).toBe(false);
+		expect(issues(result)).toEqual([field]);
+	});
+
 	it("accepts a complete client credentials block", () => {
 		const result = oauthKeyConfigSchema.safeParse({ _auth_type: "oauth", grant_type: "client_credentials", token_url: tokenUrl, ...pair });
 		expect(result.success).toBe(true);
@@ -186,6 +238,15 @@ describe("oauthKeyConfigSchema", () => {
 });
 
 describe("oauthKeyConfigComplete", () => {
+	it("requires a token URL and subject token file for token exchange", () => {
+		const config = { grant_type: "token_exchange", token_url: tokenUrl, subject_token_file: "/var/run/secrets/identity/token" };
+		expect(oauthKeyConfigComplete(config)).toBe(true);
+		expect(oauthKeyConfigComplete({ ...config, token_url: undefined })).toBe(false);
+		for (const subject_token_file of [undefined, "", "   "]) {
+			expect(oauthKeyConfigComplete({ ...config, subject_token_file })).toBe(false);
+		}
+	});
+
 	it("is true only for a whole block of its grant", () => {
 		expect(oauthKeyConfigComplete({ grant_type: "client_credentials", token_url: tokenUrl, ...pair })).toBe(true);
 		expect(oauthKeyConfigComplete({ grant_type: "client_credentials", token_url: tokenUrl, client_id: pair.client_id })).toBe(false);

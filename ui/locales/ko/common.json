@@ -373,6 +373,8 @@
 		"clientIdIsRequiredForClientCredentials": "클라이언트 자격 증명에는 클라이언트 ID가 필요해요",
 		"clientSecretIsRequiredForClientCredentials": "클라이언트 자격 증명에는 클라이언트 시크릿이 필요해요",
 		"privateKeyIsRequiredForJwtBearer": "JWT bearer에는 프라이빗 키가 필요해요",
+		"subjectTokenFileIsRequiredForTokenExchange": "토큰 교환에는 주체 토큰 파일이 필요해요",
+		"subjectTokenFileMustBeAnAbsolutePath": "주체 토큰 파일은 절대 경로여야 해요",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "프라이빗 키는 RSA 또는 EC PEM 블록이어야 해요",
 		"issuerIsRequiredForJwtBearer": "JWT bearer에는 발급자(issuer)가 필요해요",
 		"audienceIsRequiredForJwtBearer": "JWT bearer에는 대상(audience)이 필요해요",

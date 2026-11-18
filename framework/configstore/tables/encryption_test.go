@@ -266,6 +266,44 @@ func TestTableKey_OAuthClientCredentialsOmitsUnsetFields(t *testing.T) {
 	assert.Equal(t, schemas.OAuthGrantClientCredentials, found.OAuthKeyConfig.GrantType)
 }
 
+// TestTableKey_OAuthTokenExchangeRoundTrip pins that the token_exchange settings, which live in
+// the encrypted settings column with no column of their own, survive a save and a load.
+func TestTableKey_OAuthTokenExchangeRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "oauth-te",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "oauth-uuid-te",
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:        schemas.OAuthGrantTokenExchange,
+			TokenURL:         *schemas.NewSecretVar("https://auth.openai.com/oauth/token"),
+			SubjectTokenFile: "/var/run/secrets/openai/token",
+			SubjectTokenType: schemas.OAuthSubjectTokenTypeIDToken,
+			RequestEncoding:  schemas.OAuthRequestEncodingJSON,
+			ExtraParams:      map[string]string{"identity_provider_id": "idp_1", "service_account_id": "sa_1"},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	settings, _ := raw["oauth_settings_json"].(string)
+	assert.NotContains(t, settings, "/var/run/secrets/openai/token", "the settings column is encrypted at rest")
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.OAuthKeyConfig)
+	got := found.OAuthKeyConfig
+	assert.Equal(t, schemas.OAuthGrantTokenExchange, got.GrantType)
+	assert.Equal(t, "/var/run/secrets/openai/token", got.SubjectTokenFile)
+	assert.Equal(t, schemas.OAuthSubjectTokenTypeIDToken, got.SubjectTokenType)
+	assert.Equal(t, schemas.OAuthRequestEncodingJSON, got.RequestEncoding)
+	assert.Equal(t, map[string]string{"identity_provider_id": "idp_1", "service_account_id": "sa_1"}, got.ExtraParams)
+	assert.Nil(t, got.ClientID)
+	assert.Nil(t, got.PrivateKey)
+}
+
 func TestTableKey_NoOAuthConfig_LeavesNil(t *testing.T) {
 	db := setupTestDB(t)
 

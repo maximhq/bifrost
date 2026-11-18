@@ -17,7 +17,7 @@ import (
 
 // oauthKeyCacheVersion namespaces cache keys derived from an OAuthKeyConfig. Bump it when the
 // set of hashed fields changes.
-const oauthKeyCacheVersion = "oauthkey-v1"
+const oauthKeyCacheVersion = "oauthkey-v2"
 
 // ResolveBearer is the one entry point for bearer auth on a key that may be static or minted.
 // value is Key.Value; when set it is used verbatim. When it is empty and cfg is nil the result
@@ -107,8 +107,34 @@ func MinterForConfig(cfg *schemas.OAuthKeyConfig, hc *http.Client) (string, Mint
 			ExtraParams:   extraParams(cfg.ExtraParams),
 		}, hc)
 		return cacheKey, mint, nil
+	case schemas.OAuthGrantTokenExchange:
+		// The subject token is a host credential the key editor never saw, so the endpoint it is
+		// sent to must be one the operator allowed. A token_url reference resolves only here.
+		if !schemas.TokenExchangeURLAllowed(tokenURL) {
+			return "", nil, configurationError("oauth_key_config.token_url " + redactURL(tokenURL) + " is not an allowed token exchange endpoint; list it in " +
+				schemas.TokenExchangeURLsEnv + " (default " + strings.Join(schemas.DefaultTokenExchangeURLs, ",") + ")")
+		}
+		subjectType := strings.TrimSpace(cfg.SubjectTokenType)
+		if subjectType != "" && !slices.Contains(schemas.OAuthSubjectTokenTypes, subjectType) {
+			return "", nil, configurationError("oauth_key_config.subject_token_type must be one of " + strings.Join(schemas.OAuthSubjectTokenTypes, ", "))
+		}
+		switch cfg.RequestEncoding {
+		case "", schemas.OAuthRequestEncodingForm, schemas.OAuthRequestEncodingJSON:
+		default:
+			return "", nil, configurationError("oauth_key_config.request_encoding must be form or json")
+		}
+		mint := TokenExchangeMinter(TokenExchangeConfig{
+			TokenURL:         tokenURL,
+			SubjectTokenFile: strings.TrimSpace(cfg.SubjectTokenFile),
+			SubjectTokenType: subjectType,
+			Encoding:         cfg.RequestEncoding,
+			Scopes:           cfg.Scopes,
+			Audience:         strings.TrimSpace(cfg.Audience),
+			ExtraParams:      extraParams(cfg.ExtraParams),
+		}, hc)
+		return cacheKey, mint, nil
 	default:
-		return "", nil, configurationError("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+		return "", nil, configurationError("oauth_key_config.grant_type must be client_credentials, jwt_bearer or token_exchange")
 	}
 }
 
@@ -135,10 +161,14 @@ func validateConfig(cfg *schemas.OAuthKeyConfig) (string, *schemas.BifrostError)
 		if secret(cfg.PrivateKey) == "" || strings.TrimSpace(cfg.Issuer) == "" || strings.TrimSpace(cfg.Audience) == "" {
 			return "", configurationError("oauth_key_config.private_key, oauth_key_config.issuer and oauth_key_config.audience are required for the jwt_bearer grant")
 		}
+	case schemas.OAuthGrantTokenExchange:
+		if strings.TrimSpace(cfg.SubjectTokenFile) == "" {
+			return "", configurationError("oauth_key_config.subject_token_file is required for the token_exchange grant")
+		}
 	case "":
 		return "", configurationError("oauth_key_config.grant_type is required")
 	default:
-		return "", configurationError("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+		return "", configurationError("oauth_key_config.grant_type must be client_credentials, jwt_bearer or token_exchange")
 	}
 	return oauthKeyCacheKey(cfg, tokenURL), nil
 }
@@ -209,6 +239,11 @@ func oauthKeyCacheKey(cfg *schemas.OAuthKeyConfig, tokenURL string) string {
 		string(cfg.AuthStyle),
 		strings.Join(cfg.Scopes, " "),
 		encodedExtraParams(cfg.ExtraParams),
+		// token_exchange: the file path, not its contents, names the credential, so a token the
+		// platform rotates on disk keeps the slot.
+		strings.TrimSpace(cfg.SubjectTokenFile),
+		strings.TrimSpace(cfg.SubjectTokenType),
+		string(cfg.RequestEncoding),
 	)
 }
 

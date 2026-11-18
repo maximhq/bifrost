@@ -47,17 +47,23 @@ export const stripOAuthAuthDiscriminator = (config: OAuthKeyConfigForm | undefin
 	if (_auth_type === "api_key" || (_auth_type !== "oauth" && !oauthKeyConfigComplete(rest))) {
 		return undefined;
 	}
-	if (rest.grant_type === "client_credentials") {
+	if (rest.grant_type !== "jwt_bearer") {
 		delete rest.private_key;
 		delete rest.issuer;
 		delete rest.subject;
 		delete rest.key_id;
 		delete rest.signing_algorithm;
 		delete rest.assertion_lifetime_seconds;
-	} else if (rest.grant_type === "jwt_bearer") {
+	}
+	if (rest.grant_type !== "client_credentials") {
 		delete rest.client_id;
 		delete rest.client_secret;
 		delete rest.auth_style;
+	}
+	if (rest.grant_type !== "token_exchange") {
+		delete rest.subject_token_file;
+		delete rest.subject_token_type;
+		delete rest.request_encoding;
 	}
 	if (rest.scopes && rest.scopes.length === 0) delete rest.scopes;
 	if (rest.extra_params && Object.keys(rest.extra_params).length === 0) delete rest.extra_params;

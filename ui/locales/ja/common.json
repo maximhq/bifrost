@@ -373,6 +373,8 @@
 		"clientIdIsRequiredForClientCredentials": "クライアントクレデンシャルにはクライアント ID が必要です",
 		"clientSecretIsRequiredForClientCredentials": "クライアントクレデンシャルにはクライアントシークレットが必要です",
 		"privateKeyIsRequiredForJwtBearer": "JWT bearer には秘密鍵が必要です",
+		"subjectTokenFileIsRequiredForTokenExchange": "トークン交換にはサブジェクトトークンファイルが必要です",
+		"subjectTokenFileMustBeAnAbsolutePath": "サブジェクトトークンファイルは絶対パスで指定してください",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "秘密鍵は RSA または EC の PEM ブロックにしてください",
 		"issuerIsRequiredForJwtBearer": "JWT bearer には発行者が必要です",
 		"audienceIsRequiredForJwtBearer": "JWT bearer にはオーディエンスが必要です",

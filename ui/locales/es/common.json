@@ -373,6 +373,8 @@
 		"clientIdIsRequiredForClientCredentials": "El ID de cliente es obligatorio para las credenciales de cliente",
 		"clientSecretIsRequiredForClientCredentials": "El secreto de cliente es obligatorio para las credenciales de cliente",
 		"privateKeyIsRequiredForJwtBearer": "La clave privada es obligatoria para JWT bearer",
+		"subjectTokenFileIsRequiredForTokenExchange": "El archivo del token de sujeto es obligatorio para el intercambio de tokens",
+		"subjectTokenFileMustBeAnAbsolutePath": "El archivo del token de sujeto debe tener una ruta absoluta",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "La clave privada debe ser un bloque PEM RSA o EC",
 		"issuerIsRequiredForJwtBearer": "El emisor es obligatorio para JWT bearer",
 		"audienceIsRequiredForJwtBearer": "La audiencia es obligatoria para JWT bearer",

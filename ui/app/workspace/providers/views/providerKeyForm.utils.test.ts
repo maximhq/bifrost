@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { modelProviderKeySchema } from "@/lib/types/schemas";
 
 import {
 	applyAuthMethod,
@@ -51,6 +52,53 @@ describe("stripOAuthAuthDiscriminator", () => {
 		client_id: { value: "id" },
 		client_secret: { value: "secret" },
 	};
+
+	it.each(["oauth", undefined] as const)("round trips token exchange with auth type %s", (_auth_type) => {
+		const config = {
+			grant_type: "token_exchange" as const,
+			token_url: tokenUrl,
+			subject_token_file: "/var/run/secrets/identity/token",
+			subject_token_type: "urn:ietf:params:oauth:token-type:id_token" as const,
+			request_encoding: "json" as const,
+			extra_params: { identity_provider_id: "idp-1", service_account_id: "svc-1" },
+		};
+		const parsed = modelProviderKeySchema.parse({
+			id: "k1",
+			name: "exchange",
+			models: ["*"],
+			weight: 1,
+			value: { value: "" },
+			oauth_key_config: {
+				...config,
+				_auth_type,
+				...pair,
+				private_key: { value: "pem" },
+				issuer: "i",
+				subject: "s",
+				key_id: "kid",
+				signing_algorithm: "RS256",
+				assertion_lifetime_seconds: 300,
+				auth_style: "header",
+			},
+		});
+		for (const isEdit of [false, true]) {
+			expect(applyAuthMethod(parsed, isEdit).oauth_key_config).toEqual(config);
+		}
+	});
+
+	it.each(["client_credentials", "jwt_bearer"] as const)("drops token exchange fields when switching to %s", (grant_type) => {
+		const out = stripOAuthAuthDiscriminator({
+			_auth_type: "oauth",
+			...cc,
+			grant_type,
+			subject_token_file: "/var/run/secrets/identity/token",
+			subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+			request_encoding: "form",
+		});
+		expect(out).not.toHaveProperty("subject_token_file");
+		expect(out).not.toHaveProperty("subject_token_type");
+		expect(out).not.toHaveProperty("request_encoding");
+	});
 
 	it("drops the whole block on the API key method", () => {
 		expect(stripOAuthAuthDiscriminator({ _auth_type: "api_key", ...cc })).toBeUndefined();
