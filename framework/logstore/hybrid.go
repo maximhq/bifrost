@@ -3223,6 +3223,14 @@ func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.T
 	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
 }
 
+// ReclaimSpace delegates to the inner store when it can release freed pages.
+func (h *HybridLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, error) {
+	if reclaimer, ok := h.inner.(SpaceReclaimer); ok {
+		return reclaimer.ReclaimSpace(ctx, maxPages)
+	}
+	return 0, nil
+}
+
 // Complexity suggestion methods - delegated directly. Suggestions, runs and
 // pending vector deletes hold no payloads, so they stay in the database.
 
