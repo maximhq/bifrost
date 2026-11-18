@@ -313,7 +313,8 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // Nace's SDK routes contain openai/typesafe, but require Nace credentials.
-  const isNace = PROVIDER_KEYWORDS.nace.some((k) => haystack.includes(k));
+  // "nace" is matched as a whole word so prompt words such as "furnace" or "menace" do not claim a row.
+  const isNace = /\bnace\b/.test(haystack) || haystack.includes("drex-");
   if (provider === "nace") return isNace;
   if (isNace) return false;
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
