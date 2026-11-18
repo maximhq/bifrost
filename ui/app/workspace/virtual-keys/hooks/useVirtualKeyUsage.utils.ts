@@ -1,4 +1,5 @@
 import { RateLimit, VirtualKey } from "@/lib/types/governance";
+import type { TFunction } from "i18next";
 
 /** The subset of an access profile's rate limit this derivation needs. */
 export type ProfileRateLimit = Partial<RateLimit> | undefined;
@@ -66,4 +67,21 @@ export function virtualKeyManagement(
 	const managed = vk?.is_access_profile_managed ?? false;
 	const owned = !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id);
 	return { isOwnerGoverned: managed && owned, isUserProfileManaged: managed && !owned };
+}
+/**
+ * Who shares a managed key's budget, for the "shared" note: each assignee holds their own copy of
+ * the profile, and an owner-governed key shares its team, business unit or customer's profile.
+ */
+export function sharedBudgetNote(
+	t: TFunction<"models">,
+	{
+		isManagedByProfile,
+		isOwnerGoverned,
+		assignee,
+	}: { isManagedByProfile: boolean; isOwnerGoverned: boolean; assignee?: { name?: string; email?: string } },
+): string | undefined {
+	if (!isManagedByProfile) return undefined;
+	if (isOwnerGoverned) return t("virtualKeys.sharedBudgetOwner");
+	const name = assignee?.name || assignee?.email;
+	return name ? t("virtualKeys.sharedBudgetUser", { name }) : t("virtualKeys.sharedBudgetUserUnnamed");
 }

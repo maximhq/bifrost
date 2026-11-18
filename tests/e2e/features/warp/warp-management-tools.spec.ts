@@ -9,6 +9,9 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 // it off the switches cannot be turned on. /api/warp/config is answered in this
 // page's view only and a save is captured, never stored, since it is shared
 // server state.
+//
+// The section exists only while Warp uses the Bifrost MCP (bifrost_mcp_enabled),
+// which is off for now; these cases mock it on, and the last pins it hidden.
 
 const sizes = [
   { kind: 'read', tools: 98, estimated_tokens: 29500 },
@@ -38,6 +41,7 @@ const configuredWarp = {
   management_writes_available: true,
   management_tool_sizes: sizes as object[] | undefined,
   bifrost_mcp_available: true,
+  bifrost_mcp_enabled: true,
 }
 
 // Returns the bodies of the saves the page sent.
@@ -138,5 +142,15 @@ test.describe('Warp configuration tools', () => {
     await expect(page.getByTestId('warp-management-tools-not-loaded')).toBeVisible()
     await expect(page.getByTestId('warp-management-tools-total')).toHaveCount(0)
     await expect(page.getByTestId('warp-management-write-create-switch')).toBeDisabled()
+  })
+
+  test('is hidden while Warp is decoupled from the Bifrost MCP', async ({ page }) => {
+    await mockWarp(page, { bifrost_mcp_enabled: false })
+    await page.goto('/workspace/config/warp')
+
+    // The view renders before the config loads; the enabled switch reflects the mocked config.
+    await expect(page.getByTestId('warp-enabled-switch')).toBeVisible()
+    await expect(page.getByTestId('warp-enabled-switch')).toBeChecked()
+    await expect(page.getByTestId('warp-management-tools-section')).toHaveCount(0)
   })
 })

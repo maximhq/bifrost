@@ -437,7 +437,7 @@ func storedQuestionFrom(question *Question) *schemas.WarpStoredQuestion {
 	return &schemas.WarpStoredQuestion{
 		Question: question.Question, Options: options,
 		AllowOther: question.AllowOther, Kind: question.Kind,
-		Pending: question.pending,
+		Action: question.Action, Pending: question.pending,
 	}
 }
 

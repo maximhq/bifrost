@@ -393,7 +393,7 @@
 		"authModeHelp": "인바운드 MCP 클라이언트(예: Claude 코드, 커서)가 <code0>/mcp</code0> 엔드포인트에 인증하는 방법을 제어해요. <b1>headers</b1> (기본값) - VK / api-key / 세션 헤더만, OAuth 검색이 비활성화되었어요. <b2>모두</b2> - 헤더 자격 증명과 Bifrost 발급 JWT를 허용해요. 기존 통합은 영향을 받지 않어요. <b3>oauth</b3> - JWT에만 해당. VK 및 헤더 액세스가 비활성화되었어요.",
 		"issuerUrlHelp": "검색 문서에 광고되고 모든 JWT에 <code0>iss</code0> 클레임으로 포함된 안정적인 공개 URL입니다. OAuth 및 두 모드 모두에 필요: Bifrost는 요청 <code1>Host</code1> 헤더에서 발급자를 파생하지 않습니다. 해당 헤더가 호출자에 의해 제어되기 때문입니다. env var 구문(예: <code2>env.BIFROST_ISSUER_URL</code2>)을 지원합니다.",
 		"authCodeTtlHelp": "동의 페이지가 MCP 클라이언트로 다시 리디렉션된 후 일회성 코드가 유효한 기간(기본값: 300, 최대 900 = 15분)",
-		"accessTokenTtlHelp": "발행된 JWT Bearer 토큰의 수명이에요. 만료되면 클라이언트가 자동으로 새로 고쳐집니다(기본값: 600 = 10분). 또한 취소된 권한 부여가 중단되기 전에 계속 작동하는 기간을 제한해요.",
+		"accessTokenTtlHelp": "발행된 JWT Bearer 토큰의 수명이에요. 만료되면 클라이언트가 자동으로 새로 고쳐집니다(기본값: 600 = 10분). 또한 취소된 권한 부여가 중단되기 전에 계속 작동하는 기간을 제한해요. 설정 → Gateways의 Claude Code 게이트웨이와 공유돼요.",
 		"requireIdpLoginHelp": "활성화되면 OAuth 동의 흐름은 ID 공급자 로그인만 제공해요. 가상 키는 더 이상 MCP 토큰을 얻는 데 사용할 수 없으며 기존 가상 키 OAuth 세션은 즉시 액세스 권한을 잃게 돼요. 익명 세션 액세스는 영향을 받지 않습니다(추론 시 인증 적용으로 제어됨).",
 		"vFSStructure": "VFS 구조:",
 		"allToolsPerServerInASinglePyFile": "단일 .py 파일에 있는 서버당 모든 도구",
@@ -1759,9 +1759,9 @@
 		"issuerDescription": "Bifrost의 고정 공개 URL이에요. 각 게이트웨이는 <code0/>에서 제공돼요. MCP OAuth 서버와 같은 발급자를 사용하므로 변경하면 OAuth로 로그인한 MCP 클라이언트에도 영향을 줘요. 환경 변수 구문을 지원해요(예: <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com 또는 env.BIFROST_ISSUER_URL",
 		"urlTemplate": "<발급자 URL>/gateway/<클라이언트>",
-		"accessTokenTtlLabel": "액세스 토큰 유효 기간(분)",
-		"accessTokenTtlDescription": "각 로그인의 액세스 토큰이 유효한 기간입니다(기본값 10, 최소 1). 로그아웃하거나 로그인을 취소하면 갱신은 중단되지만, 이미 발급된 액세스 토큰은 만료될 때까지 계속 작동합니다. 즉시 접근을 차단하려면 가상 키나 사용자를 비활성화하세요. 이 설정은 MCP OAuth와 공유됩니다.",
-		"accessTokenTtlInvalid": "액세스 토큰 유효 기간은 1분 이상이어야 합니다.",
+		"accessTokenTtlLabel": "액세스 토큰 TTL(초)",
+		"accessTokenTtlDescription": "각 로그인의 액세스 토큰이 유효한 기간입니다(기본값 600, 최소 60). 로그아웃하거나 로그인을 취소하면 갱신은 중단되지만, 이미 발급된 액세스 토큰은 만료될 때까지 계속 작동합니다. 즉시 접근을 차단하려면 가상 키나 사용자를 비활성화하세요. 이 설정은 MCP OAuth와 공유됩니다.",
+		"accessTokenTtlInvalid": "액세스 토큰 TTL은 60초 이상이어야 해요.",
 		"allowTempTokenLabel": "임시 토큰 인증 링크 허용",
 		"allowTempTokenDescription": "활성화되면 사용자별 MCP OAuth 링크와 Claude Code 로그인 링크에 단기 범위 토큰이 포함될 수 있으므로 활성 Bifrost 대시보드 세션이 없는 사람이 흐름을 완료할 수 있어요. 일반 대시보드 인증을 요구하려면 비활성화된 상태로 유지하세요."
 	}

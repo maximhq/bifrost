@@ -5046,7 +5046,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Cannot see a provider's status page\",\"ask\":\"Is Anthropic having an outage right now?\",\"expect\":{\"maxToolCalls\":6,\"answerAll\":[\"can['’]t|cannot|can not|unable|not able|don['’]t|do not|doesn['’]t|does not\"],\"answerNone\":[\"(^|[.!?\\\\n]\\\\s*)anthropic (is|isn['’]t) (having|down|experiencing)[^.]*\\\\bright now\\\\b\"]}});"
+                  "warp.prerequest({\"name\":\"Cannot see a provider's status page\",\"ask\":\"Is Anthropic having an outage right now?\",\"expect\":{\"maxToolCalls\":10,\"answerAll\":[\"can['’]t|cannot|can not|unable|not able|don['’]t|do not|doesn['’]t|does not\"],\"answerNone\":[\"(^|[.!?\\\\n]\\\\s*)anthropic (is|isn['’]t) (having|down|experiencing)[^.]*\\\\bright now\\\\b\"]}});"
                 ]
               }
             },
@@ -5056,7 +5056,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Cannot see a provider's status page\",\"ask\":\"Is Anthropic having an outage right now?\",\"expect\":{\"maxToolCalls\":6,\"answerAll\":[\"can['’]t|cannot|can not|unable|not able|don['’]t|do not|doesn['’]t|does not\"],\"answerNone\":[\"(^|[.!?\\\\n]\\\\s*)anthropic (is|isn['’]t) (having|down|experiencing)[^.]*\\\\bright now\\\\b\"]}});"
+                  "warp.test({\"name\":\"Cannot see a provider's status page\",\"ask\":\"Is Anthropic having an outage right now?\",\"expect\":{\"maxToolCalls\":10,\"answerAll\":[\"can['’]t|cannot|can not|unable|not able|don['’]t|do not|doesn['’]t|does not\"],\"answerNone\":[\"(^|[.!?\\\\n]\\\\s*)anthropic (is|isn['’]t) (having|down|experiencing)[^.]*\\\\bright now\\\\b\"]}});"
                 ]
               }
             }

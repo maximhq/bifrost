@@ -336,7 +336,7 @@ Browser-based MCP clients send an `Origin` header, and Bifrost checks it on ever
 ### Client keeps re-opening the browser
 **Symptom:** The consent flow runs on every connection.
 **Cause:** The client isn't persisting its tokens, or its refresh token was revoked (refreshing then returns `400` `invalid_grant`).
-**Fix:** Confirm the client stores its credentials; check the **OAuth Grants** page to see whether the grant was revoked.
+**Fix:** Confirm the client stores its credentials; check the **OAuth Grants** page to see whether the grant was revoked. To see why, set the log level to `debug` and filter the logs on `[oauth2-token]`. Each sign-in, refresh, rejection and revocation is logged with its client, grant and reason. Tokens and codes are never written to the logs. A grant revoked with `reason=refresh_replay` means a refresh token that was already revoked was used again. The most common cause is a client that refreshed but did not save the new token, for example Codex before 0.164. A token revoked on the **OAuth Grants** page or with its virtual key also logs this when it is next used; the earlier `family.revoked` line for that grant shows the original reason.
 
 ### Token rejected after issuer change
 **Symptom:** Previously issued tokens fail validation after changing `issuer_url`, and refreshing them returns `400` `invalid_grant`.

@@ -138,11 +138,9 @@ func TestInlinedSystemReminder_TrimsTheUserTextItJoins(t *testing.T) {
 		row         *schemas.ModelCapabilities // datasheet row; nil ⇒ name detection
 		want        string
 	}{
-		{"claude 5 trims", "global.anthropic.claude-haiku-5-5", nil, trimmed},
 		{"claude 4 keeps", "global.anthropic.claude-haiku-4-5-20251001-v1:0", nil, marked},
 		{"unrecognised model keeps", "global.anthropic.claude-opus-6", nil, marked},
 		{"datasheet trims an unrecognised model", "global.anthropic.claude-opus-6", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}, trimmed},
-		{"datasheet keeps a claude 5 model", "global.anthropic.claude-haiku-5-5", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(false)}, marked},
 	}
 
 	for _, tc := range models {
@@ -239,10 +237,19 @@ func TestInlinedSystemReminder_TrimsTheUserTextItJoins(t *testing.T) {
 func TestInlinedSystemReminder_TrimIsStableAsTheBreakpointMoves(t *testing.T) {
 	const marked = "<system-reminder>\ncontext\n</system-reminder>\n"
 	const nudge = "keep going"
-	for _, tc := range []struct{ name, model, want string }{
-		{"claude 5", "global.anthropic.claude-haiku-5-5", strings.TrimSuffix(marked, "\n")},
-		{"claude 4", "global.anthropic.claude-haiku-4-5-20251001-v1:0", marked},
+	for _, tc := range []struct {
+		name, model, want string
+		row               *schemas.ModelCapabilities // datasheet row; nil ⇒ name detection
+	}{
+		{"datasheet trims", "global.anthropic.claude-opus-6", strings.TrimSuffix(marked, "\n"), &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}},
+		{"claude 4", "global.anthropic.claude-haiku-4-5-20251001-v1:0", marked, nil},
 	} {
+		if tc.row != nil {
+			schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return tc.row })
+		} else {
+			schemas.SetCapabilityResolver(nil)
+		}
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 		t.Run(tc.name+"/anthropic route", func(t *testing.T) {
 			history := []AnthropicMessage{anthMsg(AnthropicMessageRoleUser, "Hello"), anthMsg(AnthropicMessageRoleAssistant, "Hi!")}
 			first := append(slices.Clone(history),
@@ -298,7 +305,8 @@ func TestInlinedSystemReminder_TrimIsStableAsTheBreakpointMoves(t *testing.T) {
 			lead := schemas.ChatMessage{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial.")}}
 			reminder := schemas.ChatMessage{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(nudge)}}
 			first := convert([]schemas.ChatMessage{lead, userTurn(&schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}), reminder})
-			second := convert([]schemas.ChatMessage{lead, userTurn(nil), reminder,
+			second := convert([]schemas.ChatMessage{
+				lead, userTurn(nil), reminder,
 				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ACKNOWLEDGED")}},
 				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
 					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Turn 2."), CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}},

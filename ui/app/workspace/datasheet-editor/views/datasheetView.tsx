@@ -2,6 +2,7 @@ import OverriddenPrice from "@/app/workspace/model-catalog/views/overriddenPrice
 import FullPageLoader from "@/components/fullPageLoader";
 import { NoPermissionView } from "@/components/noPermissionView";
 import PageTitle from "@/components/pageTitle";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
@@ -120,45 +122,45 @@ export default function DatasheetView() {
 		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full flex-col overflow-hidden p-4">
 			{editing !== undefined && <DatasheetEntrySheet target={editing} canEdit={canEdit} onClose={() => setEditing(undefined)} />}
 
-			<div className="mb-4 flex shrink-0 flex-wrap items-center justify-end gap-2">
-				<PageTitle title={t("datasheet.title")}>{t("datasheet.subtitle")}</PageTitle>
-				<Button onClick={() => setEditing(null)} disabled={!canEdit} data-testid="datasheet-add-custom-btn">
+			<PageTitle title={t("datasheet.title")}>{t("datasheet.subtitle")}</PageTitle>
+
+			<div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
+				<div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
+						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+						<Input
+							aria-label={t("datasheet.searchAria")}
+							placeholder={t("datasheet.searchPlaceholder")}
+							value={search}
+							onChange={(e) => setUrlState({ search: e.target.value || null })}
+							className="pl-9"
+							data-testid="datasheet-search-input"
+						/>
+					</div>
+					<ProviderSelector
+						source="catalog"
+						data-testid="datasheet-provider-filter"
+						className="w-full sm:w-[200px]"
+						allOption={allProvidersOption}
+						value={providerFilter || ALL_PROVIDERS_VALUE}
+						onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
+					/>
+					<div className="flex items-center gap-2">
+						<Switch
+							id="datasheet-overridden-only"
+							checked={overridden}
+							onCheckedChange={(checked) => setUrlState({ overridden: checked || null })}
+							data-testid="datasheet-overridden-only-switch"
+						/>
+						<Label htmlFor="datasheet-overridden-only" className="text-sm">
+							{t("datasheet.overriddenOnly")}
+						</Label>
+					</div>
+				</div>
+				<Button className="h-9" onClick={() => setEditing(null)} disabled={!canEdit} data-testid="datasheet-add-custom-btn">
 					<Plus className="h-4 w-4" />
 					{t("datasheet.addCustomModel")}
 				</Button>
-			</div>
-
-			<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
-				<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
-					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-					<Input
-						aria-label={t("datasheet.searchAria")}
-						placeholder={t("datasheet.searchPlaceholder")}
-						value={search}
-						onChange={(e) => setUrlState({ search: e.target.value || null })}
-						className="pl-9"
-						data-testid="datasheet-search-input"
-					/>
-				</div>
-				<ProviderSelector
-					source="catalog"
-					data-testid="datasheet-provider-filter"
-					className="w-full sm:w-[200px]"
-					allOption={allProvidersOption}
-					value={providerFilter || ALL_PROVIDERS_VALUE}
-					onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
-				/>
-				<div className="flex items-center gap-2">
-					<Switch
-						id="datasheet-overridden-only"
-						checked={overridden}
-						onCheckedChange={(checked) => setUrlState({ overridden: checked || null })}
-						data-testid="datasheet-overridden-only-switch"
-					/>
-					<Label htmlFor="datasheet-overridden-only" className="text-sm">
-						{t("datasheet.overriddenOnly")}
-					</Label>
-				</div>
 			</div>
 
 			{isLoading && !data ? (
@@ -172,18 +174,18 @@ export default function DatasheetView() {
 				</div>
 			) : (
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="datasheet-table">
-					<Table containerClassName="h-full overflow-y-auto overflow-x-auto" className="table-fixed">
+					<Table containerClassName="h-full overflow-y-auto overflow-x-auto" className="min-w-[1280px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[130px] font-medium">{t("datasheet.provider")}</TableHead>
 								<TableHead className="font-medium">{t("datasheet.model")}</TableHead>
-								<TableHead className="w-[130px] font-medium">{t("datasheet.mode")}</TableHead>
+								<TableHead className="w-[150px] font-medium">{t("datasheet.mode")}</TableHead>
 								<TableHead className="w-[120px] text-right font-medium">{t("datasheet.contextLength")}</TableHead>
 								<TableHead className="w-[120px] text-right font-medium">{t("datasheet.maxOutputTokens")}</TableHead>
 								<TableHead className="w-[110px] text-right font-medium">{t("datasheet.colInput")}</TableHead>
 								<TableHead className="w-[110px] text-right font-medium">{t("datasheet.colOutput")}</TableHead>
 								<TableHead className="w-[170px] font-medium">{t("datasheet.colStatus")}</TableHead>
-								<TableHead className="w-[56px]"></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -201,17 +203,23 @@ export default function DatasheetView() {
 									const isOverridden = (entry.overrides?.length ?? 0) > 0;
 									const drifted = (entry.drifted_fields?.length ?? 0) > 0;
 									return (
-										<TableRow key={entryKey(entry)} data-testid={`datasheet-row-${testKey}`}>
+										<TableRow key={entryKey(entry)} className="group" data-testid={`datasheet-row-${testKey}`}>
 											<TableCell className="py-3">
 												<div className="flex min-w-0 items-center gap-2">
 													<RenderProviderIcon provider={entry.provider as KnownProvider} size="sm" className="h-4 w-4" />
 													<span className="truncate text-sm">{ProviderLabels[entry.provider as ProviderName] || entry.provider}</span>
 												</div>
 											</TableCell>
-											<TableCell className="truncate py-3 font-mono text-sm" title={entry.model}>
-												{entry.model}
+											<TableCell className="py-3">
+												<TruncatedLabel className="block font-mono text-sm" tooltipSide="top">
+													{entry.model}
+												</TruncatedLabel>
 											</TableCell>
-											<TableCell className="truncate py-3 font-mono text-xs">{entry.mode || "—"}</TableCell>
+											<TableCell className="py-3">
+												<TruncatedLabel className="block font-mono text-sm" tooltipSide="top">
+													{entry.mode || "—"}
+												</TruncatedLabel>
+											</TableCell>
 											<TableCell className="py-3 text-right font-mono text-sm" data-testid={`datasheet-context-${testKey}`}>
 												<LimitCell entry={entry} field="context_length" />
 											</TableCell>
@@ -245,7 +253,9 @@ export default function DatasheetView() {
 													{entry.effective?.is_deprecated && <Badge variant="outline">{t("datasheet.deprecatedBadge")}</Badge>}
 												</div>
 											</TableCell>
-											<TableCell className="px-1 py-3">
+											<TableCell
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white px-1 py-3 text-center ${PIN_SHADOW_RIGHT}`}
+											>
 												<Button
 													variant="ghost"
 													size="icon"
