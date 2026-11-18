@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -10,6 +11,29 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// Record the effective project on the current provider attempt after routing.
+func recordVertexProject(ctx *schemas.BifrostContext, target string) {
+	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	spanID, _ := ctx.Value(schemas.BifrostContextKeySpanID).(string)
+	if tracer == nil || traceID == "" || spanID == "" {
+		return
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return
+	}
+	_, path, _ := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/")
+	path, ok := strings.CutPrefix(path, "projects/")
+	project, _, hasResource := strings.Cut(path, "/locations/")
+	if !ok || !hasResource || project == "" || strings.Contains(project, "/") {
+		return
+	}
+	if handle := tracer.GetSpanHandleByID(traceID, &spanID); handle != nil {
+		tracer.SetAttribute(handle, "bifrost.vertex.project_id", project)
+	}
+}
 
 // resolveVertexProjectID returns the GCP project ID for the current attempt.
 // Priority: alias-level VertexAliasCfg.ProjectID > key-level

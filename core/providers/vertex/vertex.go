@@ -914,6 +914,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
 		req.SetBody(jsonBody)
@@ -1120,6 +1121,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		headers["Authorization"] = "Bearer " + token.AccessToken
 
 		// Use shared Anthropic streaming logic
+		recordVertexProject(ctx, completeURL)
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
 			provider.streamingClient,
@@ -1215,6 +1217,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 
 		// Use shared streaming logic from Gemini
+		recordVertexProject(ctx, completeURL)
 		return gemini.HandleGeminiChatCompletionStream(
 			ctx,
 			provider.streamingClient,
@@ -1267,6 +1270,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 
 		// Use shared OpenAI streaming logic
+		recordVertexProject(ctx, completeURL)
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
 			provider.streamingClient,
@@ -1361,6 +1365,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 		req.SetRequestURI(url)
+		recordVertexProject(ctx, url)
 		usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 		if !usedLargePayloadBody {
 			req.SetBody(jsonBody)
@@ -1524,6 +1529,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		req.SetRequestURI(url)
+		recordVertexProject(ctx, url)
 		usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 		if !usedLargePayloadBody {
 			req.SetBody(jsonBody)
@@ -1655,6 +1661,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers["Authorization"] = "Bearer " + token.AccessToken
 
 		// Use shared streaming logic from Anthropic
+		recordVertexProject(ctx, url)
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
 			provider.streamingClient,
@@ -1763,6 +1770,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 
 		// Use shared streaming logic from Gemini
+		recordVertexProject(ctx, completeURL)
 		return gemini.HandleGeminiResponsesStream(
 			ctx,
 			provider.streamingClient,
@@ -1882,6 +1890,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
@@ -2222,6 +2231,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 
 	req.Header.SetMethod(http.MethodPost)
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("X-Goog-User-Project", projectID)
 
@@ -2534,6 +2544,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	}
 
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
 		req.SetBody(jsonBody)
@@ -2743,6 +2754,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	}
 
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
 		req.SetBody(jsonBody)
@@ -2916,6 +2928,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	}
 
 	req.SetRequestURI(completeURL)
+	recordVertexProject(ctx, completeURL)
 	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -5035,6 +5048,7 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	fasthttpReq.SetRequestURI(requestURL)
+	recordVertexProject(ctx, requestURL)
 
 	// Set extra headers from provider network config
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
@@ -5200,6 +5214,7 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	fasthttpReq.SetRequestURI(requestURL)
+	recordVertexProject(ctx, requestURL)
 
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 

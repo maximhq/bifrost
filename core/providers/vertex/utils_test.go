@@ -285,6 +285,43 @@ func BenchmarkVertexEndpointSelection(b *testing.B) {
 	}
 }
 
+type vertexProjectTracer struct {
+	schemas.NoOpTracer
+	span *schemas.Span
+}
+
+func (t *vertexProjectTracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanHandle {
+	if traceID == "trace" && spanID != nil && *spanID == "attempt" {
+		return t.span
+	}
+	return nil
+}
+
+func (t *vertexProjectTracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	handle.(*schemas.Span).SetAttribute(key, value)
+}
+
+func TestRecordVertexProjectFromUpstreamTarget(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	tracer := &vertexProjectTracer{span: &schemas.Span{}}
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace")
+	ctx.SetValue(schemas.BifrostContextKeySpanID, "attempt")
+
+	for _, test := range []struct{ path, project string }{
+		{"/v1/projects/project-alpha/locations/global/publishers/google/models/gemini:generateContent?key=fixture", "project-alpha"},
+		{"/v1/projects/project-beta/locations/global/publishers/google/models/gemini:streamGenerateContent", "project-beta"},
+		{"/v1beta1/projects/123456789/locations/us-central1/endpoints/42:generateContent", "123456789"},
+		{"/v1/locations/global/models/gemini?model=projects/other-project/locations/global", ""},
+	} {
+		tracer.span = &schemas.Span{}
+		recordVertexProject(ctx, "https://aiplatform.googleapis.com"+test.path)
+		if got := schemas.GetStringAttr(tracer.span.Attributes, "bifrost.vertex.project_id"); got != test.project {
+			t.Errorf("recorded project = %q, want %q", got, test.project)
+		}
+	}
+}
+
 func TestGetVertexAPIHost(t *testing.T) {
 	t.Parallel()
 
