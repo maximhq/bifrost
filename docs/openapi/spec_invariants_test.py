@@ -524,11 +524,15 @@ def test_warp_chat_response_contract_is_current():
     # a constant that stops being emitted must not linger in the published enum.
     agent = (REPO_ROOT / "framework" / "warp" / "agent.go").read_text(encoding="utf-8")
     constants = dict(re.findall(r'(Err[A-Za-z]+)\s+=\s+"([a-z_]+)"', agent))
-    emitted = sorted({
-        constants[name]
-        for name in re.findall(r"Code:\s+(Err[A-Za-z]+)", agent)
-        if name in constants
-    })
+    names = set(re.findall(r"Code:\s+(Err[A-Za-z]+)", agent))
+    # Governance refusals are emitted as Code: code, the value governanceRefusal returns,
+    # so the constants it returns or assigns are emitted too.
+    refusal = re.search(r"func governanceRefusal\(.*?\n}\n", agent, re.S)
+    if refusal:
+        names |= set(re.findall(r"(?:return|code =)\s+(Err[A-Za-z]+)", refusal.group(0)))
+    else:
+        problems.append("could not find governanceRefusal in framework/warp/agent.go")
+    emitted = sorted({constants[name] for name in names if name in constants})
     if not emitted:
         problems.append("could not read any emitted error codes from framework/warp/agent.go")
 

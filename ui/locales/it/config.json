@@ -38,7 +38,7 @@
 		"asyncJobTtl": "TTL dei risultati dei job asincroni (secondi)",
 		"asyncJobTtlHelp": "Time-to-live predefinito per i risultati dei job asincroni in secondi. I risultati vengono rimossi automaticamente dopo la scadenza.",
 		"bifrostUrl": "URL di Bifrost",
-		"bifrostUrlHelp": "L'URL con cui i client raggiungono questo gateway, compreso un eventuale percorso di base. Obbligatorio per <code0>/v1/mcp</code0> e per gli strumenti di configurazione di Warp: le loro chiamate si comportano come se arrivassero qui, quindi i link nei risultati puntano a questo URL. Se lasciato vuoto, entrambi sono disattivati; l'intestazione Host inviata da una richiesta non viene mai usata al suo posto.",
+		"bifrostUrlHelp": "L'URL con cui i client raggiungono questo gateway, compreso un eventuale percorso di base. Obbligatorio per <code0>/v1/mcp</code0>: le sue chiamate agli strumenti si comportano come se arrivassero qui, quindi i link nei risultati puntano a questo URL. Se lasciato vuoto, è disattivato; l'intestazione Host inviata da una richiesta non viene mai usata al suo posto.",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "URL OpenAPI",
 		"openapiUrlHelp": "La specifica OpenAPI da cui <code0>/v1/mcp</code0> crea i suoi strumenti: un URL http(s) o un percorso relativo alla directory dell'app per le installazioni isolate. Lascia vuoto per leggere la specifica pubblicata per questa build.",
