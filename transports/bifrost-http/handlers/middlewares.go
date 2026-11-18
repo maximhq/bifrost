@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -579,7 +580,14 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx, allowed)
+				cleanup, applied, err := streamingDecompress(ctx, allowed, maxRequestBodyBytes)
+				if errors.Is(err, errCompressedBodyTooLarge) {
+					// Refused from its length without being read: close the connection so the
+					// unread body is not parsed as the next request.
+					ctx.SetConnectionClose()
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
 				if providerUtils.IsDecompressionSizeLimitError(err) {
 					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 					return
@@ -647,27 +655,39 @@ func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 	return int64(contentLength) > threshold
 }
 
-// streamingDecompress wraps the request body stream with a streaming decompression
-// reader, avoiding full body materialization for large compressed requests.
-// The decompressed stream is capped at maxRequestBodyBytes: once a handler has
-// read past the cap the stream fails with errRequestBodyTooLarge, so a
-// decompression bomb cannot expand beyond the configured request limit.
+// streamingDecompress replaces the request body with a streaming decompression reader, so a
+// large compressed request is never held in memory decompressed. The decompressed stream is
+// capped at maxRequestBodyBytes: once a handler has read past the cap the stream fails with
+// errRequestBodyTooLarge, so a decompression bomb cannot expand beyond the configured limit.
+//
+// The compressed bytes are read into memory first, up to maxCompressedBytes. The reader cannot
+// wrap the request's own body stream: under StreamRequestBody that stream is fasthttp's
+// connection reader, and SetBodyStream releases it, so the next read panicked with
+// "BUG: reading released body stream". Holding the compressed body is what the buffered path
+// costs too; only the decompressed body is streamed.
+//
 // Returns (cleanup, applied, err):
-//   - applied=true: body stream was wrapped; caller must invoke cleanup after the
+//   - applied=true: the body stream was replaced; caller must invoke cleanup after the
 //     handler chain completes and the body is fully consumed.
 //   - applied=false: no body stream available (StreamRequestBody not enabled on the
 //     server). Caller should fall back to the buffered decompression path.
-func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cleanup func(), applied bool, err error) {
+//   - err wraps errCompressedBodyTooLarge when the compressed body is over maxCompressedBytes.
+func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes, maxCompressedBytes int) (cleanup func(), applied bool, err error) {
 	bodyStream := ctx.RequestBodyStream()
 	if bodyStream == nil {
 		return func() {}, false, nil
+	}
+
+	compressed, err := readCompressedBody(bodyStream, ctx.Request.Header.ContentLength(), maxCompressedBytes)
+	if err != nil {
+		return nil, false, err
 	}
 
 	encoding := strings.ToLower(strings.TrimSpace(
 		string(ctx.Request.Header.ContentEncoding()),
 	))
 
-	decompReader, cleanup, err := newDecompressReader(bodyStream, encoding)
+	decompReader, cleanup, err := newDecompressReader(compressed, encoding)
 	if err != nil {
 		return nil, false, err
 	}
@@ -677,6 +697,122 @@ func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cle
 	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 
 	return cleanup, true, nil
+}
+
+var errCompressedBodyTooLarge = errors.New("compressed request body exceeds max allowed size")
+
+// compressedBodyChunkSize is the size of the pooled chunks a known-length compressed body is read
+// into, and so the most memory a client that declares a large body but sends little can pin.
+const compressedBodyChunkSize = 1 << 20
+
+type compressedBodyChunk [compressedBodyChunkSize]byte
+
+// compressedBodyChunkPool holds the chunks of known-length compressed bodies. Bodies on this path
+// are over the large-payload threshold, so reusing chunks avoids a fresh allocation of the whole
+// body per request. A chunk's bytes are not cleared on release: only the part a body filled is read.
+var compressedBodyChunkPool = sync.Pool{New: func() any { return new(compressedBodyChunk) }}
+
+// readCompressedBody reads a compressed request body of contentLength bytes (-1 when chunked)
+// from its stream, refusing one over maxBytes, and returns a reader over it. A known length is
+// read into pooled chunks of compressedBodyChunkSize, so a client that declares a large body but
+// sends little holds one chunk, not a buffer of the declared size, and each byte is copied once
+// (from the stream into its chunk). The reader returns each chunk to the pool once it has handed
+// out the chunk's last byte (see pooledChunkReader).
+func readCompressedBody(stream io.Reader, contentLength, maxBytes int) (io.Reader, error) {
+	if contentLength > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	if contentLength >= 0 {
+		r := &pooledChunkReader{
+			chunks: make([]*compressedBodyChunk, 0, (contentLength+compressedBodyChunkSize-1)/compressedBodyChunkSize),
+			size:   contentLength,
+		}
+		for remaining := contentLength; remaining > 0; {
+			chunk := compressedBodyChunkPool.Get().(*compressedBodyChunk)
+			n := min(remaining, compressedBodyChunkSize)
+			if _, err := io.ReadFull(stream, chunk[:n]); err != nil {
+				compressedBodyChunkPool.Put(chunk)
+				r.release()
+				if err == io.EOF {
+					err = io.ErrUnexpectedEOF
+				}
+				return nil, fmt.Errorf("read compressed request body: %w", err)
+			}
+			r.chunks = append(r.chunks, chunk)
+			remaining -= n
+		}
+		return r, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(stream, int64(maxBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read compressed request body: %w", err)
+	}
+	if len(b) > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	return bytes.NewReader(b), nil
+}
+
+// pooledChunkReader reads size bytes held in pooled chunks, in order: every chunk is full except
+// the last. It returns a chunk to compressedBodyChunkPool as soon as the chunk's last byte has been
+// read or written out. Nothing else holds a chunk (Read copies out of it and an io.Writer must not
+// retain what it is given), so a chunk is never reused while it can still be read. A body that is
+// not read to the end keeps its unread chunks until the garbage collector frees them.
+type pooledChunkReader struct {
+	chunks []*compressedBodyChunk
+	off    int // read offset in chunks[0]
+	size   int // bytes not yet read
+}
+
+// current returns the unread bytes of the first chunk.
+func (r *pooledChunkReader) current() []byte {
+	return r.chunks[0][r.off:min(compressedBodyChunkSize, r.off+r.size)]
+}
+
+// advance marks n bytes of the first chunk read and releases the chunk once it is used up.
+func (r *pooledChunkReader) advance(n int) {
+	r.off += n
+	r.size -= n
+	if r.off == compressedBodyChunkSize || r.size == 0 {
+		compressedBodyChunkPool.Put(r.chunks[0])
+		r.chunks[0] = nil
+		r.chunks = r.chunks[1:]
+		r.off = 0
+	}
+}
+
+func (r *pooledChunkReader) Read(p []byte) (int, error) {
+	if r.size == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.current())
+	r.advance(n)
+	return n, nil
+}
+
+// WriteTo writes the unread bytes to w chunk by chunk, without an intermediate buffer.
+func (r *pooledChunkReader) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	for r.size > 0 {
+		n, err := w.Write(r.current())
+		total += int64(n)
+		if n > 0 {
+			r.advance(n)
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+// release returns every chunk the reader still holds, on the error path before it is handed out.
+func (r *pooledChunkReader) release() {
+	for i, chunk := range r.chunks {
+		compressedBodyChunkPool.Put(chunk)
+		r.chunks[i] = nil
+	}
+	r.chunks, r.off, r.size = nil, 0, 0
 }
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")

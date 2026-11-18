@@ -3305,6 +3305,284 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 	}
 }
 
+// trickleThenFail returns data, then err, as a client that declared a long body and stopped.
+type trickleThenFail struct {
+	data []byte
+	err  error
+}
+
+func (r *trickleThenFail) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// TestReadCompressedBodyAllocatesAsBytesArrive asserts a compressed body of known length is held
+// in pooled chunks: a client that declares a near-cap Content-Length and sends little pins at most
+// one chunk, not a buffer of the declared size. Bodies read back exactly, including when chunks are
+// reused across bodies and when the last chunk is only partly filled; a drained reader stays at
+// EOF; a short body fails as an unexpected EOF; an over-cap length is refused before any read.
+func TestReadCompressedBodyAllocatesAsBytesArrive(t *testing.T) {
+	const declared = 64 << 20
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := readCompressedBody(&trickleThenFail{data: bytes.Repeat([]byte("z"), 1024), err: io.ErrUnexpectedEOF}, declared, 128<<20)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a body that stops short must fail")
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > compressedBodyChunkSize+64<<10 {
+		t.Errorf("a %d-byte declared body that sent 1 KB allocated %d bytes; it must pin at most one %d-byte chunk", declared, allocated, compressedBodyChunkSize)
+	}
+
+	// Two bodies of different content and size, the second reusing the first's chunks: the
+	// second's last chunk is partly filled over bytes the first wrote.
+	first := bytes.Repeat([]byte("A"), 3*compressedBodyChunkSize)
+	second := append(bytes.Repeat([]byte("b"), compressedBodyChunkSize), bytes.Repeat([]byte("c"), 1000)...)
+	for _, body := range [][]byte{first, second, first} {
+		r, err := readCompressedBody(bytes.NewReader(body), len(body), 128<<20)
+		if err != nil {
+			t.Fatalf("read %d-byte body: %v", len(body), err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("%d-byte body: err %v, %d bytes back, equal %v", len(body), err, len(got), bytes.Equal(got, body))
+		}
+		if n, err := r.Read(make([]byte, 16)); n != 0 || err != io.EOF {
+			t.Errorf("read after the end: %d, %v; want 0, EOF", n, err)
+		}
+	}
+	r, err := readCompressedBody(bytes.NewReader(second), len(second), 128<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var drained bytes.Buffer
+	if n, err := io.Copy(&drained, r); err != nil || n != int64(len(second)) || !bytes.Equal(drained.Bytes(), second) {
+		t.Errorf("WriteTo drain: %d bytes, err %v, equal %v", n, err, bytes.Equal(drained.Bytes(), second))
+	}
+
+	if _, err := readCompressedBody(bytes.NewReader(first[:compressedBodyChunkSize+100]), len(first), 128<<20); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("short body: err %v, want io.ErrUnexpectedEOF", err)
+	}
+	if _, err := readCompressedBody(bytes.NewReader(first), 129<<20, 128<<20); !errors.Is(err, errCompressedBodyTooLarge) {
+		t.Errorf("over-cap length: err %v, want errCompressedBodyTooLarge", err)
+	}
+	if r, err := readCompressedBody(bytes.NewReader(nil), 0, 128<<20); err != nil {
+		t.Errorf("empty body: %v", err)
+	} else if got, _ := io.ReadAll(r); len(got) != 0 {
+		t.Errorf("empty body: %q", got)
+	}
+}
+
+// BenchmarkReadCompressedBody measures reading a compressed body of known length as the
+// streaming decompression path does (bodies over the large-payload threshold, 10 MB by default):
+// complete bodies are read and drained like the decompressor reads them, and stalled bodies
+// declare a large Content-Length, send 1 KB and stop, which is the memory a client that never
+// finishes its upload pins until the read timeout.
+func BenchmarkReadCompressedBody(b *testing.B) {
+	for _, size := range []int{1 << 20, 10 << 20, 16 << 20, 64 << 20, 128 << 20} {
+		body := bytes.Repeat([]byte("z"), size)
+		b.Run(fmt.Sprintf("complete/%dMB", size>>20), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				r, err := readCompressedBody(bytes.NewReader(body), size, 256<<20)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := io.Copy(io.Discard, r); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+	sent := bytes.Repeat([]byte("z"), 1024)
+	for _, declared := range []int{16 << 20, 64 << 20, 128 << 20} {
+		b.Run(fmt.Sprintf("stalled/%dMB-declared-1KB-sent", declared>>20), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := readCompressedBody(&trickleThenFail{data: sent, err: io.ErrUnexpectedEOF}, declared, 256<<20); err == nil {
+					b.Fatal("a stalled body must fail")
+				}
+			}
+		})
+	}
+}
+
+// serveStreamingRequest sends req to handler through a real fasthttp server with
+// StreamRequestBody on (as enterprise runs with large payloads enabled, and the gateway runs by
+// default), so the handler sees fasthttp's own connection-backed body stream. Cleanup closes the
+// client's kept-alive connection, shuts the server down and waits for Serve to return before the
+// listener is closed, so nothing the test started outlives it.
+func serveStreamingRequest(tb testing.TB, handler fasthttp.RequestHandler, maxBodyBytes int, req *fasthttp.Request) *fasthttp.Response {
+	tb.Helper()
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler, StreamRequestBody: true, DisablePreParseMultipartForm: true, MaxRequestBodySize: maxBodyBytes}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		srv.Serve(ln) //nolint:errcheck
+	}()
+	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
+	tb.Cleanup(func() {
+		client.CloseIdleConnections()
+		srv.Shutdown() //nolint:errcheck
+		<-served
+		ln.Close()
+	})
+	resp := &fasthttp.Response{}
+	if err := client.Do(req, resp); err != nil {
+		tb.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+// TestServeStreamingRequestTearsDownServer asserts serveStreamingRequest's cleanup stops the server
+// it started: no goroutine is left in Server.Serve or serving the kept-alive connection
+// (Server.serveConn) when the test ends, instead of waiting for the client's idle timeout to close
+// the connection. fasthttp's own background loops (worker and connection cleaners, the server date
+// ticker) exit on their own timers and are not counted.
+func TestServeStreamingRequestTearsDownServer(t *testing.T) {
+	serverGoroutines := func() int {
+		buf := make([]byte, 1<<20)
+		stacks := string(buf[:runtime.Stack(buf, true)])
+		return strings.Count(stacks, "fasthttp.(*Server).serveConn(") + strings.Count(stacks, "fasthttp.(*Server).Serve(")
+	}
+	before := serverGoroutines()
+	t.Run("serve", func(t *testing.T) {
+		req := &fasthttp.Request{}
+		req.SetRequestURI("http://bifrost/v1/chat/completions")
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetBodyString(`{"model":"openai/gpt-4o-mini"}`)
+		resp := serveStreamingRequest(t, func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusOK) }, 1<<20, req)
+		if resp.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d, want 200", resp.StatusCode())
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for serverGoroutines() > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := serverGoroutines(); n > before {
+		t.Errorf("%d goroutines still in Server.Serve or Server.serveConn after cleanup, %d before: the test server was not shut down", n, before)
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream pins the streaming
+// decompression path against fasthttp's real request stream. The middleware wrapped that stream
+// and then called SetBodyStream, which releases it, so the first read of the decompressed body
+// panicked with "BUG: reading released body stream" for any compressed body over the 10 MB
+// streaming threshold. The other streaming-path tests set a bytes.Reader as the stream, which
+// fasthttp does not release, so they never saw it.
+func TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	raw := make([]byte, 9<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte(base64.StdEncoding.EncodeToString(raw)) // ~12 MB; compresses to ~9 MB
+	compressed, err := gzipCompress(append(plain, plain[:4<<20]...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(compressed)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Fatalf("compressed body %d bytes must exceed the %d-byte streaming threshold", len(compressed), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+	wantLen := len(plain) + 4<<20
+
+	var gotLen int
+	var readPanic any
+	handler := RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		defer func() { readPanic = recover() }()
+		gotLen = len(ctx.Request.Body())
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/chat/completions")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBody(compressed)
+	resp := serveStreamingRequest(t, handler, 100<<20, req)
+
+	if readPanic != nil {
+		t.Fatalf("reading the decompressed body panicked: %v", readPanic)
+	}
+	if resp.StatusCode() != fasthttp.StatusOK || gotLen != wantLen {
+		t.Errorf("status=%d decompressed=%d bytes, want 200 and %d bytes; body: %.200s", resp.StatusCode(), gotLen, wantLen, resp.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit asserts a compressed body
+// over the request limit is refused with 413 before it is read, now that the streaming path reads
+// the compressed bytes into memory.
+func TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit(t *testing.T) {
+	const limitMB = 1
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	config.StreamingDecompressThreshold = 1024
+	raw := make([]byte, 2<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := gzipCompress(raw) // random: stays ~2 MB compressed
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { called = true })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyStream(bytes.NewReader(compressed), -1)
+	handler(ctx)
+
+	if called {
+		t.Error("handler ran for a compressed body over the request limit")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413; body: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_OverLimitClosesConnection asserts that refusing
+// a compressed body over the request limit on a streaming server closes the connection. The body
+// is refused from its Content-Length without being read, so on a kept-alive connection its bytes
+// would be parsed as the next request.
+func TestRequestDecompressionMiddleware_StreamingPath_OverLimitClosesConnection(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	config.StreamingDecompressThreshold = 1024
+	raw := make([]byte, 2<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := gzipCompress(raw) // random: stays ~2 MB compressed, over the 1 MB limit
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlerRan := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { handlerRan = true })
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/chat/completions")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBody(compressed)
+	resp := serveStreamingRequest(t, handler, 100<<20, req)
+
+	if resp.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413: %s", resp.StatusCode(), resp.Body())
+	}
+	if handlerRan {
+		t.Error("handler ran for a compressed body over the limit")
+	}
+	if !resp.ConnectionClose() {
+		t.Error("413 for an unread compressed body must close the connection")
+	}
+}
+
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
