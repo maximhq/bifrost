@@ -114,9 +114,20 @@ func TestBifrostMCPExposesEveryOperation(t *testing.T) {
 	}
 }
 
+// bifrostMCPDefensiveDeniedRoutes are denied routes the repo spec may not
+// define: /v1/mcp left the bundled spec, but a spec fetched from openapi_url can
+// be an older one that still has it, and serving it would nest MCP inside MCP.
+var bifrostMCPDefensiveDeniedRoutes = bifrostMCPRouteSet("POST /v1/mcp", "GET /v1/mcp")
+
 // Every denied route names an operation the spec defines, so a stale entry
-// fails here, and none of those operations is served.
+// fails here, and none of those operations is served. Defensive entries are
+// exempt from the first check but must still be denied.
 func TestBifrostMCPDeniedRoutesMatchSpec(t *testing.T) {
+	for key := range bifrostMCPDefensiveDeniedRoutes {
+		if !bifrostMCPDeniedRoutes[key] {
+			t.Errorf("defensive route %s is not denied", key)
+		}
+	}
 	tools := listBifrostMCPTools(t, bifrostMCPTestOptions(true))
 	matched := map[string]bool{}
 	for _, op := range repoSpecOperations(t) {
@@ -130,7 +141,7 @@ func TestBifrostMCPDeniedRoutesMatchSpec(t *testing.T) {
 		}
 	}
 	for key := range bifrostMCPDeniedRoutes {
-		if !matched[key] {
+		if !matched[key] && !bifrostMCPDefensiveDeniedRoutes[key] {
 			t.Errorf("denied route %s matches no operation in %s", key, repoOpenAPISpec)
 		}
 	}
@@ -620,8 +631,8 @@ func TestBifrostMCPDefaultSpecURL(t *testing.T) {
 	if strings.Join(fetched, " ") != strings.Join(want, " ") {
 		t.Errorf("fetched %v, want %v", fetched, want)
 	}
-	if DefaultOpenAPIURL != "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi-oss.json" {
-		t.Errorf("default points at %s, want dev's openapi-oss.json", DefaultOpenAPIURL)
+	if DefaultOpenAPIURL != "https://getbifrost.ai/openapi-oss.json" {
+		t.Errorf("default points at %s, want the published openapi-oss.json", DefaultOpenAPIURL)
 	}
 }
 
