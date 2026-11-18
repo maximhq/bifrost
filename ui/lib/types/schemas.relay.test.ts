@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	hasUnsafeInteger,
+	relayBodyOverridesSchema,
 	relayFormSchema,
 	relayOpenAPISpecUrlSchema,
 	relayRouteFormSchema,
@@ -12,6 +14,71 @@ import { emptyRelayForm } from "@/lib/utils/relayForm";
 // toast after a failed save.
 describe("relay form validation", () => {
 	const route = (path: string) => relayRouteFormSchema.safeParse({ method: "POST", path, headers: [], enabled: true });
+
+	it("refuses body overrides the gateway would refuse", () => {
+		const messages = (pairs: { name: string; value: string }[]) =>
+			(relayBodyOverridesSchema.safeParse(pairs).error?.issues ?? []).map((i) => i.message);
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "options.depth", value: '"advanced"' },
+				{ name: "", value: "" },
+			]),
+		).toEqual([]);
+		expect(messages([{ name: "depth", value: "advanced" }])).toEqual([
+			'Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)',
+		]);
+		expect(messages([{ name: "depth", value: "" }])).toEqual(["An enforced field needs a JSON value"]);
+		expect(messages([{ name: "", value: "true" }])).toEqual(["An enforced field needs a path"]);
+		expect(messages([{ name: "items.0", value: "1" }])[0]).toContain("no key made only of digits");
+		expect(messages([{ name: "items.#.id", value: "1" }])[0]).toContain("object keys separated by dots");
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "Include_Usage", value: "false" },
+			]),
+		).toEqual(["This field is already set (paths ignore letter case)"]);
+		expect(
+			messages([
+				{ name: "options", value: "{}" },
+				{ name: "options.depth", value: "1" },
+			]),
+		).toEqual(["options.depth is inside options, which is also set"]);
+		expect(messages([{ name: "options.-1", value: "true" }])[0]).toContain("no key -1");
+		expect(messages([{ name: "options.-x", value: "true" }])).toEqual([]);
+		expect(
+			messages([
+				{ name: "options.depth", value: "1" },
+				{ name: "Options.mode", value: "2" },
+			]),
+		).toEqual(["options is spelled with different letter case in another field; use one spelling"]);
+		expect(messages([{ name: "limit", value: "1e400" }])[0]).toContain("too large to send");
+		expect(messages([{ name: "limits", value: '{"max":[1, -1e400]}' }])[0]).toContain("too large to send");
+		expect(messages([{ name: "limit", value: "1e300" }])).toEqual([]);
+	});
+
+	it("refuses a relay field that clashes with a route's once they are merged", () => {
+		const relay = (fields: { name: string; value: string }[], routeFields: { name: string; value: string }[], inherit?: boolean) =>
+			(
+				relayFormSchema.safeParse({
+					...emptyRelayForm(),
+					name: "r",
+					base_url: "https://api.example.com",
+					auth: { type: "none" },
+					body_overrides: fields,
+					routes: [{ method: "POST", path: "/search", headers: [], body_overrides: routeFields, inherit_body_overrides: inherit }],
+				}).error?.issues ?? []
+			).filter((i) => i.path[0] === "body_overrides");
+		const clash = relay([{ name: "options", value: "{}" }], [{ name: "options.depth", value: "1" }]);
+		expect(clash.map((i) => i.path)).toEqual([["body_overrides", 0, "name"]]);
+		expect(clash[0].message).toContain("options.depth on route POST /search");
+		expect(relay([{ name: "options.mode", value: "1" }], [{ name: "Options.depth", value: "1" }])).toHaveLength(1);
+		expect(relay([{ name: "include_usage", value: "true" }], [{ name: "INCLUDE_USAGE", value: "true" }])).toHaveLength(1);
+		expect(relay([{ name: "include_usage", value: "true" }], [{ name: "include_usage", value: "false" }]), "same path is replaced").toEqual(
+			[],
+		);
+		expect(relay([{ name: "options", value: "{}" }], [{ name: "options.depth", value: "1" }], false), "route opted out").toEqual([]);
+	});
 
 	it("accepts the gateway's segment globs and rejects ** before the last segment", () => {
 		expect(route("/v1/*/status").success).toBe(true);
@@ -100,5 +167,18 @@ describe("relay form validation", () => {
 		expect(relayOpenAPISpecUrlSchema.safeParse(" https://exa.ai/docs/exa-spec.json ").data).toBe("https://exa.ai/docs/exa-spec.json");
 		expect(relayOpenAPISpecUrlSchema.safeParse("http://127.0.0.1:8080/openapi.yaml").success).toBe(true);
 		expect(relayOpenAPISpecUrlSchema.safeParse("http://[::1]/spec.json").success).toBe(true);
+	});
+});
+
+describe("body override numbers", () => {
+	it("refuses a whole number a save would round, and keeps safe or quoted ones", () => {
+		expect(hasUnsafeInteger("9007199254740993")).toBe(true);
+		expect(hasUnsafeInteger('{"n":[1,-9007199254740993]}')).toBe(true);
+		expect(hasUnsafeInteger("9007199254740991")).toBe(false);
+		expect(hasUnsafeInteger('"9007199254740993"')).toBe(false);
+		expect(hasUnsafeInteger('{"a\\"9007199254740993":1}')).toBe(false);
+		expect(hasUnsafeInteger("1.5e300")).toBe(false);
+		const result = relayBodyOverridesSchema.safeParse([{ name: "seed", value: "9007199254740993" }]);
+		expect(result.success).toBe(false);
 	});
 });

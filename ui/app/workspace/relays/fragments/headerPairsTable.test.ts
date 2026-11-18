@@ -58,6 +58,21 @@ describe("deleting rows around a held conflict", () => {
 		expect(pairsFromRecord(afterRemove.value, held.conflicts)).toEqual([{ name: "X-A", value: "a" }]);
 	});
 
+	it("flags a duplicate typed into a row renamed to a digit name, counting rows in on-screen order", () => {
+		// a=A, b=B; rename b to 3, then that row to a. An object lists "3" first, the table shows [a, 3].
+		const record: Record<string, string> = { "3": "B", a: "A" };
+		const order = ["a", "3"];
+		const held = heldConflicts(new Map([[1, "a"]]), record, order);
+		expect(held.originals).toEqual(new Map([[1, "3"]]));
+		const pairs = pairsFromRecord(record, held.conflicts, order);
+		expect(pairs).toEqual([
+			{ name: "a", value: "A" },
+			{ name: "a", value: "B" },
+		]);
+		const parsed = relayRouteFormSchema.safeParse({ method: "POST", path: "/", headers: pairs });
+		expect(parsed.error?.issues.map((i) => i.message)).toContain("This header is already matched on this route");
+	});
+
 	it("ignores a conflict typed into the empty add row, which has nothing to save yet", () => {
 		const held = heldConflicts(new Map([[1, "X-A"]]), { "X-A": "a" });
 		expect(held.conflicts.size).toBe(0);
