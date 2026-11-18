@@ -341512,6 +341512,7 @@
     },
     {
       "name": "335. Key aliases follow the keys that can serve the request (deepseek alias-keys) (#6620 / PR #8528)",
+      "description": "A key alias is resolved at key selection, after governance has checked the request, so governance has to judge an alias by the keys that can serve it: key selection may pick any enabled key the virtual key's key_ids allow, or the one key the request pins, and each key resolves the name through its own aliases. The profile's deepseek key maps deepseek-v4-flash-anthropic to deepseek-v4-flash; the setup adds a second deepseek key, with a fake credential that is never called, mapping the same alias to deepseek-v4-pro. A virtual key over every key that allows only deepseek-v4-flash must refuse the alias with 403 model_blocked, since key selection could pick the conflicting key and run deepseek-v4-pro. Pinning the profile key with x-bf-api-key admits it, since only that key can serve the request. A virtual key whose key_ids name only the profile key admits it as well: a key the virtual key cannot use does not veto the alias. The two admitted cases make one small live DeepSeek call each. The cleanup deletes both virtual keys and the added key.",
       "item": [
         {
           "name": "deepseek alias-keys setup: create a virtual key over every key that allows only deepseek-v4-flash - alias-keys - #6620",
