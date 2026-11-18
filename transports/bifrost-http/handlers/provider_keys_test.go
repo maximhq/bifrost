@@ -823,6 +823,20 @@ func TestValidateProviderKeyAnthropicWorkloadIdentity(t *testing.T) {
 		})
 	}
 
+	t.Run("an oauth subject_token_file is guarded like a dial target", func(t *testing.T) {
+		key := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantTokenExchange, TokenURL: *schemas.NewSecretVar("https://auth.openai.com/oauth/token"),
+			SubjectTokenFile: "/var/run/secrets/openai/token",
+		}}
+		moved := key
+		movedCfg := *key.OAuthKeyConfig
+		movedCfg.SubjectTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		moved.OAuthKeyConfig = &movedCfg
+		if got := changedDialTargets(&key, moved); len(got) != 1 || got[0] != "oauth_key_config.subject_token_file" {
+			t.Fatalf("moving only the subject token file must count as a dial target change, got %v", got)
+		}
+	})
+
 	t.Run("the identity source path is guarded like a dial target", func(t *testing.T) {
 		targets := keyDialTargets(schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)})
 		if targets["anthropic_key_config.workload_identity.identity_source.path"] == nil {

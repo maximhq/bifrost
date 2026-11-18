@@ -2,16 +2,15 @@ package anthropic
 
 import (
 	"bytes"
-	"errors"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -328,19 +327,6 @@ func exchangeWorkloadIdentityToken(ctx context.Context, hc *http.Client, tokenUR
 // shared tokencache.CredentialDirsEnv, read from the environment only.
 const identityTokenDirsEnv = tokencache.CredentialDirsEnv
 
-// allowedIdentityTokenPath returns the real path of an identity token file once it is known to sit
-// under an allowed credential directory (see tokencache.AllowedCredentialPath).
-func allowedIdentityTokenPath(path string) (string, *schemas.BifrostError) {
-	resolved, err := tokencache.AllowedCredentialPath(path)
-	if err == nil {
-		return resolved, nil
-	}
-	if errors.Is(err, tokencache.ErrCredentialPathNotAllowed) || !filepath.IsAbs(path) {
-		return "", workloadIdentityConfigError("anthropic workload identity token file " + err.Error())
-	}
-	return "", providerUtils.NewConfigurationError("anthropic workload identity token file could not be read: " + err.Error())
-}
-
 // readIdentityToken returns the identity token from src, re-reading a file source on every call so
 // a token the platform rotates on disk (a Kubernetes projected service account token) is always
 // current. The file is read only from an allowed credential directory (see allowedIdentityTokenPath).
@@ -355,23 +341,15 @@ func readIdentityToken(src *schemas.IdentitySource) (string, *schemas.BifrostErr
 		if path == "" {
 			return "", workloadIdentityConfigError("anthropic workload identity source of type file has no path")
 		}
-		resolved, bErr := allowedIdentityTokenPath(path)
-		if bErr != nil {
-			return "", bErr
-		}
-		f, err := os.Open(resolved)
+		read, err := tokencache.ReadCredentialFile(path, maxIdentityTokenBytes)
 		if err != nil {
+			if errors.Is(err, tokencache.ErrCredentialPathNotAllowed) || !filepath.IsAbs(path) {
+				return "", workloadIdentityConfigError("anthropic workload identity token file " + err.Error())
+			}
+			// Transient: the volume may not be mounted yet.
 			return "", providerUtils.NewConfigurationError("anthropic workload identity token file could not be read: " + err.Error())
 		}
-		defer f.Close()
-		data, err := io.ReadAll(io.LimitReader(f, maxIdentityTokenBytes+1))
-		if err != nil {
-			return "", providerUtils.NewConfigurationError("anthropic workload identity token file could not be read: " + err.Error())
-		}
-		token = strings.TrimSpace(string(data))
-		if token == "" {
-			return "", providerUtils.NewConfigurationError("anthropic workload identity token file " + path + " is empty")
-		}
+		token = read
 	case schemas.IdentitySourceInline:
 		token = strings.TrimSpace(src.Token.GetValue())
 		if token == "" {

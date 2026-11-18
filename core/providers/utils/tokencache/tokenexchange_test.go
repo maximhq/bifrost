@@ -342,10 +342,12 @@ func TestTokenExchangeResponseHandling(t *testing.T) {
 	})
 
 	t.Run("a token type other than Bearer is refused", func(t *testing.T) {
-		_, bErr := mintOnce(t, http.StatusOK, `{"access_token":"x","token_type":"N_A","expires_in":3600}`)
+		// The endpoint reflects the subject token in token_type; it must not reach the caller.
+		_, bErr := mintOnce(t, http.StatusOK, `{"access_token":"x","token_type":"s","expires_in":3600}`)
 		require.NotNil(t, bErr)
 		assert.Equal(t, http.StatusBadGateway, *bErr.StatusCode)
-		assert.Contains(t, bErr.Error.Message, "want Bearer")
+		assert.Contains(t, bErr.Error.Message, "other than Bearer")
+		assert.NotContains(t, bErr.Error.Message, `"s"`)
 	})
 
 	t.Run("lowercase bearer is accepted", func(t *testing.T) {
@@ -407,9 +409,16 @@ func TestReadCredentialFileRefusals(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "byte limit")
 
-	_, err = ReadCredentialFile(dir, maxSubjectTokenBytes)
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o700))
+	_, err = ReadCredentialFile(filepath.Join(dir, "sub"), maxSubjectTokenBytes)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a regular file")
+
+	_, err = ReadCredentialFile(dir, maxSubjectTokenBytes)
+	require.ErrorIs(t, err, ErrCredentialPathNotAllowed, "the directory itself is not a credential file")
+
+	_, err = ReadCredentialFile(filepath.Join(dir, "..", "elsewhere"), maxSubjectTokenBytes)
+	require.ErrorIs(t, err, ErrCredentialPathNotAllowed)
 
 	_, err = ReadCredentialFile("relative/token", maxSubjectTokenBytes)
 	require.Error(t, err)
@@ -423,4 +432,17 @@ func TestReadCredentialFileRefusals(t *testing.T) {
 	got, err := ReadCredentialFile(filepath.Join(dir, "token"), maxSubjectTokenBytes)
 	require.NoError(t, err)
 	assert.Equal(t, "rotated", got)
+}
+
+// TestTokenExchangeMinterChecksEndpoint pins that the exported constructor applies the endpoint
+// allowlist itself, before the subject token file is read.
+func TestTokenExchangeMinterChecksEndpoint(t *testing.T) {
+	file := subjectTokenFile(t, "s")
+	t.Setenv(schemas.TokenExchangeURLsEnv, "https://auth.openai.com/oauth/token")
+	for _, u := range []string{"https://attacker.example/token", "http://auth.openai.com/oauth/token"} {
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: u, SubjectTokenFile: file}, authClient(t))
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr, u)
+		assert.Contains(t, bErr.Error.Message, "is not allowed")
+	}
 }

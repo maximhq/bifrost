@@ -50,6 +50,12 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 	}
 	hc = noRedirects(exchangeClient(hc))
 	return func(ctx context.Context, _ *Entry[string]) (*Entry[string], *schemas.BifrostError) {
+		// Checked here too, not only in MinterForConfig, so a Go SDK caller that builds the
+		// minter directly gets the same guard before the file is read.
+		if !httpsOrLoopbackURL(cfg.TokenURL) || !schemas.TokenExchangeURLAllowed(cfg.TokenURL) {
+			return nil, configurationError("oauth token exchange endpoint " + redactURL(cfg.TokenURL) + " is not allowed; list it in " +
+				schemas.TokenExchangeURLsEnv + " (default " + strings.Join(schemas.DefaultTokenExchangeURLs, ",") + ")")
+		}
 		subject, err := ReadCredentialFile(cfg.SubjectTokenFile, maxSubjectTokenBytes)
 		if err != nil {
 			return nil, subjectTokenError(err)
@@ -100,7 +106,8 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 		// RFC 8693 lets the endpoint issue something other than a bearer token; Bifrost can only
 		// send a bearer.
 		if resp.tokenType != "" && !strings.EqualFold(resp.tokenType, "Bearer") {
-			bErr := providerUtils.NewProviderAPIError("oauth token exchange at "+redactURL(cfg.TokenURL)+" returned token_type "+resp.tokenType+", want Bearer", nil, http.StatusBadGateway, nil, nil)
+			// The value is not quoted back: an endpoint could reflect a credential in it.
+			bErr := providerUtils.NewProviderAPIError("oauth token exchange at "+redactURL(cfg.TokenURL)+" returned a token_type other than Bearer", nil, http.StatusBadGateway, nil, nil)
 			bErr.AllowFallbacks = schemas.Ptr(false)
 			return nil, bErr
 		}
