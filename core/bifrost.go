@@ -583,8 +583,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 // Listing models is a metadata read and should not wait inference-scale
 // timeouts. The bound is per page, not per provider: every page re-fetches the
 // upstream catalog, so one deadline across the whole walk cut a large catalog
-// off after its first page. A var rather than a const so package tests can shrink it.
-var listAllModelsProviderTimeout = 5 * time.Second
+// off after its first page. 10s fits a slow healthy page (a HuggingFace page takes
+// 3.5-4.8s alone). A var rather than a const so package tests can shrink it.
+var listAllModelsProviderTimeout = 10 * time.Second
 
 // providerModelLister is the optional model-catalog capability ListAllModels
 // falls back on when a provider's live poll fails. The framework's

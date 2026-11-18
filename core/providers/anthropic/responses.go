@@ -6042,8 +6042,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// A system message encountered after the conversation starts is emitted as
 	// role:"system" in the messages array when the provider+model supports it.
 	seenConversation := false
-	midConvSystemSupported := isRequestMessage && caps.SupportsMidConversationSystem(
-		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
+	midConvSystemSupported := isRequestMessage && midConversationSystemSupported(caps)
 	// Per-message effort (output_config.effort on a role:"system" message) is a separate,
 	// narrower gate: models without per-turn effort 400 on the field, so the override is
 	// dropped fail-soft for them rather than forwarded.
@@ -6095,24 +6094,6 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// its earlier actions, which need a filler tool_result beside the one screenshot.
 	computerCallFillerIDs := make(map[string][]string)
 
-	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
-	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
-	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
-	// the turn must FOLLOW a user message (or an assistant message ending in server-tool use),
-	// and it must be either the last entry or be followed by an assistant turn.
-	//
-	// The check is deliberately conservative — it looks at what has actually been emitted rather
-	// than trying to predict how the remaining input items will map to output messages, and it
-	// recognizes the assistant-ending-in-server-tool-result exception only by the last emitted
-	// block's type. A false negative costs little for text (the caller falls back to inlining,
-	// which is cache-preserving and always accepted) but drops tool-change blocks, which the
-	// inline form cannot carry. A false positive would be a 400.
-	//
-	// "Consecutive system messages are accepted and treated as a single system section, which
-	// follows the same placement rule as a whole" (Anthropic docs), so the trailing run of
-	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
-	// skipped before requiring the user turn; without that, the second member of a system
-	// group would be judged against its sibling and inlined, dropping its override.
 	// droppedAsEmpty reports whether a user/assistant input item leaves no message on the
 	// wire because all of its text is empty (convertBifrostMessageToAnthropicMessage returns
 	// nil for it). Turn-shape checks below must not count it. Pending thinking flushes at a
@@ -6143,43 +6124,6 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}
 		}
 		return true
-	}
-
-	midConvPlacementOK := func(i int) bool {
-		prev := len(anthropicMessages) - 1
-		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
-			prev--
-		}
-		if prev < 0 {
-			return false
-		}
-		switch anthropicMessages[prev].Role {
-		case AnthropicMessageRoleUser:
-		case AnthropicMessageRoleAssistant:
-			// The documented exception: an assistant turn that ends in a server tool
-			// result (web_search, web_fetch, code_execution, tool_search, advisor, MCP).
-			// Recognised explicitly because the inline fallback cannot carry a
-			// tool_addition / tool_removal, so a false negative here silently drops it.
-			if !endsInServerToolResult(anthropicMessages[prev].Content) {
-				return false
-			}
-		default:
-			return false
-		}
-		// The trailing clause is judged at the END of the group too: skip the input items
-		// that will join this system section, then require end-of-messages or an assistant
-		// turn. Judging the first member by its system sibling would inline it.
-		next := i + 1
-		for next < len(bifrostMessages) && ((bifrostMessages[next].Role != nil &&
-			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
-				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper)) ||
-			droppedAsEmpty(&bifrostMessages[next])) {
-			next++
-		}
-		if next == len(bifrostMessages) {
-			return true
-		}
-		return bifrostMessages[next].Role != nil && *bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleAssistant
 	}
 
 	// hasConversationTurn reports whether a user or assistant message has been emitted. An
@@ -6403,8 +6347,11 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					continue
 				}
 				switch {
-				case seenConversation && midConvSystemSupported && midConvPlacementOK(i):
+				case seenConversation && midConvSystemSupported:
 					// Mid-conversation system message — emit as role:"system" in messages array.
+					// Placement is checked once the whole list is built, against the messages
+					// actually emitted (enforceMidConversationSystemPlacement): the input item
+					// after this one does not tell what lands next to it on the wire.
 					anthropicMessages = append(anthropicMessages, AnthropicMessage{
 						Role:         AnthropicMessageRoleSystem,
 						Content:      *content,
@@ -6891,6 +6838,10 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 	// Flush any remaining pending tool calls (with tracking)
 	flushPendingToolCallsWithTracking()
+
+	if midConvSystemSupported {
+		anthropicMessages = enforceMidConversationSystemPlacement(anthropicMessages, trimInlineJoin)
+	}
 
 	// Trim trailing whitespace from the last assistant message
 	// ContentStr is converted to a single text ContentBlock during message conversion
@@ -7548,6 +7499,112 @@ func endsInServerToolResult(content AnthropicContent) bool {
 		AnthropicContentBlockTypeAdvisorToolResult,
 		AnthropicContentBlockTypeMCPToolResult:
 		return true
+	}
+	return false
+}
+
+// enforceMidConversationSystemPlacement inlines every native role:"system" run in msgs that
+// breaks Anthropic's placement rule, which it rejects with "messages.N: role 'system' must
+// follow a 'user' message ...". A run of consecutive system messages is one system section
+// (Anthropic docs): it must follow a user message, or an assistant message ending in a server
+// tool result, and must either end msgs or be followed by an assistant message.
+//
+// It judges the emitted messages rather than the input items, because an item's role does not
+// say what lands next to it on the wire: a tool_use-led assistant reply arrives as a role-less
+// function_call item, reasoning and tool calls merge into one assistant turn, and empty items
+// emit nothing. Deciding on the input made the same reminder native while it was last and
+// inlined once a reply followed it, which broke the cached prefix at that reminder every turn.
+//
+// An inlined member takes exactly the form the converter's inline branch gives it: the user
+// text it joins is trimmed when trimJoin is set, an output_config override goes out first as an
+// effort-only system message, and the text is wrapped by inlineMidConversationSystem
+// (tool_addition / tool_removal blocks cannot ride a user turn and are dropped, as there).
+// Effort-only members are exempt from placement and stay as they are. Returns msgs itself,
+// without allocating, when every run is placed legally.
+func enforceMidConversationSystemPlacement(msgs []AnthropicMessage, trimJoin bool) []AnthropicMessage {
+	var out []AnthropicMessage // nil until the first run that must be inlined
+	for i := 0; i < len(msgs); {
+		if msgs[i].Role != AnthropicMessageRoleSystem {
+			if out != nil {
+				out = append(out, msgs[i])
+			}
+			i++
+			continue
+		}
+		end := i
+		for end < len(msgs) && msgs[end].Role == AnthropicMessageRoleSystem {
+			end++
+		}
+		if midConvSystemRunPlaced(msgs, i, end) || !systemRunHasContent(msgs[i:end]) {
+			if out != nil {
+				out = append(out, msgs[i:end]...)
+			}
+			i = end
+			continue
+		}
+		if out == nil {
+			out = make([]AnthropicMessage, i, len(msgs)+end-i)
+			copy(out, msgs[:i])
+		}
+		for _, m := range msgs[i:end] {
+			if isEffortOnlySystemMessage(&m) {
+				out = append(out, m)
+				continue
+			}
+			if trimJoin {
+				trimUserTurnTail(out)
+			}
+			if m.OutputConfig != nil {
+				out = append(out, AnthropicMessage{
+					Role:         AnthropicMessageRoleSystem,
+					Content:      AnthropicContent{ContentBlocks: []AnthropicContentBlock{}},
+					OutputConfig: m.OutputConfig,
+				})
+			}
+			if inlined := inlineMidConversationSystem(&m.Content); inlined != nil {
+				out = append(out, *inlined)
+			}
+		}
+		i = end
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
+
+// midConvSystemRunPlaced reports whether the system run msgs[start:end] meets both placement
+// clauses. The run is maximal, so msgs[start-1] and msgs[end] are not system messages.
+func midConvSystemRunPlaced(msgs []AnthropicMessage, start, end int) bool {
+	if start == 0 {
+		return false
+	}
+	switch prev := msgs[start-1]; prev.Role {
+	case AnthropicMessageRoleUser:
+	case AnthropicMessageRoleAssistant:
+		if !endsInServerToolResult(prev.Content) {
+			return false
+		}
+	default:
+		return false
+	}
+	return end == len(msgs) || msgs[end].Role == AnthropicMessageRoleAssistant
+}
+
+// isEffortOnlySystemMessage reports whether a role:"system" message carries only a per-message
+// output_config, the form exempt from the placement rule.
+func isEffortOnlySystemMessage(m *AnthropicMessage) bool {
+	return m.OutputConfig != nil && len(m.Content.ContentBlocks) == 0 &&
+		(m.Content.ContentStr == nil || *m.Content.ContentStr == "")
+}
+
+// systemRunHasContent reports whether any member of a system run carries more than an
+// output_config, i.e. whether the placement rule applies to the run at all.
+func systemRunHasContent(run []AnthropicMessage) bool {
+	for i := range run {
+		if !isEffortOnlySystemMessage(&run[i]) {
+			return true
+		}
 	}
 	return false
 }
