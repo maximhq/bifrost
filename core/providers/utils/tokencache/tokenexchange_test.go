@@ -446,3 +446,27 @@ func TestTokenExchangeMinterChecksEndpoint(t *testing.T) {
 		assert.Contains(t, bErr.Error.Message, "is not allowed")
 	}
 }
+
+// TestTokenExchangeTransportErrorScrubsSubjectToken pins that a transport error carrying text
+// from the response is scrubbed of the subject token too: Go reports a malformed redirect
+// Location in full before any redirect policy runs.
+func TestTokenExchangeTransportErrorScrubsSubjectToken(t *testing.T) {
+	const subject = "eyJhbGciOiJSUzI1NiJ9.reflected-subject.c2ln"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/%ZZ?token="+subject)
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(schemas.TokenExchangeURLsEnv, srv.URL+"/token")
+	_, mint, bErr := MinterForConfig(teConfig(srv.URL+"/token", subjectTokenFile(t, subject)), authClient(t))
+	require.Nil(t, bErr)
+	_, bErr = mint(context.Background(), nil)
+	require.NotNil(t, bErr)
+	serialized, err := json.Marshal(bErr)
+	require.NoError(t, err)
+	assert.NotContains(t, string(serialized), "reflected-subject")
+	assert.NotContains(t, bErr.Error.Message, "reflected-subject")
+	if bErr.Error.Error != nil {
+		assert.NotContains(t, bErr.Error.Error.Error(), "reflected-subject")
+	}
+}

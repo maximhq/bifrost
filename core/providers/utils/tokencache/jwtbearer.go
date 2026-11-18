@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,6 +244,11 @@ func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byt
 
 	resp, err := hc.Do(req)
 	if err != nil {
+		// A transport error can quote the response (Go reports a malformed redirect Location
+		// in full), so it is scrubbed of submitted values like an error body.
+		if msg := err.Error(); scrubSubmitted(msg, submitted) != msg {
+			err = errors.New(scrubSubmitted(msg, submitted))
+		}
 		return nil, transportError(tokenURL, err)
 	}
 	defer resp.Body.Close()
