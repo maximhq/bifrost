@@ -6,6 +6,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// parseNaceError converts a Drex error response into a BifrostError. Drex's error message and
+// type replace the shared handler's defaults when they are present.
 func parseNaceError(resp *fasthttp.Response) *schemas.BifrostError {
 	var native NaceError
 	err := providerUtils.HandleProviderAPIError(resp, &native)

@@ -11,6 +11,8 @@ import (
 // The API accepts "<name>/<version>" only when the version matches this set.
 var declaredPart = regexp.MustCompile(`^[A-Za-z0-9 ._@+-]+$`)
 
+// TestClientIdentity checks that the client identity is "bifrost/<version>", sanitized and capped
+// at 64 bytes.
 func TestClientIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		version string

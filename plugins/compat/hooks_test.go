@@ -516,6 +516,8 @@ func BenchmarkPreLLMHookDropParams(b *testing.B) {
 	}
 }
 
+// BenchmarkMarkNativeDecision measures the emulation check for providers that serve decisions
+// natively.
 func BenchmarkMarkNativeDecision(b *testing.B) {
 	for _, provider := range []schemas.ModelProvider{schemas.Typesafe, schemas.Nace, schemas.VLLM, schemas.SGL} {
 		b.Run(string(provider), func(b *testing.B) {

@@ -729,6 +729,8 @@ func BenchmarkClassifyDecisionComplexity(b *testing.B) {
 	}
 }
 
+// TestNaceDecisionClassifier checks that a Nace decision model proposes a tier only when its
+// confidence meets the minimum, and proposes none on a provider failure or a timeout.
 func TestNaceDecisionClassifier(t *testing.T) {
 	for _, test := range []struct {
 		name             string

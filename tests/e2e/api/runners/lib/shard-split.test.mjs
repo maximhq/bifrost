@@ -840,5 +840,16 @@ test("Nace SDK routes stay out of forks that do not carry Nace credentials", () 
   assert.deepEqual(runFilter(["--provider", "typesafe"], { source }), ["typesafe decision"]);
 });
 
+test("A prompt word that contains nace does not move an OpenAI row to the Nace fork", () => {
+  const source = join(WORK, "nace-word.json");
+  const row = (name, model, prompt) => ({
+    name,
+    request: { method: "POST", url: "http://localhost:8080/v1/chat/completions", body: { mode: "raw", raw: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }) } },
+  });
+  writeFileSync(source, JSON.stringify({ info: { name: "nace word match" }, item: [row("furnace prompt", "openai/gpt-4o", "Explain how a furnace works and why a menace is scary."), row("nace model", "nace/drex-v2.0", "Hello")] }));
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["furnace prompt"]);
+  assert.deepEqual(runFilter(["--provider", "nace"], { source }), ["nace model"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

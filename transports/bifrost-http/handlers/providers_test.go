@@ -4041,6 +4041,8 @@ func TestDatasheetOverrideHandlers_RejectInvalidBodies(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsNaceListsDrex checks that the decision model picker lists the Drex
+// models of a Nace provider.
 func TestListModels_DecisionsNaceListsDrex(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })

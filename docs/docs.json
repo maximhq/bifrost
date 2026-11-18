@@ -295,7 +295,7 @@
               "features/routers",
               "features/complexity-router",
               "features/warp",
-          "features/bifrost-mcp-server",
+              "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -596,6 +596,13 @@
                 "icon": "c",
                 "pages": [
                   "integrations/cohere-sdk/overview"
+                ]
+              },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
                 ]
               },
               "integrations/litellm-sdk",

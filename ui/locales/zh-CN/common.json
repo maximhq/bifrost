@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "预算用量",
 		"override": "覆盖",
-		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}"
+		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}",
+		"sharedTag": "共享"
 	},
 	"rateLimit": {
 		"tokens": "token",

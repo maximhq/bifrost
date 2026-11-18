@@ -6417,15 +6417,6 @@
           },
           "default": 100,
           "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
-        },
-        "management_writes": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["create", "update", "delete", "action"]
-          },
-          "uniqueItems": true,
-          "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs, such as tests and cache flushes). Reads are always offered. Empty, the default, is reads only. Every kind adds its tools to every Warp request, so turning on more grows each request's context. client.bifrost_mcp_allow_writes is the ceiling: with it off no write is offered. Omitting it keeps the stored value."
         }
       },
       "additionalProperties": false
@@ -8196,7 +8187,7 @@
         "openapi_url": {
           "type": "string",
           "maxLength": 2048,
-          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, dev's docs/openapi/openapi-oss.json.",
+          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, https://getbifrost.ai/openapi-oss.json.",
           "optional": true
         }
       },
@@ -8208,7 +8199,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
+          "description": "Base URL for the provider (optional, required for Ollama). For Bedrock, only the host is used: it replaces the bedrock-runtime host for all inference, a key's bedrock_key_config.endpoints.runtime still wins over it, and the other Bedrock services keep their per-key endpoints or public hosts. Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -13410,12 +13401,30 @@
                 "default": "enforce",
                 "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
+              "input_timing": {
+                "type": "string",
+                "enum": [
+                  "pre_call",
+                  "parallel"
+                ],
+                "default": "pre_call",
+                "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+              },
+              "profile_execution_mode": {
+                "type": "string",
+                "enum": [
+                  "independent",
+                  "chained"
+                ],
+                "default": "independent",
+                "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
                   "type": "integer"
                 },
-                "description": "IDs of provider configurations to use with this rule"
+                "description": "IDs of provider configurations to use with this rule, in execution order"
               }
             },
             "required": [

@@ -72,6 +72,11 @@ export function makeMatchProvider(isActive) {
   return function matchProvider(haystack) {
     for (const p of MATCH_ORDER) {
       if (!isActive(p)) continue;
+      if (p === "nace") {
+        // Whole word, as in filter-collection.mjs: "furnace" or "menace" in a prompt is not Nace.
+        if (/\bnace\b/.test(haystack) || haystack.includes("drex-")) return p;
+        continue;
+      }
       for (const k of PROVIDER_KEYWORDS[p] || [p]) if (haystack.includes(k)) return p;
     }
     return null;

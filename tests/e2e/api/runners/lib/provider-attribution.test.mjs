@@ -113,4 +113,13 @@ test("Nace SDK routes are attributed to Nace rather than their ingress provider"
   assert.strictEqual(providerOfLogLine("post http://localhost:8080/openai/v1/decisions [200 ok]", folder, matchNace), "nace");
 });
 
+test("Nace is matched as a whole word, not inside prompt words", () => {
+  const match = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  assert.strictEqual(match("explain how a furnace works gpt-4o"), "openai");
+  assert.strictEqual(match("a menace on /openai/v1/chat/completions"), "openai");
+  assert.strictEqual(match("model nace/drex-v2.0"), "nace");
+  assert.strictEqual(match("https://console.nace.ai/v1/systemone"), "nace");
+  assert.strictEqual(match("drex-max-v1.1"), "nace");
+});
+
 console.log(`\n${passed} passed`);
