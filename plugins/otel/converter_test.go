@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func TestConvertTraceToResourceSpan_PluginSpanFilter(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, convertOptions{})
 	spans := rs.ScopeSpans[0].Spans
 
 	// The filtered logging span is dropped; root + governance remain.
@@ -112,7 +113,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 
 	// Profile exports content and raw payloads; the key turned content off: nothing content-shaped
 	// leaves, on the root or the child, and the raw payloads stay home too.
-	off := p.convertTraceToResourceSpan("svc", makeTrace(true), nil, false, true, false, false)
+	off := p.convertTraceToResourceSpan("svc", makeTrace(true), convertOptions{exportRawPayloads: true})
 	root := findRoot(off.ScopeSpans[0].Spans)
 	child := childSpan(off.ScopeSpans[0].Spans)
 	if got := attrString(root, schemas.AttrInputMessages); got != "" {
@@ -141,7 +142,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 	}
 
 	// Same profile, a trace whose key said nothing: content and raw payloads export as configured.
-	on := p.convertTraceToResourceSpan("svc", makeTrace(false), nil, false, true, false, false)
+	on := p.convertTraceToResourceSpan("svc", makeTrace(false), convertOptions{exportRawPayloads: true})
 	child = childSpan(on.ScopeSpans[0].Spans)
 	if got := attrString(child, schemas.AttrInputMessages); got == "" {
 		t.Error("without the key attribute, child content should export as the profile allows")
@@ -155,7 +156,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 
 	// A profile that disables content stays disabled with or without the key attribute.
 	for _, keyDisabled := range []bool{true, false} {
-		strict := p.convertTraceToResourceSpan("svc", makeTrace(keyDisabled), nil, true, true, false, false)
+		strict := p.convertTraceToResourceSpan("svc", makeTrace(keyDisabled), convertOptions{disableContentLogging: true, exportRawPayloads: true})
 		if got := attrString(childSpan(strict.ScopeSpans[0].Spans), schemas.AttrInputMessages); got != "" {
 			t.Errorf("profile disable_content_logging with keyDisabled=%v: child content = %q, want empty", keyDisabled, got)
 		}
@@ -198,13 +199,13 @@ func TestConvertTraceToResourceSpan_DisableRootSpanContent(t *testing.T) {
 	}
 
 	// Flag off: root keeps its content (current default behavior).
-	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, false)
+	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), convertOptions{})
 	if root := findRoot(off.ScopeSpans[0].Spans); attrString(root, schemas.AttrInputMessages) == "" {
 		t.Error("with flag off, root span should retain input content")
 	}
 
 	// Flag on: root content dropped, request model retained, child content untouched.
-	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, true)
+	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), convertOptions{disableRootSpanContent: true})
 	root := findRoot(on.ScopeSpans[0].Spans)
 	if got := attrString(root, schemas.AttrInputMessages); got != "" {
 		t.Errorf("root input content = %q, want empty when disableRootSpanContent is set", got)
@@ -307,7 +308,7 @@ func TestSessionGroupingOverridesTraceID(t *testing.T) {
 	wantParent := hexToBytes(sessionParentSpanID(sess), 8)
 
 	for _, original := range []string{"00000000000000000000000000000001", "00000000000000000000000000000002"} {
-		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), nil, false, false, true, false)
+		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), convertOptions{groupTracesBySession: true})
 		spans := rs.ScopeSpans[0].Spans
 		if len(spans) != 2 {
 			t.Fatalf("expected 2 spans, got %d", len(spans))
@@ -337,7 +338,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0123456789abcdef0123456789abcdef"
 	const inboundParent = "fedcba9876543210"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), nil, false, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), convertOptions{groupTracesBySession: true})
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -364,7 +365,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 func TestSessionGroupingDisabled(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "00000000000000000000000000000009"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), convertOptions{})
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -390,7 +391,7 @@ func TestSessionGroupingDisabled(t *testing.T) {
 func TestNoSessionIDNoTag(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0000000000000000000000000000000a"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), nil, false, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), convertOptions{groupTracesBySession: true})
 	root := findRoot(rs.ScopeSpans[0].Spans)
 	if root == nil {
 		t.Fatal("root span not found")
@@ -401,5 +402,447 @@ func TestNoSessionIDNoTag(t *testing.T) {
 	// With no session ID, grouping cannot apply: trace ID stays original.
 	if !bytes.Equal(root.TraceId, hexToBytes(original, 16)) {
 		t.Errorf("root TraceId = %x, want original %x", root.TraceId, hexToBytes(original, 16))
+	}
+}
+
+// findAttr returns the OTEL KeyValue with the given key from a span, or nil if
+// not present. Used by trace-attribute propagation tests below.
+func findAttr(span *Span, key string) *KeyValue {
+	for _, kv := range span.Attributes {
+		if kv.Key == key {
+			return kv
+		}
+	}
+	return nil
+}
+
+// TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans verifies
+// that x-bf-dim-* dimensions stored on TraceAttrDimensions are merged onto every
+// exported span when applyTraceDimensionsToChildSpans is enabled, including the root and
+// all child kinds (llm.call, plugin, retry).
+func TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	llm := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	plugin := makeSpan("plug", "root", "plugin.governance.prehook", schemas.SpanKindPlugin)
+	retry := makeSpan("retry", "llm", "retry", schemas.SpanKindRetry)
+
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, llm, plugin, retry},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{
+				"customer_id": "acme",
+				"environment": "prod",
+			},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	if rs == nil || len(rs.ScopeSpans) == 0 {
+		t.Fatal("convertTraceToResourceSpan returned nil/empty result")
+	}
+	spans := rs.ScopeSpans[0].Spans
+	if len(spans) != 4 {
+		t.Fatalf("expected 4 exported spans, got %d", len(spans))
+	}
+
+	for _, sp := range spans {
+		cust := findAttr(sp, "customer_id")
+		if cust == nil {
+			t.Errorf("span %q missing customer_id", sp.Name)
+			continue
+		}
+		if got := cust.Value.GetStringValue(); got != "acme" {
+			t.Errorf("span %q customer_id = %q, want %q", sp.Name, got, "acme")
+		}
+		env := findAttr(sp, "environment")
+		if env == nil {
+			t.Errorf("span %q missing environment", sp.Name)
+			continue
+		}
+		if got := env.Value.GetStringValue(); got != "prod" {
+			t.Errorf("span %q environment = %q, want %q", sp.Name, got, "prod")
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_SpanAttributePrecedence verifies that when a
+// trace-level attribute and a span-level attribute share the same key, the
+// span-level value wins. Trace attributes are background context; explicit
+// per-span values are authoritative.
+func TestConvertTraceToResourceSpan_SpanAttributePrecedence(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	root.Attributes = map[string]any{"foo": "span-level"}
+
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{"foo": "trace-level"},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	spans := rs.ScopeSpans[0].Spans
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 exported span, got %d", len(spans))
+	}
+
+	foo := findAttr(spans[0], "foo")
+	if foo == nil {
+		t.Fatal("missing foo attribute")
+	}
+	if got := foo.Value.GetStringValue(); got != "span-level" {
+		t.Errorf("foo = %q, want %q (span-level should override trace-level)", got, "span-level")
+	}
+
+	// Sanity: only one entry for the key — we did not append a duplicate.
+	count := 0
+	for _, kv := range spans[0].Attributes {
+		if kv.Key == "foo" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one 'foo' entry on the span, got %d", count)
+	}
+}
+
+// TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression verifies that a
+// trace with empty/nil Attributes adds zero merged key-values — the existing
+// behavior before this feature is preserved.
+func TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	root.Attributes = map[string]any{"http.method": "POST"}
+
+	t.Run("nil Attributes", func(t *testing.T) {
+		trace := &schemas.Trace{
+			TraceID:  "0123456789abcdef0123456789abcdef",
+			RootSpan: root,
+			Spans:    []*schemas.Span{root},
+		}
+		rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+		spans := rs.ScopeSpans[0].Spans
+		// One attribute: http.method (no AttrRequestID because RequestID is unset).
+		if len(spans[0].Attributes) != 1 {
+			t.Errorf("expected 1 attribute, got %d (%v)", len(spans[0].Attributes), spans[0].Attributes)
+		}
+	})
+
+	t.Run("empty Attributes", func(t *testing.T) {
+		trace := &schemas.Trace{
+			TraceID:    "0123456789abcdef0123456789abcdef",
+			RootSpan:   root,
+			Spans:      []*schemas.Span{root},
+			Attributes: map[string]any{},
+		}
+		rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+		spans := rs.ScopeSpans[0].Spans
+		if len(spans[0].Attributes) != 1 {
+			t.Errorf("expected 1 attribute, got %d (%v)", len(spans[0].Attributes), spans[0].Attributes)
+		}
+	})
+}
+
+// TestConvertTraceToResourceSpan_EmptyStringDimValue_NoCrash verifies that a
+// trace attribute with an empty-string value is silently dropped (anyToKeyValue
+// returns nil for ""). Without the nil-check in the merge loop, appending a nil
+// *KeyValue here would crash OTLP marshaling downstream.
+func TestConvertTraceToResourceSpan_EmptyStringDimValue_NoCrash(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{
+				"foo":         "", // empty string — anyToKeyValue returns nil
+				"customer_id": "acme",
+			},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	spans := rs.ScopeSpans[0].Spans
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 exported span, got %d", len(spans))
+	}
+
+	if findAttr(spans[0], "foo") != nil {
+		t.Error("empty-string dim 'foo' should have been dropped")
+	}
+	cust := findAttr(spans[0], "customer_id")
+	if cust == nil {
+		t.Fatal("non-empty dim 'customer_id' should still be present")
+	}
+	if got := cust.Value.GetStringValue(); got != "acme" {
+		t.Errorf("customer_id = %q, want %q", got, "acme")
+	}
+	// Guard against nil entries sneaking into the slice — they would crash
+	// OTLP marshaling.
+	for i, kv := range spans[0].Attributes {
+		if kv == nil {
+			t.Errorf("Attributes[%d] is nil — would crash OTLP marshaling", i)
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_FilteredSpansDoNotReceiveAttrs verifies that
+// spans filtered out by pluginSpanFilter never appear in the exported output
+// (and therefore can't carry the trace-level dims at all). This guards against
+// a hypothetical regression where the merge loop accidentally exports a
+// filtered span.
+func TestConvertTraceToResourceSpan_FilteredSpansDoNotReceiveAttrs(t *testing.T) {
+	p := &OtelPlugin{
+		pluginSpanFilter: &PluginSpanFilter{
+			Mode:    PluginSpanFilterModeExclude,
+			Plugins: []string{"logging"},
+		},
+	}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	loggingPre := makeSpan("log-pre", "root", "plugin.logging.prehook", schemas.SpanKindPlugin)
+	govPre := makeSpan("gov-pre", "root", "plugin.governance.prehook", schemas.SpanKindPlugin)
+
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, loggingPre, govPre},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{"customer_id": "acme"},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	spans := rs.ScopeSpans[0].Spans
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 exported spans (root + gov-pre), got %d", len(spans))
+	}
+
+	for _, sp := range spans {
+		if sp.Name == "plugin.logging.prehook" {
+			t.Errorf("filtered span %q was exported", sp.Name)
+		}
+		if findAttr(sp, "customer_id") == nil {
+			t.Errorf("exported span %q missing customer_id", sp.Name)
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_SkipsReservedAndInternalTraceAttrs verifies that
+// reserved dim suffixes (path/method) and other trace-level keys (session id,
+// the nested dimensions map itself) are not copied onto exported spans.
+func TestConvertTraceToResourceSpan_SkipsReservedAndInternalTraceAttrs(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	child := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, child},
+		Attributes: map[string]any{
+			schemas.TraceAttrSessionID: "sess-1",
+			schemas.TraceAttrDimensions: map[string]string{
+				"customer_id": "acme",
+				"path":        "/foo",
+				"method":      "DELETE",
+			},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	spans := rs.ScopeSpans[0].Spans
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 exported spans, got %d", len(spans))
+	}
+	for _, sp := range spans {
+		if findAttr(sp, "customer_id") == nil {
+			t.Errorf("span %q missing customer_id", sp.Name)
+		}
+		if findAttr(sp, "path") != nil {
+			t.Errorf("span %q leaked reserved dim 'path'", sp.Name)
+		}
+		if findAttr(sp, "method") != nil {
+			t.Errorf("span %q leaked reserved dim 'method'", sp.Name)
+		}
+		if findAttr(sp, schemas.TraceAttrSessionID) != nil {
+			t.Errorf("span %q leaked internal %s", sp.Name, schemas.TraceAttrSessionID)
+		}
+		if findAttr(sp, schemas.TraceAttrDimensions) != nil {
+			t.Errorf("span %q leaked nested %s map", sp.Name, schemas.TraceAttrDimensions)
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_PropagationDisabled_NoChildDims verifies the
+// default (flag off) keeps dimensions off child spans.
+func TestConvertTraceToResourceSpan_PropagationDisabled_NoChildDims(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	child := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, child},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{"customer_id": "acme"},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{})
+	spans := rs.ScopeSpans[0].Spans
+	for _, sp := range spans {
+		if findAttr(sp, "customer_id") != nil {
+			t.Errorf("span %q got customer_id with applyTraceDimensionsToChildSpans=false", sp.Name)
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_DecodedDimensionsPropagate verifies that dimensions
+// held as map[string]any (the shape a trace decoded from JSON carries) still reach
+// child spans, matching what schemas.TraceDimensions returns to other connectors.
+func TestConvertTraceToResourceSpan_DecodedDimensionsPropagate(t *testing.T) {
+	p := &OtelPlugin{}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	llm := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, llm},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]any{"customer_id": "acme", "not_a_string": 42},
+		},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	for _, sp := range rs.ScopeSpans[0].Spans {
+		kv := findAttr(sp, "customer_id")
+		if kv == nil || kv.Value.GetStringValue() != "acme" {
+			t.Errorf("span %q customer_id = %v, want acme", sp.Name, kv)
+		}
+		if findAttr(sp, "not_a_string") != nil {
+			t.Errorf("span %q carries a non-string dimension", sp.Name)
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_ReservedDimensionNamespacesSkipped verifies that a
+// client-supplied dimension can never write into the attribute namespaces backends
+// aggregate on (cost, usage, model, request id, session, captured headers, instance
+// identity), and that the check ignores case.
+func TestConvertTraceToResourceSpan_ReservedDimensionNamespacesSkipped(t *testing.T) {
+	p := &OtelPlugin{instanceAttrs: []*KeyValue{kvStr("service.instance.id", "host-a")}}
+
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	llm := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	plugin := makeSpan("plug", "root", "plugin.governance.prehook", schemas.SpanKindPlugin)
+	reserved := []string{
+		"gen_ai.usage.cost", "GEN_AI.request.model", "llm.model_name", schemas.AttrBifrostRequestID,
+		"session.id", "http.request.header.authorization", "url.full", "service.instance.id",
+		"k8s.pod.name", "langfuse.observation.type", "openinference.span.kind", "otel.status_code",
+		"Path", "METHOD",
+	}
+	dims := map[string]string{"customer_id": "acme"}
+	for _, k := range reserved {
+		dims[k] = "spoofed"
+	}
+	trace := &schemas.Trace{
+		TraceID:    "0123456789abcdef0123456789abcdef",
+		RequestID:  "req-1",
+		RootSpan:   root,
+		Spans:      []*schemas.Span{root, llm, plugin},
+		Attributes: map[string]any{schemas.TraceAttrDimensions: dims, schemas.TraceAttrSessionID: "sess-1"},
+	}
+
+	rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+	for _, sp := range rs.ScopeSpans[0].Spans {
+		if findAttr(sp, "customer_id") == nil {
+			t.Errorf("span %q missing customer_id", sp.Name)
+		}
+		seen := map[string]int{}
+		for _, kv := range sp.Attributes {
+			seen[kv.Key]++
+			if kv.Value.GetStringValue() == "spoofed" {
+				t.Errorf("span %q carries reserved dimension %q", sp.Name, kv.Key)
+			}
+		}
+		for k, n := range seen {
+			if n > 1 {
+				t.Errorf("span %q has %d entries for %q", sp.Name, n, k)
+			}
+		}
+	}
+}
+
+// TestConvertTraceToResourceSpan_DimensionOrderDeterministic verifies merged dimensions
+// are appended in key order, so repeated exports of one trace are byte-identical.
+func TestConvertTraceToResourceSpan_DimensionOrderDeterministic(t *testing.T) {
+	p := &OtelPlugin{}
+
+	llm := makeSpan("llm", "", "llm.call", schemas.SpanKindLLMCall)
+	trace := &schemas.Trace{
+		TraceID: "0123456789abcdef0123456789abcdef",
+		Spans:   []*schemas.Span{llm},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{"zeta": "1", "alpha": "2", "mid": "3", "beta": "4"},
+		},
+	}
+
+	for i := 0; i < 20; i++ {
+		rs := p.convertTraceToResourceSpan("", trace, convertOptions{applyTraceDimensionsToChildSpans: true})
+		var keys []string
+		for _, kv := range rs.ScopeSpans[0].Spans[0].Attributes {
+			keys = append(keys, kv.Key)
+		}
+		if got, want := strings.Join(keys, ","), "alpha,beta,mid,zeta"; !strings.HasSuffix(got, want) {
+			t.Fatalf("attribute order = %q, want suffix %q", got, want)
+		}
+	}
+}
+
+// BenchmarkConvertTraceDimensions measures the export cost of the dimension merge on a
+// four-span trace with three dimensions, with the flag off (the default) and on.
+func BenchmarkConvertTraceDimensions(b *testing.B) {
+	p := &OtelPlugin{}
+	root := makeSpan("root", "", "POST /chat", schemas.SpanKindHTTPRequest)
+	root.Attributes = map[string]any{"http.method": "POST", "customer_id": "acme"}
+	llm := makeSpan("llm", "root", "llm.call", schemas.SpanKindLLMCall)
+	llm.Attributes = map[string]any{"gen_ai.request.model": "gpt-4o", "gen_ai.usage.input_tokens": 12}
+	plugin := makeSpan("plug", "root", "plugin.governance.prehook", schemas.SpanKindPlugin)
+	retry := makeSpan("retry", "llm", "retry", schemas.SpanKindRetry)
+	trace := &schemas.Trace{
+		TraceID:  "0123456789abcdef0123456789abcdef",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root, llm, plugin, retry},
+		Attributes: map[string]any{
+			schemas.TraceAttrDimensions: map[string]string{"customer_id": "acme", "environment": "prod", "agent_name": "support"},
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		opts convertOptions
+	}{
+		{"off", convertOptions{}},
+		{"on", convertOptions{applyTraceDimensionsToChildSpans: true}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = p.convertTraceToResourceSpan("svc", trace, tc.opts)
+			}
+		})
 	}
 }

@@ -1375,6 +1375,14 @@ type GeminiImageConfig struct {
 	// ImageSize controls the resolution of generated images.
 	// Valid values: "1k", "2k", "4k"
 	ImageSize string `json:"imageSize,omitempty"`
+	// ImageOutputOptions controls the encoding of generated images.
+	ImageOutputOptions *GeminiImageOutputOptions `json:"imageOutputOptions,omitempty"`
+}
+
+// GeminiImageOutputOptions controls the encoding of generated images (Vertex AI only).
+type GeminiImageOutputOptions struct {
+	MimeType           string `json:"mimeType,omitempty"`           // "image/png" or "image/jpeg"
+	CompressionQuality *int   `json:"compressionQuality,omitempty"` // 0-100, JPEG only
 }
 
 // ModelSelectionConfig represents configuration for model selection.
@@ -3678,4 +3686,330 @@ type GeminiFileUploadHandlerReq struct {
 	// Step 2 fields — populated when upload_id is present in query
 	UploadID string `json:"-"`
 	FileData []byte `json:"-"`
+}
+
+// ==================== LIVE API (BidiGenerateContent) TYPES ====================
+
+// GeminiLiveClientMessage is one frame sent to the Live API. Exactly one field is set.
+type GeminiLiveClientMessage struct {
+	Setup         *GeminiLiveSetup         `json:"setup,omitempty"`
+	ClientContent *GeminiLiveClientContent `json:"clientContent,omitempty"`
+	RealtimeInput *GeminiLiveRealtimeInput `json:"realtimeInput,omitempty"`
+	ToolResponse  *GeminiLiveToolResponse  `json:"toolResponse,omitempty"`
+	ContextUpdate *GeminiLiveContextUpdate `json:"contextUpdate,omitempty"`
+}
+
+// GeminiLiveContextUpdate changes the instructions or the tools of a running session, on Gemini 3 and later. A field left out is kept.
+type GeminiLiveContextUpdate struct {
+	SystemInstruction *Content                      `json:"systemInstruction,omitempty"` // an empty one clears the instructions
+	Tools             *GeminiLiveContextUpdateTools `json:"tools,omitempty"`
+}
+
+// GeminiLiveContextUpdateTools wraps the tool list so that an empty list, which clears the tools, differs from no update.
+type GeminiLiveContextUpdateTools struct {
+	Tools []Tool `json:"tools"`
+}
+
+// GeminiLiveSetup is the first and only configuration frame of a Live session.
+type GeminiLiveSetup struct {
+	Model                    string                         `json:"model"`
+	GenerationConfig         *GeminiLiveGenerationConfig    `json:"generationConfig,omitempty"`
+	SystemInstruction        *Content                       `json:"systemInstruction,omitempty"`
+	Tools                    []Tool                         `json:"tools,omitempty"`
+	RealtimeInputConfig      *GeminiLiveRealtimeInputConfig `json:"realtimeInputConfig,omitempty"`
+	InputAudioTranscription  *GeminiLiveAudioTranscription  `json:"inputAudioTranscription,omitempty"`
+	OutputAudioTranscription *GeminiLiveAudioTranscription  `json:"outputAudioTranscription,omitempty"`
+}
+
+// GeminiLiveGenerationConfig holds the generation settings a Live session accepts. The Live API
+// rejects names it does not know, so this deliberately carries only what it supports.
+type GeminiLiveGenerationConfig struct {
+	ResponseModalities []string                        `json:"responseModalities,omitempty"`
+	Temperature        *float64                        `json:"temperature,omitempty"`
+	MaxOutputTokens    *int                            `json:"maxOutputTokens,omitempty"`
+	SpeechConfig       *SpeechConfig                   `json:"speechConfig,omitempty"`
+	ThinkingConfig     *GenerationConfigThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// GeminiLiveRealtimeInputConfig configures how the session detects and reacts to speech.
+type GeminiLiveRealtimeInputConfig struct {
+	AutomaticActivityDetection *GeminiLiveActivityDetection `json:"automaticActivityDetection,omitempty"`
+	ActivityHandling           string                       `json:"activityHandling,omitempty"`
+}
+
+// GeminiLiveActivityDetection configures server-side voice activity detection. Disabled hands
+// turn boundaries to the client through activityStart and activityEnd.
+type GeminiLiveActivityDetection struct {
+	Disabled          bool `json:"disabled,omitempty"`
+	PrefixPaddingMs   *int `json:"prefixPaddingMs,omitempty"`
+	SilenceDurationMs *int `json:"silenceDurationMs,omitempty"`
+}
+
+// GeminiLiveAudioTranscription turns on transcription of one audio direction. It has no options
+// here; its presence is the switch.
+type GeminiLiveAudioTranscription struct{}
+
+// GeminiLiveClientContent adds turns to the conversation. TurnComplete asks the model to answer.
+type GeminiLiveClientContent struct {
+	Turns        []*Content `json:"turns,omitempty"`
+	TurnComplete bool       `json:"turnComplete,omitempty"`
+}
+
+// GeminiLiveRealtimeInput streams audio to the model. With automatic detection on, AudioStreamEnd
+// flushes the audio; with it off, ActivityStart and ActivityEnd bracket each utterance.
+type GeminiLiveRealtimeInput struct {
+	Audio          *GeminiLiveBlob     `json:"audio,omitempty"`
+	AudioStreamEnd bool                `json:"audioStreamEnd,omitempty"`
+	ActivityStart  *GeminiLiveActivity `json:"activityStart,omitempty"`
+	ActivityEnd    *GeminiLiveActivity `json:"activityEnd,omitempty"`
+}
+
+// GeminiLiveActivity marks the start or end of a client-detected utterance. It has no fields.
+type GeminiLiveActivity struct{}
+
+// GeminiLiveToolResponse answers function calls from one toolCall frame. Answer every pending call
+// in one frame: a partial answer makes the model ask again for the rest under new ids.
+type GeminiLiveToolResponse struct {
+	FunctionResponses []*FunctionResponse `json:"functionResponses"`
+}
+
+// GeminiLiveBlob is base64 media with its MIME type. Unlike Blob it is never normalized, so audio
+// chunks pass through unchanged.
+type GeminiLiveBlob struct {
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// GeminiLiveServerMessage is one frame received from the Live API. A frame can carry several of
+// these at once, such as serverContent with usageMetadata.
+type GeminiLiveServerMessage struct {
+	SetupComplete        *GeminiLiveSetupComplete        `json:"setupComplete,omitempty"`
+	ServerContent        *GeminiLiveServerContent        `json:"serverContent,omitempty"`
+	ToolCall             *GeminiLiveToolCall             `json:"toolCall,omitempty"`
+	ToolCallCancellation *GeminiLiveToolCallCancellation `json:"toolCallCancellation,omitempty"`
+	VoiceActivity        *GeminiLiveVoiceActivity        `json:"voiceActivity,omitempty"`
+	UsageMetadata        *GeminiLiveUsageMetadata        `json:"usageMetadata,omitempty"`
+}
+
+// GeminiLiveSetupComplete acknowledges the setup frame. It has no fields.
+type GeminiLiveSetupComplete struct{}
+
+// GeminiLiveServerContent carries the model's output and the turn boundaries around it.
+// InteractionStatus is IN_PROGRESS while an extended-thinking model still has an answer to give
+// after a TurnComplete, and IDLE once it is done.
+type GeminiLiveServerContent struct {
+	ModelTurn           *GeminiLiveModelTurn  `json:"modelTurn,omitempty"`
+	InputTranscription  *GeminiLiveTranscript `json:"inputTranscription,omitempty"`
+	OutputTranscription *GeminiLiveTranscript `json:"outputTranscription,omitempty"`
+	GenerationComplete  bool                  `json:"generationComplete,omitempty"`
+	TurnComplete        bool                  `json:"turnComplete,omitempty"`
+	Interrupted         bool                  `json:"interrupted,omitempty"`
+	InteractionStatus   string                `json:"interactionStatus,omitempty"`
+}
+
+// GeminiLiveModelTurn holds the model's output parts for one chunk of a turn.
+type GeminiLiveModelTurn struct {
+	Parts []*GeminiLiveModelPart `json:"parts,omitempty"`
+}
+
+// GeminiLiveModelPart is text or audio from the model. Thought parts are the model's reasoning.
+type GeminiLiveModelPart struct {
+	Text       string          `json:"text,omitempty"`
+	Thought    bool            `json:"thought,omitempty"`
+	InlineData *GeminiLiveBlob `json:"inlineData,omitempty"`
+}
+
+// GeminiLiveTranscript is a transcription fragment of one audio direction.
+type GeminiLiveTranscript struct {
+	Text string `json:"text,omitempty"`
+}
+
+// GeminiLiveToolCall asks the client to run functions. Parallel calls share one frame.
+type GeminiLiveToolCall struct {
+	FunctionCalls []*FunctionCall `json:"functionCalls,omitempty"`
+}
+
+// GeminiLiveToolCallCancellation withdraws pending function calls, for example after an interruption.
+type GeminiLiveToolCallCancellation struct {
+	IDs []string `json:"ids,omitempty"`
+}
+
+// GeminiLiveVoiceActivity reports where the server heard speech start or end. AudioOffset is a
+// protobuf duration such as "1.366125s".
+type GeminiLiveVoiceActivity struct {
+	Type        string `json:"type,omitempty"`
+	AudioOffset string `json:"audioOffset,omitempty"`
+}
+
+// GeminiLiveUsageMetadata reports token usage. It arrives only on the frame that ends a turn, and
+// the prompt count is the whole context re-sent for that generation, not a delta. The response
+// count excludes thinking tokens. The Gemini API names the response fields response*, and Vertex AI
+// names the same fields candidates*.
+type GeminiLiveUsageMetadata struct {
+	PromptTokenCount        int                   `json:"promptTokenCount,omitempty"`
+	ResponseTokenCount      int                   `json:"responseTokenCount,omitempty"`
+	CandidatesTokenCount    int                   `json:"candidatesTokenCount,omitempty"`
+	ThoughtsTokenCount      int                   `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int                   `json:"cachedContentTokenCount,omitempty"`
+	TotalTokenCount         int                   `json:"totalTokenCount,omitempty"`
+	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
+	CandidatesTokensDetails []*ModalityTokenCount `json:"candidatesTokensDetails,omitempty"`
+}
+
+// =============================================================================
+// DECISIONS (POST /v1beta/decisions)
+// =============================================================================
+
+// GeminiDecisionRequest is the body of POST /v1beta/decisions, which answers
+// named questions about one shared input with a Gemini Decision model.
+type GeminiDecisionRequest struct {
+	Model       string                            `json:"model"`
+	Input       GeminiDecisionInput               `json:"input"`
+	Questions   map[string]GeminiDecisionQuestion `json:"questions"`
+	ExtraParams map[string]interface{}            `json:"-"` // native extensions, merged onto the wire under the passthrough flag
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *GeminiDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// GeminiDecisionInput is a decision's input: a string, or a list of
+// Interactions API content blocks. At most one member is set.
+type GeminiDecisionInput struct {
+	Text   *string
+	Blocks []GeminiInteractionsContent
+}
+
+// MarshalJSON writes the string or the block list.
+func (in GeminiDecisionInput) MarshalJSON() ([]byte, error) {
+	if in.Text != nil && in.Blocks != nil {
+		return nil, fmt.Errorf("gemini decision input carries both text and blocks; only one should be set")
+	}
+	if in.Blocks != nil {
+		return providerUtils.MarshalSorted(in.Blocks)
+	}
+	if in.Text != nil {
+		return providerUtils.MarshalSorted(*in.Text)
+	}
+	return []byte("null"), nil
+}
+
+// Interactions API content block types a decision's input accepts.
+const (
+	GeminiContentTypeText     = "text"
+	GeminiContentTypeImage    = "image"
+	GeminiContentTypeAudio    = "audio"
+	GeminiContentTypeVideo    = "video"
+	GeminiContentTypeDocument = "document"
+)
+
+// GeminiInteractionsContent is one Interactions API content block, the shape a
+// decision's input takes. A media block carries its bytes in Data or a location
+// in URI, and always its MimeType.
+type GeminiInteractionsContent struct {
+	Type       string  `json:"type"`
+	Text       *string `json:"text,omitempty"`
+	Data       *string `json:"data,omitempty"` // base64
+	URI        *string `json:"uri,omitempty"`  // Files API URI or HTTPS URL
+	MimeType   *string `json:"mime_type,omitempty"`
+	Resolution *string `json:"resolution,omitempty"` // image or video: "low", "medium", "high", or "ultra_high"
+}
+
+// Gemini decision question types.
+const (
+	GeminiDecisionQuestionTypeNoul   = "noul"
+	GeminiDecisionQuestionTypeChoice = "choice"
+	GeminiDecisionQuestionTypeScore  = "score"
+)
+
+// GeminiDecisionQuestion is one named question of a decisions request.
+type GeminiDecisionQuestion struct {
+	Type         string                  `json:"type"`
+	Instructions string                  `json:"instructions,omitempty"`
+	Criteria     *GeminiDecisionCriteria `json:"criteria,omitempty"`
+}
+
+// GeminiDecisionCriteria is a question's criteria, written as the member its
+// type takes: the meaning of yes and no for noul, each option's description
+// for choice, and each level's description, lowest first, for score. At most
+// one member is set.
+type GeminiDecisionCriteria struct {
+	Noul   *GeminiNoulCriteria
+	Choice map[string]string
+	Score  []string
+}
+
+// MarshalJSON writes the set member; option keys are sorted.
+func (c GeminiDecisionCriteria) MarshalJSON() ([]byte, error) {
+	set := 0
+	for _, present := range []bool{c.Noul != nil, c.Choice != nil, c.Score != nil} {
+		if present {
+			set++
+		}
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("gemini decision criteria carries more than one of noul, choice, and score criteria")
+	}
+	switch {
+	case c.Noul != nil:
+		return providerUtils.MarshalSorted(c.Noul)
+	case c.Choice != nil:
+		return providerUtils.MarshalSorted(c.Choice)
+	case c.Score != nil:
+		return providerUtils.MarshalSorted(c.Score)
+	}
+	return []byte("null"), nil
+}
+
+// GeminiNoulCriteria says what yes and no mean for a noul question.
+type GeminiNoulCriteria struct {
+	TrueDescription  *string `json:"true_description,omitempty"`
+	FalseDescription *string `json:"false_description,omitempty"`
+}
+
+// GeminiDecisionResponse is the body of a successful decisions response.
+type GeminiDecisionResponse struct {
+	Answers map[string]GeminiDecisionAnswer `json:"answers"`
+	Usage   *GeminiDecisionUsage            `json:"usage,omitempty"`
+}
+
+// GeminiDecisionAnswer is one answer, under its question's name. Which of Noul,
+// Choice, and Score is set follows Type.
+type GeminiDecisionAnswer struct {
+	Type          string             `json:"type"`
+	Noul          *float64           `json:"noul,omitempty"`
+	Choice        *string            `json:"choice,omitempty"`
+	Score         *float64           `json:"score,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"` // level index -> description, as sent
+	Confidence    *float64           `json:"confidence,omitempty"`
+}
+
+// GeminiDecisionUsage is the Interactions API's usage, which decisions report
+// with input tokens only, plus the input split by modality.
+type GeminiDecisionUsage struct {
+	geminiInteractionsUsage
+	InputTokensByModality []GeminiModalityTokens `json:"input_tokens_by_modality,omitempty"`
+}
+
+// GeminiModalityTokens is one modality's share of a token count.
+type GeminiModalityTokens struct {
+	Modality string `json:"modality"`
+	Tokens   int    `json:"tokens"`
+}
+
+// GeminiDecisionError is the error body the decisions endpoint returns.
+type GeminiDecisionError struct {
+	Error *GeminiDecisionErrorBody `json:"error,omitempty"`
+}
+
+// GeminiDecisionErrorBody carries a string Code ("invalid_request", "not_found",
+// or a safety reason such as "safety", "prohibited_content", "blocklist",
+// "image_safety" or "content_blocked"), not the numeric status Google's other
+// errors carry.
+type GeminiDecisionErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }

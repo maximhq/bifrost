@@ -392,6 +392,20 @@ Bifrost also refreshes each OIDC session when it expires (sessions last at least
 
 ---
 
+## Set up workload identity (optional)
+
+With Entra SSO in place, AKS services, Azure VMs and Functions, and pipelines with federated credentials can call Bifrost with their own Entra token instead of a stored virtual key, and run as a Bifrost service account. This is **Azure workload identity federation**, and it reuses the app registration you just set up: you expose it with an Application ID URI, assign workloads an app role, and map each workload to a service account.
+
+<Frame caption="After Entra SSO is set up, the provider's Workload identity section shows Azure workload identity federation as available.">
+  <img src="/media/workload-identity/provider-workload-identity.png" alt="Workload identity section of the Entra provider configuration, showing Azure workload identity federation and additional trusted issuers" />
+</Frame>
+
+<Card title="Workload Identity" icon="fingerprint" href="/enterprise/workload-identity/overview#set-up-a-token-source" horizontal>
+  Set up Azure workload identity federation, or trust AWS roles, GitHub Actions, Okta machine clients and other issuers alongside Entra.
+</Card>
+
+---
+
 ## Troubleshooting
 
 **User is not redirected to Microsoft login** - verify the provider is enabled in Bifrost and the server was restarted after saving. Check that the Tenant ID and Client ID are correct.

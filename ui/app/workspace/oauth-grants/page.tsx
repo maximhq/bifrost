@@ -61,6 +61,8 @@ export default function OAuthGrantsPage() {
 
 	const page = data?.sessions ?? [];
 	const totalCount = data?.total_count ?? 0;
+	// Older servers omit the TTL; fall back to the server default of 10 minutes.
+	const accessTokenTTLSeconds = data?.access_token_ttl || 600;
 	const hasActiveFilters = !!urlState.q || filters.mode.length > 0 || filters.virtual_key_id.length > 0 || filters.user_id.length > 0;
 
 	// Snap the offset back into range when the total shrinks past the current
@@ -132,6 +134,7 @@ export default function OAuthGrantsPage() {
 					revoking={revoking}
 					pendingActionRowId={pendingActionRowId}
 					onRevoke={setPendingDelete}
+					accessTokenTTLSeconds={accessTokenTTLSeconds}
 				/>
 			)}
 		</div>

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -530,4 +531,313 @@ func TestOverheadEndToEndStreaming(t *testing.T) {
 
 	t.Logf("chunks=%d total=%v upstream=%v overhead=%v (%.1f%%)",
 		received, total, upstream, overhead, 100*float64(overhead)/float64(total))
+}
+
+// attemptWindowRecorder is an LLM plugin that keeps the attempt window each PostLLMHook sees,
+// which is what the telemetry plugin reads to observe provider latency and queue wait.
+type attemptWindowRecorder struct {
+	mu      sync.Mutex
+	windows []schemas.AttemptWindow
+}
+
+func (r *attemptWindowRecorder) GetName() string { return "attempt-window-recorder" }
+func (r *attemptWindowRecorder) Cleanup() error  { return nil }
+
+func (r *attemptWindowRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *attemptWindowRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (r *attemptWindowRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if IsFinalChunk(ctx) || !isStreamRequest(resp, bifrostErr) {
+		w, _ := schemas.GetAttemptWindow(ctx)
+		r.mu.Lock()
+		r.windows = append(r.windows, w)
+		r.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+func isStreamRequest(resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) bool {
+	rt, _, _, _ := GetResponseFields(resp, bifrostErr)
+	return IsStreamRequestType(rt)
+}
+
+func (r *attemptWindowRecorder) snapshot() []schemas.AttemptWindow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]schemas.AttemptWindow(nil), r.windows...)
+}
+
+// One worker and one queue slot: a request behind a busy worker waits in the queue, and a
+// request behind a full queue waits in the blocking send. Both must show up as queue wait, and
+// neither may show up as upstream.
+func TestQueueWaitIsSeparateFromUpstreamLatency(t *testing.T) {
+	const providerDelay = 300 * time.Millisecond
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(providerDelay)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, chatCompletionBody)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	recorder := &attemptWindowRecorder{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{recorder},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer client.Shutdown()
+
+	// Three at once: the worker takes the first, the second fills the slot, the third blocks
+	// in the send until the worker frees the slot.
+	const n = 3
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			defer ctx.Cancel()
+			if _, bifrostErr := client.ChatCompletionRequest(ctx, chatRequest()); bifrostErr != nil {
+				t.Errorf("request %d failed: %s", i, bifrostErr.Error.Message)
+			}
+		}()
+		time.Sleep(20 * time.Millisecond)
+	}
+	wg.Wait()
+
+	windows := recorder.snapshot()
+	if len(windows) != n {
+		t.Fatalf("recorded %d attempt windows, want %d", len(windows), n)
+	}
+	var waits []time.Duration
+	for i, w := range windows {
+		if up := w.Upstream(); up < providerDelay || up > providerDelay*2 {
+			t.Errorf("attempt %d upstream = %v, want ~%v: queue wait must not be counted as provider time", i, up, providerDelay)
+		}
+		waits = append(waits, w.QueueWait)
+	}
+	slices.Sort(waits)
+	if waits[0] > providerDelay/2 {
+		t.Errorf("shortest queue wait = %v, want ~0 for the request a worker took at once", waits[0])
+	}
+	if waits[1] < providerDelay/2 {
+		t.Errorf("middle queue wait = %v, want >= %v for the request that sat in the slot", waits[1], providerDelay/2)
+	}
+	if waits[2] < providerDelay {
+		t.Errorf("longest queue wait = %v, want >= %v for the request blocked in the send on a full queue", waits[2], providerDelay)
+	}
+	t.Logf("queue waits=%v", waits)
+}
+
+// Retries run inside one attempt, so the attempt's upstream is the sum of its calls and its
+// queue wait is paid once: the worker does not dequeue again for a retry.
+func TestQueueWaitIsPaidOncePerAttemptAcrossRetries(t *testing.T) {
+	const providerDelay = 80 * time.Millisecond
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(providerDelay)
+		if calls.Add(1) <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":{"message":"transient","type":"server_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, chatCompletionBody)
+	}))
+	defer server.Close()
+
+	recorder := &attemptWindowRecorder{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    mockAccountFor(server.URL),
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{recorder},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := client.ChatCompletionRequest(ctx, chatRequest()); bifrostErr != nil {
+		t.Fatalf("request failed after retries: %s", bifrostErr.Error.Message)
+	}
+	windows := recorder.snapshot()
+	if len(windows) != 1 {
+		t.Fatalf("recorded %d attempt windows, want 1: retries must not re-run hooks", len(windows))
+	}
+	w := windows[0]
+	if w.Upstream() < 3*providerDelay {
+		t.Errorf("upstream = %v, want >= %v (three calls)", w.Upstream(), 3*providerDelay)
+	}
+	if w.Upstream() > w.End.Sub(w.Start) {
+		t.Errorf("upstream = %v exceeds the attempt's own window %v", w.Upstream(), w.End.Sub(w.Start))
+	}
+	if w.QueueWait > providerDelay {
+		t.Errorf("queue wait = %v on an idle queue, want ~0: backoff and retried calls are not queue time", w.QueueWait)
+	}
+}
+
+// A fallback re-enters the queue, so it carries its own queue wait and its own upstream, and the
+// primary's provider time is not repeated in it.
+func TestFallbackAttemptCarriesItsOwnQueueWaitAndUpstream(t *testing.T) {
+	const primaryDelay, fallbackDelay = 90 * time.Millisecond, 40 * time.Millisecond
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(primaryDelay)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"message":"down","type":"server_error"}}`)
+	}))
+	defer primary.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(fallbackDelay)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, chatCompletionBody)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Groq].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	account.SetKeysForProvider(schemas.Groq, []schemas.Key{{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	recorder := &attemptWindowRecorder{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{recorder},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer client.Shutdown()
+
+	req := chatRequest()
+	req.Fallbacks = []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := client.ChatCompletionRequest(ctx, req); bifrostErr != nil {
+		t.Fatalf("fallback request failed: %s", bifrostErr.Error.Message)
+	}
+
+	windows := recorder.snapshot()
+	if len(windows) != 2 {
+		t.Fatalf("recorded %d attempt windows, want 2 (primary, fallback)", len(windows))
+	}
+	if got := windows[0].Upstream(); got < primaryDelay || got > primaryDelay+fallbackDelay {
+		t.Errorf("primary upstream = %v, want ~%v", got, primaryDelay)
+	}
+	if got := windows[1].Upstream(); got < fallbackDelay || got >= primaryDelay+fallbackDelay {
+		t.Errorf("fallback upstream = %v, want ~%v and not the request-wide %v", got, fallbackDelay, primaryDelay+fallbackDelay)
+	}
+	for i, w := range windows {
+		if w.QueueWait <= 0 {
+			t.Errorf("attempt %d queue wait = %v, want > 0: every attempt that reaches a worker records its wait", i, w.QueueWait)
+		}
+	}
+}
+
+// A plugin that answers from its own cache never reaches a worker, so the attempt has neither
+// provider time nor queue wait.
+func TestShortCircuitAttemptHasNoQueueWaitOrUpstream(t *testing.T) {
+	client, _, calls := newBifrostWithMockProvider(t, 10*time.Millisecond)
+	recorder := &attemptWindowRecorder{}
+	// The recorder goes first: post-hooks run only for plugins whose pre-hook ran.
+	client.llmPlugins.Store(&[]schemas.LLMPlugin{recorder, &cacheHitPlugin{}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := client.ChatCompletionRequest(ctx, chatRequest()); bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if *calls != 0 {
+		t.Fatalf("provider called %d times, want 0", *calls)
+	}
+	windows := recorder.snapshot()
+	if len(windows) != 1 {
+		t.Fatalf("recorded %d attempt windows, want 1", len(windows))
+	}
+	if windows[0].QueueWait != 0 || windows[0].Upstream() != 0 {
+		t.Errorf("queue wait = %v, upstream = %v, want 0 and 0 for an attempt that never reached a worker", windows[0].QueueWait, windows[0].Upstream())
+	}
+}
+
+// cacheHitPlugin answers every request from its PreLLMHook, as a cache hit does.
+type cacheHitPlugin struct{}
+
+func (*cacheHitPlugin) GetName() string { return "short-circuit" }
+func (*cacheHitPlugin) Cleanup() error  { return nil }
+func (*cacheHitPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (*cacheHitPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Model: testChatModel}}}, nil
+}
+func (*cacheHitPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// A stream's provider time keeps growing until it drains, so the window read at the final chunk
+// covers the generation, and the queue wait it carries is the wait before the stream started.
+func TestStreamAttemptWindowCoversGenerationAndQueueWait(t *testing.T) {
+	const ttfb, perChunk, chunks = 50 * time.Millisecond, 40 * time.Millisecond, 4
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		time.Sleep(ttfb)
+		for i := range chunks {
+			fmt.Fprintf(w, "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":%q,"+
+				"\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tok%d\"}}]}\n\n", testChatModel, i)
+			flusher.Flush()
+			time.Sleep(perChunk)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	recorder := &attemptWindowRecorder{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    mockAccountFor(server.URL),
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{recorder},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, chatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream request failed: %s", bifrostErr.Error.Message)
+	}
+	for range stream {
+	}
+
+	windows := recorder.snapshot()
+	if len(windows) != 1 {
+		t.Fatalf("recorded %d final-chunk windows, want 1", len(windows))
+	}
+	w := windows[0]
+	if w.Upstream() < ttfb+chunks*perChunk/2 {
+		t.Errorf("stream upstream = %v, want >= %v: the generation window must be counted", w.Upstream(), ttfb+chunks*perChunk/2)
+	}
+	if w.QueueWait <= 0 || w.QueueWait >= ttfb {
+		t.Errorf("stream queue wait = %v, want a small positive wait that excludes the generation", w.QueueWait)
+	}
 }

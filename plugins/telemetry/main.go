@@ -42,11 +42,21 @@ const (
 	overheadSlotKey schemas.BifrostContextKey = "bf-prom-overhead-slot"
 )
 
-// overheadSlot hands the LLM hooks' labels and upstream counter to HTTPTransportPostHook.
+// overheadSlot hands the LLM hooks' labels and held ActiveRequests slot to HTTPTransportPostHook.
 // The transport and handler run on separate BifrostContexts, so it travels as a shared pointer.
 type overheadSlot struct {
 	start   time.Time
 	capture atomic.Pointer[overheadCapture]
+	active  atomic.Pointer[schemas.RequestType]    // request type holding an ActiveRequests slot
+	owner   atomic.Pointer[schemas.BifrostContext] // root context that claimed active
+}
+
+// ownedBy reports whether root holds the slot's active field, claiming it first when claim is set.
+func (s *overheadSlot) ownedBy(root *schemas.BifrostContext, claim bool) bool {
+	if claim && s.owner.CompareAndSwap(nil, root) {
+		return true
+	}
+	return s.owner.Load() == root
 }
 
 type overheadCapture struct {
@@ -182,6 +192,7 @@ type PrometheusPlugin struct {
 	HTTPResponseSizeBytes          *prometheus.HistogramVec
 	UpstreamRequestsTotal          *prometheus.CounterVec
 	UpstreamLatencySeconds         *prometheus.HistogramVec
+	QueueWaitSeconds               *prometheus.HistogramVec
 	OverheadLatencyMicros          *prometheus.HistogramVec
 	OverheadComponentMicros        *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
@@ -269,6 +280,15 @@ var (
 	upstreamLatencyBuckets = []float64{
 		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// queueWaitBuckets: time a request waits for a provider worker. Healthy is
+	// microseconds to a few milliseconds, saturation is seconds, and the top end is
+	// the default 300s request timeout, so the fine low buckets that upstreamLatencyBuckets
+	// lacks are what separate "idle" from "starting to queue".
+	queueWaitBuckets = []float64{
+		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
+		.25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300,
 	}
 
 	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
@@ -482,10 +502,21 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "bifrost_upstream_latency_seconds",
-			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
+			Help:    "Time one attempt spent in outbound HTTP calls and in reading the provider's stream, in seconds, retries included. Media URL fetches made for the request count too. Excludes provider queue wait (see bifrost_provider_queue_wait_seconds), retry backoff, key selection, plugin hooks and cost calculation. Not observed for an attempt that made no such call. WebSocket and realtime turns, which skip the provider queue, are timed from the pre-hook to the post-hook.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
 		bifrostLabels("is_success"),
+	)
+
+	// Labelled without is_success: the wait ends before the provider answers, so it
+	// cannot depend on the outcome.
+	bifrostQueueWaitSeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_provider_queue_wait_seconds",
+			Help:    "Time one attempt waited for a provider worker, in seconds: from the start of its enqueue (which blocks while the provider queue is full) until a worker took it. Not observed for an attempt that never reached a worker.",
+			Buckets: queueWaitBuckets,
+		},
+		bifrostLabels(),
 	)
 
 	// Labelled without is_success: unlike upstream latency, overhead is dominated by
@@ -766,6 +797,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		HTTPResponseSizeBytes:          httpResponseSizeBytes,
 		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
+		QueueWaitSeconds:               bifrostQueueWaitSeconds,
 		OverheadLatencyMicros:          bifrostOverheadLatencyMicros,
 		OverheadComponentMicros:        bifrostOverheadComponentMicros,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
@@ -932,13 +964,15 @@ func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // Running here also makes the observation once-per-request rather than
 // once-per-attempt, so a retried request no longer contributes several times.
 func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
-	// Once-per-HTTP-request safety net for ActiveRequests: core skips LLM post hooks
-	// when a client cancels a stream before it reaches the handler, which would
-	// otherwise leave the gauge incremented forever. This runs after a stream drains.
-	p.releaseActiveRequest(ctx)
+	// Once-per-HTTP-request safety net for ActiveRequests, in case no LLM post hook
+	// ended the request. This runs after a stream drains.
 	slot, ok := ctx.Value(overheadSlotKey).(*overheadSlot)
 	if !ok {
+		p.releaseActiveRequest(ctx)
 		return nil
+	}
+	if held := slot.active.Swap(nil); held != nil {
+		p.ActiveRequests.WithLabelValues(string(*held)).Dec()
 	}
 	// Nil when no LLM hook completed; !ok when upstream was never measured, since the full duration would be wrong.
 	c := slot.capture.Load()
@@ -1058,7 +1092,7 @@ func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string,
 }
 
 // PreLLMHook records the start time of the request in the context.
-// This time is used later in PostLLMHook to calculate request duration.
+// PostLLMHook uses it as the LLM-hook window for the SDK-path overhead metric.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	p.acquireActiveRequest(ctx, req.RequestType)
@@ -1066,11 +1100,11 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 }
 
 // acquireActiveRequest increments ActiveRequests unless this request already holds a
-// slot. The held request type lives on the shared BifrostContext, so a hook that runs
-// twice for the same in-flight attempt cannot count it twice. If the held type differs,
+// slot. The held request type lives on the request's shared state (see swapActiveRequest),
+// so a hook that runs twice for the same in-flight attempt cannot count it twice. If the held type differs,
 // the slot moves to the new label so release decrements the label that was counted.
 func (p *PrometheusPlugin) acquireActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
-	if heldType, held := ctx.GetAndSetValue(activeRequestTypeKey, requestType).(schemas.RequestType); held {
+	if heldType, held := swapActiveRequest(ctx, requestType, false); held {
 		if heldType != requestType {
 			p.ActiveRequests.WithLabelValues(string(heldType)).Dec()
 			p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
@@ -1089,9 +1123,33 @@ func isDroppedRequest(bifrostErr *schemas.BifrostError) bool {
 // it, so every terminal path can call it and the gauge drops exactly once. A later
 // fallback attempt re-acquires through PreLLMHook, keeping per-attempt inc/dec balanced.
 func (p *PrometheusPlugin) releaseActiveRequest(ctx *schemas.BifrostContext) {
-	if method, held := ctx.GetAndSetValue(activeRequestTypeKey, nil).(schemas.RequestType); held {
+	if method, held := swapActiveRequest(ctx, "", true); held {
 		p.ActiveRequests.WithLabelValues(string(method)).Dec()
 	}
+}
+
+// swapActiveRequest stores requestType (or clears it) as the held slot and returns the
+// previous one. The first root context to acquire on an HTTP request keeps it on the
+// overheadSlot, so HTTPTransportPostHook on the transport context can release it. Other
+// contexts derived from that request (e.g. ListAllModels fan-out) keep their own slot.
+func swapActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType, clear bool) (schemas.RequestType, bool) {
+	if slot, ok := ctx.Value(overheadSlotKey).(*overheadSlot); ok && slot.ownedBy(ctx.Root(), !clear) {
+		var next *schemas.RequestType
+		if !clear {
+			held := requestType // copied here so only the slot path allocates
+			next = &held
+		}
+		if prev := slot.active.Swap(next); prev != nil {
+			return *prev, true
+		}
+		return "", false
+	}
+	var value any
+	if !clear {
+		value = requestType
+	}
+	held, ok := ctx.GetAndSetValue(activeRequestTypeKey, value).(schemas.RequestType)
+	return held, ok
 }
 
 // applyCustomLabels resolves each configured custom label into labelValues.
@@ -1381,6 +1439,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.releaseActiveRequest(ctx)
 	}
 
+	// Read before the goroutine: an agent loop's next turn re-marks the window. Not read
+	// for intermediate stream chunks, which record nothing here.
+	var upstream, queueWait time.Duration
+	hasWindow := false
+	if isStreamFinal {
+		var window schemas.AttemptWindow
+		window, hasWindow = schemas.GetAttemptWindow(ctx)
+		upstream, queueWait = window.Upstream(), window.QueueWait
+	}
+
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
 	// Labels for HTTPTransportPostHook, which observes overhead. Published before
@@ -1465,18 +1533,27 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if !isDroppedRequest(bifrostErr) {
 			p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 
+			// Default labels, then is_success, then custom labels.
+			latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
+			// WebSocket and realtime turns open no attempt window and skip the provider queue,
+			// so the hook window is the closest measure they have. With a window, zero means the
+			// attempt made no outbound call (cache hit, plugin short-circuit, rejected before
+			// dispatch), so there is no provider latency to report.
+			if !hasWindow && isStreamFinal {
+				upstream = llmHookWindow
+			}
+			if upstream > 0 {
+				p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(upstream.Seconds())
+			}
+			if queueWait > 0 {
+				p.QueueWaitSeconds.WithLabelValues(promLabelValues...).Observe(queueWait.Seconds())
+			}
+
 			// Record retries used for this request. Observed once per request (per the goroutine
 			// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"
 			// and "total requests"; bucket le="0" gives "requests that succeeded on the first try".
 			p.RequestRetries.WithLabelValues(promLabelValues...).Observe(float64(numberOfRetries))
-
-			// Record latency
-			duration := time.Since(startTime).Seconds()
-			// Default labels, then is_success, then custom labels.
-			latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
-			p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
 		}
-
 		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
 		// is to measure overhead against.
 		if !viaTransport {

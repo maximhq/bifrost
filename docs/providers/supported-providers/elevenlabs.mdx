@@ -1,6 +1,6 @@
 ---
 title: "ElevenLabs"
-description: "ElevenLabs API conversion guide - text-to-speech, speech-to-text, voice settings, and model management"
+description: "ElevenLabs API conversion guide - text-to-speech, speech-to-text, real-time transcription, incremental speech sessions, native routes, and model management"
 icon: "pause"
 ---
 
@@ -12,6 +12,9 @@ ElevenLabs is a specialized audio provider for text-to-speech and speech-to-text
 - **Response format conversion** - Speech format handling (MP3, Opus, PCM/WAV)
 - **Timestamp support** - Character-level timing alignment for TTS
 - **Transcription with alignment** - Word and character-level timing, diarization, and additional formats
+- **Real-time transcription** - A Scribe WebSocket is translated to OpenAI Realtime transcription events on `/v1/realtime?intent=transcription`
+- **Speech sessions** - Text that arrives in pieces is spoken over one WebSocket on `/v1/audio/speech/stream`
+- **Native routes** - An ElevenLabs SDK pointed at `/elevenlabs` calls the endpoints Bifrost serves natively, and the rest of the ElevenLabs API is on `/elevenlabs_passthrough`
 - **Pronunciation dictionaries** - Support for custom pronunciation rules
 - **Voice quality parameters** - Stability, similarity boost, and speaker boost controls
 
@@ -19,9 +22,11 @@ ElevenLabs is a specialized audio provider for text-to-speech and speech-to-text
 
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
-| Speech (TTS) | ✅ | ✅ | `/v1/text-to-speech/{voice_id}` |
+| Speech (TTS) | ✅ | ✅ | `/v1/text-to-speech/{voice_id}`, `/v1/text-to-speech/{voice_id}/stream` |
+| Speech session (incremental TTS) | - | ✅ | `/v1/text-to-dialogue/stream-input` |
 | Sound Effects (Text-to-Sound) | ✅ | - | `/v1/sound-generation` |
 | Transcriptions (STT) | ✅ | - | `/v1/speech-to-text` |
+| Real-time transcription | - | ✅ | `/v1/speech-to-text/realtime` |
 | List Models | ✅ | - | `/v1/models` |
 | Chat Completions | ❌ | ❌ | - |
 | Responses API | ❌ | ❌ | - |
@@ -34,6 +39,10 @@ ElevenLabs is a specialized audio provider for text-to-speech and speech-to-text
 
 **Note**: ElevenLabs also supports a "Speech with Timestamps" endpoint at `/v1/text-to-speech/{voice_id}/with-timestamps` (non-streaming only) for enhanced timestamp information.
 </Note>
+
+<Info>
+ElevenLabs SDKs, and HTTP or WebSocket clients written for ElevenLabs, can also call Bifrost under the `/elevenlabs` base URL. Their requests are forwarded to ElevenLabs as sent, with no conversion. See the [ElevenLabs SDK integration](../../integrations/elevenlabs-sdk/overview).
+</Info>
 
 ## Setup & Configuration
 
@@ -201,10 +210,13 @@ resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadl
 |--------|--------|---------|---------|
 | `mp3` | MP3 | High | 128 kbps @ 44100 Hz |
 | `opus` | Opus | High | 128 kbps @ 48000 Hz |
-| `wav` / `pcm` | PCM WAV | Lossless | 16-bit @ 44100 Hz |
+| `wav` | WAV (`wav_44100`) | Lossless | 16-bit @ 44100 Hz |
+| `pcm` | Raw PCM (`pcm_44100`), no header | Lossless | 16-bit @ 44100 Hz |
 
 <Note>
-Defaults to MP3 format if not specified. Format is passed via query parameter `output_format`.
+Defaults to MP3 format if not specified. Format is passed via query parameter `output_format`. A value ElevenLabs names itself, such as `pcm_16000`, `ulaw_8000` or `mp3_22050_32`, is sent unchanged.
+
+ElevenLabs serves WAV only for a non-streaming request, so `wav` on a stream or a speech session is raw PCM.
 </Note>
 
 ### Timestamps Support
@@ -219,8 +231,8 @@ To get character-level timing alignment, enable `with_timestamps`:
 
 When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is used and the response includes:
 - `audio_base64` - Audio data as base64-encoded string
-- `alignment.char_start_times_ms` - Character start times in milliseconds
-- `alignment.char_end_times_ms` - Character end times in milliseconds
+- `alignment.character_start_times_seconds` - Character start times in seconds
+- `alignment.character_end_times_seconds` - Character end times in seconds
 - `alignment.characters` - Array of characters
 - `normalized_alignment` - Same as alignment but for normalized text
 
@@ -240,13 +252,13 @@ When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is us
 {
   "audio_base64": "<base64 encoded audio>",
   "alignment": {
-    "char_start_times_ms": [0, 150, 280, ...],
-    "char_end_times_ms": [150, 280, 420, ...],
+    "character_start_times_seconds": [0, 0.15, 0.28, ...],
+    "character_end_times_seconds": [0.15, 0.28, 0.42, ...],
     "characters": ["H", "e", "l", "l", "o", ...]
   },
   "normalized_alignment": {
-    "char_start_times_ms": [...],
-    "char_end_times_ms": [...],
+    "character_start_times_seconds": [...],
+    "character_end_times_seconds": [...],
     "characters": [...]
   }
 }
@@ -254,19 +266,21 @@ When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is us
 
 ## Streaming
 
-Streaming speech returns audio in chunks as they are generated:
+Streaming speech returns audio in chunks as they are generated. On `/v1/audio/speech` with `stream_format` set to `sse`, each chunk is an event:
 
 ```json
 {
-  "type": "audio.delta",
-  "audio": "<binary audio chunk>"
+  "type": "speech.audio.delta",
+  "audio": "<base64 audio chunk>"
 }
 ```
 
-Final chunk:
+Final chunk, which carries the characters the request spoke as `usage.input_chars`:
 ```json
 {
-  "type": "audio.done"
+  "type": "speech.audio.done",
+  "audio": "",
+  "usage": { "input_tokens": 0, "input_chars": 23, "output_tokens": 0, "total_tokens": 0 }
 }
 ```
 
@@ -406,18 +420,14 @@ Use `extra_params` for transcription-specific features:
 ```bash
 curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "file=@audio.wav" \
-  -F "model=eleven_latest" \
+  -F "model=elevenlabs/scribe_v2" \
   -F "language_code=en" \
   -F "tag_audio_events=true" \
   -F "num_speakers=2" \
   -F "timestamps_granularity=word" \
   -F "diarize=true" \
-  -F "diarization_threshold=0.5" \
   -F "temperature=0.1" \
-  -F "seed=42" \
-  -F "use_multi_channel=true" \
-  -F "webhook=true" \
-  -F "webhook_id=webhook-123"
+  -F "seed=42"
 ```
 
 </Tab>
@@ -426,7 +436,7 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 ```go
 resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
     Provider: schemas.Elevenlabs,
-    Model:    "eleven_latest",
+    Model:    "scribe_v2",
     Input: &schemas.TranscriptionInput{
         File: audioBytes,
     },
@@ -437,12 +447,8 @@ resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.
             "num_speakers": 2,
             "timestamps_granularity": "word",
             "diarize": true,
-            "diarization_threshold": 0.5,
             "temperature": 0.1,
             "seed": 42,
-            "use_multi_channel": true,
-            "webhook": true,
-            "webhook_id": "webhook-123",
         },
     },
 })
@@ -574,6 +580,10 @@ Character-level timing when `timestamps_granularity: "character"`:
 }
 ```
 
+### Usage
+
+`usage` is `{"type": "duration", "seconds": ...}`, taken from the `audio_duration_secs` ElevenLabs reports: the audio it transcribed, trailing silence included. A multichannel transcript adds up its channels. A response that carries no `audio_duration_secs` has no usage.
+
 ---
 
 ## Caveats
@@ -655,3 +665,94 @@ Returns available models with their capabilities and language support.
   ]
 }
 ```
+
+---
+
+# 5. Real-time Transcription
+
+Open a WebSocket to `/v1/realtime?intent=transcription` and name a Scribe real-time model in the first `session.update`: `scribe_v2_realtime` or `scribe_v3_live`. Bifrost opens ElevenLabs' `/v1/speech-to-text/realtime` and translates both directions to OpenAI Realtime transcription events.
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "type": "transcription",
+    "audio": {
+      "input": {
+        "format": { "type": "audio/pcm", "rate": 16000 },
+        "transcription": { "model": "elevenlabs/scribe_v3_live", "language": "hi" }
+      }
+    }
+  }
+}
+```
+
+Scribe takes every setting in its connect URL and cannot change one afterwards, so a later `session.update` can only repeat the settings.
+
+### Session Mapping
+
+| Bifrost Field | Scribe Field | Notes |
+|---------------|--------------|-------|
+| `audio.input.format` | `audio_format` | `audio/pcm` at 8000, 16000, 22050, 24000 (default), 44100 or 48000 Hz is `pcm_<rate>`; `audio/pcmu` is `ulaw_8000`. `audio/pcma` and other types are refused |
+| `audio.input.turn_detection` absent or `server_vad` | `commit_strategy` `vad` | `silence_duration_ms` becomes `vad_silence_threshold_secs` |
+| `audio.input.turn_detection` `semantic_vad` | `commit_strategy` `turn_prediction` | |
+| `audio.input.turn_detection` `null` | `commit_strategy` `manual` | The client commits |
+| `audio.input.transcription.language` | `language_code` | |
+| `secondary_languages`, `keyterms`, `entity_detection`, `entity_redaction` | same names | Lists, sent as repeated parameters |
+| `include_timestamps`, `include_language_detection`, `no_verbatim`, `filter_background_audio` | same names | Sent when `true` |
+| `entity_redaction_mode`, `transcript_edit`, `keepalive_interval_ms`, `min_speech_duration_ms`, `min_silence_duration_ms`, `vad_threshold` | same names | |
+
+The fields below `audio.input.transcription` are set in the same object as `model` and `language`.
+
+### Events
+
+| Client event | Sent to Scribe |
+|--------------|----------------|
+| `input_audio_buffer.append` | An audio chunk |
+| `input_audio_buffer.commit` | A commit. Refused when no audio was sent since the last commit |
+| `input_audio_buffer.clear` | Nothing. Answered with `input_audio_buffer.cleared` when no audio was sent since the last commit, and refused otherwise, because Scribe cannot discard audio |
+
+| Scribe | Client event |
+|--------|--------------|
+| Partial transcript | `conversation.item.input_audio_transcription.delta`. `delta` is the finished words that add to what was sent, and `transcript` is the whole partial text |
+| Committed transcript (from a client commit, voice detection or Scribe's time limit) | `conversation.item.input_audio_transcription.completed`, after `input_audio_buffer.committed` when Scribe committed the segment itself |
+| Error | An `error` event |
+
+`completed.usage` is `{"type":"duration","seconds":...}`: Scribe reports no usage, so Bifrost counts the audio it sent for the segment.
+
+A session that sets `session.bifrost.extensions` to `true` also receives `bifrost.transcription.words`, `bifrost.transcription.entities`, `bifrost.transcription.redacted` and `bifrost.transcription.edited` for the segments that carry them, and `bifrost.provider_event` for a Scribe frame with no neutral event.
+
+---
+
+# 6. Speech Session
+
+For text that arrives in pieces, open a WebSocket to `/v1/audio/speech/stream` with a virtual key (`x-bf-vk` or an `sk-bf-` bearer token). Bifrost opens ElevenLabs' `/v1/text-to-dialogue/stream-input` socket, which is the one that serves `eleven_v4_turbo`.
+
+The first event is `speech.config`:
+
+```json
+{
+  "type": "speech.config",
+  "model": "elevenlabs/eleven_v4_turbo",
+  "voice": "21m00Tcm4TlvDq8ikWAM",
+  "response_format": "mp3_44100_128",
+  "language_code": "hi"
+}
+```
+
+| Client event | Effect |
+|--------------|--------|
+| `speech.text` | Appends `text` to the current segment |
+| `speech.flush` | Speaks what ElevenLabs holds and closes the segment |
+| `speech.cancel` | Drops pending text and audio. The session stays open and the next text starts a new segment |
+| `speech.end` | Flushes and finishes the session |
+
+| Bifrost event | Meaning |
+|---------------|---------|
+| `speech.session.created` | The session is open. Carries the audio format and, for raw formats, the sample rate |
+| `speech.audio.delta` | A base64 `audio` chunk of a numbered `segment`. With `with_timestamps` set in `speech.config`, it carries the `alignment` of its characters |
+| `speech.segment.done` | A segment finished |
+| `speech.cancelled` | A cancel was applied |
+| `speech.audio.done` | The session is over. `usage.input_chars` is the characters of text the session accepted, including text a cancel dropped |
+
+Besides `language_code` and `with_timestamps`, `speech.config` takes `enable_logging`, `stability`, `clone_strength` and `pronunciation_dictionary_locators`. The socket takes one voice and has no cancel, so a cancel closes it and the next text dials a new one. Bifrost keeps a quiet socket open with ElevenLabs' `keep_alive` message. A session the client leaves silent for 5 minutes ends with a timeout error.

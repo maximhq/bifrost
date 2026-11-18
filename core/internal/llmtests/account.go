@@ -97,6 +97,7 @@ type TestScenarios struct {
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
+	SpeechSession                bool // Incremental speech session (text streams in over a WebSocket, audio streams back)
 	Compaction                   bool // Server-side compaction (context management)
 	ToolSearch                   bool // Anthropic server-side tool search + defer_loading (on Bedrock via InvokeModel routing)
 	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
@@ -155,6 +156,7 @@ type ComprehensiveTestConfig struct {
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+	SpeechSessionModel       string                     // Model for the incremental speech session test
 
 	// SkipEmptyToolSchemas skips the empty/nil function-schema tool tests for providers that
 	// reject a function schema whose properties object is empty or absent (e.g. Runware, whose
@@ -207,6 +209,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Wafer,
 		schemas.MiniMax,
 		schemas.BytePlus,
+		schemas.Baseten,
+		schemas.Kimchi,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -409,7 +413,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004", "multimodalembedding@001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -430,7 +433,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
+				// The Live models are served from the "us" multi-region pool.
+				Models: []string{"gemini-3.8-live"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION_LIVE", "us")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
+				},
+			},
+			{
 				Models: []string{"veo-3.1-generate-preview"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -441,7 +453,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
@@ -553,6 +564,24 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Value:          *schemas.NewSecretVar("env.BYTEPLUS_API_KEY"),
 				Models:         []string{"deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "dreamina-seedance-2-5-260628"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Baseten:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.BASETEN_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Kimchi:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.KIMCHI_API_KEY"),
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
 			},
@@ -1006,7 +1035,33 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Baseten:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.BytePlus:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Kimchi:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

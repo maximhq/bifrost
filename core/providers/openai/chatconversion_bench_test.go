@@ -159,6 +159,30 @@ func BenchmarkToOpenAIChatRequestGroq(b *testing.B) {
 	}
 }
 
+// BenchmarkToOpenAIChatRequestMistral exercises the Mistral compatibility pass
+// with a reasoning effort set and a datasheet effort ladder in place.
+func BenchmarkToOpenAIChatRequestMistral(b *testing.B) {
+	ladder := &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "high", "max"}}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.Mistral && m == "zai-glm-5-3" {
+			return ladder
+		}
+		return nil
+	})
+	b.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+	bifrostReq.Provider = schemas.Mistral
+	bifrostReq.Model = "zai-glm-5-3"
+	bifrostReq.Params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr("max")}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
+			b.Fatal("nil OpenAI request")
+		}
+	}
+}
+
 // BenchmarkOpenAIChatRequestMarshal measures serializing the outbound payload.
 // OpenAIChatRequest has a hand-written marshaller that preserves key order for
 // provider-side prompt caching, so this is not plain reflection cost.

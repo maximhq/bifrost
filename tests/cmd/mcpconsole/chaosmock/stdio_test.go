@@ -123,6 +123,50 @@ func TestStdioToolCallAndMutationReachTheFleet(t *testing.T) {
 	}
 }
 
+// TestStdioRelaysToolListChanged checks that a server-initiated notification
+// reaches a STDIO client: the bridge holds the session's GET stream open and
+// writes what it carries to stdout, between replies.
+func TestStdioRelaysToolListChanged(t *testing.T) {
+	fleet := chaosmock.NewFleet()
+	srv := fleet.Add("alpha")
+	srv.Tools().Set([]chaosmock.Tool{{Name: "echo_tool"}})
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+
+	c, ctx := bridgeToClient(t, fleet, "alpha")
+	got := make(chan string, 1)
+	c.OnNotification(func(n mcp.JSONRPCNotification) {
+		select {
+		case got <- n.Method:
+		default:
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.OpenStreams() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the bridge never opened the session's notification stream")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := srv.NotifyToolListChanged(); n != 1 {
+		t.Fatalf("expected the push to reach 1 stream, reached %d", n)
+	}
+	select {
+	case method := <-got:
+		if method != string(mcp.MethodNotificationToolsListChanged) {
+			t.Fatalf("expected %s, got %s", mcp.MethodNotificationToolsListChanged, method)
+		}
+	case <-ctx.Done():
+		t.Fatalf("the client never received tools/list_changed")
+	}
+
+	// Replies still arrive whole while the stream is open.
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+		t.Fatalf("tools/list with the stream open failed: %v", err)
+	}
+}
+
 // TestStdioInjectedStatusBecomesAProtocolError pins the translation this
 // transport needs. An HTTP status has no equivalent on a pipe, so it is
 // reported as a JSON-RPC error rather than by killing the process: a client

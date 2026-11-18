@@ -38,9 +38,7 @@ export class MCPLogsPage extends BasePage {
     // The filters section is the container with search input and filters button
     this.filtersSection = page.locator('input[placeholder="Search MCP logs"]').locator('..')
     this.filtersButton = page.getByRole('button', { name: /Filters/i })
-    this.statsCards = page.locator('[data-testid="mcp-stats-cards"]').or(
-      page.locator('text=Total Executions').locator('..').locator('..')
-    )
+    this.statsCards = page.getByTestId('mcp-logs-metric-strip')
 
     // Filter elements - filters are inside a popover opened by the Filters button
     this.toolNameFilter = page.locator('[data-testid="filter-tool-name"]').or(

@@ -16,6 +16,19 @@ type tokens struct{ input, output int }
 
 // Client events.
 
+func speechConfig(model, voice string, extra map[string]any) event {
+	config := event{"type": "speech.config", "model": model, "voice": voice, "response_format": "pcm"}
+	for name, value := range extra {
+		config[name] = value
+	}
+	return config
+}
+
+func speechText(text string) event { return event{"type": "speech.text", "text": text} }
+func speechFlush() event           { return event{"type": "speech.flush"} }
+func speechEnd() event             { return event{"type": "speech.end"} }
+func speechCancel() event          { return event{"type": "speech.cancel"} }
+
 func sessionUpdate(session map[string]any) event {
 	return event{"type": "session.update", "session": session}
 }
@@ -60,6 +73,16 @@ func textSession() map[string]any {
 // weatherTool is a function the model is told to call for weather questions.
 var weatherTool = map[string]any{
 	"type": "function", "name": "get_weather", "description": "Get the current weather for a city.",
+	"parameters": map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"city": map[string]any{"type": "string"}},
+		"required":   []string{"city"},
+	},
+}
+
+// timeTool is a function the model is told to call for time questions; a session swaps the weather tool for it.
+var timeTool = map[string]any{
+	"type": "function", "name": "get_time", "description": "Get the current local time in a city.",
 	"parameters": map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"city": map[string]any{"type": "string"}},
