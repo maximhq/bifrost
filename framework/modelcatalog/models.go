@@ -498,7 +498,9 @@ var aliasNameIndexes sync.Map // schemas.ModelProvider -> *aliasNameIndex
 // per slice and reused while the provider's configuration hands back that same slice with the same
 // alias maps (by identity and length), so an edited key, a replaced alias map, or a name added to or
 // removed from a map in place rebuilds it. Renaming an alias in place, which keeps the map and its
-// length, is not detected; alias maps are replaced, never renamed into, by every store here. Memory:
+// length, is not detected: a configuration source must publish a new slice or map for every alias
+// change, never write into one it has handed out (the contract governance's InMemoryStore states,
+// and the one every store here keeps). Memory:
 // one entry per provider, holding each distinct alias name once plus a map reference per key, freed
 // when the provider's next keys slice replaces it.
 func MayBeKeyAlias(provider schemas.ModelProvider, model string, keys []schemas.Key) bool {

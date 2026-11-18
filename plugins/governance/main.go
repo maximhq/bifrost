@@ -90,6 +90,13 @@ type Config struct {
 	ObjectOwnershipEnforced func() bool `json:"-"`
 }
 
+// InMemoryStore is the deployment's live configuration as governance reads it.
+//
+// A provider configuration it hands out is published, not lent: its Keys slice, and each key's
+// Aliases map, are never written after they are returned. A change publishes a new Keys slice (and a
+// new map for any key whose aliases change). The key-alias rules depend on this: the alias-name index
+// (modelcatalog.MayBeKeyAlias) is reused while the slice and its maps are the same, and only detects
+// in-place edits that change a map's length.
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 	GetConfiguredProviderNames() []string
