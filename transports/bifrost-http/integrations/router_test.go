@@ -1830,6 +1830,48 @@ func (*passthroughRewritingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *
 	return resp, err, nil
 }
 
+// TestHandlePassthrough_MultipartParseErrorRefused asserts a streamed multipart passthrough upload
+// whose form does not parse (here 1,001 parts, over Go's limit) is refused with 400 and never
+// forwarded. The body stream is partly read by the failed parse, so falling back to Body() would
+// forward only the unread rest of the upload.
+func TestHandlePassthrough_MultipartParseErrorRefused(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"file-abc"}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for i := 0; i <= 1000; i++ {
+		require.NoError(t, w.WriteField(fmt.Sprintf("f%d", i), "v"))
+	}
+	require.NoError(t, w.Close())
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+	ctx.Request.Header.SetContentType(w.FormDataContentType())
+	ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+	defer ctx.Request.Reset()
+	r.Handler(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	assert.Equal(t, int32(0), hits.Load(), "a multipart body that does not parse must not be forwarded")
+}
+
 // TestHandlePassthrough_MultipartUploadStreamed pins the passthrough Files API upload path. A 17 MB
 // multipart upload (over fasthttp's 16 MB in-memory limit, so the server keeps it in a temp file)
 // must reach the upstream intact with a Content-Length. OpenAI streams it from the parsed form, so

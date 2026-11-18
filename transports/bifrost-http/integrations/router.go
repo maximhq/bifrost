@@ -3677,22 +3677,25 @@ func isJSONMediaType(mediaType string) bool {
 }
 
 // passthroughMultipartBody returns a multipart request's parsed form and an exact-length stream
-// of it. It returns nils for a request that is not multipart, or whose form does not parse; the
-// caller then reads the body as bytes and forwards it as before.
-func passthroughMultipartBody(req *fasthttp.Request) (*multipart.Form, schemas.BodySource) {
+// of it. It returns nils for a request that is not multipart; the caller reads the body as bytes.
+// A multipart body whose form does not parse is an error: the body is streamed and the failed parse
+// has read part of it, so Body() would return only the unread rest. A form that parses but cannot
+// be streamed (a boundary multipart.Writer does not accept) returns nils too: Body() then rebuilds
+// the whole parsed form.
+func passthroughMultipartBody(req *fasthttp.Request) (*multipart.Form, schemas.BodySource, error) {
 	boundary := req.Header.MultipartFormBoundary()
 	if len(boundary) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	form, err := req.MultipartForm()
 	if err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("invalid multipart/form-data body: %w", err)
 	}
 	source, err := schemas.NewMultipartFormBodySource(form, string(boundary))
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return form, source
+	return form, source, nil
 }
 
 // multipartFormModelAndStream reads the model and stream fields of a parsed multipart form. The
@@ -3837,11 +3840,14 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// A multipart upload is passed on as its parsed form and a stream of it, never as bytes:
 	// fasthttp parsed it while reading the request and keeps large files in temp files, and
 	// Body() would rebuild the whole form in memory. Anything else is read as bytes.
-	form, bodySource := passthroughMultipartBody(&ctx.Request)
+	form, bodySource, err := passthroughMultipartBody(&ctx.Request)
+	if err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
 	var body []byte
 	var bodyModel string
 	var bodyStream bool
-	var err error
 	if form != nil {
 		bodyModel, bodyStream, err = multipartFormModelAndStream(form)
 		if err != nil {
