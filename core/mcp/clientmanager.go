@@ -83,7 +83,7 @@ func refreshesOnConnectRejection(credStore schemas.MCPCredentialStore, config *s
 		return false
 	}
 	switch config.AuthType {
-	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth:
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeClientCredentials:
 		return true
 	}
 	return false
@@ -182,7 +182,7 @@ func (m *MCPManager) dialClientConn(ctx *schemas.BifrostContext, state *schemas.
 		initRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-				Capabilities:    bifrostClientCapabilities,
+				Capabilities:    clientCapabilitiesFor(config),
 				ClientInfo: mcp.Implementation{
 					Name:    fmt.Sprintf("Bifrost-%s-user", config.Name),
 					Version: "1.0.0",
@@ -1392,7 +1392,7 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 		initRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-				Capabilities:    bifrostClientCapabilities,
+				Capabilities:    clientCapabilitiesFor(config),
 				ClientInfo: mcp.Implementation{
 					Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
 					Version: "1.0.0",
@@ -1578,7 +1578,7 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 		initRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-				Capabilities:    bifrostClientCapabilities,
+				Capabilities:    clientCapabilitiesFor(config),
 				ClientInfo: mcp.Implementation{
 					Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
 					Version: "1.0.0",
@@ -1677,11 +1677,11 @@ func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MC
 		authType = schemas.MCPAuthTypeHeaders
 	}
 	switch authType {
-	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth:
-		// All three resolve to a bearer credential (the retained bootstrap
-		// token, a client-credentials token for token exchange, or the
-		// shared oauth token), so they share the bearer-based one-shot
-		// verification path.
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeClientCredentials:
+		// All resolve to a bearer credential (the retained bootstrap token,
+		// a client-credentials token for token exchange, the shared oauth
+		// token, or a client_credentials grant token), so they share the
+		// bearer-based one-shot verification path.
 		accessToken := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 		if accessToken == "" {
 			return nil, fmt.Errorf("admin credential resolved no access token")
@@ -2381,6 +2381,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
 			PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
 			TokenExchange:         updatedConfig.TokenExchange,
+			ClientCredentials:     updatedConfig.ClientCredentials,
 			OpenAPIConfig:         openAPIConfig,
 		}
 
@@ -2888,7 +2889,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 		isDisabled := client.State == schemas.MCPConnectionStateDisabled
 		m.mu.RUnlock()
 		switch newConfig.AuthType {
-		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
+		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeClientCredentials:
 			if isDisabled {
 				return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
 			}
@@ -2915,6 +2916,9 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 	}
 	if newConfig.OauthConfigID != nil {
 		mergedConfig.OauthConfigID = newConfig.OauthConfigID
+	}
+	if newConfig.ClientCredentials != nil {
+		mergedConfig.ClientCredentials = newConfig.ClientCredentials
 	}
 	// PendingOAuthConfig and PendingVerification are taken verbatim, not
 	// merged: completing the admin step clears both. Carrying the old values
@@ -3358,7 +3362,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		extInitRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-				Capabilities:    bifrostClientCapabilities,
+				Capabilities:    clientCapabilitiesFor(config),
 				ClientInfo: mcp.Implementation{
 					Name:    fmt.Sprintf("Bifrost-%s", config.Name),
 					Version: "1.0.0",

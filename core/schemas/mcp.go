@@ -679,12 +679,13 @@ func MCPAllowsClientMetadataDocuments(maxVersion string) bool {
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone           MCPAuthType = "none"             // No authentication
-	MCPAuthTypeHeaders        MCPAuthType = "headers"          // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth          MCPAuthType = "oauth"            // OAuth 2.0 authentication (server-level, admin authenticates once)
-	MCPAuthTypePerUserOauth   MCPAuthType = "per_user_oauth"   // Per-user OAuth 2.0 authentication (each user authenticates individually)
-	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
-	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
+	MCPAuthTypeNone              MCPAuthType = "none"               // No authentication
+	MCPAuthTypeHeaders           MCPAuthType = "headers"            // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth             MCPAuthType = "oauth"              // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth      MCPAuthType = "per_user_oauth"     // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypePerUserHeaders    MCPAuthType = "per_user_headers"   // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
+	MCPAuthTypeClientCredentials MCPAuthType = "client_credentials" // Shared OAuth client_credentials grant with pre-registered credentials (MCP OAuth Client Credentials extension)
+	MCPAuthTypeTokenExchange     MCPAuthType = "token_exchange"     // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
 
 // IsPerUser reports whether callers of a client with this auth type
@@ -915,6 +916,135 @@ func (a UpstreamClientAuth) validate(f upstreamClientAuthFields) error {
 	return nil
 }
 
+// MCPClientCredentialsConfig configures auth_type client_credentials: Bifrost
+// obtains a shared access token with the OAuth client_credentials grant, using
+// credentials registered with the upstream's authorization server out of band
+// (MCP OAuth Client Credentials extension). TokenURL, AuthMethod and
+// SigningAlgorithm are filled in on save from discovery when left empty, so later
+// token requests never depend on what the upstream advertises.
+type MCPClientCredentialsConfig struct {
+	TokenURL          string     `json:"token_url,omitempty"`          // discovered on save when empty
+	ClientID          *SecretVar `json:"client_id,omitempty"`          // required
+	ClientSecret      *SecretVar `json:"client_secret,omitempty"`      // or PrivateKey, never both
+	AuthMethod        string     `json:"auth_method,omitempty"`        // client_secret_basic or client_secret_post; empty follows the server
+	PrivateKey        *SecretVar `json:"private_key,omitempty"`        // PEM RSA or EC key signing the client assertion
+	KeyID             string     `json:"key_id,omitempty"`             // kid header of the client assertion
+	SigningAlgorithm  string     `json:"signing_algorithm,omitempty"`  // empty: chosen from the key on save
+	AssertionAudience string     `json:"assertion_audience,omitempty"` // aud of the client assertion; empty: token_url
+	Scopes            []string   `json:"scopes,omitempty"`
+	Resource          *string    `json:"resource,omitempty"` // RFC 8707 resource indicator; nil: the server URL, "": omitted
+}
+
+// ClientAuth returns how Bifrost authenticates at the token endpoint.
+func (c *MCPClientCredentialsConfig) ClientAuth() UpstreamClientAuth {
+	return UpstreamClientAuth{
+		ClientID:          c.ClientID,
+		ClientSecret:      c.ClientSecret,
+		Method:            c.AuthMethod,
+		PrivateKey:        c.PrivateKey,
+		KeyID:             c.KeyID,
+		SigningAlgorithm:  c.SigningAlgorithm,
+		AssertionAudience: c.AssertionAudience,
+	}
+}
+
+// Validate checks the block without network access: a client ID, exactly one of a
+// secret or a key, key settings only with a key, and an https token_url when set.
+func (c *MCPClientCredentialsConfig) Validate() error {
+	if c == nil {
+		return fmt.Errorf("client_credentials is required for client_credentials auth type")
+	}
+	auth := c.ClientAuth()
+	if !c.ClientID.IsSet() {
+		return fmt.Errorf("client_credentials.client_id is required")
+	}
+	if !auth.HasSecret() && !auth.UsesPrivateKey() {
+		return fmt.Errorf("client_credentials: set client_secret or private_key")
+	}
+	if err := auth.validate(upstreamClientAuthFields{
+		block: "client_credentials", secret: "client_secret", key: "private_key", method: "auth_method",
+		keyID: "key_id", alg: "signing_algorithm", audience: "assertion_audience",
+	}); err != nil {
+		return err
+	}
+	if u := strings.TrimSpace(c.TokenURL); u != "" && !IsHTTPSOrLoopbackURL(u) {
+		return fmt.Errorf("client_credentials.token_url must be an https URL")
+	}
+	for i, scope := range c.Scopes {
+		if strings.TrimSpace(scope) == "" || strings.ContainsAny(scope, " \t\n") {
+			return fmt.Errorf("client_credentials.scopes[%d] must be a single non-empty scope", i)
+		}
+	}
+	return nil
+}
+
+// ResourceFor returns the resource indicator to send for an MCP server at
+// serverURL: the configured one, or serverURL when unset. "" means none.
+func (c *MCPClientCredentialsConfig) ResourceFor(serverURL string) string {
+	if c.Resource != nil {
+		return strings.TrimSpace(*c.Resource)
+	}
+	return serverURL
+}
+
+// Redacted returns a copy with the client ID, secret and key masked.
+func (c *MCPClientCredentialsConfig) Redacted() *MCPClientCredentialsConfig {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.ClientID = c.ClientID.Redacted()
+	cfg.ClientSecret = c.ClientSecret.Redacted()
+	cfg.PrivateKey = c.PrivateKey.Redacted()
+	cfg.Scopes = slices.Clone(c.Scopes)
+	return &cfg
+}
+
+// KeepMaskedFrom replaces each masked credential in c with existing's stored one,
+// so an update that sends back what a read returned keeps the stored values.
+func (c *MCPClientCredentialsConfig) KeepMaskedFrom(existing *MCPClientCredentialsConfig) {
+	if c == nil || existing == nil {
+		return
+	}
+	if c.ClientID.IsMaskedPlaceholder() {
+		c.ClientID = existing.ClientID
+	}
+	if c.ClientSecret.IsMaskedPlaceholder() {
+		c.ClientSecret = existing.ClientSecret
+	}
+	if c.PrivateKey.IsMaskedPlaceholder() {
+		c.PrivateKey = existing.PrivateKey
+	}
+}
+
+// Equal reports whether c and o hold the same settings.
+func (c *MCPClientCredentialsConfig) Equal(o *MCPClientCredentialsConfig) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	resource := func(r *string) string {
+		if r == nil {
+			return "\x00"
+		}
+		return *r
+	}
+	return c.TokenURL == o.TokenURL && c.ClientID.Equals(o.ClientID) && c.ClientSecret.Equals(o.ClientSecret) &&
+		c.AuthMethod == o.AuthMethod && c.PrivateKey.Equals(o.PrivateKey) && c.KeyID == o.KeyID &&
+		c.SigningAlgorithm == o.SigningAlgorithm && c.AssertionAudience == o.AssertionAudience &&
+		slices.Equal(c.Scopes, o.Scopes) && resource(c.Resource) == resource(o.Resource)
+}
+
+// TargetChangedFrom reports whether c sends the credential somewhere other than
+// existing does: another token endpoint, or another assertion audience. An empty
+// token_url counts as a change, since it is discovered again.
+func (c *MCPClientCredentialsConfig) TargetChangedFrom(existing *MCPClientCredentialsConfig) bool {
+	if c == nil || existing == nil {
+		return false
+	}
+	return strings.TrimSpace(c.TokenURL) != strings.TrimSpace(existing.TokenURL) ||
+		strings.TrimSpace(c.AssertionAudience) != strings.TrimSpace(existing.AssertionAudience)
+}
+
 // IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
 // loopback host for local testing. It checks only the URL: whether the host may
 // be dialed is decided by the OAuth client's private-target guard.
@@ -1019,10 +1149,13 @@ type MCPClientConfig struct {
 	PerUserHeaderKeys []string `json:"per_user_header_keys,omitempty"`
 	// TokenExchange scopes delegated token exchange. Required (with a
 	// non-empty Audience) when AuthType == token_exchange; ignored otherwise.
-	TokenExchange       *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
-	AllowedExtraHeaders WhiteList               `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
-	InProcessServer     *server.MCPServer       `json:"-"`                               // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute      WhiteList               `json:"tools_to_execute,omitempty"`      // Include-only list.
+	TokenExchange *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
+	// ClientCredentials configures the client_credentials grant. Required when
+	// AuthType == client_credentials; ignored otherwise.
+	ClientCredentials   *MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
+	AllowedExtraHeaders WhiteList                   `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer           `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList                   `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)
@@ -1789,10 +1922,13 @@ type MCPToolMetadata struct {
 
 // MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.
 const (
-	MCPAppsExtension       = "io.modelcontextprotocol/ui"
-	MCPAppsMimeType        = "text/html;profile=mcp-app"
-	MCPToolVisibilityModel = "model"
-	MCPToolVisibilityApp   = "app"
+	MCPAppsExtension = "io.modelcontextprotocol/ui"
+	// MCPOAuthClientCredentialsExtension is the MCP OAuth Client Credentials
+	// extension, declared by clients that authenticate with that grant.
+	MCPOAuthClientCredentialsExtension = "io.modelcontextprotocol/oauth-client-credentials"
+	MCPAppsMimeType                    = "text/html;profile=mcp-app"
+	MCPToolVisibilityModel             = "model"
+	MCPToolVisibilityApp               = "app"
 )
 
 // ModelVisible reports whether a model may see and call the tool; no visibility means yes.

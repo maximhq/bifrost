@@ -87,3 +87,7 @@ func TestSharedOAuthResolverAdminConnectionHeaders_PerCallDelegatesToConnectionH
 		t.Errorf("expected the resolved bearer token, got %q", got)
 	}
 }
+
+func (f *fakeSharedOAuthProvider) GetClientCredentialsAccessToken(_ context.Context, _ *schemas.MCPClientConfig) (string, error) {
+	return f.accessToken, nil
+}

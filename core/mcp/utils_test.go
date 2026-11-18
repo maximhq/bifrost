@@ -719,6 +719,10 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 			c.AuthType = schemas.MCPAuthTypeTokenExchange
 			c.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "aud", UseIdPCredentials: true}
 		}), wantErr: "not supported for openapi"},
+		{name: "client credentials refused", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypeClientCredentials
+			c.ClientCredentials = &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")}
+		}), wantErr: "not supported for openapi"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateMCPClientConfig(tc.cfg)
@@ -729,6 +733,38 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// TestClientCapabilitiesFor: a client_credentials client declares everything
+// every client does plus the OAuth Client Credentials extension, and the shared
+// base is left unchanged.
+func TestClientCapabilitiesFor(t *testing.T) {
+	cc := clientCapabilitiesFor(&schemas.MCPClientConfig{AuthType: schemas.MCPAuthTypeClientCredentials})
+	for name, settings := range bifrostClientCapabilities.Extensions {
+		require.Equal(t, settings, cc.Extensions[name], "extension %s", name)
+	}
+	require.Contains(t, cc.Extensions, schemas.MCPOAuthClientCredentialsExtension)
+	require.Len(t, cc.Extensions, len(bifrostClientCapabilities.Extensions)+1)
+	require.NotContains(t, bifrostClientCapabilities.Extensions, schemas.MCPOAuthClientCredentialsExtension)
+	require.Equal(t, bifrostClientCapabilities, clientCapabilitiesFor(&schemas.MCPClientConfig{AuthType: schemas.MCPAuthTypeOauth}))
+}
+
+// TestValidateMCPClientConfig_ClientCredentials: the block is required and checked, and STDIO is refused.
+func TestValidateMCPClientConfig_ClientCredentials(t *testing.T) {
+	config := func(cc *schemas.MCPClientCredentialsConfig) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: "cc", Name: "cc_client", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://mcp.example.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc,
+		}
+	}
+	require.NoError(t, validateMCPClientConfig(config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")})))
+	require.ErrorContains(t, validateMCPClientConfig(config(nil)), "client_credentials is required")
+	require.ErrorContains(t, validateMCPClientConfig(config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id")})), "set client_secret or private_key")
+
+	stdio := config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")})
+	stdio.ConnectionType, stdio.ConnectionString, stdio.StdioConfig = schemas.MCPConnectionTypeSTDIO, nil, &schemas.MCPStdioConfig{Command: "server"}
+	require.ErrorContains(t, validateMCPClientConfig(stdio), "not supported for STDIO")
 }
 
 // TestValidateMCPClientConfig_STDIONeedsACommand: a STDIO client with an empty or blank command is

@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -113,6 +114,11 @@ type OAuth2Provider struct {
 	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
 	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
 	idjagGrants *idjagGrantCache
+
+	// clientCredentialsCache holds the shared token of each client_credentials
+	// MCP client; see clientCredentialsTokens.
+	clientCredentialsCache *tokencache.Cache[string]
+	clientCredentialsOnce  sync.Once
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -523,6 +529,8 @@ func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, co
 		p.EvictExchangedToken(mode, identity, config.ID)
 		_, err := p.GetExchangedAccessToken(ctx, config)
 		return err
+	case schemas.MCPAuthTypeClientCredentials:
+		return p.forceRefreshClientCredentials(ctx, config)
 	default:
 		return fmt.Errorf("force-refresh is not supported for MCP auth type %q", config.AuthType)
 	}
@@ -1301,6 +1309,20 @@ func (e *PermanentOAuthError) Error() string {
 	return fmt.Sprintf("permanent oauth error (status %d): %s", e.StatusCode, e.Body)
 }
 
+// TokenEndpointError is a token response that was neither a token nor a refusal
+// classified as permanent. Body is the raw response, up to the read cap.
+type TokenEndpointError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *TokenEndpointError) Error() string {
+	if e.StatusCode == http.StatusOK {
+		return "token response missing access_token, body: " + e.Body
+	}
+	return fmt.Sprintf("token request failed with status %d: %s", e.StatusCode, e.Body)
+}
+
 // tokenRejection is how callTokenEndpoint treats a response that carried no
 // access token.
 type tokenRejection int
@@ -1541,14 +1563,11 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			// re-auth is the only recovery the token row offers.
 			return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
 		case rejectionTransient:
-			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+			lastErr = &TokenEndpointError{StatusCode: resp.StatusCode, Body: string(body)}
 			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
 			continue
 		default:
-			if resp.StatusCode == http.StatusOK {
-				return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
-			}
-			return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+			return nil, &TokenEndpointError{StatusCode: resp.StatusCode, Body: string(body)}
 		}
 	}
 

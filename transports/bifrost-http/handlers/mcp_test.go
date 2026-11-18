@@ -1768,6 +1768,156 @@ func TestAddMCPClient_UnknownAuthTypeIs400(t *testing.T) {
 	assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
 }
 
+// clientCredentialsUpstream is an MCP server whose authorization server issues
+// client_credentials tokens to client "bifrost" with secret "good".
+func clientCredentialsUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+srv.URL+`/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": srv.URL + "/mcp", "authorization_servers": []string{srv.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": srv.URL, "token_endpoint": srv.URL + "/token", "grant_types_supported": []string{"client_credentials"}})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if user, pass, ok := r.BasicAuth(); !ok || user != "bifrost" || pass != "good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "cc-token", "expires_in": 3600})
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestAddMCPClient_ClientCredentials pins create for client_credentials: the
+// token endpoint is discovered and stored, credentials the server refuses fail
+// the create with nothing stored, and the block is refused on other auth types.
+func TestAddMCPClient_ClientCredentials(t *testing.T) {
+	upstream := clientCredentialsUpstream(t)
+	body := func(name, secret string) string {
+		return `{"name":"` + name + `","connection_type":"http","connection_string":"` + upstream.URL + `/mcp","auth_type":"client_credentials",` +
+			`"client_credentials":{"client_id":"bifrost","client_secret":"` + secret + `"}}`
+	}
+
+	t.Run("discovers and stores the token endpoint", func(t *testing.T) {
+		h, mgr := newOpenAPITestHandler(t)
+		h.store.OAuthProvider = oauth2.NewOAuth2Provider(nil, nil)
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body("cc_ok", "good"), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		require.Len(t, mgr.added, 1)
+		require.NotNil(t, mgr.added[0].ClientCredentials)
+		assert.Equal(t, upstream.URL+"/token", mgr.added[0].ClientCredentials.TokenURL)
+		stored, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "cc_ok")
+		require.NoError(t, err)
+		require.NotNil(t, stored.ClientCredentials)
+		assert.Equal(t, upstream.URL+"/token", stored.ClientCredentials.TokenURL)
+		assert.Equal(t, schemas.ClientSecretBasic, stored.ClientCredentials.AuthMethod)
+	})
+	t.Run("refused credentials fail the create", func(t *testing.T) {
+		h, mgr := newOpenAPITestHandler(t)
+		h.store.OAuthProvider = oauth2.NewOAuth2Provider(nil, nil)
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body("cc_bad", "wrong"), "", false)
+		require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+		assert.Contains(t, respBody, "the token endpoint refused the client credentials: invalid_client")
+		assert.Empty(t, mgr.added)
+		_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "cc_bad")
+		assert.ErrorIs(t, err, configstore.ErrNotFound)
+	})
+	t.Run("the block is refused on another auth type", func(t *testing.T) {
+		h, _ := newOpenAPITestHandler(t)
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost,
+			`{"name":"hdr","connection_type":"http","connection_string":"`+upstream.URL+`/mcp","auth_type":"headers","client_credentials":{"client_id":"x","client_secret":"y"}}`, "", false)
+		require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+		assert.Contains(t, respBody, "client_credentials can only be set for client_credentials clients")
+	})
+}
+
+// TestAddMCPClient_ClientCredentialsBlockRefusedBeforeOAuth pins that an OAuth
+// create carrying a client_credentials block is refused before the OAuth flow
+// starts, instead of storing a pending OAuth config that ignores the block.
+func TestAddMCPClient_ClientCredentialsBlockRefusedBeforeOAuth(t *testing.T) {
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		t.Run(authType, func(t *testing.T) {
+			h, _, server := newLoopbackOAuthMCPHandler(t)
+			body := func(name, extra string) string {
+				return `{"name":"` + name + `","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}` + extra + `}`
+			}
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body("with_block", `,"client_credentials":{"client_id":"x","client_secret":"y"}`), "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, "client_credentials can only be set for client_credentials clients")
+			assert.NotContains(t, respBody, "pending_oauth")
+
+			status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body("without_block", ""), "", false)
+			require.Equal(t, fasthttp.StatusOK, status, respBody)
+			assert.Contains(t, respBody, "pending_oauth", "the same create without the block starts OAuth")
+		})
+	}
+}
+
+// TestUpdateMCPClient_ClientCredentials pins update for client_credentials: a
+// masked round trip keeps the stored secret, a cleared token_url cannot carry a
+// masked secret to a newly discovered endpoint, a new secret is checked against
+// the token endpoint before it is stored, and an unauthenticated edit cannot
+// reach a private token endpoint.
+func TestUpdateMCPClient_ClientCredentials(t *testing.T) {
+	upstream := clientCredentialsUpstream(t)
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.OAuthProvider = oauth2.NewOAuth2Provider(nil, nil)
+	ctx := context.Background()
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost,
+		`{"name":"cc_upd","connection_type":"http","connection_string":"`+upstream.URL+`/mcp","auth_type":"client_credentials","client_credentials":{"client_id":"bifrost","client_secret":"good"}}`, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	id := mgr.added[0].ID
+	masked := schemas.NewSecretVar("good").Redacted().GetValue()
+	update := func(block string) (int, string) {
+		return doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"client_credentials":`+block+`}`, id, false)
+	}
+	storedSecret := func() string {
+		row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+		require.NoError(t, err)
+		return row.ClientCredentials.ClientSecret.GetValue()
+	}
+
+	status, respBody = update(`{"token_url":"` + upstream.URL + `/token","client_id":"bifrost","client_secret":"` + masked + `","auth_method":"client_secret_basic"}`)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Equal(t, "good", storedSecret(), "a masked secret keeps the stored one")
+
+	status, respBody = update(`{"client_id":"bifrost","client_secret":"` + masked + `"}`)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "must be resent explicitly")
+
+	status, respBody = update(`{"token_url":"` + upstream.URL + `/token","client_id":"bifrost","client_secret":"wrong"}`)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "refused the client credentials")
+	assert.Equal(t, "good", storedSecret(), "a refused secret is not stored")
+
+	// With the real dialer and loopback allowlisted, an admin-created client edited
+	// with no credential check is resolved public-only, so the endpoint is not reached.
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut,
+		`{"client_credentials":{"token_url":"`+upstream.URL+`/token","client_id":"bifrost","client_secret":"good","scopes":["read"]}}`, id, true)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "could not obtain a token")
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, row.ClientCredentials.Scopes, "the refused block is not stored")
+}
+
 // TestAddMCPClient_OmittedAuthTypeRunsAsStored pins that a client created
 // without an auth_type reaches the runtime with the auth_type its stored row
 // carries, headers, so it connects the same way before and after a restart. The

@@ -969,6 +969,28 @@ var bifrostClientCapabilities = mcp.ClientCapabilities{
 	Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{"mimeTypes": []string{schemas.MCPAppsMimeType}}},
 }
 
+// clientCredentialsCapabilities is bifrostClientCapabilities plus the OAuth Client
+// Credentials extension, for clients that authenticate with it.
+var clientCredentialsCapabilities = withExtension(bifrostClientCapabilities, schemas.MCPOAuthClientCredentialsExtension)
+
+// withExtension returns a copy of base that also declares the extension name, with no settings.
+func withExtension(base mcp.ClientCapabilities, name string) mcp.ClientCapabilities {
+	base.Extensions = maps.Clone(base.Extensions)
+	if base.Extensions == nil {
+		base.Extensions = map[string]any{}
+	}
+	base.Extensions[name] = struct{}{}
+	return base
+}
+
+// clientCapabilitiesFor returns the capabilities Bifrost declares when connecting with config.
+func clientCapabilitiesFor(config *schemas.MCPClientConfig) mcp.ClientCapabilities {
+	if config != nil && config.AuthType == schemas.MCPAuthTypeClientCredentials {
+		return clientCredentialsCapabilities
+	}
+	return bifrostClientCapabilities
+}
+
 // manualInputRoundTrips leaves an upstream's input_required to CallUpstreamTool instead of mcp-go's loop.
 var manualInputRoundTrips = client.WithManualInputRoundTrips()
 
@@ -1832,6 +1854,18 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	}
 	if err := ValidatePerUserDiscovery(config); err != nil {
 		return err
+	}
+	if config.AuthType == schemas.MCPAuthTypeClientCredentials {
+		// The token goes on an HTTP request, which a STDIO subprocess never receives.
+		if config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+			return fmt.Errorf("client_credentials auth type is not supported for STDIO connection type in client '%s' (use http or sse)", config.Name)
+		}
+		if err := config.ClientCredentials.Validate(); err != nil {
+			return fmt.Errorf("%w in client '%s'", err, config.Name)
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for client_credentials auth type in client '%s'", config.Name)
+		}
 	}
 	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {

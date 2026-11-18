@@ -203,3 +203,7 @@ func TestPerUserOAuthResolverAdminConnectionHeaders(t *testing.T) {
 		}
 	})
 }
+
+func (f *fakeOAuth2Provider) GetClientCredentialsAccessToken(_ context.Context, _ *schemas.MCPClientConfig) (string, error) {
+	return "", errors.New("not implemented")
+}

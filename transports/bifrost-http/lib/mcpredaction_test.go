@@ -87,6 +87,25 @@ func TestRedactMCPClientConfig_MasksSecretBackedConnectionString(t *testing.T) {
 		"secret ref must be preserved so the UI can show it")
 }
 
+// TestRedactMCPClientConfig_ClientCredentials: a read never returns the client
+// secret or private key, and the live block is left untouched.
+func TestRedactMCPClientConfig_ClientCredentials(t *testing.T) {
+	c := &Config{}
+	config := &schemas.MCPClientConfig{
+		ID: "cc-1", Name: "inventory", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeClientCredentials,
+		ClientCredentials: &schemas.MCPClientCredentialsConfig{
+			TokenURL: "https://as.example.com/token", ClientID: schemas.NewSecretVar("bifrost-client-id"),
+			ClientSecret: schemas.NewSecretVar("client-secret-value"), Scopes: []string{"inventory:read"},
+		},
+	}
+	redacted := c.RedactMCPClientConfig(config)
+	require.NotNil(t, redacted.ClientCredentials)
+	assert.NotEqual(t, "client-secret-value", redacted.ClientCredentials.ClientSecret.GetValue())
+	assert.True(t, redacted.ClientCredentials.ClientSecret.IsMaskedPlaceholder())
+	assert.Equal(t, "https://as.example.com/token", redacted.ClientCredentials.TokenURL, "the stored endpoint stays visible")
+	assert.Equal(t, "client-secret-value", config.ClientCredentials.ClientSecret.GetValue(), "the live block is not mutated")
+}
+
 // TestRedactMCPClientConfig_OpenAPIConfig: the upstream API credentials inside
 // openapi_config are masked and the (large) spec document is left out of reads,
 // while the server-computed metadata that describes the spec survives and the

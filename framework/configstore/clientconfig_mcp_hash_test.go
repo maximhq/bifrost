@@ -69,6 +69,22 @@ func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
 	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
 }
 
+// TestGenerateMCPClientHash_ClientCredentials: a declared or edited
+// client_credentials block drifts the hash, so a config.json edit reconciles.
+func TestGenerateMCPClientHash_ClientCredentials(t *testing.T) {
+	hash := func(cc *schemas.MCPClientCredentialsConfig) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "client_credentials", ClientCredentials: cc})
+		require.NoError(t, err)
+		return h
+	}
+	cc := func(secret string) *schemas.MCPClientCredentialsConfig {
+		return &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar(secret)}
+	}
+	assert.NotEqual(t, hash(nil), hash(cc("a")), "declaring the block must drift the hash")
+	assert.NotEqual(t, hash(cc("a")), hash(cc("b")), "a rotated secret must drift the hash")
+	assert.Equal(t, hash(cc("a")), hash(cc("a")))
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key
