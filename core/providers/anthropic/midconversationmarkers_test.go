@@ -336,24 +336,25 @@ func TestDefaultStripsUserTurnTrailingWhitespace(t *testing.T) {
 	}
 }
 
-// setMidConvSystemRow sets supports_mid_conversation_system_messages on every row of the
-// given providers, as the datasheet would.
-func setMidConvSystemRow(t *testing.T, value bool, providers ...schemas.ModelProvider) {
+// setMidConvSystemRow installs row as the datasheet record of every model of the given
+// providers.
+func setMidConvSystemRow(t *testing.T, row schemas.ModelCapabilities, providers ...schemas.ModelProvider) {
 	t.Helper()
 	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, _ string) *schemas.ModelCapabilities {
 		if slices.Contains(providers, provider) {
-			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &value}
+			return &row
 		}
 		return nil
 	})
 	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
 }
 
-// holdMidConvSystemFalse pins the row to false, the datasheet state that keeps released
-// gateways inlining.
+// holdMidConvSystemFalse holds the older supports_mid_conversation_system_messages key false,
+// the datasheet state that keeps released gateways inlining.
 func holdMidConvSystemFalse(t *testing.T, providers ...schemas.ModelProvider) {
 	t.Helper()
-	setMidConvSystemRow(t, false, providers...)
+	no := false
+	setMidConvSystemRow(t, schemas.ModelCapabilities{SupportsMidConversationSystem: &no}, providers...)
 }
 
 // midConvTurnBody renders a Claude Code-shaped /v1/messages body: the given messages JSON,
@@ -389,8 +390,9 @@ func reminderForm(t *testing.T, body []byte, reminder string) (string, string) {
 // role-less function_call item, which the old input-lookahead read as "not an assistant" and
 // so inlined a reminder it had sent natively one turn earlier; the change of form broke the
 // cached prefix at that reminder on every turn (Bedrock InvokeModel, Opus 5.5, 2026-11-16).
-// Both datasheet states are covered: false, as production holds it for released gateways (this
-// build enables the native form for the listed models in code), and true, the 2026-11-16 state.
+// The older key is covered false (as production holds it for released gateways) and true (the
+// 2026-11-16 state); this build ignores it and goes native. native=false keeps the reminder inlined,
+// and inlined must be just as stable. Opus 5.6 stands for a version the datasheet has not seen.
 func TestMidConvSystemReminder_FormStableAcrossTurns(t *testing.T) {
 	const (
 		r1 = "R1: the date is 2026-11-18."
@@ -416,21 +418,41 @@ func TestMidConvSystemReminder_FormStableAcrossTurns(t *testing.T) {
 		{schemas.Bedrock, "bedrock/us.anthropic.claude-opus-5-5"},
 		{schemas.Vertex, "vertex/claude-opus-5-5"},
 		{schemas.Azure, "azure/claude-opus-5-5"},
+		{schemas.Bedrock, "bedrock/us.anthropic.claude-opus-5-6"},
 	} {
+		no, yes := false, true
+		rows := []struct {
+			name string
+			row  schemas.ModelCapabilities
+			role string
+		}{
+			{"older=false", schemas.ModelCapabilities{SupportsMidConversationSystem: &no}, "system"},
+			{"older=true", schemas.ModelCapabilities{SupportsMidConversationSystem: &yes}, "system"},
+			{"native=false", schemas.ModelCapabilities{SupportsNativeMidConversationSystem: &no}, "user"},
+		}
 		for name, reply := range replies {
-			for _, row := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/%s/datasheet=%v", host.provider, name, row), func(t *testing.T) {
-					setMidConvSystemRow(t, row, host.provider)
+			for _, row := range rows {
+				t.Run(fmt.Sprintf("%s/%s/%s/%s", host.provider, host.model, name, row.name), func(t *testing.T) {
+					setMidConvSystemRow(t, row.row, host.provider)
 					turnN := requestRoundTrip(t, midConvTurnBody(host.model, head))
 					turnN1 := requestRoundTrip(t, midConvTurnBody(host.model, head+reply))
+					// The exact bytes of each form: the original text when native, the full envelope when wrapped.
+					want := func(text string) string {
+						if row.role == "user" {
+							return inlinedText(text)
+						}
+						return text
+					}
 
 					roleN, textN := reminderForm(t, turnN, r1)
 					roleN1, textN1 := reminderForm(t, turnN1, r1)
-					assert.Equal(t, "system", roleN, "turn N must send the tail reminder natively")
+					assert.Equal(t, row.role, roleN, "turn N sent the tail reminder in the wrong form")
+					assert.Equal(t, want(r1), textN, "turn N sent the tail reminder with the wrong text")
 					assert.Equal(t, roleN, roleN1, "reminder changed role between turns: %s", gjson.GetBytes(turnN1, "messages").Raw)
 					assert.Equal(t, textN, textN1, "reminder changed text between turns")
-					role2, _ := reminderForm(t, turnN1, r2)
-					assert.Equal(t, "system", role2, "the new tail reminder must be native")
+					role2, text2 := reminderForm(t, turnN1, r2)
+					assert.Equal(t, row.role, role2, "the new tail reminder is in the wrong form")
+					assert.Equal(t, want(r2), text2, "the new tail reminder has the wrong text")
 				})
 			}
 		}
