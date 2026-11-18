@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -60,6 +62,75 @@ func TestParseGeminiError_RoundTripToGeminiError(t *testing.T) {
 	}
 	if geminiErr.Error.Status != "RESOURCE_EXHAUSTED" {
 		t.Fatalf("expected status RESOURCE_EXHAUSTED to survive round trip, got %q", geminiErr.Error.Status)
+	}
+}
+
+// TestToGeminiError_CodeAndStatusMatchHTTPStatus pins AIP-193's shape: code is the HTTP
+// status the response is written with, and status is the google.rpc.Code name for it.
+func TestToGeminiError_CodeAndStatusMatchHTTPStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        *schemas.BifrostError
+		wantCode   int
+		wantStatus string
+	}{
+		{
+			name:       "caller error without status code",
+			err:        &schemas.BifrostError{Error: &schemas.ErrorField{Message: "transcription input not provided for transcription request"}},
+			wantCode:   400,
+			wantStatus: "INVALID_ARGUMENT",
+		},
+		{
+			name:       "bifrost internal error without status code",
+			err:        &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "boom"}},
+			wantCode:   500,
+			wantStatus: "INTERNAL",
+		},
+		{
+			name:       "non-google type is replaced",
+			err:        &schemas.BifrostError{StatusCode: new(401), Error: &schemas.ErrorField{Type: new("authentication_error"), Message: "bad key"}},
+			wantCode:   401,
+			wantStatus: "UNAUTHENTICATED",
+		},
+		{
+			name:       "google status from upstream is kept",
+			err:        &schemas.BifrostError{StatusCode: new(400), Error: &schemas.ErrorField{Type: new("FAILED_PRECONDITION"), Message: "billing"}},
+			wantCode:   400,
+			wantStatus: "FAILED_PRECONDITION",
+		},
+		{
+			name:       "status without a google.rpc.Code pairing",
+			err:        &schemas.BifrostError{StatusCode: new(502), Error: &schemas.ErrorField{Message: "bad gateway"}},
+			wantCode:   502,
+			wantStatus: "UNKNOWN",
+		},
+		{
+			name:       "OK type is not kept on an error",
+			err:        &schemas.BifrostError{StatusCode: new(503), Error: &schemas.ErrorField{Type: new("OK"), Message: "mislabelled"}},
+			wantCode:   503,
+			wantStatus: "UNAVAILABLE",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToGeminiError(tc.err)
+			if got == nil || got.Error == nil {
+				t.Fatal("expected non-nil gemini error")
+			}
+			if got.Error.Code != tc.wantCode || got.Error.Code != tc.err.EffectiveHTTPStatus() {
+				t.Fatalf("code = %d, want %d (HTTP status %d)", got.Error.Code, tc.wantCode, tc.err.EffectiveHTTPStatus())
+			}
+			if got.Error.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Error.Status, tc.wantStatus)
+			}
+			body, err := sonic.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), `"details"`) {
+				t.Fatalf("details must be omitted when empty, got %s", body)
+			}
+		})
 	}
 }
 

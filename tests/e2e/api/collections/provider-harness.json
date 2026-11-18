@@ -1128,6 +1128,54 @@
               ]
             }
           }
+        },
+        {
+          "name": "[EXPECT-400] gemini/gemini-2.5-flash /genai Bifrost-side rejection uses Google's error shape: code is the HTTP status and status is INVALID_ARGUMENT (genai-error-shape)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{ \"text\": \"unterminated\""
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost rejects the malformed body itself. Google's shape (AIP-193) puts the HTTP status in",
+                  "// error.code and the google.rpc.Code name in error.status; Bifrost used to send status \"\".",
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.equal(400); });",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var err = j.error || {};",
+                  "pm.test('error.code matches the HTTP status', function () { pm.expect(err.code, pm.response.text().slice(0, 500)).to.equal(pm.response.code); });",
+                  "pm.test('error.status is INVALID_ARGUMENT', function () { pm.expect(err.status, pm.response.text().slice(0, 500)).to.equal('INVALID_ARGUMENT'); });",
+                  "pm.test('error.details is omitted, not null', function () { pm.expect(Object.prototype.hasOwnProperty.call(err, 'details'), pm.response.text().slice(0, 500)).to.equal(false); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

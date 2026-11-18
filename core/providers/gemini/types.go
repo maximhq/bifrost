@@ -2841,7 +2841,7 @@ type GeminiGenerationErrorStruct struct {
 	Code    int                            `json:"code"`
 	Message string                         `json:"message"`
 	Status  string                         `json:"status"`
-	Details []GeminiGenerationErrorDetails `json:"details"`
+	Details []GeminiGenerationErrorDetails `json:"details,omitempty"`
 }
 
 type GeminiGenerationErrorDetails struct {
