@@ -50,6 +50,11 @@ func TestSubquadratic(t *testing.T) {
 			Embedding:             false,
 			ListModels:            true,
 			Decision:              true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false, // SubQ has no download endpoint
 		},
 	}
 

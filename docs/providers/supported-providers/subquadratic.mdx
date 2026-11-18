@@ -115,7 +115,7 @@ Reasoning content maps onto Bifrost's existing `message.reasoning` / delta reaso
 
 # 2. Responses API
 
-`POST /v1/responses` is native on SubQ. Bifrost applies the same effort rule: `reasoning.effort: "none"` is dropped. Temperature on Responses is accepted and ignored by SubQ, so Bifrost leaves it alone.
+`POST /v1/responses` is native on SubQ. Bifrost applies the same effort and tool-choice rules as Chat Completions: `reasoning.effort: "none"` is dropped, and forced/`required` `tool_choice` values are downgraded to `"auto"`. Temperature on Responses is accepted and ignored by SubQ, so Bifrost leaves it alone.
 
 When the Responses input includes images, Bifrost converts the request to Chat Completions and sets the Responses-to-chat fallback context key so the rest of the pipeline stays consistent.
 

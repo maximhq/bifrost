@@ -1190,6 +1190,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// SubQ tool_choice accepts only "auto" or "none". Downgrade required/forced
+		// choices to "auto" (lossy, same as Chat Completions) rather than 400.
+		if bifrostReq.Provider == schemas.Subquadratic {
+			applySubquadraticResponsesToolChoice(req)
+		}
+
 		effort := ""
 		if req.ResponsesParameters.Reasoning != nil &&
 			req.ResponsesParameters.Reasoning.Effort != nil {
@@ -1307,6 +1313,37 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // Gated on the OpenAI-family name rather than caps.SupportsReasoning:
 // this asks whether the API rejects the field, which is not the same question for
 // xAI/Groq.
+// applySubquadraticResponsesToolChoice rewrites tool_choice for SubQ's Responses
+// contract: only "auto" and "none" are accepted. Forced/required choices become
+// "auto", matching Chat Completions' applySubquadraticCompatibility.
+func applySubquadraticResponsesToolChoice(req *OpenAIResponsesRequest) {
+	if req == nil || req.ToolChoice == nil {
+		return
+	}
+	tc := req.ToolChoice
+	if tc.ResponsesToolChoiceStr != nil {
+		switch schemas.ResponsesToolChoiceType(*tc.ResponsesToolChoiceStr) {
+		case schemas.ResponsesToolChoiceTypeNone, schemas.ResponsesToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAuto)),
+			}
+			return
+		}
+	}
+	if tc.ResponsesToolChoiceStruct != nil {
+		switch tc.ResponsesToolChoiceStruct.Type {
+		case schemas.ResponsesToolChoiceTypeNone, schemas.ResponsesToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAuto)),
+			}
+		}
+	}
+}
+
 func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
 	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
 	// An outright unsupported_fields entry outranks the conditional label: the
