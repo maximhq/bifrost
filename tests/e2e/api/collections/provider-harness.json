@@ -341407,6 +341407,7 @@
                   "pm.test('alias-limit: the alias counts against the limit on the model it stands for', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(429);",
                   "  pm.expect(pm.response.text(), 'blocked as a model, not as a limit: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(pm.response.text(), 'not a governance rate-limit refusal: ' + pm.response.text()).to.match(/\"(rate_limited|request_limited|token_limited)\"/);",
                   "});"
                 ]
               }
