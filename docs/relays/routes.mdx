@@ -336,6 +336,12 @@ A call is refused with `400`, before it reaches the API, when Bifrost cannot gua
 
 Compressed bodies (`Content-Encoding: gzip`, `br`, `deflate` or `zstd`) work: Bifrost decompresses every request before it reaches a relay. The fields are set before anything else reads the body, so the [price](./pricing), the Relay Logs row and the API all see the body that was sent.
 
+<Warning>
+Do not put credentials in body overrides. Values are stored as plain text, returned by the relays API to anyone who can read the relay, and recorded in Relay Logs with the request body. If the API also accepts its key in a header or the query string, use the relay's [credential](./configuration#authentication) there instead.
+</Warning>
+
+To stop forcing a field, remove it. A route cannot drop a field the relay sets; it can only set the same path to another value, such as `"include_usage": false`.
+
 ---
 
 ## Which calls are charged
