@@ -123,10 +123,10 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	// operator's, as a passthrough call's caller header replaces the extra header.
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	route := e.matchRoute(method, path, headers)
-	usage, billable := e.usage, billableByDefault(method, nil)
+	usage, billable, forced := e.usage, billableByDefault(method, nil), compileBodyOverrides(cfg.BodyOverrides)
 	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}
 	if route != nil {
-		usage, billable = route.usage, route.billable
+		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
 		for i := range e.routes {
 			if &e.routes[i] == route {
 				out.RouteIndex = schemas.Ptr(i)
@@ -155,6 +155,15 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 			out.Notes = append(out.Notes, "no route matches and skip_route_check is off: the call is refused with 404")
 		}
 		return out, nil
+	}
+	// Forced fields go in first, as in Serve, so the model and request-side units are read off the sent body.
+	reqBody, created, err := applyBodyOverrides(forced, method, reqBody)
+	if err != nil {
+		out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+		return out, nil
+	}
+	if created {
+		contentType = "application/json"
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.
 	if out.ModelPath != "" && out.ModelSource == schemas.RelayModelFromQuery {

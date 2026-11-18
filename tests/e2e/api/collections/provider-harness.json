@@ -297594,6 +297594,103 @@
               }
             }
           ]
+        },
+        {
+          "name": "Body overrides: the usage preview prices the body the relay sends",
+          "description": "POST /api/relays/usage-preview with an unsaved relay whose /translate route forces text: \"forced text\" (11 characters) and prices request-side characters, under a relay that forces model: tavily-basic. The live relay sets forced fields before it reads the model or measures the request, so the preview must too: the sample's own text (2 characters) and model are replaced, and a body the relay would refuse is reported as a 400. No upstream is called.",
+          "item": [
+            {
+              "name": "the preview measures and reads the forced fields, not the sample's - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('preview forced fields: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var out = pm.response.json();",
+                      "pm.test('preview forced fields: request-side units come from the forced text', function () {",
+                      "  var dump = JSON.stringify(out);",
+                      "  pm.expect(out.units, dump).to.eql(11);",
+                      "  pm.expect(Math.abs(out.cost - 0.11) < 1e-9, 'cost should be 0.11: ' + dump).to.be.true;",
+                      "  pm.expect(out.model, dump).to.eql('tavily-basic');",
+                      "  pm.expect(out.counted, dump).to.eql(true);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/usage-preview",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "usage-preview"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"config\": {\n    \"name\": \"harness-preview-forced\",\n    \"base_url\": \"https://api.example.com\",\n    \"auth\": {\n      \"type\": \"bearer\"\n    },\n    \"body_overrides\": {\n      \"model\": \"tavily-basic\"\n    },\n    \"usage\": {\n      \"model_path\": \"model\"\n    },\n    \"routes\": [\n      {\n        \"method\": \"POST\",\n        \"path\": \"/translate\",\n        \"body_overrides\": {\n          \"text\": \"forced text\"\n        },\n        \"usage\": {\n          \"units_source\": \"request\",\n          \"units_path\": \"text\",\n          \"units_measure\": \"chars\",\n          \"cost_per_unit\": 0.01\n        }\n      },\n      {\n        \"method\": \"POST\",\n        \"path\": \"/search\"\n      }\n    ]\n  },\n  \"sample\": {\n    \"method\": \"POST\",\n    \"path\": \"/translate\",\n    \"request_body\": \"{\\\"text\\\":\\\"hi\\\",\\\"model\\\":\\\"mine\\\"}\"\n  }\n}"
+                }
+              }
+            },
+            {
+              "name": "the preview reports that the relay refuses a body it cannot set the forced fields in - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('preview refused body: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var out = pm.response.json();",
+                      "pm.test('preview refused body: not counted, and the 400 is explained', function () {",
+                      "  var dump = JSON.stringify(out);",
+                      "  pm.expect(out.counted, dump).to.eql(false);",
+                      "  pm.expect((out.notes || []).join('\\n'), dump).to.include('refuses this request with 400');",
+                      "  pm.expect((out.notes || []).join('\\n'), dump).to.include('must be a JSON object');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/usage-preview",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "usage-preview"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"config\": {\n    \"name\": \"harness-preview-forced\",\n    \"base_url\": \"https://api.example.com\",\n    \"auth\": {\n      \"type\": \"bearer\"\n    },\n    \"body_overrides\": {\n      \"model\": \"tavily-basic\"\n    },\n    \"usage\": {\n      \"model_path\": \"model\"\n    },\n    \"routes\": [\n      {\n        \"method\": \"POST\",\n        \"path\": \"/translate\",\n        \"body_overrides\": {\n          \"text\": \"forced text\"\n        },\n        \"usage\": {\n          \"units_source\": \"request\",\n          \"units_path\": \"text\",\n          \"units_measure\": \"chars\",\n          \"cost_per_unit\": 0.01\n        }\n      },\n      {\n        \"method\": \"POST\",\n        \"path\": \"/search\"\n      }\n    ]\n  },\n  \"sample\": {\n    \"method\": \"POST\",\n    \"path\": \"/search\",\n    \"request_content_type\": \"text/plain\",\n    \"request_body\": \"query=x\"\n  }\n}"
+                }
+              }
+            }
+          ]
         }
       ]
     },

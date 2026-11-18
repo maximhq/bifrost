@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -235,6 +236,33 @@ func TestPreviewUsage(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, ignoring.ExtractedCost)
 		assert.InDelta(t, 0.01, ignoring.Cost, 1e-9, "only the operator's own fee remains")
+	})
+	t.Run("forced body fields are measured and read as the relay sends them", func(t *testing.T) {
+		cfg := &schemas.RelayConfig{
+			BodyOverrides: map[string]json.RawMessage{"model": json.RawMessage(`"tavily-basic"`)},
+			Usage:         &schemas.RelayUsageConfig{ModelPath: "model"},
+			Routes: []schemas.RelayRouteConfig{
+				{Method: "POST", Path: "/translate", BodyOverrides: map[string]json.RawMessage{"text": json.RawMessage(`"forced text"`)},
+					Usage: &schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsPath: "text", UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.01)}},
+				{Method: "POST", Path: "/search"},
+			},
+		}
+		out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/translate", RequestBody: `{"text":"hi","model":"mine"}`}, false)
+		require.NoError(t, err)
+		require.NotNil(t, out.Units)
+		assert.InDelta(t, 11, *out.Units, 0, "the forced text is what the relay measures")
+		assert.InDelta(t, 0.11, out.Cost, 1e-9)
+		assert.Equal(t, "tavily-basic", out.Model, "the route inherits the relay's forced model")
+
+		out, err = previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/search"}, false)
+		require.NoError(t, err)
+		assert.Equal(t, "tavily-basic", out.Model, "an empty POST gets a created body, as on the wire")
+
+		out, err = previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/search", RequestContentType: "text/plain", RequestBody: "query=x"}, false)
+		require.NoError(t, err)
+		assert.False(t, out.Counted)
+		assert.Contains(t, notes(out), "refuses this request with 400")
+		assert.Contains(t, notes(out), "must be a JSON object")
 	})
 	t.Run("invalid config is refused", func(t *testing.T) {
 		_, err := previewUsage(&schemas.RelayConfig{SkipRouteCheck: true, Auth: schemas.RelayAuthConfig{Type: "magic"}}, nil, UsagePreviewInput{Method: "POST", Path: "/"}, false)
