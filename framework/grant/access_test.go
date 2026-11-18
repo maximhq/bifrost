@@ -1860,13 +1860,47 @@ func TestAccess_KeyScopedMatcherAndAliasTargetsSeeThePermitsKeys(t *testing.T) {
 			assert.ElementsMatch(t, []string{"aliased"}, c.KeyIDs)
 		}
 	})
-	t.Run("two provider permits for the provider: every key", func(t *testing.T) {
+	t.Run("two provider permits for the provider: the union of their keys", func(t *testing.T) {
 		seen = nil
 		access := NewAccess(held(keyed(
 			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}},
 			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"titan-*"}, KeyIDs: []string{"plain"}},
 		)), "", nil, Intersect, nil).WithKeyScopedMatcher(matcher)
 		assert.False(t, access.IsModelAllowed("bedrock", "best-model"), "the plain permit's key could serve the name as written")
+		require.NotEmpty(t, seen)
+		assert.ElementsMatch(t, []string{"aliased", "plain"}, seen[0])
+	})
+	t.Run("two restricted provider permits: a key neither allows does not veto the alias", func(t *testing.T) {
+		// Keys a and b map the alias to an allowed model; key c has no alias, but no permit lets it serve.
+		aliasedOnAB := func(_, model string, _, keyIDs []string) bool {
+			if model != "best-model" || len(keyIDs) == 0 {
+				return false
+			}
+			for _, id := range keyIDs {
+				if id != "a" && id != "b" {
+					return false
+				}
+			}
+			return true
+		}
+		access := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"a"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"b"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(aliasedOnAB)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		withC := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"a"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"b", "c"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(aliasedOnAB)
+		assert.False(t, withC.IsModelAllowed("bedrock", "best-model"), "key c can serve the request and has no alias")
+	})
+	t.Run("an unrestricted provider permit among several: every key", func(t *testing.T) {
+		seen = nil
+		access := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"titan-*"}, KeyIDs: []string{"*"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(matcher)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
 		require.NotEmpty(t, seen)
 		assert.Equal(t, []string{"*"}, seen[0])
 	})

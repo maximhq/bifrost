@@ -1059,18 +1059,24 @@ var allKeyIDs = schemas.WhiteList{"*"}
 
 // keyIDsServing is the key restriction a request permitted by one of pps on provider is served
 // under. Key selection may use the keys of every provider permit the permit holds for the provider
-// (see unionKeysHeldBy), so with more than one it answers every key, the conservative choice for an
-// alias check that has to hold on each key that can serve the name.
+// (see unionKeysHeldBy), so with more than one it answers the union of their keys: every key when
+// one of them is unrestricted, otherwise only the keys some permit names, so a key no permit lets
+// serve the request cannot veto an alias. One provider permit, the usual case, allocates nothing.
 func keyIDsServing(pps []schemas.ProviderPermit, provider string) schemas.WhiteList {
 	var keyIDs schemas.WhiteList
 	n := 0
 	for i := range pps {
-		if pps[i].Provider == provider {
-			keyIDs = pps[i].KeyIDs
-			n++
+		if pps[i].Provider != provider {
+			continue
 		}
+		if n == 0 {
+			keyIDs = pps[i].KeyIDs
+		} else {
+			keyIDs = composeKeyIDs(keyIDs, pps[i].KeyIDs, Union)
+		}
+		n++
 	}
-	if n != 1 {
+	if n == 0 {
 		return allKeyIDs
 	}
 	return keyIDs
