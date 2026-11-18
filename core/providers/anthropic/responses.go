@@ -4474,7 +4474,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Other code interpreter lifecycle events have no Anthropic equivalent.
 		return nil
 
-	case schemas.ResponsesStreamResponseTypeProviderRawEvent:
+	case schemas.ResponsesStreamResponseTypeProviderRawEvent, schemas.ResponsesStreamResponseTypeInteractionEvent:
 		// Raw-only carrier for an unmodeled provider event; it has no typed
 		// rendering. The integration's passthrough branch forwards the raw frame
 		// before this converter runs, so reaching here means the surface cannot

@@ -2849,6 +2849,9 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 				}
 				r.StartingAfter = schemas.Ptr(n)
 			}
+			if raw := ctx.QueryArgs().Peek("last_event_id"); len(raw) > 0 {
+				r.LastEventID = schemas.Ptr(string(raw))
+			}
 			if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
 				b, err := strconv.ParseBool(string(raw))
 				if err != nil {

@@ -19,6 +19,16 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	return acc
 }
 
+// TestDeepCopyResponsesStreamResponseCopiesEventID pins that a copied chunk's resume cursor is its own.
+func TestDeepCopyResponsesStreamResponseCopiesEventID(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{EventID: schemas.Ptr("e1")}
+	copied := deepCopyResponsesStreamResponse(original)
+	require.NotNil(t, copied.EventID)
+	*copied.EventID = "e2"
+	require.Equal(t, "e1", *original.EventID)
+	require.Nil(t, deepCopyResponsesStreamResponse(&schemas.BifrostResponsesStreamResponse{}).EventID)
+}
+
 func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
 	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
 		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
@@ -827,4 +837,31 @@ func TestPassthroughStreamCarriesServiceTierFromUsage(t *testing.T) {
 	require.NotNil(t, processed.Data)
 	require.NotNil(t, processed.Data.ServiceTier)
 	require.Equal(t, schemas.BifrostServiceTierDefault, *processed.Data.ServiceTier)
+}
+
+// TestBuildResponsesMessageKeepsStreamedMedia pins that an answer's media, which has no delta event, is kept
+// beside the text that streamed, and is not repeated when the item already holds it.
+func TestBuildResponsesMessageKeepsStreamedMedia(t *testing.T) {
+	media := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,QQ==")}}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hi")}
+	item := func(status string, blocks ...schemas.ResponsesMessageContentBlock) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Status: &status, Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	chunk := func(i int, resp *schemas.BifrostResponsesStreamResponse) *ResponsesStreamChunk {
+		return &ResponsesStreamChunk{ChunkIndex: i, StreamResponse: resp}
+	}
+	zero := 0
+	messages := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks([]*ResponsesStreamChunk{
+		chunk(0, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item("in_progress")}),
+		chunk(1, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeContentPartAdded, OutputIndex: &zero, ContentIndex: &zero, ItemID: schemas.Ptr("msg_1"), Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("")}}),
+		chunk(2, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: &zero, ContentIndex: &zero, ItemID: schemas.Ptr("msg_1"), Delta: schemas.Ptr("hi")}),
+		chunk(3, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", text, media)}),
+		chunk(4, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", text, media)}),
+	})
+	if len(messages) != 1 || messages[0].Content == nil || len(messages[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if blocks := messages[0].Content.ContentBlocks; *blocks[0].Text != "hi" || blocks[1].ResponsesInputMessageContentBlockImage == nil {
+		t.Errorf("want the text and its image, got %+v", blocks)
+	}
 }

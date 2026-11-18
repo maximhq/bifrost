@@ -173,6 +173,28 @@ func TestExtractGeminiPassthroughUsage(t *testing.T) {
 				}
 			},
 		},
+		{
+			// Live code_execution run: total_tokens counts the tool use prompt tokens, which
+			// Google bills as input, so they are prompt tokens here too.
+			name: "interactions tool use prompt tokens are prompt tokens",
+			path: "/v1beta/interactions",
+			body: `{"model":"gemini-3-flash-preview","usage":{"total_tokens":1471,"total_input_tokens":339,"total_output_tokens":218,"total_tool_use_tokens":445,"total_thought_tokens":469}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				geminiMustLLM(t, u, 784, 687, 1471)
+			},
+		},
+		{
+			// Live google_search run: grounding_tool_count is the per-query search fee on Gemini 3.
+			name: "interactions google search count is the search fee",
+			path: "/v1beta/interactions",
+			body: `{"model":"gemini-3-flash-preview","usage":{"total_tokens":332,"total_input_tokens":46,"total_output_tokens":47,"total_thought_tokens":239,"grounding_tool_count":[{"type":"google_search","count":3}]}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				geminiMustLLM(t, u, 46, 286, 332)
+				if u.LLMUsage.ToolUsage == nil || u.LLMUsage.ToolUsage.WebSearch == nil || u.LLMUsage.ToolUsage.WebSearch.NumRequests != 3 {
+					t.Fatalf("tool usage = %+v, want 3 web searches", u.LLMUsage.ToolUsage)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -420,5 +442,28 @@ func TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling(t *testing.T) {
 	)
 	if imagen == nil || imagen.ImageUsage == nil {
 		t.Fatalf("imagen :predict usage = %+v, want per-image usage", imagen)
+	}
+}
+
+// TestInteractionsStreamObserverPricesSearchesWithStreamModel pins that a completed frame without
+// a model is priced with the model the stream reported earlier: three searches on a Gemini 3 run
+// bill three units, not one.
+func TestInteractionsStreamObserverPricesSearchesWithStreamModel(t *testing.T) {
+	created := []byte(`{"event_type":"interaction.created","interaction":{"id":"int_s","model":"gemini-3-flash-preview","status":"in_progress"}}`)
+	completed := []byte(`{"event_type":"interaction.completed","interaction":{"id":"int_s","status":"completed","usage":{"total_input_tokens":46,"total_output_tokens":47,"total_tokens":93,"grounding_tool_count":[{"type":"google_search","count":3}]}}}`)
+	o := gemini.NewInteractionsStreamObserver(&schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"})
+	resp := &schemas.BifrostPassthroughResponse{}
+	for _, e := range [][]byte{created, completed} {
+		if u := o.Observe(e); u != nil {
+			resp.PassthroughUsage = u
+		}
+	}
+	o.Finalize(resp)
+	job := resp.ProviderJob
+	if job == nil || job.Usage == nil || job.Usage.LLMUsage == nil || job.Usage.LLMUsage.ToolUsage == nil || job.Usage.LLMUsage.ToolUsage.WebSearch == nil {
+		t.Fatalf("job=%+v, want a finished run with web search usage", job)
+	}
+	if n := job.Usage.LLMUsage.ToolUsage.WebSearch.NumRequests; n != 3 {
+		t.Fatalf("search units = %d, want 3 for a Gemini 3 run", n)
 	}
 }

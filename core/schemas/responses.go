@@ -78,8 +78,9 @@ type BifrostResponsesRetrieveRequest struct {
 	StartingAfter      *int          `json:"starting_after,omitempty"`
 	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
 	// Stream replays the stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
-	Stream         *bool  `json:"stream,omitempty"`
-	RawRequestBody []byte `json:"-"`
+	Stream         *bool   `json:"stream,omitempty"`
+	LastEventID    *string `json:"last_event_id,omitempty"` // Gemini Interactions: resume a replayed stream after this event
+	RawRequestBody []byte  `json:"-"`
 }
 
 // GetRawRequestBody implements raw body passthrough when enabled on context.
@@ -279,6 +280,7 @@ type BifrostResponsesResponse struct {
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
+	ProviderJob          *BifrostPassthroughJob              `json:"-"` // a stored run (Gemini Interaction) this response reports on, settled once by job accounting
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -4539,6 +4541,9 @@ const (
 	ResponsesStreamResponseTypeProviderRawEvent ResponsesStreamResponseType = "response.provider_raw_event"
 	// SafeguardsUpdate carries an Anthropic classifier event, omitted on OpenAI surfaces.
 	ResponsesStreamResponseTypeSafeguardsUpdate ResponsesStreamResponseType = "response.safeguards_update"
+	// InteractionEvent carries a Gemini Interactions event with no Responses form to the native /genai
+	// route, omitted on OpenAI surfaces.
+	ResponsesStreamResponseTypeInteractionEvent ResponsesStreamResponseType = "response.interaction_event"
 
 	ResponsesStreamResponseTypeCreated    ResponsesStreamResponseType = "response.created"
 	ResponsesStreamResponseTypeInProgress ResponsesStreamResponseType = "response.in_progress"
@@ -4679,6 +4684,8 @@ type BifrostResponsesStreamResponse struct {
 	Message *string                 `json:"message,omitempty"`
 	Param   *string                 `json:"param,omitempty"`
 
+	EventID *string `json:"event_id,omitempty"` // Gemini Interactions: the cursor last_event_id resumes after
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 
 	// SafeguardResults carries the Claude Code auto-mode classifier verdicts found
@@ -4760,13 +4767,14 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	}
 
 	// Filter out non-OpenAI response types
-	if resp.Type == ResponsesStreamResponseTypePing || resp.Type == ResponsesStreamResponseTypeProviderRawEvent || resp.Type == ResponsesStreamResponseTypeSafeguardsUpdate {
+	if resp.Type == ResponsesStreamResponseTypePing || resp.Type == ResponsesStreamResponseTypeProviderRawEvent || resp.Type == ResponsesStreamResponseTypeSafeguardsUpdate || resp.Type == ResponsesStreamResponseTypeInteractionEvent {
 		return nil
 	}
 
 	result := &BifrostResponsesStreamResponse{
 		Type:           resp.Type,
 		SequenceNumber: resp.SequenceNumber,
+		EventID:        resp.EventID,
 	}
 
 	// Copy nested response (applies defaults)
