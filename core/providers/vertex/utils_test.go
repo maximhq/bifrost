@@ -316,7 +316,7 @@ func TestRecordVertexProjectFromUpstreamTarget(t *testing.T) {
 	} {
 		tracer.span = &schemas.Span{}
 		recordVertexProject(ctx, "https://aiplatform.googleapis.com"+test.path)
-		if got := schemas.GetStringAttr(tracer.span.Attributes, "bifrost.vertex.project_id"); got != test.project {
+		if got := schemas.GetStringAttr(tracer.span.Attributes, schemas.AttrBifrostVertexProjectID); got != test.project {
 			t.Errorf("recorded project = %q, want %q", got, test.project)
 		}
 	}

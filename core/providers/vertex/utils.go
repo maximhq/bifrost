@@ -31,7 +31,7 @@ func recordVertexProject(ctx *schemas.BifrostContext, target string) {
 		return
 	}
 	if handle := tracer.GetSpanHandleByID(traceID, &spanID); handle != nil {
-		tracer.SetAttribute(handle, "bifrost.vertex.project_id", project)
+		tracer.SetAttribute(handle, schemas.AttrBifrostVertexProjectID, project)
 	}
 }
 
