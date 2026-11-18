@@ -1769,6 +1769,38 @@ func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
 	t.Run("without a reported key every checked target is charged", func(t *testing.T) {
 		assert.Equal(t, map[string]int64{"rl-gpt-4o": 1, "rl-gpt-4o-mini": 1}, run(t, ""))
 	})
+	// A request that fails after the provider processed tokens is still billed for them, but core
+	// clears the selected key before the error reaches the post-hook. The attempt trail still names
+	// the key of the attempt that failed, so only that key's target is charged.
+	t.Run("a terminal error with billed usage is charged against the failed attempt's target", func(t *testing.T) {
+		plugin, local := newPlugin(t)
+		ctx := presentCtx(mcpTestVKValue)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "best-gpt"}}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		// As core leaves it after a final error: no selected key, the trail naming each attempt's key.
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "")
+		ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{{Attempt: 0, KeyID: "k1"}, {Attempt: 1, KeyID: "k2"}})
+		failed := &schemas.BifrostError{
+			Error: &schemas.ErrorField{Message: "upstream failed after an earlier turn"},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider: schemas.OpenAI, OriginalModelRequested: "best-gpt", RequestType: schemas.ChatCompletionRequest,
+				BilledUsage: &schemas.BifrostLLMUsage{PromptTokens: 40, TotalTokens: 40},
+			},
+		}
+		_, _, err = plugin.PostLLMHook(ctx, nil, failed)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+		tokens := map[string]int64{}
+		for _, id := range []string{"rl-gpt-4o", "rl-gpt-4o-mini"} {
+			rl := local.GetGovernanceData(context.Background()).RateLimits[id]
+			require.NotNil(t, rl)
+			tokens[id] = rl.TokenCurrentUsage
+		}
+		assert.Equal(t, map[string]int64{"rl-gpt-4o": 0, "rl-gpt-4o-mini": 40}, tokens)
+	})
 }
 
 // The access a literal model name is checked against is the request's own access with only its

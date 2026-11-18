@@ -2456,7 +2456,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 // The check runs before key selection, so it answers to the limits of every model the eligible keys
 // map the alias to. Only one of them ran, so charging the rest would spend limits of models that
 // never ran. When the settled limits carried alias targets for this (provider, model) and core
-// reports the key that ran, the limits are gathered again with that key's targets alone, and the
+// reports the key that ran (see keyThatRan), the limits are gathered again with that key's targets alone, and the
 // settled list is kept only where the two agree: nothing is charged that was not checked. Without
 // alias targets, or without a reported key, the settled list is returned as is. A request naming no
 // alias pays one context read.
@@ -2469,7 +2469,7 @@ func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, prov
 	if ra := schemas.GetResolvedAlias(ctx); len(settled.targets) == 1 && ra != nil && ra.Config != nil && ra.Config.ModelID == settled.targets[0] {
 		return budgets, rateLimits
 	}
-	keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	keyID := keyThatRan(ctx)
 	g := ctx.Grant()
 	if keyID == "" || g == nil {
 		return budgets, rateLimits
@@ -2481,6 +2481,19 @@ func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, prov
 		return budgets, rateLimits
 	}
 	return limitsAlsoIn(budgets, ranBudgets), limitsAlsoIn(rateLimits, ranRateLimits)
+}
+
+// keyThatRan is the key of the attempt being charged: the selected key, or, once core has cleared it
+// after a final error (which can still carry billed usage), the key the attempt trail's last record
+// names. Empty when neither says.
+func keyThatRan(ctx *schemas.BifrostContext) string {
+	if keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); keyID != "" {
+		return keyID
+	}
+	if trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); len(trail) > 0 {
+		return trail[len(trail)-1].KeyID
+	}
+	return ""
 }
 
 // limitsAlsoIn is the limits of settled whose IDs ran also names, in settled's order.
