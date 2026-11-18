@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports/v2
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0

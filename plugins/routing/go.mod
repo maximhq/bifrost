@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/routing
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
