@@ -38,7 +38,7 @@
 		"asyncJobTtl": "TTL des résultats de tâches asynchrones (secondes)",
 		"asyncJobTtlHelp": "Durée de vie par défaut des résultats de tâches asynchrones, en secondes. Les résultats sont automatiquement nettoyés à expiration.",
 		"bifrostUrl": "URL de Bifrost",
-		"bifrostUrlHelp": "L'URL à laquelle les clients joignent cette passerelle, y compris un éventuel chemin de base. Obligatoire pour <code0>/v1/mcp</code0> et les outils de configuration de Warp : leurs appels se comportent comme s'ils arrivaient ici, de sorte que les liens de leurs résultats pointent vers elle. Si le champ est vide, les deux sont désactivés ; l'en-tête Host envoyé par une requête n'est jamais utilisé à la place.",
+		"bifrostUrlHelp": "L'URL à laquelle les clients joignent cette passerelle, y compris un éventuel chemin de base. Obligatoire pour <code0>/v1/mcp</code0> : ses appels d'outils se comportent comme s'ils arrivaient ici, de sorte que les liens de leurs résultats pointent vers elle. Si le champ est vide, il est désactivé ; l'en-tête Host envoyé par une requête n'est jamais utilisé à la place.",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "URL OpenAPI",
 		"openapiUrlHelp": "La spécification OpenAPI à partir de laquelle <code0>/v1/mcp</code0> crée ses outils : une URL http(s), ou un chemin relatif au répertoire de l'application pour les installations isolées. Laissez vide pour lire la spécification publiée de cette version.",
