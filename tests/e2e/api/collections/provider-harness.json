@@ -346543,7 +346543,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -346591,7 +346591,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -346641,7 +346641,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_output_tokens\": 1024,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/7f355066418bb19c8ddfcee9dadb74c6500cff09/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
