@@ -450,6 +450,12 @@ should be re-tested through passthrough since the translation layer is bypassed.
 
 ---
 
+## Stream lifecycle
+
+- [ ] **Consumer processing must not trigger provider idle timeout (#10165)** — the current Newman collection cannot pause Bifrost's consumer between upstream reads. A request delay or a delayed upstream chunk tests a different condition; slow client reads alone do not deterministically exhaust all gateway/socket buffers. A harness regression needs a controlled gateway post-hook or a backpressure fixture that confirms no upstream read is pending. Covered locally by `TestIdleTimeoutReader_ConsumerPauseDoesNotTimeout`, `TestIdleTimeoutReader_HTTPConsumerPause`, and cancellation/timeout overlap tests in `core/providers/utils/idle_timeout_reader_test.go`; these are not a live gateway harness run.
+
+---
+
 ## Priority order for backlog burn-down
 
 1. **Cross-model feature variants** — biggest gap, highest leverage; ~20 new requests close most of the matrix
