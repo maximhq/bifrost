@@ -320470,6 +320470,9 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  var j = pm.response.json();",
                   "  pm.expect(j.extra_fields.provider).to.eql('wally');",
+                  "  var msg = (((j.choices || [])[0]) || {}).message || {};",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage.completion_tokens, 'no tokens generated: ' + pm.response.text()).to.be.above(0);",
                   "  pm.expect(j.usage.completion_tokens, 'cap not honored: ' + pm.response.text()).to.be.at.most(5);",
                   "});"
                 ]
