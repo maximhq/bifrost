@@ -340687,7 +340687,2934 @@
       ]
     },
     {
-      "name": "368. Chat stream usage isolation (#10139)",
+      "name": "368. Files API uploads streamed from the request (multipart upload stream)",
+      "description": "A Files API upload used to be copied in memory at every layer: the transport plugins rebuilt the parsed multipart form with Body() and copied it per phase, the /openai/files parser read the file into a []byte, the OpenAI provider rebuilt the multipart body in a buffer and copied it again, and passthrough rebuilt the form and copied it into the upstream request. A 55 MB upload grew the gateway by ~500 MiB, and parallel batch-input uploads OOM-killed pods.\n\nThe file now stays in the request's temp file and is streamed upstream with an exact Content-Length. These cases pin that a streamed upload still reaches OpenAI whole: the bytes OpenAI reports storing must equal the fixture size exactly (2215244 bytes), on the passthrough route and on the /openai integration route. Each upload is deleted afterwards.",
+      "item": [
+        {
+          "name": "368.1 openai /openai_passthrough/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamPassthroughFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.2 openai /openai/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamIntegrationFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.3 openai /openai_passthrough/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files/{{mpStreamPassthroughFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files",
+                "{{mpStreamPassthroughFileId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.4 openai /openai/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{mpStreamIntegrationFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{mpStreamIntegrationFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "369. Request bodies streamed or buffered by shape (request body stream)",
+      "description": "Regression suite for how the gateway reads request bodies. Multipart uploads are streamed: transport plugins see them as a BodySource instead of a copy, the /openai/files parser passes the file as a handle, OpenAI and Azure stream it upstream, passthrough streams the parsed form, and the server parses multipart from the connection instead of buffering 16 MB per file. Providers that need the bytes read them once. Every other body (JSON, larger than the 8 KB stream prefetch, gzip-compressed) is buffered as before.\n\nThe upload cases assert the provider stored exactly the fixture size (arxiv-1706.03762.pdf = 2215244 bytes, openai-batch-input.jsonl = 362 bytes) on every route and provider, that OpenAI parses a streamed JSONL as batch input, and that multipart passthrough streaming (stream=true transcription) still works. The connection cases send an upload that is refused before its body is read, then a normal request: a streaming server does not drain an unread body, so without the gateway draining it the next request on the connection would be parsed from leftover upload bytes. Every uploaded file is deleted at the end.",
+      "item": [
+        {
+          "name": "369.01 openai /openai/v1/files batch input jsonl upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch input upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai batch input upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(362); });",
+                  "pm.test('openai batch input upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiBatchInputId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.02 openai /openai/v1/batches accepts the streamed upload as batch input (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch from streamed upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai batch from streamed upload: references the uploaded file', function () { pm.expect(body.input_file_id, pm.response.text()).to.eql(pm.collectionVariables.get('rbsOpenaiBatchInputId')); });",
+                  "// A new batch reports 'validating' before OpenAI has parsed the input file, so wait (bounded) until",
+                  "// it leaves 'validating' and only then assert the streamed JSONL validated.",
+                  "function checkValidated(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/batches/' + body.id, method: 'GET' }, function (err, res) {",
+                  "    // Every poll must answer 200: an error status fails the case here instead of being retried.",
+                  "    if (err || res.code !== 200) {",
+                  "      pm.test('openai batch from streamed upload: validation poll ' + attempt + ' answered 200', function () { pm.expect.fail(err ? String(err) : (res.code + ' ' + res.text())); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.json();",
+                  "    if (j.status !== 'validating') {",
+                  "      pm.test('openai batch from streamed upload: OpenAI validated the JSONL (not failed)', function () { pm.expect(j.status, JSON.stringify(j)).to.not.eql('failed'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt >= 20) {",
+                  "      pm.test('openai batch from streamed upload: validation finished within 60s', function () { pm.expect.fail('batch ' + body.id + ' still validating: ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkValidated(attempt + 1); }, 3000);",
+                  "  });",
+                  "}",
+                  "checkValidated(1);",
+                  "pm.collectionVariables.set('rbsOpenaiBatchId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{rbsOpenaiBatchInputId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.03 openai /openai/v1/batches/{id}/cancel cancels the batch built from the streamed upload (request body stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI refuses to cancel a batch that already finished, and the collection-level check requires a 200",
+                  "// here. So look first: a batch that completed (or otherwise ended) between 369.02 and now has nothing to",
+                  "// cancel, and the cancel is skipped with that recorded. A retrieve error fails the case.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/batches/' + pm.collectionVariables.get('rbsOpenaiBatchId'), method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) {",
+                  "    pm.test('openai batch cancel: the batch can be retrieved before cancelling', function () { pm.expect.fail(err ? String(err) : (res.code + ' ' + res.text())); });",
+                  "    return;",
+                  "  }",
+                  "  var status = res.json().status;",
+                  "  if (['completed', 'failed', 'expired', 'cancelled'].indexOf(status) !== -1) {",
+                  "    pm.test('openai batch cancel: skipped, the batch already ended as ' + status, function () { pm.expect(status).to.be.a('string'); });",
+                  "    pm.execution.skipRequest();",
+                  "  }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch cancel: 200', function () { pm.expect(pm.response.json().id, pm.response.text()).to.eql(pm.collectionVariables.get('rbsOpenaiBatchId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{rbsOpenaiBatchId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{rbsOpenaiBatchId}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.04 openai /v1/files pdf upload with expires_after fields arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai pdf upload with expiry: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai pdf upload with expiry: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('openai pdf upload with expiry: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiPdfId', body.id);",
+                  "pm.test('openai pdf upload with expiry: the expires_after fields reached OpenAI', function () { pm.expect(body.expires_at, pm.response.text()).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[anchor]",
+                  "value": "created_at",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[seconds]",
+                  "value": "3600",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.05 azure /openai/v1/files pdf upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('azure pdf upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('azure pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAzurePdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "azure",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.06 gemini /openai/v1/files pdf upload read once for a provider that needs the bytes (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('gemini pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.test('gemini pdf upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.collectionVariables.set('rbsGeminiPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "gemini",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.07 anthropic /anthropic/v1/files pdf upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('anthropic pdf upload: the provider stored the whole file', function () { pm.expect(body.size_bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('anthropic pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAnthropicPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.08 anthropic /anthropic_passthrough/v1/files pdf upload read once arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic passthrough pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('anthropic passthrough pdf upload: the provider stored the whole file', function () { pm.expect(body.size_bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('anthropic passthrough pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAnthropicPassthroughPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.09 openai/gpt-4o-mini-transcribe /openai_passthrough/v1/audio/transcriptions stream=true streams a multipart upload (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai streamed transcription passthrough: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai streamed transcription passthrough: answered as an SSE stream', function () { pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text().slice(0, 300)).to.include('text/event-stream'); });",
+                  "pm.test('openai streamed transcription passthrough: the transcript completed', function () { pm.expect(pm.response.text(), pm.response.text().slice(0, 300)).to.include('transcript.text.done'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gpt-4o-mini-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.10 openai/whisper-1 /openai/v1/audio/transcriptions multipart upload is transcribed (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai transcription via drop-in: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai transcription via drop-in: has text', function () { pm.expect(pm.response.json().text, pm.response.text()).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.11 openai/whisper-1 /v1/audio/transcriptions multipart upload is transcribed (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai transcription via /v1: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai transcription via /v1: has text', function () { pm.expect(pm.response.json().text, pm.response.text()).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.12 openai/gpt-4o-mini /v1/chat/completions JSON body larger than the 8 KB stream prefetch (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai 12 KB JSON body: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai 12 KB JSON body: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request-12kb.json"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.13 openai/gpt-4o-mini /v1/chat/completions gzip-compressed JSON body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gzip JSON body: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai gzip JSON body: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request.json.gz"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.14 openai/gpt-4o-mini /openai/v1/chat/completions gzip-compressed JSON body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gzip JSON body via drop-in: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai gzip JSON body via drop-in: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request.json.gz"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.15 [EXPECT-405] openai upload to an unknown files route is refused without reading the body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 405, not 404: the dashboard's GET /{filepath:*} catch-all matches every path, so the router answers",
+                  "// a POST to a path no API route registers with Method Not Allowed.",
+                  "pm.collectionVariables.set('rbsUnknownRouteStatus', String(pm.response.code));",
+                  "pm.test('openai upload to unknown route: refused with 405 before the body was read', function () { pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(405); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/rbs-unknown/route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "rbs-unknown",
+                "route"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.16 openai/gpt-4o-mini /v1/chat/completions right after an unread upload is parsed intact (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.15, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.15', function () { pm.expect(pm.collectionVariables.get('rbsUnknownRouteStatus'), 'refusal status from 369.15').to.be.ok; });",
+                  "pm.test('openai chat after unread upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai chat after unread upload: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly the word: pong\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.17 [EXPECT-405] openai upload with the wrong method is refused without reading the body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rbsWrongMethodStatus', String(pm.response.code));",
+                  "pm.test('openai upload with wrong method: refused with 405 before the body was read', function () { pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(405); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.18 openai/gpt-4o-mini /openai/v1/chat/completions right after a refused upload is parsed intact (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.17, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.17', function () { pm.expect(pm.collectionVariables.get('rbsWrongMethodStatus'), 'refusal status from 369.17').to.be.ok; });",
+                  "pm.test('openai drop-in chat after refused upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai drop-in chat after refused upload: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly the word: pong\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.19 [EXPECT-400] openai /openai/v1/files upload without purpose is refused by the parser (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rbsParserRefusalStatus', String(pm.response.code));",
+                  "pm.test('openai upload without purpose: 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400); });",
+                  "pm.test('openai upload without purpose: names the missing field', function () { pm.expect(pm.response.text()).to.include('purpose'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.20 openai /openai/v1/files upload right after a parser refusal arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.19, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.19', function () { pm.expect(pm.collectionVariables.get('rbsParserRefusalStatus'), 'refusal status from 369.19').to.be.ok; });",
+                  "pm.test('openai upload after parser refusal: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai upload after parser refusal: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('openai upload after parser refusal: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiRetryPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.21 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiBatchInputId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiBatchInputId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.22 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiPdfId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.23 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiRetryPdfId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiRetryPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.24 azure deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsAzurePdfId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsAzurePdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.25 gemini deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsGeminiPdfId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsGeminiPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.26 anthropic deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{rbsAnthropicPdfId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{rbsAnthropicPdfId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.27 anthropic deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{rbsAnthropicPassthroughPdfId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{rbsAnthropicPassthroughPdfId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.28 openai/whisper-1 /openai_passthrough/v1/audio/transcriptions part without a filename keeps its Content-Type in the log summary (request body stream)",
+          "description": "A streamed passthrough upload is parsed by Go's ReadForm, which files every part without a filename under Value and drops its Content-Type, so the log summary could only guess from the bytes. A file sent without a filename (here the prompt part, sent as application/octet-stream with printable bytes) was logged as a text field. passthroughparse.ReadMultipartForm now records each value part's Content-Type while the form is parsed, the summary records a non-text part like a file (field, content_type, bytes), as the buffered summary does, and the part is forwarded with its Content-Type. Red before the change: fields.prompt holds RBS-OCTET-PROMPT-7f3a.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('octet value part: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('octet value part: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "      pm.test('octet value part: log read answered 200, or 404 until the log is written', function () { pm.expect.fail('log ' + reqId + ' read failed: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.passthrough_request_body) {",
+                  "      var s = JSON.parse(j.passthrough_request_body);",
+                  "      pm.test('octet value part: body logged as a form summary', function () { pm.expect(j.params && j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); pm.expect(s.fields && s.fields.model, j.passthrough_request_body).to.eql('whisper-1'); });",
+                  "      pm.test('octet value part: the part sent without a filename is recorded like a file, with its Content-Type', function () { var f = (s.files || []).filter(function (x) { return x.field === 'prompt'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].content_type, j.passthrough_request_body).to.eql('application/octet-stream'); pm.expect(f[0].bytes, j.passthrough_request_body).to.be.above(0); });",
+                  "      pm.test('octet value part: its bytes are not logged as a text field', function () { pm.expect(s.fields || {}, j.passthrough_request_body).to.not.have.property('prompt'); pm.expect(j.passthrough_request_body, 'summary').to.not.include('RBS-OCTET-PROMPT-7f3a'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('octet value part: log row carries the request body summary', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_request_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "RBS-OCTET-PROMPT-7f3a octet part without a filename",
+                  "type": "text",
+                  "contentType": "application/octet-stream"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.29 [EXPECT-400] openai /openai_passthrough/v1/files multipart body that does not parse is refused by the gateway (request body stream)",
+          "description": "A streamed multipart passthrough upload whose form does not parse (here the closing boundary is missing) used to fall back to Body(), which on a streamed request returns only what the failed parse left unread, so a truncated or empty body went upstream and the client got the provider's error. The gateway now refuses it with 400 and its own message before anything is forwarded. Red before the change: the error text is OpenAI's, not 'invalid multipart/form-data body'.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unparseable multipart: refused by the gateway with its own message', function () { pm.expect(pm.response.text(), 'status ' + pm.response.code).to.include('invalid multipart/form-data body'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data; boundary=rbsTruncatedBoundary"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nbatch\r\n--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.jsonl\"\r\nContent-Type: application/jsonl\r\n\r\n{\"custom_id\":\"r\"}\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "333. Virtual key allowed_models match key aliases (deepseek alias-allowlist) (#6620 / PR #8528)",
+      "description": "A key alias is a client-facing name for a provider model (here deepseek-v4-flash-anthropic stands for deepseek-v4-flash). Key aliases are resolved only at key selection, after governance has checked the request, so governance compared the alias name against allowed_models and refused a request for the alias even when the virtual key allowed the model it stands for (403 model_blocked, #6620). The check now also accepts a name that every enabled key of the provider maps to an allowed model; a key without the alias would send the name through as written, so one key mapping it is not enough, and the match is one way. A virtual key allows only deepseek-v4-flash. Requesting the alias of that model must be admitted; requesting the model by name still is; requesting the alias of a model the key does not allow (deepseek-v4-pro-anthropic) must still be refused with model_blocked. Red before the change: the alias request returned 403 model_blocked. The cases make two small live DeepSeek calls, and the run-scoped virtual key is deleted at the end.",
+      "item": [
+        {
+          "name": "deepseek alias-allowlist setup: create a virtual key that allows only deepseek-v4-flash - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasAllowVkId');",
+                  "  pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "  pm.collectionVariables.set('aliasAllowVkName', 'harness-alias-allowlist-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('aliasAllowVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-allowlist: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-allowlist: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasAllowVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasAllowVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasAllowVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"*\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted when the key allows the model the alias stands for - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: the alias of an allowed model is admitted by the virtual key', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash is still admitted by name (control) - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: the allowed model itself is admitted by the virtual key', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "[EXPECT-403] deepseek/deepseek-v4-pro-anthropic stays blocked: its alias resolves to a model the key does not allow - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: an alias of a model that is not allowed is refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not a governance refusal: ' + pm.response.text()).to.contain('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-allowlist cleanup: delete the virtual key - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasAllowVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasAllowVkId');",
+                  "  pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "  pm.collectionVariables.unset('aliasAllowVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasAllowVkId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "334. Key aliases carry the limits of the model they stand for; batch items and restricted keys (deepseek alias-limit) (#6620 / PR #8528)",
+      "description": "A key alias (deepseek-v4-flash-anthropic stands for deepseek-v4-flash) is resolved only at key selection, after governance has run. These cases pin what follows from that, for #6620 / PR #8528: a model-scoped rate limit set on deepseek-v4-flash for a virtual key must also count a request that names the alias; an inline batch item reaches the provider exactly as written, so an item that names an alias is refused instead of being admitted as the model it stands for; and a provider key that only serves other models never vetoes the alias. Every object the folder creates (virtual key, restricted provider key, model limit) is deleted again, and a retained virtual key from an aborted run is deleted before the next run starts. The folder makes two small live DeepSeek calls.",
+      "item": [
+        {
+          "name": "deepseek alias-limit setup: create a virtual key that allows only deepseek-v4-flash - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasLimitVkId');",
+                  "  pm.collectionVariables.unset('aliasLimitVkValue');",
+                  "  pm.collectionVariables.set('aliasLimitVkName', 'harness-alias-limit-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('aliasLimitVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-limit: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasLimitVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-limit: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasLimitVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasLimitVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasLimitVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"*\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-403] deepseek inline batch item naming a key alias is refused: items reach the provider as written - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: a batch item that names an alias is held to its literal name', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not a governance refusal: ' + pm.response.text()).to.contain('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasLimitVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"requests\": [\n    {\n      \"custom_id\": \"harness-alias-limit-1\",\n      \"params\": {\n        \"model\": \"deepseek-v4-flash-anthropic\",\n        \"max_tokens\": 16,\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Say hello in exactly one word.\"\n          }\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/batches"
+          }
+        },
+        {
+          "name": "deepseek alias-limit setup: add a key that only serves other models - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasLimitKeyId');",
+                  "  pm.collectionVariables.set('aliasLimitKeyName', 'harness-alias-limit-key-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A restricted key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasLimitKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-limit: the retained restricted key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale restricted key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale restricted key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: restricted key added', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) { key = {}; }",
+                  "pm.test('alias-limit: the restricted key has an id', function () {",
+                  "  pm.expect(key.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (key.id) { pm.collectionVariables.set('aliasLimitKeyId', key.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasLimitKeyName}}\",\"value\":\"sk-harness-unused-key\",\"models\":[\"harness-unused-*\"],\"weight\":1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/providers/deepseek/keys"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted next to a key that only serves other models - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: a key key selection never picks for the name does not veto the alias', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasLimitVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-limit cleanup: delete the restricted key - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasLimitKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasLimitKeyId');",
+                  "  pm.collectionVariables.unset('aliasLimitKeyName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/deepseek/keys/{{aliasLimitKeyId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-limit setup: limit deepseek-v4-flash to one request for this virtual key - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasLimitMcId');",
+                  "}",
+                  "// A model limit a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasLimitMcId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/model-configs/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-limit: the retained model limit from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale model limit ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale model limit ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: model limit created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var mc = body.model_config || body;",
+                  "pm.test('alias-limit: the model limit has an id', function () {",
+                  "  pm.expect(mc.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (mc.id) { pm.collectionVariables.set('aliasLimitMcId', mc.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model_name\":\"deepseek-v4-flash\",\"provider\":\"deepseek\",\"scope\":\"virtual_key\",\"scope_id\":\"{{aliasLimitVkId}}\",\"rate_limit\":{\"request_max_limit\":1,\"request_reset_duration\":\"1h\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/model-configs"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic uses the one request the model limit allows - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitMcId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: the first alias request is within the model limit', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasLimitVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "[EXPECT-429] deepseek/deepseek-v4-flash-anthropic is held to the limit set on the model it stands for - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasLimitMcId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: the alias counts against the limit on the model it stands for', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(429);",
+                  "  pm.expect(pm.response.text(), 'blocked as a model, not as a limit: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(pm.response.text(), 'not a governance rate-limit refusal: ' + pm.response.text()).to.match(/\"(rate_limited|request_limited|token_limited)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasLimitVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-limit cleanup: delete the model limit - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasLimitMcId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasLimitMcId');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/model-configs/{{aliasLimitMcId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-limit cleanup: delete the virtual key - alias-limit - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasLimitVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-limit: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasLimitVkId');",
+                  "  pm.collectionVariables.unset('aliasLimitVkValue');",
+                  "  pm.collectionVariables.unset('aliasLimitVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasLimitVkId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "335. Key aliases follow the keys that can serve the request (deepseek alias-keys) (#6620 / PR #8528)",
+      "description": "A key alias is resolved at key selection, after governance has checked the request, so governance has to judge an alias by the keys that can serve it: key selection may pick any enabled key the virtual key's key_ids allow, or the one key the request pins, and each key resolves the name through its own aliases. The profile's deepseek key maps deepseek-v4-flash-anthropic to deepseek-v4-flash; the setup adds a second deepseek key, with a fake credential that is never called, mapping the same alias to deepseek-v4-pro. A virtual key over every key that allows only deepseek-v4-flash must refuse the alias with 403 model_blocked, since key selection could pick the conflicting key and run deepseek-v4-pro. Pinning the profile key with x-bf-api-key admits it, since only that key can serve the request. A virtual key whose key_ids name only the profile key admits it as well: a key the virtual key cannot use does not veto the alias. The two admitted cases make one small live DeepSeek call each. The cleanup deletes both virtual keys and the added key.",
+      "item": [
+        {
+          "name": "deepseek alias-keys setup: create a virtual key over every key that allows only deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "  pm.collectionVariables.set('aliasKeysVkName', 'harness-alias-keys-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysVkId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale virtual key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale virtual key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-keys: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasKeysVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasKeysVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"*\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek alias-keys setup: add a key that maps deepseek-v4-flash-anthropic to deepseek-v4-pro - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyId');",
+                  "  pm.collectionVariables.set('aliasKeysConflictKeyName', 'harness-alias-keys-conflict-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysConflictKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained conflicting key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale conflicting key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale conflicting key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: conflicting key added', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) { key = {}; }",
+                  "pm.test('alias-keys: the conflicting key has an id', function () {",
+                  "  pm.expect(key.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (key.id) { pm.collectionVariables.set('aliasKeysConflictKeyId', key.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysConflictKeyName}}\",\"value\":\"sk-harness-unused-key\",\"models\":[\"deepseek-v4-flash-anthropic\"],\"weight\":1,\"aliases\":{\"deepseek-v4-flash-anthropic\":{\"model_id\":\"deepseek-v4-pro\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/providers/deepseek/keys"
+          }
+        },
+        {
+          "name": "[EXPECT-403] deepseek/deepseek-v4-flash-anthropic is refused while a selectable key maps it to deepseek-v4-pro - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: an alias some selectable key turns into a model the virtual key does not allow is refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not a governance refusal: ' + pm.response.text()).to.contain('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted when the request pins the key that maps it to deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: a pinned key is the only key whose alias counts', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysVkValue}}"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "DeepSeek API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-keys setup: create a virtual key restricted to the key that maps the alias to deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "  pm.collectionVariables.set('aliasKeysRestrictedVkName', 'harness-alias-keys-restricted-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "  // The profile key's id is assigned at load, so it is looked up by name.",
+                  "  pm.collectionVariables.unset('aliasKeysProfileKeyId');",
+                  "  var listHeaders = {};",
+                  "  var listToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (listToken) { listHeaders.Authorization = 'Bearer ' + listToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys', method: 'GET', header: listHeaders}, function (err, response) {",
+                  "    var keys = [];",
+                  "    try { keys = (response && response.json().keys) || []; } catch (e) { keys = []; }",
+                  "    var profile = keys.filter(function (k) { return k.name === 'DeepSeek API Key'; })[0];",
+                  "    pm.test('alias-keys: the profile key is found by name', function () {",
+                  "      pm.expect(err, 'key list errored: ' + err).to.equal(null);",
+                  "      pm.expect(profile && profile.id, 'no key named DeepSeek API Key: ' + (response && response.text())).to.be.a('string').and.not.equal('');",
+                  "    });",
+                  "    if (!profile || !profile.id) { pm.execution.skipRequest(); return; }",
+                  "    pm.collectionVariables.set('aliasKeysProfileKeyId', profile.id);",
+                  "  });",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysRestrictedVkId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale virtual key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale virtual key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-keys: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasKeysRestrictedVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasKeysRestrictedVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysRestrictedVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"{{aliasKeysProfileKeyId}}\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted through a virtual key whose key_ids exclude the conflicting key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysRestrictedVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: a key the virtual key may not use does not veto the alias', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysRestrictedVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the restricted virtual key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysRestrictedVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "  pm.collectionVariables.unset('aliasKeysProfileKeyId');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasKeysRestrictedVkId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the conflicting key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyId');",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/deepseek/keys/{{aliasKeysConflictKeyId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the virtual key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasKeysVkId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "370. Chat stream usage isolation (#10139)",
       "description": "OpenAI-compatible streaming must emit usage in a separate choices: [] event after finish_reason and before [DONE]. Anthropic previously produced a single combined finish/usage event on all normalized chat routes. These cases pin native and SDK drop-in HTTP writers with include_usage enabled.",
       "item": [
         {
