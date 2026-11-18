@@ -586,7 +586,7 @@ test.describe("Relay Logs", () => {
     await expect(sheet).toContainText("Request details");
     await expect(sheet).toContainText(relayName);
     await expect(sheet).toContainText("Call");
-    await expect(sheet).toContainText("success");
+    await expect(sheet).toContainText("Success");
     await expect(sheet).toContainText("POST /v1/search");
     await expect(sheet).toContainText(row.request_id);
     await expect(sheet).toContainText(grantedKeyName);
@@ -652,7 +652,7 @@ test.describe("Relay Logs", () => {
     await page.toggleColumn("virtual_key");
     await page.openRow(relayName, "-ungranted");
 
-    await expect(page.sheet).toContainText("error");
+    await expect(page.sheet).toContainText("Error");
     await expect(page.sheetError).toBeVisible();
     await expect(page.sheetError).toContainText("Error");
     await expect(page.sheetError).toContainText(`Relay '${relayName}' is not allowed for virtual key`);

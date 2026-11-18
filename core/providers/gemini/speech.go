@@ -94,10 +94,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrostReq is nil")
 	}
-	// Here we confirm if the response_format is wav or empty string
-	// If its anything else, we will return an error
+	// Gemini TTS returns raw PCM; only wav (wrapped here) or empty (raw PCM) can be produced.
 	if bifrostReq.Params != nil && bifrostReq.Params.ResponseFormat != "" && bifrostReq.Params.ResponseFormat != "wav" {
-		return nil, fmt.Errorf("gemini does not support response_format: %s. Only wav or empty string is supported which defaults to wav", bifrostReq.Params.ResponseFormat)
+		return nil, utils.InvalidRequestErrorf("gemini speech does not support response_format %q; use wav, or leave it empty for raw 24 kHz PCM", bifrostReq.Params.ResponseFormat)
 	}
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
@@ -107,11 +106,18 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
 	// Convert speech input to Gemini format
 	if bifrostReq.Input != nil && bifrostReq.Input.Input != "" {
+		text := bifrostReq.Input.Input
+		// Gemini TTS has no instructions field; a style direction ahead of the text steers the voice.
+		if bifrostReq.Params != nil {
+			if instructions := strings.TrimSpace(bifrostReq.Params.Instructions); instructions != "" {
+				text = instructions + ": " + text
+			}
+		}
 		geminiReq.Contents = []Content{
 			{
 				Parts: []*Part{
 					{
-						Text: bifrostReq.Input.Input,
+						Text: text,
 					},
 				},
 			},
@@ -177,6 +183,24 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 	return bifrostResp, nil
 }
 
+// geminiPCMMimeType labels the headerless signed 16-bit 24 kHz PCM that Gemini TTS answers with.
+const geminiPCMMimeType = "audio/L16;codec=pcm;rate=24000"
+
+// geminiSpeechMimeType labels speech audio for a GenAI client; Gemini TTS answers in raw PCM or WAV, so audio without a WAV header is PCM whatever its first bytes look like.
+func geminiSpeechMimeType(audio []byte, routing schemas.RoutingInfo) string {
+	mimeType := utils.DetectAudioMimeType(audio)
+	model := routing.Model
+	if routing.ResolvedKeyAlias != nil && routing.ResolvedKeyAlias.ModelID != "" {
+		model = routing.ResolvedKeyAlias.ModelID // a key alias hides the model behind its own name
+	}
+	isGeminiTTS := (routing.Provider == schemas.Gemini || routing.Provider == schemas.Vertex) &&
+		strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini")
+	if isGeminiTTS && mimeType != "audio/wav" {
+		return geminiPCMMimeType
+	}
+	return mimeType
+}
+
 // ToGeminiSpeechResponse converts a BifrostSpeechResponse to Gemini's GenerateContentResponse
 func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
@@ -191,7 +215,7 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 				{
 					InlineData: &Blob{
 						Data:     encodeBytesToBase64String(bifrostResp.Audio),
-						MIMEType: utils.DetectAudioMimeType(bifrostResp.Audio),
+						MIMEType: geminiSpeechMimeType(bifrostResp.Audio, bifrostResp.ExtraFields.RoutingInfo),
 					},
 				},
 			},
@@ -223,7 +247,7 @@ func ToGeminiSpeechStreamResponse(bifrostResp *schemas.BifrostSpeechStreamRespon
 			// Gemini TTS stream chunks are headerless signed 16-bit PCM. Generic
 			// header detection falls back to audio/mp3 for headerless data, which
 			// makes native GenAI clients decode valid PCM as the wrong format.
-			mimeType = "audio/L16;codec=pcm;rate=24000"
+			mimeType = geminiPCMMimeType
 		}
 		genaiResp.Candidates = []*Candidate{{
 			Content: &Content{

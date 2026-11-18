@@ -164,6 +164,35 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		}));
 	};
 
+	// Whether anything on the form can align to a calendar: a filled budget or rate limit on a window
+	// with a calendar boundary. The toggle is shown only then.
+	const canCalendarAlign = useMemo(() => {
+		const hasAlignableBudget = formData.budgets.some(
+			(b) =>
+				b.maxLimit !== undefined &&
+				b.maxLimit !== null &&
+				(supportsCalendarAlignment(b.resetDuration) || isMultiUnitDuration(b.resetDuration)),
+		);
+		const hasAlignableRateLimit =
+			(formData.tokenMaxLimit !== undefined &&
+				formData.tokenMaxLimit !== null &&
+				(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
+			(formData.requestMaxLimit !== undefined &&
+				formData.requestMaxLimit !== null &&
+				(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
+		return hasAlignableBudget || hasAlignableRateLimit;
+	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
+
+	// With nothing left that can align, the team is not calendar aligned in any meaningful sense, so
+	// the hidden toggle is turned off rather than left to submit calendar_aligned: true - the same as
+	// the customer and virtual key sheets do.
+	useEffect(() => {
+		if (formData.calendarAligned && !canCalendarAlign) {
+			updateField("calendarAligned", false);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [canCalendarAlign, formData.calendarAligned]);
+
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		// Warn only on the persisted false→true transition. Toggling off then
 		// back on within the same edit session doesn't reset on save (the backend
@@ -531,20 +560,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						/>
 						{/* Calendar alignment — team-wide setting that applies to all team budgets and the team rate limit */}
 						{(() => {
-							const hasAlignableBudget = formData.budgets.some(
-								(b) =>
-									b.maxLimit !== undefined &&
-									b.maxLimit !== null &&
-									(supportsCalendarAlignment(b.resetDuration) || isMultiUnitDuration(b.resetDuration)),
-							);
-							const hasAlignableRateLimit =
-								(formData.tokenMaxLimit !== undefined &&
-									formData.tokenMaxLimit !== null &&
-									(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
-								(formData.requestMaxLimit !== undefined &&
-									formData.requestMaxLimit !== null &&
-									(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
-							if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
+							if (!canCalendarAlign) return null;
 							return (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 									<div className="space-y-0.5">

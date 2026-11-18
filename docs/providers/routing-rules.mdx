@@ -118,6 +118,10 @@ request > 90               // Switch providers when request limit near max
 
 #### Complexity Routing
 
+<Warning>
+**Deprecated.** `complexity_tier` comes from the deprecated [Complexity Router](/features/complexity-router), which [Routers](/features/routers) replace in Bifrost v3.0.0. Existing rules keep working until then, and v3.0.0 will migrate them. We recommend Routers for both existing and new setups: they classify requests and send each tier to its own model without routing rules. Routers run after the routing rules and do not set `complexity_tier`. To move, see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+</Warning>
+
 ```cel
 complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", or "COMPLEX"
 ```

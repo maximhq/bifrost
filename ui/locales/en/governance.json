@@ -50,7 +50,8 @@
 			"budgetLimits": "Budget Limits",
 			"updateAction": "Update Customer",
 			"createAction": "Create Customer",
-			"calendarAlignHelp": "Enabling calendar alignment will reset budget usage to <bold0>$0.00</bold0> and token/request rate-limit counters to <bold1>0</bold1> for this customer, then snap each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save."
+			"calendarAlignHelp": "Enabling calendar alignment will reset budget usage to <bold0>$0.00</bold0> and token/request rate-limit counters to <bold1>0</bold1> for this customer, then snap each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save.",
+			"limitsCheckFailed": "Couldn't check what governs this customer's spend, so its budget and rate limit can't be shown yet."
 		},
 		"detail": {
 			"title": "Customer Details",

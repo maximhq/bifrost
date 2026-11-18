@@ -421,9 +421,7 @@ func TestEstimateCountsCustomToolCall(t *testing.T) {
 	}
 }
 
-// Custom tool history does not survive the chat conversion, so a cancelled
-// Responses request counts each call's input and each result's output from the
-// original items.
+// A cancelled Responses request counts each custom call's input and each result's output once.
 func TestEstimateCountsResponsesCustomToolHistory(t *testing.T) {
 	c, _ := selectCounter("")
 	const input = "SELECT city, temperature FROM forecasts WHERE day = 'today'"

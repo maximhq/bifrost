@@ -1,0 +1,196 @@
+---
+title: "Kimchi"
+description: "Kimchi API conversion guide - OpenAI-compatible format, streaming, tool calling, reasoning, embeddings, and long-running stream behavior"
+icon: "k"
+---
+
+## Overview
+
+[Kimchi](https://kimchi.dev) is an **OpenAI-compatible provider** that serves open-weight models such as DeepSeek, GLM, MiniMax and Kimi. Bifrost delegates to the OpenAI implementation with standard parameter handling. Key characteristics:
+- **OpenAI API compatibility** - Same request and response format as OpenAI
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Function definitions and tool choice in the OpenAI schema
+- **Reasoning** - Reasoning models return `reasoning_content`, which Bifrost maps to the message's `reasoning`
+- **Embeddings** - OpenAI-compatible `/v1/embeddings`
+- **Responses API** - Converted to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Image Generation, Speech, Transcriptions, Files, and Batch return `UnsupportedOperationError`. Kimchi does not serve the legacy `/v1/completions` endpoint.
+</Note>
+
+## Setup & Configuration
+
+Bifrost calls `https://llm.kimchi.dev/openai` by default and sends the Kimchi API key as a bearer token. Bifrost appends the `/v1/...` paths itself. To create an API key, see the [Kimchi documentation](https://docs.kimchi.dev).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Kimchi** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Kimchi**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.KIMCHI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "kimchi": {
+      "keys": [
+        {
+          "name": "kimchi-key-1",
+          "value": "env.KIMCHI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Kimchi:
+    return []schemas.Key{{
+        Name:   "kimchi-key-1",
+        Value:  *schemas.NewSecretVar("env.KIMCHI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Kimchi supports the standard OpenAI chat completion parameters. For the full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kimchi/deepseek-v4.1-flash",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Filtered Parameters
+
+Removed before the request is sent, as for other OpenAI-compatible providers:
+- `prediction`
+- `prompt_cache_key`, `prompt_cache_retention`, `prompt_cache_options`
+- `verbosity`
+- `store`
+- `web_search_options`
+
+### Reasoning
+
+Reasoning models such as `glm-5.3-flash` return their thinking in `reasoning_content`, both in full responses and in stream deltas. Bifrost maps it to the message's `reasoning` field and returns it under both `reasoning` and `reasoning_content`. Reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`.
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support as Chat Completions. `previous_response_id` and `conversation` are not carried over to the chat request, so send the full conversation history in `input`. Reasoning from chat responses becomes a `reasoning` output item.
+
+---
+
+# 3. List Models
+
+Lists the models your key can use from Kimchi's `/v1/models`, prefixed with `kimchi/`. When Kimchi returns a `context_window` for a model, Bifrost reports it as the model's context length. Otherwise, context length and token limits come from Bifrost's model catalog when it has an entry for the model.
+
+---
+
+# 4. Embeddings
+
+Kimchi's OpenAI-compatible `/v1/embeddings` endpoint, used through the standard embeddings interface. Embedding models such as `bge-m3` are listed by `/v1/models`.
+
+---
+
+## Streaming and Timeouts
+
+How the default network configuration applies to Kimchi:
+- While a model produces no output (before the first token or mid-stream), Kimchi sends SSE keep-alive comments more often than Bifrost's per-chunk idle timeout (`stream_idle_timeout_in_seconds`, default 120). Every received byte resets that timer, so long silent stretches do not end the stream.
+- If a stream stays silent for a long time, Kimchi ends it with a final chunk that carries an `error` object (`type: "overloaded_error"`). Bifrost returns it as a regular stream error, the same as a mid-stream error from any other provider.
+- Non-streaming requests are bounded by `default_request_timeout_in_seconds` (default 300). Raise it in the provider's [network configuration](/deployment-guides/config-json/providers) if you run very long non-streaming generations.
+- When a model is busy, Kimchi can reject a request with a retryable 503 `overloaded_error`. Bifrost does not retry by default (`max_retries` is 0), so set `max_retries` to 2 or more:
+
+```json
+{
+  "providers": {
+    "kimchi": {
+      "network_config": {
+        "max_retries": 2
+      }
+    }
+  }
+}
+```
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Kimchi API |
+| Image Generation | Not offered by Kimchi API |
+| Speech/TTS | Not offered by Kimchi API |
+| Transcription/STT | Not offered by Kimchi API |
+| Batch Operations | Not supported by the Kimchi provider |
+| File Management | Not supported by the Kimchi provider |
+
+---
+
+## Caveats
+
+<Accordion title="Pricing">
+**Severity**: Low
+**Behavior**: Costs are computed from Bifrost's model catalog
+**Impact**: A Kimchi model without a catalog price is not costed
+**Fix**: Add the model's price as a [pricing override](/providers/custom-pricing)
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered out
+**Impact**: prompt_cache_key, verbosity, store and the other fields listed above are removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>

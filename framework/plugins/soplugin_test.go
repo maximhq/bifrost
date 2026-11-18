@@ -861,6 +861,7 @@ func TestLoadPluginWithOptionalHooks(t *testing.T) {
 // private/loopback host for a URL-based plugin path - a useful zero value must default to
 // the secure behavior, not to "no SSRF protection".
 func TestSharedObjectPluginLoader_ZeroValueBlocksPrivateDownload(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -876,6 +877,7 @@ func TestSharedObjectPluginLoader_ZeroValueBlocksPrivateDownload(t *testing.T) {
 // with an allowlist covering the target host gets past the SSRF gate - the resulting error
 // (if any) comes from plugin.Open failing on non-plugin bytes, not from the SSRF guard.
 func TestNewSharedObjectPluginLoader_AllowlistPermitsConfiguredHost(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("not a real plugin binary"))

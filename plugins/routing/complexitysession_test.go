@@ -249,7 +249,8 @@ func TestPublishLocalSessionFallbackPreservesProposalEvidence(t *testing.T) {
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := (&RoutingPlugin{}).publishLocalSessionFallback(ctx, complexity.TierMedium, true, proposal)
+	plugin := &RoutingPlugin{}
+	result := plugin.publishLocalSessionFallback(ctx, plugin.complexityRuntime(), complexity.TierMedium, true, proposal)
 
 	require.Equal(t, complexity.TierMedium, result.Tier)
 	require.Equal(t, complexity.MechanismSession, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))

@@ -2355,6 +2355,29 @@
         "finance"
       ],
       "icon_url": "https://fxmacrodata.com/static/logos/pwa-512.png"
+    },
+    {
+      "name": "Bowmark",
+      "description": "Search a library of typed, tested functions for live websites like LinkedIn, Amazon and YouTube, then run short scripts that call them and return structured results. Hosted remotely by Bowmark. Needs a Bowmark API key sent as an Authorization: Bearer <key> header; new accounts start with a free $10.",
+      "category": "Search",
+      "connection_type": "http",
+      "connection_url": "https://api.bowmark.ai/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://bowmark.ai/docs/quickstart",
+      "publisher": "Bowmark",
+      "tags": [
+        "bowmark",
+        "web-data",
+        "search",
+        "linkedin",
+        "amazon",
+        "youtube",
+        "structured-data"
+      ],
+      "icon_url": "https://avatars.githubusercontent.com/u/287127998?v=4"
     }
   ]
 }

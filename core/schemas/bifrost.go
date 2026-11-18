@@ -91,7 +91,10 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	MachGen       ModelProvider = "machgen"
 	Baseten       ModelProvider = "baseten"
+	Kimchi        ModelProvider = "kimchi"
+	Soniox        ModelProvider = "soniox"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -145,7 +148,10 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
+	MachGen,
 	Baseten,
+	Kimchi,
+	Soniox,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -233,6 +239,11 @@ const (
 // BifrostContextKey is a type for context keys used in Bifrost.
 type BifrostContextKey string
 
+const (
+	StructuredOutputGrammarRejected = "rejected"   // a native structured-output request hit the provider's grammar limit
+	StructuredOutputForceTool       = "force-tool" // the retry must send the schema as the synthetic tool
+)
+
 // MCPAuthMode describes which identity dimension a per-user OAuth row is keyed by.
 // It is a derived view of context state at the point of token lookup, never
 // stored as a context key. Derived via BifrostContext.MCPAuthMode().
@@ -296,9 +307,11 @@ const (
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"   // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier or a model router classified the request, and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier or a model router classified the request (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityScore           BifrostContextKey = "bifrost-governance-complexity-score"     // float64 (classifier score behind the tier: the semantic classifier's similarity to the nearest reference phrase; only present alongside a computed tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyModelRouterID                       BifrostContextKey = "bifrost-model-router-id"                 // string (ID of the model router that took the request after the routing rules; unset when none did (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyModelRouterName                     BifrostContextKey = "bifrost-model-router-name"               // string (name of the model router in BifrostContextKeyModelRouterID (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"       // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"            // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"         // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -323,6 +336,7 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                  // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
+	BifrostContextKeyPassthroughModelListFilter          BifrostContextKey = "bifrost-passthrough-model-list-filter"            // PassthroughModelListFilter (set by the transport on a passthrough model-list route; governance trims the listed models to the caller's access. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyAnthropicNativeRequestSurface       BifrostContextKey = "bifrost-anthropic-native-request-surface"         // opaque provider-owned value (set by the Anthropic Messages ingress converter, recording the caller's own thinking and sampling surface so the Anthropic egress can rebuild what the neutral shape cannot carry). The key is exported ONLY so ClearContextForInternalRequest can shed it: a plugin-owned sub-request built on a derived context would otherwise inherit the caller's parameters. The value type is unexported, so nothing outside that provider can forge one.
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
@@ -333,6 +347,7 @@ const (
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
+	BifrostContextKeyStructuredOutputGrammarRetry        BifrostContextKey = "bifrost-structured-output-grammar-retry"          // string (StructuredOutputGrammarRejected set by a provider, StructuredOutputForceTool set by bifrost)
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeyClientIP                            BifrostContextKey = "bifrost-client-ip"                                // string (caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer; set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
@@ -345,6 +360,7 @@ const (
 	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
 	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeyLiveDelegationFailed                BifrostContextKey = "bifrost-live-delegation-failed"                   // bool (set by the live transport on a backend unit the provider refused to run a delegation on)
+	BifrostContextKeySpeechSession                       BifrostContextKey = "bifrost-speech-session"                           // bool (set by the speech session transport on the one request a session is; logging records it as a speech.session row)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
@@ -470,7 +486,7 @@ const (
 	BifrostContextKeyInjectedToolsExecuted               BifrostContextKey = "bifrost-injected-tools-executed"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) - the current attempt ran a provider-injected tool: it is not retried, and its response is assembled across turns
 	BifrostContextKeyMCPHealthCheckRequest               BifrostContextKey = "bifrost-mcp-health-check-request"           // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when the MCP connect/ping/list-tools request was generated by bifrost itself (periodic health checks, or the admin connection-verification probe) rather than originating from a caller
 	BifrostContextKeyMCPCallerCapabilities               BifrostContextKey = "bifrost-mcp-caller-capabilities"            // *mcp.ClientCapabilities (set by the MCP gateway - DO NOT SET THIS MANUALLY) - what the downstream MCP client declared on this request (2026-07-28 only)
-	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode) or "all" (the gateway's sync)
+	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode), "all" or "gateway" (the gateway's sync)
 	BifrostContextKeyMCPGatewayClient                    BifrostContextKey = "bifrost-mcp-gateway-client"                 // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the one MCP client a /mcp/<slug> request serves
 	BifrostContextKeyMCPInputResumption                  BifrostContextKey = "bifrost-mcp-input-resumption"               // *mcp.MultiRoundTripParams (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the caller's answers and requestState when it retries a tools/call that needed input
 	BifrostContextKeyMCPRoundTripID                      BifrostContextKey = "bifrost-mcp-round-trip-id"                  // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the round-trip id a caller's retry carried in its requestState
@@ -701,6 +717,10 @@ const (
 	RoutingEngineLoadbalancing  = "loadbalancing"
 	RoutingEngineModelCatalog   = "model-catalog"
 	RoutingEngineCircuitBreaker = "circuit-breaker"
+	// RoutingEngineModelRouter marks a model router's decision: after the
+	// routing rules, a router took the request, classified it, and its target
+	// for that tier was applied.
+	RoutingEngineModelRouter = "model-router"
 	// RoutingEngineSessionAffinity marks decisions a session made for the request:
 	// staying on the provider or key that served it before, ahead of what the
 	// routing engines proposed. Recorded so the request's trail says why it went
@@ -1410,25 +1430,20 @@ type BifrostMCPConnectRequest struct {
 // BifrostMCPPingRequest is intentionally empty: the wire ping rides over the existing
 // transport and has no per-call headers or parameters. Plugins observe via ClientName on
 // the parent BifrostMCPRequest and may short-circuit (synthetic healthy/unhealthy).
-type BifrostMCPPingRequest struct {
-}
+type BifrostMCPPingRequest struct{}
 
 // BifrostMCPListToolsRequest is intentionally empty for the same reason as ping: list_tools
 // reuses the existing transport's headers. Plugins observe via ClientName and may short-circuit
 // (e.g. cached tool list).
-type BifrostMCPListToolsRequest struct {
-}
+type BifrostMCPListToolsRequest struct{}
 
 // BifrostMCPListResourcesRequest, BifrostMCPListResourceTemplatesRequest and
 // BifrostMCPListPromptsRequest are empty for the same reason as list_tools.
-type BifrostMCPListResourcesRequest struct {
-}
+type BifrostMCPListResourcesRequest struct{}
 
-type BifrostMCPListResourceTemplatesRequest struct {
-}
+type BifrostMCPListResourceTemplatesRequest struct{}
 
-type BifrostMCPListPromptsRequest struct {
-}
+type BifrostMCPListPromptsRequest struct{}
 
 // BifrostMCPGetPromptRequest is a prompts/get forwarded to the client that owns the prompt.
 type BifrostMCPGetPromptRequest struct {
@@ -1449,8 +1464,7 @@ type BifrostMCPCompleteRequest struct {
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
 // Note that the tool name and arguments are not standardized in this struct yet since they are still being pulled from the old fields for backward compatibility,
 // but they will be standardized in the future when we remove the old fields.
-type BifrostMCPExecuteToolRequest struct {
-}
+type BifrostMCPExecuteToolRequest struct{}
 
 // GetToolName returns the tool name from the active MCP request variant.
 func (r *BifrostMCPRequest) GetToolName() string {
@@ -1989,8 +2003,7 @@ type MCPServerCapabilities struct {
 	Logging   bool `json:"logging"`   // server supports logging
 }
 
-type BifrostMCPPingResponse struct {
-}
+type BifrostMCPPingResponse struct{}
 
 type BifrostMCPListToolsResponse struct {
 	Tools        map[string]ChatTool // Discovered tools keyed by client-prefixed name
@@ -2031,8 +2044,7 @@ type SkippedMCPTool struct {
 
 // Keeping the stub for now, will be used from the next major bump when we move ChatMessage
 // and ResponsesMessage into this struct.
-type BifrostMCPExecuteToolResponse struct {
-}
+type BifrostMCPExecuteToolResponse struct{}
 
 // PopulateExtraFields backfills ExtraFields.{MCPRequestType, ClientName, ToolName}
 // when they aren't already set on the response. Mirrors BifrostResponse.PopulateExtraFields
