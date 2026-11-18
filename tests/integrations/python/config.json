@@ -1833,6 +1833,9 @@
           },
           {
             "relay_name": "harness-relay-beta"
+          },
+          {
+            "relay_name": "harness-relay-forced"
           }
         ]
       },
@@ -2029,6 +2032,59 @@
         "cost_per_request": 0.003
       },
       "skip_route_check": true
+    },
+    {
+      "name": "harness-relay-forced",
+      "description": "Harness relay (relays-e2e): Tavily-shaped body_overrides. The relay forces include_usage: true on every call, routes add or replace fields, and the fixture's /v1/gated/** reports credits only when include_usage is true",
+      "base_url": "http://127.0.0.1:8783",
+      "auth": {
+        "type": "bearer"
+      },
+      "credential": {
+        "value": "sk-harness-relay-forced"
+      },
+      "usage": {
+        "units_path": "usage.credits",
+        "cost_per_unit": 0.008
+      },
+      "body_overrides": {
+        "include_usage": true
+      },
+      "skip_route_check": true,
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/v1/gated/search"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/deep",
+          "body_overrides": {
+            "options.depth": "advanced"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/off",
+          "body_overrides": {
+            "include_usage": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/gated/status"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/stream",
+          "stream": true
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/disabled",
+          "enabled": false
+        }
+      ]
     }
   ],
   "server": {

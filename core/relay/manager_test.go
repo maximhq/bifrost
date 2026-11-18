@@ -2,6 +2,8 @@ package relay
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -886,6 +888,193 @@ func TestServeForcesBodyOverrides(t *testing.T) {
 			assert.Len(t, pipeline.pre, before, "a refused body reaches no hook and no upstream")
 		})
 	}
+}
+
+// usageGatedUpstream answers like Tavily: usage.credits is reported only when the request carries
+// "include_usage": true. It records each body it received.
+func usageGatedUpstream(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if providerUtils.GetJSONField(raw, "include_usage").Raw == "true" {
+			_, _ = io.WriteString(w, `{"results":[],"usage":{"credits":3}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"results":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), bodies...) }
+}
+
+// A relay-level include_usage is what makes a caller's call billable at all, whatever the caller sent.
+func TestServeRelayBodyOverridePricesCallersThatOmitTheField(t *testing.T) {
+	upstream, bodies := usageGatedUpstream(t)
+	cfg := bearerConfig("tavily", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.Usage = &schemas.RelayUsageConfig{UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.008)}
+	cfg.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/search"},
+		{Method: "POST", Path: "/off", BodyOverrides: map[string]json.RawMessage{"include_usage": json.RawMessage("false")}},
+	}
+	m, _ := newTestManager(t, cfg)
+	jsonHeaders := map[string]string{"content-type": "application/json"}
+
+	for name, tc := range map[string]struct{ path, body string }{
+		"caller omits it":       {"/search", `{"query":"x"}`},
+		"caller turns it off":   {"/search", `{"query":"x","include_usage":false}`},
+		"caller already set it": {"/search", `{"query":"x","include_usage":true}`},
+		"caller sends nothing":  {"/search", ``},
+		"unlisted path":         {"/crawl", `{"url":"https://example.com"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, bErr := m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: tc.path, Headers: jsonHeaders, Body: []byte(tc.body)})
+			require.Nil(t, bErr)
+			sent := bodies()
+			assert.Equal(t, "true", providerUtils.GetJSONField([]byte(sent[len(sent)-1]), "include_usage").Raw)
+			require.NotNil(t, res.Response.Usage)
+			assert.InDelta(t, 3*0.008, res.Response.Usage.Cost, 1e-12, "every call is priced from the credits the forced field asks for")
+		})
+	}
+
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: "/off", Headers: jsonHeaders, Body: []byte(`{"query":"x","include_usage":true}`)})
+	require.Nil(t, bErr)
+	sent := bodies()
+	assert.Equal(t, "false", providerUtils.GetJSONField([]byte(sent[len(sent)-1]), "include_usage").Raw, "a route's value replaces the relay's")
+	assert.InDelta(t, 0, res.Response.Usage.Cost, 1e-12)
+}
+
+// Relays and routes without body_overrides forward the caller's bytes as before, whatever they are.
+func TestServeWithoutBodyOverridesForwardsTheBodyUnchanged(t *testing.T) {
+	var got []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	plain := bearerConfig("plain", upstream.URL)
+	plain.SkipRouteCheck = true
+	mixed := bearerConfig("mixed", upstream.URL)
+	mixed.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/forced", BodyOverrides: map[string]json.RawMessage{"include_usage": json.RawMessage("true")}},
+		{Method: "POST", Path: "/raw"},
+	}
+	m := NewManager(nil, nil)
+	require.NoError(t, m.Upsert(plain))
+	require.NoError(t, m.Upsert(mixed))
+
+	for _, body := range []string{
+		`query=x`,
+		`{"include_usage":false,"include_usage":false}`,
+		`{"Include_Usage":false}`,
+		`[1,2]`,
+		"{\n  \"query\" : \"x\"\n}",
+		``,
+	} {
+		for _, target := range []struct{ relay, path string }{{"plain", "/anything"}, {"mixed", "/raw"}} {
+			_, bErr := m.Serve(testCtx(t), Request{Endpoint: target.relay, Method: "POST", Path: target.path, Headers: map[string]string{}, Body: []byte(body)})
+			require.Nil(t, bErr, "%s %q", target.relay, body)
+			assert.Equal(t, body, string(got), "%s %s forwards the bytes as sent", target.relay, target.path)
+		}
+	}
+}
+
+// SigV4 signs the body that is sent, so the forced fields are covered by the signature.
+func TestServeSignsTheForcedBody(t *testing.T) {
+	var gotBody []byte
+	var gotHash, gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotHash, gotAuth = r.Header.Get("X-Amz-Content-Sha256"), r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+		_, _ = io.WriteString(w, `{"JobId":"j-1"}`)
+	}))
+	defer upstream.Close()
+	cfg := &schemas.RelayConfig{
+		Name: "textract", BaseURL: upstream.URL,
+		Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "textract"}},
+		Credential: &schemas.RelayCredential{AWS: &schemas.RelayAWSCredential{
+			AccessKey: schemas.NewSecretVar("AKIDEXAMPLE"), SecretKey: schemas.NewSecretVar("secret"), Region: schemas.NewSecretVar("us-east-1"),
+		}},
+		BodyOverrides: map[string]json.RawMessage{"OutputConfig": json.RawMessage(`{"S3Bucket":"audit"}`)},
+		Routes:        []schemas.RelayRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Start*"}}},
+	}
+	m, _ := newTestManager(t, cfg)
+	headers := map[string]string{"x-amz-target": "Textract.StartDocumentAnalysis", "content-type": "application/x-amz-json-1.1"}
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "POST", Path: "/", Headers: headers, Body: []byte(`{"DocumentLocation":{}}`)})
+	require.Nil(t, bErr)
+	assert.JSONEq(t, `{"DocumentLocation":{},"OutputConfig":{"S3Bucket":"audit"}}`, string(gotBody))
+	sum := sha256.Sum256(gotBody)
+	assert.Equal(t, hex.EncodeToString(sum[:]), gotHash, "the signed payload hash is the sent body's")
+	assert.Contains(t, gotAuth, "AWS4-HMAC-SHA256")
+}
+
+// A streamed route and a job's start call get the forced fields like any buffered call.
+func TestServeForcesBodyOnStreamAndJobRoutes(t *testing.T) {
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/stream" {
+			gotBody = string(raw)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"usage\":{\"credits\":2}}\n\n")
+			return
+		}
+		if r.URL.Path == "/start" {
+			gotBody = string(raw)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"JobId":"j-1"}`)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("svc", upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.01)}
+	cfg.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/stream", Stream: schemas.Ptr(true)},
+		{Method: "POST", Path: "/start", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, Job: &schemas.RelayJobConfig{
+			IDPath: "JobId", StatusPath: "status", Succeeded: []string{"SUCCEEDED"},
+			Poll: schemas.RelayJobPoll{Method: "POST", Path: "/status", Body: `{"JobId":"{{job.id}}"}`},
+		}},
+	}
+	m, pipeline := newTestManager(t, cfg)
+
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "svc", Method: "POST", Path: "/stream", Headers: map[string]string{}, Body: []byte(`{"q":1}`)})
+	require.Nil(t, bErr)
+	require.NotNil(t, res.Stream)
+	_, _ = io.ReadAll(res.Stream)
+	require.NoError(t, res.Stream.Close())
+	assert.JSONEq(t, `{"q":1,"include_usage":true}`, gotBody)
+	require.NotNil(t, pipeline.post[0].Usage)
+	assert.InDelta(t, 0.02, pipeline.post[0].Usage.Cost, 1e-12)
+
+	res, bErr = m.Serve(testCtx(t), Request{Endpoint: "svc", Method: "POST", Path: "/start", Headers: map[string]string{}, Body: []byte(`{"doc":"a"}`)})
+	require.Nil(t, bErr)
+	assert.JSONEq(t, `{"doc":"a","include_usage":true}`, gotBody)
+	require.NotNil(t, res.Response.Usage.Job, "the start call still hands back its job")
+
+	snap, err := ParseJobSnapshot(res.Response.Usage.Job.Params)
+	require.NoError(t, err)
+	assert.Equal(t, `{"JobId":"j-1"}`, string(snap.PollRequest("j-1").Body), "the sweeper's own poll is sent as configured, without the forced fields")
+}
+
+// A disabled route is refused with 404 before its body is looked at, so it never answers 400.
+func TestServeDisabledRouteWinsOverBodyRefusal(t *testing.T) {
+	cfg := bearerConfig("tavily", "http://127.0.0.1:1")
+	cfg.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/search", Enabled: schemas.Ptr(false)}}
+	m, pipeline := newTestManager(t, cfg)
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: "POST", Path: "/search", Headers: map[string]string{}, Body: []byte(`query=x`)})
+	require.NotNil(t, bErr)
+	assert.Equal(t, http.StatusNotFound, *bErr.StatusCode)
+	assert.Empty(t, pipeline.pre)
 }
 
 func BenchmarkMatchRoute(b *testing.B) {
