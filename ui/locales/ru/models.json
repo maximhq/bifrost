@@ -838,6 +838,7 @@
 			"oauthAssertionLifetime": "Срок действия утверждения (секунды)",
 			"oauthAssertionLifetimeHelp": "Срок действия каждого подписанного утверждения. По умолчанию — 300.",
 			"oauthAudienceCcHelp": "Передаётся как параметр audience формы для провайдеров, которые ограничивают токены доступом к API.",
+			"oauthAudienceTeHelp": "Передаётся в конечную точку токенов как параметр audience (поле формы или поле JSON при кодировке JSON). Это не claim aud токена субъекта.",
 			"copilotTokenLabel": "Токен GitHub или API-токен Copilot",
 			"copilotTokenDescription": "Персональный токен доступа с тонкими настройками разрешений (<code>github_pat_…</code>) и разрешением <strong>Copilot Requests</strong>. В вашей организации должна быть включена политика <strong>Copilot CLI</strong>.",
 			"copilotTokenInputPlaceholder": "Токен github_pat_… или ghu_… либо API-токен Copilot",

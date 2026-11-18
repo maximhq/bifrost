@@ -3,6 +3,7 @@ import { modelProviderKeySchema } from "@/lib/types/schemas";
 
 import {
 	applyAuthMethod,
+	defaultTokenExchangeEncoding,
 	stripAnthropicAuthDiscriminator,
 	stripDatabricksAuthDiscriminator,
 	stripOAuthAuthDiscriminator,
@@ -98,6 +99,11 @@ describe("stripOAuthAuthDiscriminator", () => {
 		expect(out).not.toHaveProperty("subject_token_file");
 		expect(out).not.toHaveProperty("subject_token_type");
 		expect(out).not.toHaveProperty("request_encoding");
+	});
+
+	it("never persists the extra parameter conflict flag", () => {
+		const out = stripOAuthAuthDiscriminator({ _auth_type: "oauth", ...cc, _extra_params_conflict: false });
+		expect(out).not.toHaveProperty("_extra_params_conflict");
 	});
 
 	it("drops the whole block on the API key method", () => {
@@ -354,5 +360,16 @@ describe("applyAuthMethod with anthropic_key_config", () => {
 		expect(
 			stripAnthropicAuthDiscriminator({ workload_identity: { ...ids, identity_source: { type: "inline", path: tokenFile } } }),
 		).toBeUndefined();
+	});
+});
+describe("defaultTokenExchangeEncoding", () => {
+	it.each([
+		[{ value: "https://auth.openai.com/oauth/token" }, "json"],
+		[{ value: " https://auth.openai.com/oauth/token " }, "json"],
+		[{ value: "https://idp.example.com/oauth2/token" }, "form"],
+		[{ value: "", ref: "env.OPENAI_TOKEN_URL" }, "form"],
+		[undefined, "form"],
+	] as const)("picks the encoding for %j", (tokenURL, want) => {
+		expect(defaultTokenExchangeEncoding(tokenURL)).toBe(want);
 	});
 });

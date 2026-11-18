@@ -250,6 +250,46 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Add a key that mints its bearer with the RFC 8693 token exchange grant. The subject token
+   * file is first entered as a relative path, which must show the inline error and block the
+   * save, then corrected. Extra parameters are entered as name/value rows.
+   */
+  async addOAuthTokenExchangeKey(config: {
+    name: string
+    tokenUrl: string
+    subjectTokenFile: string
+    extraParams?: Record<string, string>
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-openai-oauth-tab').click()
+    await this.page.getByTestId('key-select-oauth-grant-type').click()
+    await this.page.getByRole('option', { name: /Token exchange/i }).click()
+    await this.page.getByTestId('key-input-oauth-token-url').fill(config.tokenUrl)
+
+    const subjectTokenFile = this.page.getByTestId('key-input-oauth-subject-token-file')
+    await subjectTokenFile.fill('relative/token')
+    await this.keySaveBtn.click()
+    await expect(this.page.getByText('Subject token file must be an absolute path')).toBeVisible()
+    await expect(this.keyForm).toBeVisible()
+    await subjectTokenFile.fill(config.subjectTokenFile)
+
+    const entries = Object.entries(config.extraParams ?? {})
+    for (const [i, [name, value]] of entries.entries()) {
+      await this.page.getByTestId(`key-input-oauth-extra-param-name-${i}`).fill(name)
+      await this.page.getByTestId(`key-input-oauth-extra-param-value-${i}`).fill(value)
+    }
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
    * Open the key editor for an existing key and leave it on screen.
    */
   async openKeyEditor(keyName: string): Promise<void> {

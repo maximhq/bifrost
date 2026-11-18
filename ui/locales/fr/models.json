@@ -806,6 +806,7 @@
 			"oauthAssertionLifetime": "Durée de validité de l’assertion (secondes)",
 			"oauthAssertionLifetimeHelp": "Durée de validité de chaque assertion signée. Valeur par défaut : 300.",
 			"oauthAudienceCcHelp": "Envoyé comme paramètre de formulaire audience, pour les fournisseurs qui limitent la portée des jetons par API.",
+			"oauthAudienceTeHelp": "Envoyé au point de terminaison de jetons comme paramètre audience (un champ de formulaire, ou un champ JSON avec l'encodage JSON). Ce n'est pas la revendication aud du jeton de sujet.",
 			"copilotTokenLabel": "Jeton GitHub ou jeton API Copilot",
 			"copilotTokenDescription": "Jeton d’accès personnel à autorisations précises (<code>github_pat_…</code>) avec l’autorisation <strong>Copilot Requests</strong>. Votre organisation doit activer la stratégie <strong>Copilot CLI</strong>.",
 			"copilotTokenInputPlaceholder": "Jeton github_pat_… ou ghu_…, ou jeton API Copilot",

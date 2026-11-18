@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "Assertion Lifetime (seconds)",
 			"oauthAssertionLifetimeHelp": "How long each signed assertion is valid for. Default 300.",
 			"oauthAudienceCcHelp": "Sent as the audience form parameter, for providers that scope tokens by API.",
+			"oauthAudienceTeHelp": "Sent to the token endpoint as the audience parameter (a form field, or a JSON field with JSON encoding). This is not the aud claim of the subject token.",
 			"copilotTokenLabel": "GitHub Token or Copilot API Token",
 			"copilotTokenDescription": "A fine-grained personal access token (<code>github_pat_…</code>) with the <strong>Copilot Requests</strong> permission. Your organization must enable the <strong>Copilot CLI</strong> policy.",
 			"copilotTokenInputPlaceholder": "github_pat_… or ghu_… token, or a Copilot API token",

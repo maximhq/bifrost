@@ -393,6 +393,8 @@
 		"privateKeyIsRequiredForJwtBearer": "Для JWT bearer необходимо указать закрытый ключ",
 		"subjectTokenFileIsRequiredForTokenExchange": "Для обмена токенов требуется файл токена субъекта",
 		"subjectTokenFileMustBeAnAbsolutePath": "Путь к файлу токена субъекта должен быть абсолютным",
+		"extraParamNamesMustBeUnique": "Имена дополнительных параметров должны быть уникальными",
+		"extraParamNeedsAName": "У каждого дополнительного параметра должно быть имя",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "Закрытый ключ должен быть блоком PEM формата RSA или EC",
 		"issuerIsRequiredForJwtBearer": "Для JWT bearer необходимо указать издателя",
 		"audienceIsRequiredForJwtBearer": "Для JWT bearer необходимо указать аудиторию",

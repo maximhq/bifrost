@@ -18,6 +18,7 @@ import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { Trans, useTranslation } from "react-i18next";
+import { defaultTokenExchangeEncoding } from "../views/providerKeyForm.utils";
 import { DeploymentsTable } from "./deploymentsTable";
 import { GithubCopilotSignIn } from "./githubCopilotSignIn";
 
@@ -281,6 +282,20 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 		// oauthDefaults re-runs detection after the key form resets itself once the key
 		// resolves, for the same reason as databricksDefaults above.
 	}, [isOpenAICompatible, form, oauthDefaults]);
+
+	// A token exchange key follows its token URL to a default encoding (JSON for OpenAI's endpoint)
+	// until the user picks one. Only a token URL the user edited moves it, so opening a saved key
+	// never changes its encoding.
+	const oauthTokenURL = form.watch("key.oauth_key_config.token_url");
+	useEffect(() => {
+		if (oauthGrantType !== "token_exchange") return;
+		if (!form.getFieldState("key.oauth_key_config.token_url").isDirty) return;
+		if (form.getFieldState("key.oauth_key_config.request_encoding").isDirty) return;
+		const encoding = defaultTokenExchangeEncoding(oauthTokenURL);
+		if (form.getValues("key.oauth_key_config.request_encoding") !== encoding) {
+			form.setValue("key.oauth_key_config.request_encoding", encoding);
+		}
+	}, [oauthGrantType, oauthTokenURL, form]);
 
 	const anthropicDefaults = form.formState.defaultValues?.key?.anthropic_key_config;
 	useEffect(() => {
@@ -1559,25 +1574,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 											</FormItem>
 										)}
 									/>
-									<FormField
-										control={control}
-										name="key.oauth_key_config.extra_params"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>{t("providers.keys.oauthExtraParams")}</FormLabel>
-												<FormDescription>{t("providers.keys.oauthExtraParamsHelp")}</FormDescription>
-												<HeadersTable<string>
-													value={field.value ?? {}}
-													onChange={field.onChange}
-													label={t("providers.keys.oauthExtraParams")}
-													keyPlaceholder="identity_provider_id"
-													valuePlaceholder={t("headersTable.value", { ns: "common" })}
-													testIdPrefix="key-input-oauth-extra-param"
-												/>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
 								</>
 							)}
 							{oauthGrantType === "jwt_bearer" && (
@@ -1748,7 +1744,11 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 											<FormLabel>
 												{t("providers.keys.oauthAudience")} {t("providers.optionalParen")}
 											</FormLabel>
-											<FormDescription>{t("providers.keys.oauthAudienceCcHelp")}</FormDescription>
+											<FormDescription>
+												{t(
+													oauthGrantType === "token_exchange" ? "providers.keys.oauthAudienceTeHelp" : "providers.keys.oauthAudienceCcHelp",
+												)}
+											</FormDescription>
 											<FormControl>
 												<Input
 													data-testid="key-input-oauth-cc-audience"
@@ -1762,6 +1762,36 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									)}
 								/>
 							)}
+							{/* Every grant sends extra_params, so the editor stays visible whichever grant is chosen. */}
+							<FormField
+								control={control}
+								name="key.oauth_key_config.extra_params"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>{t("providers.keys.oauthExtraParams")}</FormLabel>
+										<FormDescription>{t("providers.keys.oauthExtraParamsHelp")}</FormDescription>
+										<HeadersTable<string>
+											value={field.value ?? {}}
+											onChange={field.onChange}
+											// A conflict on the empty add row has nothing to save, so only held rows count.
+											onConflictsChange={(conflicts, headers) =>
+												form.setValue(
+													"key.oauth_key_config._extra_params_conflict",
+													[...conflicts.keys()].some((row) => row < Object.keys(headers).length),
+													{ shouldValidate: form.formState.isSubmitted },
+												)
+											}
+											label={t("providers.keys.oauthExtraParams")}
+											// i18n-ignore: a parameter name example, not prose
+											keyPlaceholder="identity_provider_id"
+											valuePlaceholder={t("headersTable.value", { ns: "common" })}
+											testIdPrefix="key-input-oauth-extra-param"
+											keepClearedNames
+										/>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 						</>
 					)}
 				</div>

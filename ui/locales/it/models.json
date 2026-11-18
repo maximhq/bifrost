@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "Durata dell'asserzione (secondi)",
 			"oauthAssertionLifetimeHelp": "Durata di validità di ogni asserzione firmata. Valore predefinito: 300.",
 			"oauthAudienceCcHelp": "Inviato come parametro audience del modulo, per i provider che definiscono l'ambito dei token in base all'API.",
+			"oauthAudienceTeHelp": "Inviato all'endpoint dei token come parametro audience (un campo del modulo, o un campo JSON con la codifica JSON). Non è il claim aud del token del soggetto.",
 			"copilotTokenLabel": "Token GitHub o token API Copilot",
 			"copilotTokenDescription": "Un token di accesso personale con autorizzazioni granulari (<code>github_pat_…</code>) e l'autorizzazione <strong>Copilot Requests</strong>. L'organizzazione deve abilitare la policy <strong>Copilot CLI</strong>.",
 			"copilotTokenInputPlaceholder": "Token github_pat_… o ghu_… oppure token API Copilot",

@@ -78,6 +78,9 @@ func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
 		got["subject_token_type"] != "urn:ietf:params:oauth:token-type:jwt" || got["identity_provider_id"] != "idp_1" || got["service_account_id"] != "sa_1" {
 		t.Fatalf("exchange body = %v", got)
 	}
+	if len(auths) != 2 {
+		t.Fatalf("upstream requests = %d, want 2 (the cold request and the cache hit)", len(auths))
+	}
 	for _, a := range auths {
 		if a != "Bearer wif-token" {
 			t.Fatalf("Authorization = %q, want the exchanged bearer", a)

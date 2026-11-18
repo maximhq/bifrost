@@ -571,6 +571,9 @@ export const oauthKeyConfigSchema = z
 		subject_token_file: z.string().optional(),
 		subject_token_type: z.enum(["urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:id_token"]).optional(),
 		request_encoding: z.enum(["form", "json"]).optional(),
+		// UI-only: set while the extra parameters table holds a row whose name clashes with
+		// another, so the save is blocked until the user resolves it. Never sent to the API.
+		_extra_params_conflict: z.boolean().optional(),
 	})
 	.superRefine((data, ctx) => {
 		// The API-key tab leaves this block inert; only an OAuth block is checked.
@@ -585,6 +588,12 @@ export const oauthKeyConfigSchema = z
 		if (!started) return;
 		if (!data.grant_type) {
 			ctx.addIssue({ code: "custom", path: ["grant_type"], message: i18n.t("validation.chooseAGrantType") });
+		}
+		// Every grant sends extra_params, so the names are checked whatever the grant.
+		if (data._extra_params_conflict) {
+			ctx.addIssue({ code: "custom", path: ["extra_params"], message: i18n.t("validation.extraParamNamesMustBeUnique") });
+		} else if (Object.keys(data.extra_params ?? {}).some((name) => !name.trim())) {
+			ctx.addIssue({ code: "custom", path: ["extra_params"], message: i18n.t("validation.extraParamNeedsAName") });
 		}
 		if (!isSecretVarSet(data.token_url)) {
 			ctx.addIssue({ code: "custom", path: ["token_url"], message: i18n.t("validation.tokenUrlIsRequired") });

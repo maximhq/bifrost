@@ -65,6 +65,33 @@ describe("oauthKeyConfigSchema", () => {
 		expect(issues(result)).toEqual([field]);
 	});
 
+	it.each(["client_credentials", "jwt_bearer", "token_exchange"] as const)("rejects an unnamed extra parameter on %s", (grant_type) => {
+		const result = oauthKeyConfigSchema.safeParse({
+			_auth_type: "oauth",
+			grant_type,
+			token_url: tokenUrl,
+			...pair,
+			subject_token_file: "/var/run/secrets/identity/token",
+			extra_params: { "": "value", " ": "other" },
+		});
+		expect(result.success).toBe(false);
+		expect(issues(result)).toContain("extra_params");
+	});
+
+	it("blocks save while an extra parameter name is in conflict", () => {
+		const config = {
+			_auth_type: "oauth",
+			grant_type: "token_exchange",
+			token_url: tokenUrl,
+			subject_token_file: "/var/run/secrets/identity/token",
+			extra_params: { identity_provider_id: "idp-1" },
+		};
+		const result = oauthKeyConfigSchema.safeParse({ ...config, _extra_params_conflict: true });
+		expect(result.success).toBe(false);
+		expect(issues(result)).toEqual(["extra_params"]);
+		expect(oauthKeyConfigSchema.safeParse({ ...config, _extra_params_conflict: false }).success).toBe(true);
+	});
+
 	it("accepts a complete client credentials block", () => {
 		const result = oauthKeyConfigSchema.safeParse({ _auth_type: "oauth", grant_type: "client_credentials", token_url: tokenUrl, ...pair });
 		expect(result.success).toBe(true);

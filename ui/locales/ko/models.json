@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "어설션 수명(초)",
 			"oauthAssertionLifetimeHelp": "각 서명된 어설션의 유효 기간입니다. 기본값은 300입니다.",
 			"oauthAudienceCcHelp": "API별로 토큰 범위를 지정하는 공급자에 audience 폼 매개변수로 전달됩니다.",
+			"oauthAudienceTeHelp": "토큰 엔드포인트에 audience 매개변수로 전달돼요 (폼 필드, 또는 JSON 인코딩에서는 JSON 필드). 주체 토큰의 aud 클레임이 아니에요.",
 			"copilotTokenLabel": "GitHub 토큰 또는 Copilot API 토큰",
 			"copilotTokenDescription": "<strong>Copilot Requests</strong> 권한이 있는 세분화된 개인 액세스 토큰(<code>github_pat_…</code>)입니다. 조직에서 <strong>Copilot CLI</strong> 정책을 활성화해야 합니다.",
 			"copilotTokenInputPlaceholder": "github_pat_… 또는 ghu_… 토큰, 또는 Copilot API 토큰",

@@ -28,6 +28,9 @@ type SavedOAuthKey = {
     signing_algorithm?: string;
     auth_style?: string;
     assertion_lifetime_seconds?: number;
+    subject_token_file?: string;
+    request_encoding?: string;
+    extra_params?: Record<string, string>;
   } | null;
 };
 
@@ -908,6 +911,46 @@ test.describe("Providers", () => {
       // The PEM is a credential: it comes back masked and never in the clear.
       expect(saved?.oauth_key_config?.private_key?.value ?? "").not.toContain("BEGIN PRIVATE KEY");
       expect(JSON.stringify(saved)).not.toContain("MIGHAgEAMBMGByqGSM49AgEG");
+    });
+
+    test("should add an OAuth token exchange key and keep its settings on reopen", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-te-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-te-key-${Date.now()}`;
+      // OpenAI's token endpoint is on the default allowlist, and the form defaults the
+      // request encoding to JSON for it.
+      await providersPage.addOAuthTokenExchangeKey({
+        name: keyName,
+        tokenUrl: "https://auth.openai.com/oauth/token",
+        subjectTokenFile: "/var/run/secrets/openai/token",
+        extraParams: { identity_provider_id: "idp_e2e", service_account_id: "sa_e2e" },
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      const saved = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(saved?.oauth_key_config?.grant_type).toBe("token_exchange");
+      expect(saved?.oauth_key_config?.subject_token_file).toBe("/var/run/secrets/openai/token");
+      expect(saved?.oauth_key_config?.request_encoding).toBe("json");
+      expect(Object.keys(saved?.oauth_key_config?.extra_params ?? {}).sort()).toEqual(["identity_provider_id", "service_account_id"]);
+
+      // Reopening the key shows the stored settings.
+      await providersPage.openKeyEditor(keyName);
+      await expect(providersPage.page.getByTestId("apikey-openai-oauth-tab")).toHaveAttribute("data-state", "active");
+      await expect(providersPage.page.getByTestId("key-input-oauth-subject-token-file")).toHaveValue("/var/run/secrets/openai/token");
+      await expect(providersPage.page.getByTestId("key-select-oauth-request-encoding")).toHaveText(/JSON/);
+      await expect(providersPage.page.getByTestId("key-input-oauth-extra-param-name-0")).toHaveValue("identity_provider_id");
     });
 
     test("should edit an OAuth key without disturbing its masked credentials", async ({

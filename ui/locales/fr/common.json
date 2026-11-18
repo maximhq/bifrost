@@ -375,6 +375,8 @@
 		"privateKeyIsRequiredForJwtBearer": "La clé privée est obligatoire pour JWT bearer",
 		"subjectTokenFileIsRequiredForTokenExchange": "Le fichier du jeton de sujet est requis pour l’échange de jetons",
 		"subjectTokenFileMustBeAnAbsolutePath": "Le fichier du jeton de sujet doit être indiqué par un chemin absolu",
+		"extraParamNamesMustBeUnique": "Chaque nom de paramètre supplémentaire doit être unique",
+		"extraParamNeedsAName": "Chaque paramètre supplémentaire doit avoir un nom",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "La clé privée doit être un bloc PEM RSA ou EC",
 		"issuerIsRequiredForJwtBearer": "L’émetteur est obligatoire pour JWT bearer",
 		"audienceIsRequiredForJwtBearer": "L’audience est obligatoire pour JWT bearer",

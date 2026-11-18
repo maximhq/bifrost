@@ -421,7 +421,7 @@ OAuthKeyConfig:
       description: Scopes requested, sent space-joined
     audience:
       type: string
-      description: jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter
+      description: jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter; token_exchange optional audience request parameter (form field or JSON field, per request_encoding), sent to the token endpoint and distinct from the aud claim inside the subject token
     issuer:
       type: string
       minLength: 1

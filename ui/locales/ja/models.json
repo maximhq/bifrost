@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "アサーションの有効期間（秒）",
 			"oauthAssertionLifetimeHelp": "署名付きアサーションの有効期間です。デフォルトは 300 です。",
 			"oauthAudienceCcHelp": "トークンを API ごとにスコープ設定するプロバイダー向けに、audience フォームパラメーターとして送信されます。",
+			"oauthAudienceTeHelp": "audience パラメーターとしてトークンエンドポイントに送信されます (フォームフィールド、または JSON エンコードでは JSON フィールド)。サブジェクトトークンの aud クレームではありません。",
 			"copilotTokenLabel": "GitHub Token または Copilot API Token",
 			"copilotTokenDescription": "<strong>Copilot Requests</strong> 権限を持つ、詳細な権限を設定した個人アクセストークン（<code>github_pat_…</code>）です。組織で <strong>Copilot CLI</strong> ポリシーを有効にする必要があります。",
 			"copilotTokenInputPlaceholder": "github_pat_… または ghu_… トークン、あるいは Copilot API Token",

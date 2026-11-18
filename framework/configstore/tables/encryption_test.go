@@ -288,8 +288,14 @@ func TestTableKey_OAuthTokenExchangeRoundTrip(t *testing.T) {
 	require.NoError(t, db.Create(key).Error)
 
 	raw := rawRow(t, db, "config_keys", key.ID)
-	settings, _ := raw["oauth_settings_json"].(string)
+	settings, ok := raw["oauth_settings_json"].(string)
+	require.True(t, ok, "oauth_settings_json is stored as text, got %T", raw["oauth_settings_json"])
+	require.NotEmpty(t, settings)
 	assert.NotContains(t, settings, "/var/run/secrets/openai/token", "the settings column is encrypted at rest")
+	plain, err := encrypt.Decrypt(settings)
+	require.NoError(t, err, "the settings column must hold ciphertext")
+	assert.Contains(t, plain, "/var/run/secrets/openai/token")
+	assert.Contains(t, plain, "idp_1")
 
 	var found TableKey
 	require.NoError(t, db.First(&found, key.ID).Error)

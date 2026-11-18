@@ -267,7 +267,7 @@ Three grants are supported:
 
 - **`client_credentials`** (RFC 6749 §4.4): a client ID and secret, sent as HTTP Basic auth by default or as form fields with `auth_style: "body"`.
 - **`jwt_bearer`** (RFC 7523): Bifrost signs a JWT assertion (`iss`, `sub`, `aud`, `iat`, `nbf`, `exp`, `jti`) with your RSA or EC private key and exchanges it for a token.
-- **`token_exchange`** (RFC 8693): Bifrost reads a token your platform issued to the workload, such as a Kubernetes projected service account token, from `subject_token_file` and exchanges it for an access token. No secret is stored. This is how [OpenAI workload identity federation](https://developers.openai.com/api/docs/guides/workload-identity-federation) works; see [OpenAI workload identity federation](#openai-workload-identity-federation) below.
+- **`token_exchange`** (RFC 8693): Bifrost reads a token your platform issued to the workload, such as a Kubernetes projected service account token, from `subject_token_file` and exchanges it for an access token. No static OpenAI API key is needed. This is how [OpenAI workload identity federation](https://developers.openai.com/api/docs/guides/workload-identity-federation) works; see [OpenAI workload identity federation](#openai-workload-identity-federation) below.
 
 A non-empty `value` always wins, so a key can carry both while you migrate. `oauth_key_config` is only accepted on `openai` and on custom providers whose base is `openai`; elsewhere it is refused at configuration time rather than silently ignored.
 
@@ -277,8 +277,9 @@ A non-empty `value` always wins, so a key can carry both while you migrate. `oau
 
 1. Open the custom provider under **Providers** and click **Add Key**
 2. Under **Authentication Method** choose **OAuth (minted token)**
-3. Pick the grant, enter the **Token URL**, then the client ID and secret (client credentials) or the private key, issuer and audience (JWT bearer)
-4. Add scopes if the identity provider needs them, then save
+3. Pick the grant, enter the **Token URL**, then the client ID and secret (client credentials), the private key, issuer and audience (JWT bearer), or the **Subject token file** (token exchange, required)
+4. For token exchange, optionally set the subject token type, the request encoding, an audience and extra parameters. For OpenAI, choose the `json` encoding and add the `identity_provider_id` and `service_account_id` extra parameters, as in [OpenAI workload identity federation](#openai-workload-identity-federation) below
+5. Add scopes if the identity provider needs them, then save
 
 The stored key shows the token URL in plain text and masks the client secret and private key, like every other credential.
 
@@ -371,7 +372,7 @@ curl --location 'http://localhost:8080/api/providers/acme-llm/keys' \
 | `private_key` | JWT bearer | RSA or EC private key in PEM form. PKCS#1, SEC 1 and PKCS#8 all work; a PEM pasted with literal `\n` is repaired. |
 | `issuer` | JWT bearer | The `iss` claim, usually the client or service account ID. |
 | `subject` | | The `sub` claim. Defaults to `issuer`. |
-| `audience` | JWT bearer | The `aud` claim, usually the token endpoint. For client credentials it is sent as the optional `audience` form parameter. |
+| `audience` | JWT bearer | The `aud` claim, usually the token endpoint. For client credentials it is sent as the optional `audience` form parameter. For token exchange it is optional and, when set, is sent as the `audience` request parameter (a form field, or a JSON field with `request_encoding: json`). It names the token Bifrost asks for; it is not the `aud` claim inside the subject token, which the platform sets when it issues that token. |
 | `key_id` | | The `kid` header, when the identity provider selects keys by ID. |
 | `signing_algorithm` | | `RS256` (default), `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`. Symmetric algorithms are refused. |
 | `assertion_lifetime_seconds` | | Seconds from issue until the assertion expires (`exp` = now + value). Default `300`, maximum `3600`. Bifrost backdates `iat` and `nbf` by 30 seconds for clock skew, so the assertion's `exp - iat` span is this value plus 30; pick a value 30 seconds under any span limit your identity provider enforces. |
@@ -394,7 +395,12 @@ volumes:
             audience: https://api.openai.com/v1   # must match the provider's audience
             expirationSeconds: 3600
             path: token
-# mounted read-only at /var/run/secrets/openai
+containers:
+  - name: bifrost
+    volumeMounts:
+      - name: openai-identity-token
+        mountPath: /var/run/secrets/openai   # mount the directory, not the file, so rotation is seen
+        readOnly: true
 ```
 
 ```json
@@ -426,8 +432,8 @@ volumes:
 
 The subject token is a credential of the host, not of the key, so two environment variables bound where it can go. Both are read from the environment only, never from a key:
 
-- `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`: comma-separated directories `subject_token_file` may be read from (default `/var/run/secrets,/run/secrets`). Narrow it to the token's own mount, for example `/var/run/secrets/openai`, so a key cannot select another credential on the host such as the Kubernetes API token. The file is opened inside that directory, so neither `..` nor a symlink can lead out of it.
-- `BIFROST_TOKEN_EXCHANGE_URLS`: comma-separated token endpoints the subject token may be sent to, compared exactly (default `https://auth.openai.com/oauth/token`). It is checked when the key is saved and again before every exchange, after `env.` references resolve. Redirects from the endpoint are never followed.
+- `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`: comma-separated directories `subject_token_file` may be read from. When it is unset, Bifrost reads from `/var/run/secrets` and `/run/secrets`; when it is set, it replaces those defaults. Narrow it to the token's own mount, for example `/var/run/secrets/openai`, so a key cannot select another credential on the host such as the Kubernetes API token. A path with a `..` component is refused, and the file is opened inside an allowed directory, so a symlink cannot lead out of it.
+- `BIFROST_TOKEN_EXCHANGE_URLS`: comma-separated token endpoints the subject token may be sent to, compared exactly. When it is unset, only `https://auth.openai.com/oauth/token` is allowed; when it is set, it replaces that default. A literal `token_url` is checked when the key is saved; an `env.` reference is checked only after it resolves. Before every exchange, Bifrost checks the resolved endpoint again. Redirects from the endpoint are never followed.
 
 Changing `subject_token_file` on an existing key through the management API needs a genuine admin session, as changing `token_url` does. Expiry counts from when the request was sent, and an earlier `expires_at` in the response wins over `expires_in`. A response with a `token_type` other than `Bearer`, or a token that has already expired, is refused. OpenAI error bodies (`{"error": {"code", "message"}}`) are reported with the subject token removed.
 

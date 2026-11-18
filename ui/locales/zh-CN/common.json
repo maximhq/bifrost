@@ -375,6 +375,8 @@
 		"privateKeyIsRequiredForJwtBearer": "JWT bearer 需要填写私钥",
 		"subjectTokenFileIsRequiredForTokenExchange": "令牌交换需要主体令牌文件",
 		"subjectTokenFileMustBeAnAbsolutePath": "主体令牌文件必须使用绝对路径",
+		"extraParamNamesMustBeUnique": "每个额外参数的名称必须唯一",
+		"extraParamNeedsAName": "每个额外参数都需要名称",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "私钥必须是 RSA 或 EC PEM 块",
 		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填写 Issuer",
 		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填写 Audience",

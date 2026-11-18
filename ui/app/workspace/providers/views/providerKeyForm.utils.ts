@@ -10,7 +10,7 @@ import { z } from "zod";
 
 type DatabricksKeyConfigForm = z.input<typeof databricksKeyConfigSchema>;
 type OAuthKeyConfigForm = z.input<typeof oauthKeyConfigSchema>;
-type OAuthKeyConfigPayload = Omit<OAuthKeyConfigForm, "_auth_type">;
+type OAuthKeyConfigPayload = Omit<OAuthKeyConfigForm, "_auth_type" | "_extra_params_conflict">;
 type DatabricksKeyConfigPayload = Omit<DatabricksKeyConfigForm, "_auth_type">;
 type AnthropicKeyConfigForm = z.input<typeof anthropicKeyConfigSchema>;
 type AnthropicWorkloadIdentityPayload = NonNullable<AnthropicKeyConfigForm["workload_identity"]>;
@@ -36,6 +36,15 @@ export const stripDatabricksAuthDiscriminator = (config: DatabricksKeyConfigForm
 	return rest;
 };
 
+// OpenAITokenExchangeURL is OpenAI's workload identity token endpoint, which takes a JSON body.
+export const OpenAITokenExchangeURL = "https://auth.openai.com/oauth/token";
+
+// defaultTokenExchangeEncoding is the request encoding a token exchange key starts with for a
+// token URL: JSON for OpenAI's endpoint, otherwise the RFC 8693 form encoding. A reference
+// resolves only on the server, so it gets the form default.
+export const defaultTokenExchangeEncoding = (tokenURL: { value?: string; ref?: string } | undefined): "form" | "json" =>
+	tokenURL?.value?.trim() === OpenAITokenExchangeURL ? "json" : "form";
+
 // stripOAuthAuthDiscriminator removes the UI-only auth discriminator before the key is sent
 // to the API, and drops the whole block on the API-key path: the form registers it for every
 // openai-based key, and an inert block would be refused by the API as half-configured. A whole
@@ -43,7 +52,7 @@ export const stripDatabricksAuthDiscriminator = (config: DatabricksKeyConfigForm
 // is kept.
 export const stripOAuthAuthDiscriminator = (config: OAuthKeyConfigForm | undefined): OAuthKeyConfigPayload | undefined => {
 	if (!config) return undefined;
-	const { _auth_type, ...rest } = config;
+	const { _auth_type, _extra_params_conflict, ...rest } = config;
 	if (_auth_type === "api_key" || (_auth_type !== "oauth" && !oauthKeyConfigComplete(rest))) {
 		return undefined;
 	}

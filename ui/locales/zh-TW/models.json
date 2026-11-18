@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "Assertion 有效期限（秒）",
 			"oauthAssertionLifetimeHelp": "每個已簽署 assertion 的有效時間。預設值為 300。",
 			"oauthAudienceCcHelp": "以 audience 表單參數傳送，適用於依 API 限定權杖範圍的提供者。",
+			"oauthAudienceTeHelp": "以 audience 參數傳送至權杖端點（表單欄位，或在 JSON 編碼下為 JSON 欄位）。這不是主體權杖的 aud 宣告。",
 			"copilotTokenLabel": "GitHub 權杖或 Copilot API 權杖",
 			"copilotTokenDescription": "具備 <strong>Copilot Requests</strong> 權限的細分個人存取權杖（<code>github_pat_…</code>）。你的組織必須啟用 <strong>Copilot CLI</strong> 原則。",
 			"copilotTokenInputPlaceholder": "github_pat_… 或 ghu_… 權杖，或 Copilot API 權杖",

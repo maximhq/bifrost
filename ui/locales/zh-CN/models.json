@@ -818,6 +818,7 @@
 			"oauthAssertionLifetime": "断言有效期（秒）",
 			"oauthAssertionLifetimeHelp": "每个签名断言的有效时长。默认值为 300。",
 			"oauthAudienceCcHelp": "作为 audience 表单参数发送，适用于按 API 限定令牌范围的提供商。",
+			"oauthAudienceTeHelp": "作为 audience 参数发送到令牌端点（表单字段，或在 JSON 编码下为 JSON 字段）。这不是主体令牌的 aud 声明。",
 			"copilotTokenLabel": "GitHub 令牌或 Copilot API 令牌",
 			"copilotTokenDescription": "具有 <strong>Copilot Requests</strong> 权限的细粒度个人访问令牌（<code>github_pat_…</code>）。你的组织必须启用 <strong>Copilot CLI</strong> 策略。",
 			"copilotTokenInputPlaceholder": "github_pat_… 或 ghu_… 令牌，或 Copilot API 令牌",

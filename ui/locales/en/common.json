@@ -170,6 +170,8 @@
 		"privateKeyIsRequiredForJwtBearer": "Private key is required for JWT bearer",
 		"subjectTokenFileIsRequiredForTokenExchange": "Subject token file is required for token exchange",
 		"subjectTokenFileMustBeAnAbsolutePath": "Subject token file must be an absolute path",
+		"extraParamNamesMustBeUnique": "Each extra parameter name must be unique",
+		"extraParamNeedsAName": "Each extra parameter needs a name",
 		"privateKeyMustBeAnRsaOrEcPemBlock": "Private key must be an RSA or EC PEM block",
 		"issuerIsRequiredForJwtBearer": "Issuer is required for JWT bearer",
 		"audienceIsRequiredForJwtBearer": "Audience is required for JWT bearer",
