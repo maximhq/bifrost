@@ -4110,6 +4110,28 @@ func TestParseInteractionsPassthroughNestedUsageWithoutTotal(t *testing.T) {
 	assert.Equal(t, 7, total(`{"usage":{"total_tokens":7,"total_input_tokens":7},"interaction":{"id":"r","status":"completed","usage":{}}}`))
 }
 
+// TestGeminiInteractionsStreamStartTextIsOneDelta pins that the text blocks of a step.start stream as one
+// delta: the native frame rides that chunk, so a change to the text reaches every block of it.
+func TestGeminiInteractionsStreamStartTextIsOneDelta(t *testing.T) {
+	for _, step := range []string{
+		`{"type":"model_output","content":[{"type":"text","text":"a"},{"type":"image","data":"QQ==","mime_type":"image/png"},{"type":"text","text":"b"}]}`,
+		`{"type":"thought","summary":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}`,
+	} {
+		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+		var deltas []string
+		for _, ev := range interactionsEvents(t, `{"event_type":"step.start","index":0,"step":`+step+`}`) {
+			out, bErr := s.ToBifrostResponsesStream(ev)
+			require.Nil(t, bErr)
+			for _, e := range out {
+				if e.Delta != nil {
+					deltas = append(deltas, *e.Delta)
+				}
+			}
+		}
+		assert.Equal(t, []string{"ab"}, deltas, step)
+	}
+}
+
 // TestGeminiInteractionsComputerUseExclusionsRefused pins that a native computer_use that excludes
 // actions is not translated for a provider that would offer them.
 func TestGeminiInteractionsComputerUseExclusionsRefused(t *testing.T) {
@@ -4429,4 +4451,37 @@ func TestInteractionJobKeepsSearchQueriesWithoutAModel(t *testing.T) {
 	job := interactionsRequest{method: "GET", path: "/v1beta/interactions/v1_q"}.job(info)
 	require.NotNil(t, job)
 	assert.Equal(t, 3, job.SearchQueries, "a poll agrees")
+}
+
+// TestGeminiResponsesStreamViaInteractionsTagsRawFormat pins that each raw Interactions event
+// attached to a chunk declares its format, so a post-hook that redacts the normalized text can
+// rewrite the frame the native route replays to the client.
+func TestGeminiResponsesStreamViaInteractionsTagsRawFormat(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: interaction.created", `data: {"event_type":"interaction.created","interaction":{"id":"v1_f","status":"in_progress","model":"gemini-3.8-flash"}}`, "",
+		"event: step.start", `data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}`, "",
+		"event: step.delta", `data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Hi"}}`, "",
+		"event: interaction.completed", `data: {"event_type":"interaction.completed","interaction":{"id":"v1_f","status":"completed"}}`, "",
+	}, "\n")
+	server, _ := newInteractionsTestServer(t, "text/event-stream", func(interactionsCall) string { return sse })
+	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	postHook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.ResponsesStream(ctx, postHook, nil, key, &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}})
+	require.Nil(t, bifrostErr)
+	tagged := 0
+	for chunk := range stream {
+		resp := chunk.BifrostResponsesStreamResponse
+		if resp == nil || resp.ExtraFields.RawResponse == nil {
+			continue
+		}
+		assert.Equal(t, schemas.RawResponseFormatGeminiInteractionsStreamEvent, resp.ExtraFields.RawResponseFormat, "raw on a %s chunk", resp.Type)
+		tagged++
+	}
+	assert.Equal(t, 4, tagged)
 }

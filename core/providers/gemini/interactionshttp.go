@@ -690,6 +690,9 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 			}
 			if sendBackRawResponse && raw != nil {
 				event.ExtraFields.RawResponse = string(raw)
+				// Declared so a post-hook that rewrites the normalized text can rewrite this frame,
+				// which the native route replays to the client as it is.
+				event.ExtraFields.RawResponseFormat = schemas.RawResponseFormatGeminiInteractionsStreamEvent
 			}
 			chunkIndex++
 			sequenceNumber++

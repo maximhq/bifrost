@@ -256,15 +256,18 @@ func (r *GeminiInteractionsRequest) nativeOnlyFields() []string {
 	if r.Agent != "" {
 		fields = append(fields, "agent")
 	}
-	for name, raw := range map[string]json.RawMessage{
-		"agent_config":     r.AgentConfig,
-		"environment":      r.Environment,
-		"webhook_config":   r.WebhookConfig,
-		"max_total_tokens": r.MaxTotalTokens,
-		"safety_settings":  r.SafetySettings,
+	for _, field := range [...]struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"agent_config", r.AgentConfig},
+		{"environment", r.Environment},
+		{"webhook_config", r.WebhookConfig},
+		{"max_total_tokens", r.MaxTotalTokens},
+		{"safety_settings", r.SafetySettings},
 	} {
-		if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
-			fields = append(fields, name)
+		if len(field.raw) > 0 && !bytes.Equal(field.raw, []byte("null")) {
+			fields = append(fields, field.name)
 		}
 	}
 	if r.EnvironmentID != nil {
@@ -2633,12 +2636,15 @@ func (s *GeminiInteractionsStreamState) applyStartContent(index int, step *Gemin
 	var out []*schemas.BifrostResponsesStreamResponse
 	switch step.Type {
 	case GeminiInteractionsStepModelOutput:
+		// All its text is one part, so it streams as one delta, which the native frame rides.
+		text, sent := joinedTextBlocks(step.Content), false
 		for i := range step.Content {
 			block := &step.Content[i]
 			switch block.Type {
 			case GeminiContentTypeText:
-				if block.Text != nil && *block.Text != "" {
-					out = append(out, s.applyDelta(index, &GeminiInteractionsDelta{Type: geminiInteractionsDeltaText, Text: block.Text})...)
+				if !sent && text != "" {
+					out = append(out, s.applyDelta(index, &GeminiInteractionsDelta{Type: geminiInteractionsDeltaText, Text: &text})...)
+					sent = true
 				}
 				if len(block.Annotations) > 0 {
 					out = append(out, s.applyDelta(index, &GeminiInteractionsDelta{Type: geminiInteractionsDeltaAnnotations, Annotations: block.Annotations})...)
@@ -2648,13 +2654,22 @@ func (s *GeminiInteractionsStreamState) applyStartContent(index int, step *Gemin
 			}
 		}
 	case GeminiInteractionsStepThought:
-		for i := range step.Summary {
-			if step.Summary[i].Text != nil && *step.Summary[i].Text != "" {
-				out = append(out, s.applyDelta(index, &GeminiInteractionsDelta{Type: geminiInteractionsDeltaThoughtSummary, Content: &step.Summary[i]})...)
-			}
+		if text := joinedTextBlocks(step.Summary); text != "" {
+			out = append(out, s.applyDelta(index, &GeminiInteractionsDelta{Type: geminiInteractionsDeltaThoughtSummary, Content: &GeminiInteractionsItem{Type: GeminiContentTypeText, Text: &text}})...)
 		}
 	}
 	return out
+}
+
+// joinedTextBlocks is the text of blocks, in order.
+func joinedTextBlocks(blocks []GeminiInteractionsItem) string {
+	var sb strings.Builder
+	for i := range blocks {
+		if blocks[i].Type == GeminiContentTypeText && blocks[i].Text != nil {
+			sb.WriteString(*blocks[i].Text)
+		}
+	}
+	return sb.String()
 }
 
 func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInteractionsDelta) []*schemas.BifrostResponsesStreamResponse {
@@ -3363,16 +3378,35 @@ func ToGeminiInteractionsErrorBody(err *schemas.BifrostError) *GeminiDecisionErr
 		} else if err.Error.Type != nil && *err.Error.Type != "" {
 			body.Code = *err.Error.Type
 		}
+		// Vertex repeats the HTTP status as the code; the Interactions code is a word.
+		if _, numeric := strconv.Atoi(body.Code); numeric == nil {
+			body.Code = "internal"
+		}
+		// A router failure carries the caller's mistake under its own generic message.
+		if invalid, ok := providerUtils.AsBifrostBadRequestError(err.Error.Error); ok {
+			body.Code, body.Message = "invalid_request", invalid.Error.Message
+		}
 	}
 	if err.StatusCode != nil {
-		switch *err.StatusCode {
-		case 400:
-			if body.Code == "internal" {
-				body.Code = "invalid_request"
-			}
-		case 404:
+		if *err.StatusCode == 404 {
 			body.Code = "not_found"
+		} else if code, ok := geminiInteractionsErrorCodes[*err.StatusCode]; ok && body.Code == "internal" {
+			body.Code = code
 		}
 	}
 	return &GeminiDecisionError{Error: body}
+}
+
+// geminiInteractionsErrorCodes are the codes Google documents for each status, for an error that names
+// none of its own.
+var geminiInteractionsErrorCodes = map[int]string{
+	400: "invalid_request",
+	401: "authentication",
+	402: "payment_required",
+	403: "permission_denied",
+	409: "aborted",
+	429: "rate_limit_exceeded",
+	501: "unimplemented",
+	503: "service_unavailable",
+	504: "deadline_exceeded",
 }

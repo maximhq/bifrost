@@ -327,6 +327,30 @@ func TestSyncRawResponseTextMapsProviderEvents(t *testing.T) {
 			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
 			want: `{"candidates":[{"content":{"role":"model","parts":[{"text":"check alex@example.com","thought":true},{"text":""},{"text":"mail [EMAIL-1]"}]},"index":0}]}`,
 		},
+		"gemini interactions text delta": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"mail alex@example.com"}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"mail [EMAIL-1]"}}`,
+		},
+		"gemini interactions thought summary": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"mail alex@example.com"}}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"mail [EMAIL-1]"}}}`,
+		},
+		"gemini interactions text on step start": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.start","index":0,"step":{"type":"model_output","content":[{"type":"text","text":"mail alex@"},{"type":"image","data":"QQ=="},{"type":"text","text":"example.com"}]}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.start","index":0,"step":{"type":"model_output","content":[{"type":"text","text":""},{"type":"image","data":"QQ=="},{"type":"text","text":"mail [EMAIL-1]"}]}}`,
+		},
+		"gemini interactions thought on step start": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.start","index":0,"step":{"type":"thought","summary":[{"type":"text","text":"mail alex@example.com"}]}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.start","index":0,"step":{"type":"thought","summary":[{"type":"text","text":"mail [EMAIL-1]"}]}}`,
+		},
 		"gemini responses delta": {
 			format: RawResponseFormatGeminiStreamChunk, raw: `{"candidates":[{"content":{"role":"model","parts":[{"text":"mail alex@example.com"}]}}]}`,
 			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
@@ -601,6 +625,11 @@ func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
 		"openai chat content": {
 			format: RawResponseFormatOpenAIChatCompletionChunk,
 			frames: twice(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":%s},"finish_reason":null}]}`),
+			texts:  text, want: redactedText,
+		},
+		"gemini interactions text": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent,
+			frames: twice(`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":%s}}`),
 			texts:  text, want: redactedText,
 		},
 		"openai chat tool arguments": {
@@ -1001,5 +1030,98 @@ func TestSplitRawJSONFramesPreservesLayout(t *testing.T) {
 			_, err := splitRawJSONFrames(bad)
 			require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
 		})
+	}
+}
+
+// TestRedactRawResponseTextInteractionsCompletion pins that text a stream repeats in its completion's steps is
+// redacted there too, an escaped value and a call's arguments included, and is not joined to the deltas.
+func TestRedactRawResponseTextInteractionsCompletion(t *testing.T) {
+	const format = RawResponseFormatGeminiInteractionsStreamEvent
+	fill := func(first, second, whole, argument string) string {
+		return strings.Join([]string{
+			`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"` + first + `"}}`,
+			`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"` + second + `"}}`,
+			`{"event_type":"interaction.completed","interaction":{"id":"v1","steps":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"model_output","content":[{"type":"text","text":"` + whole + `"}]},{"type":"function_call","id":"c","name":"f","arguments":{"to":["` + argument + `"]}}]}}`,
+		}, "\n\n")
+	}
+	got := RedactRawResponseText(fill("my sec", "ret", "my secret", `a\"secret`), format, map[string]string{"secret": "[X]", `a"secret`: "[Y]"})
+	assert.Equal(t, fill("my ", "[X]", "my [X]", "[Y]"), got)
+	// A match never spans a delta and a completion's text.
+	apart := fill("sec", "", "ret", "x")
+	assert.Equal(t, apart, RedactRawResponseText(apart, format, map[string]string{"secret": "[X]"}))
+}
+
+// TestSyncRawResponseTextInteractionsChainedEdits pins that each edit is matched to the text a completion held
+// before any edit, so one edit's new text is not taken for the text another replaces. Edits that give one text
+// two new values are reported.
+func TestSyncRawResponseTextInteractionsChainedEdits(t *testing.T) {
+	const format = RawResponseFormatGeminiInteractionsStreamEvent
+	completed := func(kind string, values ...string) *BifrostResponsesStreamResponse {
+		var output []ResponsesMessage
+		for _, v := range values {
+			if kind == "text" {
+				output = append(output, ResponsesMessage{Type: Ptr(ResponsesMessageTypeMessage), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesOutputMessageContentTypeText, Text: &v}}}})
+			} else {
+				output = append(output, ResponsesMessage{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c"), Name: Ptr("f"), Arguments: Ptr(`{"v":"` + v + `"}`)}})
+			}
+		}
+		return &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &BifrostResponsesResponse{Output: output}}
+	}
+	raw := func(kind string, values ...string) string {
+		var steps []string
+		for _, v := range values {
+			if kind == "text" {
+				steps = append(steps, `{"type":"model_output","content":[{"type":"text","text":"`+v+`"}]}`)
+			} else {
+				steps = append(steps, `{"type":"function_call","id":"c","name":"f","arguments":{"v":"`+v+`"}}`)
+			}
+		}
+		return `{"event_type":"interaction.completed","interaction":{"steps":[` + strings.Join(steps, ",") + `]}}`
+	}
+	for _, kind := range []string{"text", "arguments"} {
+		got, err := SyncRawResponseText(raw(kind, "alpha", "beta"), format, completed(kind, "alpha", "beta"), completed(kind, "beta", "gamma"))
+		require.NoError(t, err, kind)
+		assert.Equal(t, raw(kind, "beta", "gamma"), got, kind)
+
+		same := raw(kind, "alpha", "alpha")
+		got, err = SyncRawResponseText(same, format, completed(kind, "alpha", "alpha"), completed(kind, "beta", "gamma"))
+		require.ErrorIs(t, err, ErrRawResponseTextUnsupported, kind)
+		assert.Equal(t, same, got, kind)
+
+		got, err = SyncRawResponseText(same, format, completed(kind, "alpha", "alpha"), completed(kind, "beta", "beta"))
+		require.NoError(t, err, kind)
+		assert.Equal(t, raw(kind, "beta", "beta"), got, kind)
+	}
+}
+
+// TestSyncRawResponseTextInteractionsCompleted pins that a change to a completed response reaches the steps
+// Google's completion frame lists, that a frame listing none is left as it is, and that a frame whose steps
+// hold text the change cannot be matched to is reported, never sent with the original.
+func TestSyncRawResponseTextInteractionsCompleted(t *testing.T) {
+	completed := func(text, arguments string) *BifrostResponsesStreamResponse {
+		return &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &BifrostResponsesResponse{Output: []ResponsesMessage{
+			{Type: Ptr(ResponsesMessageTypeMessage), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesOutputMessageContentTypeText, Text: &text}}}},
+			{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c"), Name: Ptr("f"), Arguments: &arguments}},
+		}}}
+	}
+	const format = RawResponseFormatGeminiInteractionsStreamEvent
+	before, after := completed("mail alex@example.com", `{"to":"alex@example.com"}`), completed("mail [EMAIL-1]", `{"to":"[EMAIL-1]"}`)
+
+	raw := `{"event_type":"interaction.completed","interaction":{"id":"v1","steps":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"model_output","content":[{"type":"text","text":"mail alex@example.com"}]},{"type":"function_call","id":"c","name":"f","arguments":{"to":"alex@example.com"}}]}}`
+	got, err := SyncRawResponseText(raw, format, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.ReplaceAll(strings.ReplaceAll(raw, "mail alex@example.com", "mail [EMAIL-1]"), `"to":"alex@example.com"`, `"to":"[EMAIL-1]"`); got != want {
+		t.Errorf("got  %v\nwant %s", got, want)
+	}
+
+	bare := `{"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}`
+	if got, err := SyncRawResponseText(bare, format, before, after); err != nil || got != bare {
+		t.Errorf("a frame with no steps is left alone, got %v, %v", got, err)
+	}
+	other := `{"event_type":"interaction.completed","interaction":{"steps":[{"type":"model_output","content":[{"type":"text","text":"please mail alex@example.com"}]}]}}`
+	if got, err := SyncRawResponseText(other, format, before, after); !errors.Is(err, ErrRawResponseTextUnsupported) || got != other {
+		t.Errorf("text the change cannot be matched to is reported, got %v, %v", got, err)
 	}
 }
