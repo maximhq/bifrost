@@ -77,6 +77,7 @@ func TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired(t *testing.
 	}{
 		{"explicit empty", `{"type":"object","properties":{},"required":[],"allOf":[{"type":"object","properties":{}}]}`, true},
 		{"absent", `{"type":"object","properties":{},"allOf":[{"type":"object","properties":{}}]}`, false},
+		{"absent with disjoint anyOf required", `{"type":"object","anyOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var schema schemas.ToolFunctionParameters
