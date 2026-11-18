@@ -297266,6 +297266,2258 @@
               }
             }
           ]
+        },
+        {
+          "name": "Body overrides: a route forces request body fields whatever the caller sent",
+          "description": "harness-relay-pricing's POST /v1/forced route sets body_overrides {include_usage: true, options.depth: advanced}. The upstream fixture echoes the raw body it received, so each case asserts the forced fields reached the upstream: added when missing, replaced when the caller disagrees (siblings kept), and a created JSON object for an empty body. A body the relay cannot guarantee the fields in (a forced key twice, in another case, or not a JSON object) is refused with 400 before the upstream is called.",
+          "item": [
+            {
+              "name": "a route's body_overrides add the fields the caller left out - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b1');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides added: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides added: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides added: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(echo.body.split('\"include_usage\"').length - 1, 'one \"include_usage\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(echo.body.split('\"depth\"').length - 1, 'one \"depth\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(sent.query, dump).to.eql('bifrost');",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.options && sent.options.depth, dump).to.eql('advanced');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\"\n}"
+                }
+              }
+            },
+            {
+              "name": "a route's body_overrides replace the caller's value and keep the caller's other fields - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides replaced: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides replaced: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides replaced: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(echo.body.split('\"include_usage\"').length - 1, 'one \"include_usage\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(echo.body.split('\"depth\"').length - 1, 'one \"depth\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.options.depth, dump).to.eql('advanced');",
+                      "  pm.expect(sent.options.max_results, 'the caller\\'s sibling field is kept: ' + dump).to.eql(2);",
+                      "  pm.expect(sent.query, dump).to.eql('bifrost');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": false,\n  \"options\": {\"depth\": \"basic\", \"max_results\": 2}\n}"
+                }
+              }
+            },
+            {
+              "name": "an empty body on a route with body_overrides becomes a JSON object sent as application/json - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b3');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides on an empty body: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides on an empty body: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides on an empty body: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(sent, dump).to.eql({ include_usage: true, options: { depth: 'advanced' } });",
+                      "  pm.expect(String(echo.headers['content-type'] || '').split(';')[0].trim().toLowerCase(), 'upstream content-type: ' + JSON.stringify(echo.headers)).to.eql('application/json');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body naming a forced field twice is refused, so the caller's duplicate cannot win, and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b4');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('duplicate forced field: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('duplicate forced field: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"more than once\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('duplicate forced field: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"query\": \"bifrost\", \"include_usage\": false, \"include_usage\": false}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body naming a forced field in different letter case is refused and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b5');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('case-variant forced field: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('case-variant forced field: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"different letter case\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('case-variant forced field: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"query\": \"bifrost\", \"Include_Usage\": false}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body that is not a JSON object is refused on a route with body_overrides and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b6');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('non-JSON body: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('non-JSON body: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"must be a JSON object\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('non-JSON body: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-www-form-urlencoded"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "query=bifrost"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Body overrides: the usage preview prices the body the relay sends",
+          "description": "POST /api/relays/usage-preview with an unsaved relay whose /translate route forces text: \"forced text\" (11 characters) and prices request-side characters, under a relay that forces model: tavily-basic. The live relay sets forced fields before it reads the model or measures the request, so the preview must too: the sample's own text (2 characters) and model are replaced, and a body the relay would refuse is reported as a 400. No upstream is called.",
+          "item": [
+            {
+              "name": "the preview measures and reads the forced fields, not the sample's - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('preview forced fields: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var out = pm.response.json();",
+                      "pm.test('preview forced fields: request-side units come from the forced text', function () {",
+                      "  var dump = JSON.stringify(out);",
+                      "  pm.expect(out.units, dump).to.eql(11);",
+                      "  pm.expect(Math.abs(out.cost - 0.11) < 1e-9, 'cost should be 0.11: ' + dump).to.be.true;",
+                      "  pm.expect(out.model, dump).to.eql('tavily-basic');",
+                      "  pm.expect(out.counted, dump).to.eql(true);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/usage-preview",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "usage-preview"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"config\": {\n    \"name\": \"harness-preview-forced\",\n    \"base_url\": \"https://api.example.com\",\n    \"auth\": {\n      \"type\": \"bearer\"\n    },\n    \"body_overrides\": {\n      \"model\": \"tavily-basic\"\n    },\n    \"usage\": {\n      \"model_path\": \"model\"\n    },\n    \"routes\": [\n      {\n        \"method\": \"POST\",\n        \"path\": \"/translate\",\n        \"body_overrides\": {\n          \"text\": \"forced text\"\n        },\n        \"usage\": {\n          \"units_source\": \"request\",\n          \"units_path\": \"text\",\n          \"units_measure\": \"chars\",\n          \"cost_per_unit\": 0.01\n        }\n      },\n      {\n        \"method\": \"POST\",\n        \"path\": \"/search\"\n      }\n    ]\n  },\n  \"sample\": {\n    \"method\": \"POST\",\n    \"path\": \"/translate\",\n    \"request_body\": \"{\\\"text\\\":\\\"hi\\\",\\\"model\\\":\\\"mine\\\"}\"\n  }\n}"
+                }
+              }
+            },
+            {
+              "name": "the preview reports that the relay refuses a body it cannot set the forced fields in - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('preview refused body: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var out = pm.response.json();",
+                      "pm.test('preview refused body: not counted, and the 400 is explained', function () {",
+                      "  var dump = JSON.stringify(out);",
+                      "  pm.expect(out.counted, dump).to.eql(false);",
+                      "  pm.expect((out.notes || []).join('\\n'), dump).to.include('refuses this request with 400');",
+                      "  pm.expect((out.notes || []).join('\\n'), dump).to.include('must be a JSON object');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/usage-preview",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "usage-preview"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"config\": {\n    \"name\": \"harness-preview-forced\",\n    \"base_url\": \"https://api.example.com\",\n    \"auth\": {\n      \"type\": \"bearer\"\n    },\n    \"body_overrides\": {\n      \"model\": \"tavily-basic\"\n    },\n    \"usage\": {\n      \"model_path\": \"model\"\n    },\n    \"routes\": [\n      {\n        \"method\": \"POST\",\n        \"path\": \"/translate\",\n        \"body_overrides\": {\n          \"text\": \"forced text\"\n        },\n        \"usage\": {\n          \"units_source\": \"request\",\n          \"units_path\": \"text\",\n          \"units_measure\": \"chars\",\n          \"cost_per_unit\": 0.01\n        }\n      },\n      {\n        \"method\": \"POST\",\n        \"path\": \"/search\"\n      }\n    ]\n  },\n  \"sample\": {\n    \"method\": \"POST\",\n    \"path\": \"/search\",\n    \"request_content_type\": \"text/plain\",\n    \"request_body\": \"query=x\"\n  }\n}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Body overrides: a relay-level field reaches every route, the way Tavily needs include_usage",
+          "description": "harness-relay-forced sets body_overrides {include_usage: true} on the relay and prices usage.credits x $0.008. The fixture's /v1/gated/** reports 3 credits only when the body it receives carries include_usage: true, as Tavily does, so a caller that omits or disables the field would otherwise be relayed for free. Routes: /v1/gated/search inherits the relay's field, /v1/gated/deep adds options.depth, /v1/gated/off replaces the relay's value with false, /v1/gated/stream streams, GET /v1/gated/status sends no body, /v1/gated/disabled is disabled, and skip_route_check relays any other path with the relay's field.",
+          "item": [
+            {
+              "name": "a caller that omits include_usage is still billed: the relay adds it - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-1');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('relay field added: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('relay field added: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(pm.response.json().body.split('\"include_usage\"').length - 1, 'one \"include_usage\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.query, dump).to.eql(\"bifrost\");",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('relay field added: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/search\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/search?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "search"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\"\n}"
+                }
+              }
+            },
+            {
+              "name": "a caller that sends include_usage false is still billed: the relay replaces it - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('relay field replaced: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('relay field replaced: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(pm.response.json().body.split('\"include_usage\"').length - 1, 'one \"include_usage\" in the raw body: ' + dump).to.eql(1);",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('relay field replaced: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/search\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/search?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "search"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": false\n}"
+                }
+              }
+            },
+            {
+              "name": "a caller that already sends include_usage true is relayed byte for byte - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-3');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('relay field kept: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('relay field kept: the upstream received the caller body unchanged', function () {",
+                      "  pm.expect(pm.response.json().body).to.eql(pm.request.body.raw);",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('relay field kept: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/search\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/search?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "search"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": true\n}"
+                }
+              }
+            },
+            {
+              "name": "a route's body_overrides add to the relay's fields - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-4');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('route adds: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('route adds: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.options.depth, dump).to.eql(\"advanced\");",
+                      "  pm.expect(sent.options.n, dump).to.eql(2);",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('route adds: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/deep\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/deep?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "deep"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"options\": {\n    \"depth\": \"basic\",\n    \"n\": 2\n  }\n}"
+                }
+              }
+            },
+            {
+              "name": "a route that sets the relay's field to false replaces it, so that route reports no credits - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-5');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('route replaces: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('route replaces: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(sent.include_usage, dump).to.eql(false);",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('route replaces: the row carries no units and no cost', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, dump).to.eql('/v1/gated/off');",
+                      "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost || 0, 0), 'cost: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/off?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "off"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": true\n}"
+                }
+              }
+            },
+            {
+              "name": "a path no route lists takes the relay's field on a skip_route_check relay - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-6');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('unlisted path: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('unlisted path: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('unlisted path: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path || '', 'route_path: ' + dump).to.eql('');",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/crawl?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "crawl"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"url\": \"https://example.com\"\n}"
+                }
+              }
+            },
+            {
+              "name": "an empty POST becomes a JSON body carrying the relay's field - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-7');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('empty POST: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "pm.test('empty POST: the upstream received the forced field as JSON', function () {",
+                      "  pm.expect(JSON.parse(echo.body), echo.body).to.eql({ include_usage: true });",
+                      "  pm.expect(echo.headers['content-type'], JSON.stringify(echo.headers)).to.eql('application/json');",
+                      "});",
+                      "relayLog(function (row) {",
+                      "  pm.test('empty POST: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/search\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/search?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "search"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a GET is relayed without a body: no body is created for it - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-8');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('GET without body: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('GET without body: the upstream received no body', function () { pm.expect(pm.response.json().body).to.eql(''); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/status?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "status"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "a streamed route forwards the forced field and is billed from the last SSE event - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-9');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('stream: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('stream: the reply is an event stream', function () { pm.expect(String(pm.response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase()).to.eql('text/event-stream'); });",
+                      "var events = pm.response.text().split('\\n\\n').filter(function (e) { return e.indexOf('data: ') === 0; });",
+                      "pm.test('stream: the upstream received the forced field', function () {",
+                      "  var first = JSON.parse(events[0].slice(6));",
+                      "  pm.expect(JSON.parse(first.body).include_usage, first.body).to.eql(true);",
+                      "});",
+                      "pm.test('stream: the client receives the final event with its usage', function () { var last = JSON.parse(events[events.length - 1].slice(6)); pm.expect(last.usage && last.usage.credits, pm.response.text()).to.eql(3); });",
+                      "relayLog(function (row) {",
+                      "  pm.test('stream: Relay Logs row priced from the credits the forced field asked for', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.route_path, 'route_path: ' + dump).to.eql(\"/v1/gated/stream\");",
+                      "    pm.expect(row.billable, 'billable: ' + dump).to.eql(true);",
+                      "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
+                      "    pm.expect(near(row.cost, 0.024), 'cost should be 0.024: ' + dump).to.be.true;",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/stream?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "stream"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\"\n}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body that is not a JSON object is refused on any route of the relay and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-a');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('form body refused: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('form body refused: the error explains the refusal', function () { pm.expect(pm.response.text()).to.include(\"must be a JSON object\"); });",
+                      "upstreamHits(function (hits) {",
+                      "  pm.test('form body refused: the call never reached the upstream', function () { pm.expect(hits, 'upstream hits for ' + ID).to.eql(0); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-www-form-urlencoded"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/search?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "search"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "query=bifrost&include_usage=false"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a caller that names include_usage twice is refused, so its copy cannot win - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('duplicate refused: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('duplicate refused: the error explains the refusal', function () { pm.expect(pm.response.text()).to.include(\"more than once\"); });",
+                      "upstreamHits(function (hits) {",
+                      "  pm.test('duplicate refused: the call never reached the upstream', function () { pm.expect(hits, 'upstream hits for ' + ID).to.eql(0); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/crawl?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "crawl"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"include_usage\": true, \"include_usage\": false}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-404] a disabled route answers 404 before its body is checked - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-c');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('disabled route: HTTP 404', function () { pm.expect(pm.response.code, 'expected 404, got: ' + pm.response.text()).to.eql(404); });",
+                      "pm.test('disabled route: the error explains the refusal', function () { pm.expect(pm.response.text()).to.include(\"is disabled\"); });",
+                      "upstreamHits(function (hits) {",
+                      "  pm.test('disabled route: the call never reached the upstream', function () { pm.expect(hits, 'upstream hits for ' + ID).to.eql(0); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "text/plain"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/disabled?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "disabled"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "not json"
+                }
+              }
+            },
+            {
+              "name": "a relay without body_overrides still forwards a non-JSON body byte for byte - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-d');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('no overrides: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('no overrides: the upstream received the caller body unchanged', function () { pm.expect(pm.response.json().body).to.eql(pm.request.body.raw); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "text/plain"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/echo?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "echo"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "query=bifrost&include_usage=false"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Body overrides: a route can leave the relay's enforced fields out",
+          "description": "harness-relay-forced enforces include_usage: true on every route. /v1/gated/raw sets inherit_body_overrides: false and has no fields of its own, so the caller's body reaches the upstream unchanged; /v1/gated/own also turns the relay's fields off but enforces options.depth itself. The fixture reports credits only when include_usage is true, so a route that leaves it out is relayed without units.",
+          "item": [
+            {
+              "name": "a route with the relay's fields off forwards the caller's body unchanged - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-1');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('relay fields off: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "pm.test('relay fields off: the upstream received the caller body unchanged', function () { pm.expect(pm.response.json().body).to.eql(pm.request.body.raw); });",
+                      "relayLog(function (row) {",
+                      "  pm.test('relay fields off: no credits were reported, so no units are billed', function () { var dump = JSON.stringify(row); pm.expect(row.route_path, dump).to.eql('/v1/gated/raw'); pm.expect(row.units == null, dump).to.be.true; });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/raw?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "raw"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": false\n}"
+                }
+              }
+            },
+            {
+              "name": "a route with the relay's fields off still enforces its own - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('own fields only: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var sent = sentBody();",
+                      "pm.test('own fields only: the route field is set and the relay field is not', function () {",
+                      "  var dump = 'upstream body: ' + pm.response.json().body;",
+                      "  pm.expect(sent.options && sent.options.depth, dump).to.eql('advanced');",
+                      "  pm.expect(sent, dump).to.not.have.property('include_usage');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-forced/v1/gated/own?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-forced",
+                    "v1",
+                    "gated",
+                    "own"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\"\n}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Body overrides: a relay saved through the management API forces its fields",
+          "description": "Creates a harness-relay-forced-api-<run> relay through POST /api/relays with relay and route body_overrides, reads it back, checks the saved relay's usage preview measures the route field its override forces, then deletes it. A value that is not a valid override path is refused at save time with 400.",
+          "item": [
+            {
+              "name": "[EXPECT-400] a relay whose body_overrides path items.0 uses an array index is refused at save time - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.collectionVariables.set('relayForcedBadName', 'harness-relay-forced-bad-' + Date.now());"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('invalid override: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('invalid override: the error names the path', function () { var text = pm.response.text(); pm.expect(text, text).to.include('items.0'); pm.expect(text, text).to.include('array index'); });",
+                      "if (pm.response.code === 201) { var created = pm.collectionVariables.get('relayForcedBadName'); pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/relays/' + encodeURIComponent(created), method: 'DELETE' }, function (err, res) { pm.test('cleanup: the relay ' + created + ' that should not exist is deleted', function () { pm.expect(err ? String(err) : res.code, err ? String(err) : res.text()).to.eql(204); }); }); }"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"{{relayForcedBadName}}\",\n  \"base_url\": \"http://127.0.0.1:8783\",\n  \"auth\": {\"type\": \"none\"},\n  \"body_overrides\": {\"items.0\": 1}\n}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-201] create a relay with relay and route body_overrides - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A name per run, so a run stopped before cleanup cannot collide with the next one.",
+                      "pm.collectionVariables.set('relayForcedApiName', 'harness-relay-forced-api-' + Date.now());"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('create: HTTP 201', function () { pm.expect(pm.response.code, 'expected 201, got: ' + pm.response.text()).to.eql(201); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"{{relayForcedApiName}}\",\n  \"description\": \"Created and deleted by the relays-e2e harness\",\n  \"base_url\": \"http://127.0.0.1:8783\",\n  \"auth\": {\n    \"type\": \"bearer\"\n  },\n  \"credential\": {\n    \"value\": \"sk-harness-relay-forced-api\"\n  },\n  \"usage\": {\n    \"units_path\": \"usage.credits\",\n    \"cost_per_unit\": 0.008\n  },\n  \"body_overrides\": {\n    \"include_usage\": true\n  },\n  \"routes\": [\n    {\n      \"method\": \"POST\",\n      \"path\": \"/v1/gated/search\",\n      \"body_overrides\": {\n        \"options.depth\": \"advanced\"\n      },\n      \"usage\": {\n        \"units_path\": \"options.depth\",\n        \"units_source\": \"request\",\n        \"units_measure\": \"chars\",\n        \"cost_per_unit\": 0.003\n      }\n    }\n  ]\n}"
+                }
+              }
+            },
+            {
+              "name": "the saved relay reads back with its body_overrides - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('read back: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var j = pm.response.json(); var r = j.relay || j;",
+                      "pm.test('read back: relay and route body_overrides are stored', function () {",
+                      "  var dump = pm.response.text();",
+                      "  pm.expect(r.body_overrides, dump).to.eql({ include_usage: true });",
+                      "  pm.expect(r.routes[0].body_overrides, dump).to.eql({ 'options.depth': 'advanced' });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/{{relayForcedApiName}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "{{relayForcedApiName}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "the usage preview of the saved relay measures the route field the saved override forces - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('saved preview: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var out = pm.response.json();",
+                      "pm.test('saved preview: the route measures the field the saved override forces', function () { pm.expect(out.counted, JSON.stringify(out)).to.eql(true); pm.expect(out.units, JSON.stringify(out)).to.eql(8); pm.expect(Math.abs(out.cost - 0.024) < 1e-9, JSON.stringify(out)).to.be.true; });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/usage-preview",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "usage-preview"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"{{relayForcedApiName}}\",\n  \"sample\": {\n    \"method\": \"POST\",\n    \"path\": \"/v1/gated/search\",\n    \"request_body\": \"{\\\"query\\\":\\\"x\\\"}\",\n    \"response_body\": \"{}\"\n  }\n}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-204] cleanup: delete the API-created relay - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('cleanup: HTTP 204', function () { pm.expect(pm.response.code, 'expected 204, got: ' + pm.response.text()).to.eql(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/{{relayForcedApiName}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "{{relayForcedApiName}}"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },

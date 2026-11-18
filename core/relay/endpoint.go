@@ -33,6 +33,7 @@ type endpoint struct {
 	usage              resolvedUsage // endpoint-level usage mapping
 	routes             []compiledRoute
 	streamGlobs        []routeGlob
+	bodyOverrides      []bodyOverride            // endpoint-level forced body fields, for a request matching no route
 	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
 	awsRegion          string
 	streamIdle         int // seconds
@@ -69,6 +70,7 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		usage:              usage,
 		routes:             routes,
 		streamGlobs:        compileStreamGlobs(cfg),
+		bodyOverrides:      compileBodyOverrides(cfg.BodyOverrides),
 		streamIdle:         schemas.DefaultEndpointStreamIdleTimeoutSeconds,
 	}
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
@@ -89,6 +91,7 @@ type plan struct {
 	usage   resolvedUsage
 	billing bool
 	stream  streamMode
+	body    []bodyOverride // the request body fields forced on this call
 }
 
 // readsReplyBody reports whether a billable call reads something from its reply's body: a priced
@@ -112,9 +115,9 @@ func (e *endpoint) plan(method, path string, headers map[string]string) plan {
 	route := e.matchRoute(method, path, headers)
 	// A disabled route still matches, so its requests are refused instead of reaching a broader route
 	// (or the relay-any-path fallback) priced differently.
-	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil)}
+	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil), body: e.bodyOverrides}
 	if route != nil {
-		p.usage, p.billing = route.usage, route.billable
+		p.usage, p.billing, p.body = route.usage, route.billable, route.bodyOverrides
 		for i := range e.routes {
 			if &e.routes[i] == route {
 				p.index = i
