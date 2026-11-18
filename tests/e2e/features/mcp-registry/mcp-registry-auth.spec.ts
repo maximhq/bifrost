@@ -1,5 +1,6 @@
 import { expect, test } from "../../core/fixtures/base.fixture";
 import {
+  createClientCredentialsClientData,
   createHeadersAuthClientData,
   createOAuthClientData,
   createPerUserOAuthClientData,
@@ -174,6 +175,137 @@ test.describe("MCP Registry - Authentication", () => {
       // Client should now be connected and visible in table
       const exists = await mcpRegistryPage.clientExists(clientData.name);
       expect(exists).toBe(true);
+    });
+  });
+
+  test.describe("MCP OAuth Client Credentials", () => {
+    // A listed client_credentials server, as the API returns it: credentials masked.
+    const ccServer = () => ({
+      config: {
+        client_id: "cc-edit-1",
+        name: "cc_edit_server",
+        connection_type: "http",
+        connection_string: { value: "https://mcp.example.com/mcp", type: "plain_text" },
+        auth_type: "client_credentials",
+        client_credentials: {
+          token_url: "https://as.example.com/token",
+          client_id: { value: "svc-bifrost", type: "plain_text" },
+          client_secret: { value: "<redacted>", type: "plain_text" },
+          auth_method: "client_secret_basic",
+        },
+        tools_to_execute: ["*"],
+      },
+      tools: [],
+      state: "healthy",
+      vk_configs: [],
+    });
+
+    test("should create a client with a client secret, sending only the secret's fields", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await mcpRegistryPage.fillClientForm(createClientCredentialsClientData());
+      await expect(page.getByTestId("client-credentials-fields")).toBeVisible();
+      // Client credentials are shared only, so there is no scope to pick.
+      await expect(page.getByTestId("auth-scope-select")).toHaveCount(0);
+
+      // Saving without credentials is refused beside the fields.
+      await mcpRegistryPage.saveBtn.click({ force: true });
+      await expect(page.getByText("Client ID is required")).toBeVisible();
+      await expect(page.getByText("Enter a client secret or a private key")).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await page.getByTestId("client-credentials-client-id-input").fill("svc-bifrost");
+      await page.getByTestId("client-credentials-client-secret-input").fill("s3cret");
+      await page.getByTestId("client-credentials-scopes-input").fill("mcp:read, mcp:write");
+      await mcpRegistryPage.saveBtn.click({ force: true });
+
+      await expect.poll(() => sent?.auth_type).toBe("client_credentials");
+      expect(sent?.client_credentials).toEqual({
+        client_id: { value: "svc-bifrost", ref: "" },
+        client_secret: { value: "s3cret", ref: "" },
+        scopes: ["mcp:read", "mcp:write"],
+      });
+      await expect(mcpRegistryPage.sheet).not.toBeVisible({ timeout: 10000 });
+    });
+
+    test("should switch to a private key, clearing the secret, and send the key's fields", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await mcpRegistryPage.fillClientForm(createClientCredentialsClientData());
+      await page.getByTestId("client-credentials-client-id-input").fill("svc-bifrost");
+      await page.getByTestId("client-credentials-client-secret-input").fill("typed-before-switching");
+
+      await page.getByTestId("client-credentials-auth-method-select").click();
+      await page.getByRole("option", { name: "Private key (private_key_jwt)" }).click();
+      await expect(page.getByTestId("client-credentials-client-secret-input")).toHaveCount(0);
+      await page.getByTestId("client-credentials-private-key-input").fill("env.CC_PRIVATE_KEY");
+      await page.getByTestId("client-credentials-key-id-input").fill("key-1");
+      // The algorithm defaults to "Automatic": the server chooses it from the key.
+      await expect(page.getByTestId("client-credentials-signing-algorithm-select")).toContainText("Automatic");
+      await page.getByTestId("client-credentials-omit-resource-switch").click();
+      await mcpRegistryPage.saveBtn.click({ force: true });
+
+      await expect.poll(() => sent?.client_credentials).toBeDefined();
+      const cc = sent?.client_credentials;
+      expect(cc.client_secret).toBeUndefined();
+      expect(cc.auth_method).toBeUndefined();
+      expect(cc.private_key).toEqual({ value: "", ref: "env.CC_PRIVATE_KEY", type: "env" });
+      expect(cc.key_id).toBe("key-1");
+      expect(cc.signing_algorithm).toBeUndefined();
+      expect(cc.resource).toBe("");
+    });
+
+    test("should ask for the secret again when the token URL changes, then send the whole block", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      await page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [ccServer()], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client/cc-edit-1", async (route) => {
+        if (route.request().method() !== "PUT") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client updated successfully" } });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.openClientEditor("cc_edit_server");
+      await mcpRegistryPage.showEditorTab("authentication");
+
+      const sheet = mcpRegistryPage.editSheet;
+      const tokenUrl = sheet.getByTestId("client-credentials-token-url-input");
+      await expect(tokenUrl).toHaveValue("https://as.example.com/token");
+      await expect(sheet.getByTestId("client-credentials-retarget-warning")).toHaveCount(0);
+      await tokenUrl.fill("https://as2.example.com/token");
+      await expect(sheet.getByTestId("client-credentials-retarget-warning")).toBeVisible();
+
+      const save = sheet.getByTestId("mcpclient-save-btn");
+      await save.click();
+      await expect(sheet.getByText(/Re-enter it: the token URL or assertion audience changed/)).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await sheet.getByTestId("client-credentials-client-secret-input").fill("rotated-secret");
+      await save.click();
+      await expect.poll(() => sent?.client_credentials).toBeDefined();
+      expect(sent?.client_credentials).toMatchObject({
+        token_url: "https://as2.example.com/token",
+        client_id: { value: "svc-bifrost" },
+        client_secret: { value: "rotated-secret" },
+        auth_method: "client_secret_basic",
+      });
     });
   });
 

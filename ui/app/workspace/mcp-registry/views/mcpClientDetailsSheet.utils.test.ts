@@ -229,6 +229,43 @@ describe("authRows", () => {
 		expect(row(rows, "oauth_resource")).toMatchObject({ value: "https://mcp.example.com" });
 	});
 
+	it("summarizes client credentials without its secrets", () => {
+		const secret = authRows(
+			config({
+				auth_type: "client_credentials",
+				client_credentials: {
+					token_url: "https://as.example.com/token",
+					client_id: { value: "<redacted>" },
+					client_secret: { value: "<redacted>" },
+					auth_method: "client_secret_basic",
+					scopes: ["mcp:read"],
+				},
+			}),
+			"Shared",
+		);
+		expect(row(secret, "auth_type")).toMatchObject({ value: "OAuth Client Credentials · Shared" });
+		expect(row(secret, "client_credentials_token_url")).toMatchObject({ value: "https://as.example.com/token" });
+		expect(row(secret, "client_credentials_authentication")).toMatchObject({ value: "client_secret_basic" });
+		expect(row(secret, "client_credentials_scopes")).toMatchObject({ chips: ["mcp:read"] });
+		expect(row(secret, "client_credentials_resource")).toMatchObject({ value: "The server URL" });
+
+		const keyed = authRows(
+			config({
+				auth_type: "client_credentials",
+				client_credentials: {
+					client_id: { value: "<redacted>" },
+					private_key: { value: "<redacted>" },
+					signing_algorithm: "ES256",
+					resource: "",
+				},
+			}),
+			"Shared",
+		);
+		expect(row(keyed, "client_credentials_token_url")).toMatchObject({ value: "Not set" });
+		expect(row(keyed, "client_credentials_authentication")).toMatchObject({ value: "Private key (private_key_jwt) · ES256" });
+		expect(row(keyed, "client_credentials_resource")).toMatchObject({ value: "Not sent" });
+	});
+
 	it("adds the required header names for a per-user headers server", () => {
 		const rows = authRows(config({ auth_type: "per_user_headers", per_user_header_keys: ["X-API-Key", "X-Tenant"] }), "Per-User");
 		expect(row(rows, "auth_type")).toMatchObject({ value: "Headers · Per-User" });
