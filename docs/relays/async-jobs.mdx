@@ -19,8 +19,8 @@ Priced as ordinary calls, such an API is charged on every status check, and the 
 <Tab title="Web UI">
 
 1. Open **Relays**, select the relay and select **Add Async Job** above its routes.
-2. Under **Start Route (Charged)**, set the call that starts the job: method `POST`, path `/` and the header matcher `X-Amz-Target` = `Textract.StartDocumentAnalysis`. Set **Fee per Start (USD)** to `0.01` and **Job ID Path** to `JobId`.
-3. Under **Status Check (Free)**, set how Bifrost checks the job: method `POST`, path `/`, the header `X-Amz-Target` = `Textract.GetDocumentAnalysis`, the body `{"JobId":"{{job.id}}","MaxResults":1}` with content type `application/x-amz-json-1.1`, **Status Path** `JobStatus`, **Succeeded Statuses** `SUCCEEDED, PARTIAL_SUCCESS` and **Failed Statuses** `FAILED`.
+2. Under **Start Route**, set the call that starts the job: method `POST`, path `/` and the header matcher `X-Amz-Target` = `Textract.StartDocumentAnalysis`. Set **Fee per Start (USD)** to `0.01` and **Job ID Path** to `JobId`.
+3. Under **Status Check**, set how Bifrost checks the job: method `POST`, path `/`, the header `X-Amz-Target` = `Textract.GetDocumentAnalysis`, the body `{"JobId":"{{job.id}}","MaxResults":1}` with content type `application/x-amz-json-1.1`, **Status Path** `JobStatus`, **Succeeded Statuses** `SUCCEEDED, PARTIAL_SUCCESS` and **Failed Statuses** `FAILED`.
 4. Under **Job Pricing**, set **Price per Unit (USD)** to `0.0015`, **Units Read From** to the response, **Measure** to **Number at path** and **Units Path** to `DocumentMetadata.Pages`.
 5. Select **Add Async Job**.
 
@@ -61,12 +61,6 @@ This Textract relay charges $0.01 to start an analysis and $0.0015 per page when
             "timeout_seconds": 21600,
             "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 }
           }
-        },
-        {
-          "method": "POST",
-          "path": "/",
-          "headers": { "X-Amz-Target": "Textract.Get*" },
-          "billable": false
         }
       ]
     }
@@ -117,11 +111,6 @@ bifrost:
             usage:
               units_path: DocumentMetadata.Pages
               cost_per_unit: 0.0015
-        - method: POST
-          path: /
-          headers:
-            X-Amz-Target: "Textract.Get*"
-          billable: false
 ```
 
 </Tab>
@@ -144,7 +133,7 @@ The start route names one operation because each start has its own status call: 
 | `status_path` | Yes | Where the status is in the status check's reply, such as `JobStatus`. |
 | `succeeded` | Yes | Statuses that end the job and charge it. Letter case is ignored. |
 | `failed` | No | Statuses that end the job without a charge. |
-| `interval_seconds` | No | Seconds between checks. Default `30`, and no longer than the timeout. Bifrost looks for due jobs every 10 seconds, and checks less often after many attempts. |
+| `interval_seconds` | No | Seconds between checks. Default `30`, and shorter than the timeout (the default counts), so the job is checked at least once before its deadline. Bifrost looks for due jobs every 10 seconds, and checks less often after many attempts. |
 | `timeout_seconds` | No | Stop checking after this long. Default `3600`, at most 7 days. The job is checked once more at the deadline. |
 | `reused_id_is_new_job` | No | `true` when the API can hand back an id it already used for new work, such as a job id the caller picks. Then a start that returns the id of a job already charged starts a new job. Default `false`: such a start is a retry and is not charged again. |
 | `usage` | No | How the final reply is priced, over the route's and the relay's [pricing](./pricing). Only a `cost_per_request` set here is charged again: the route's fee was charged when the job started. |
@@ -170,13 +159,19 @@ If a gateway node charges a budget and then cannot save that it did, another nod
 
 The final charge goes to the budgets of the virtual key, team and customer that started the job, even if they changed since. It counts no extra request against rate limits.
 
+## Status checks are free
+
+A caller's own status check is never charged, and needs no route of its own. Bifrost compares each call with the job's status check: the method, the path, the query fields, the fixed headers and the fixed body fields, with any job id in place of `{{job.id}}`. A call that matches, and names a job Bifrost started on that route (still running or already settled, so a caller can keep reading a finished job's results), is relayed free on any route. A made-up id is not a status check, so that call follows the relay's routes and is priced by them. A disabled route still answers `404`, and a job id Bifrost will not follow (see below) does not count either.
+
+Fields the status check does not mention can be anything, so a caller may add its own paging token. A number in a paging field (`MaxResults`, `limit`, `page_size`, `offset` and similar names) may be any number, so `MaxResults: 1` in the status check still matches a caller asking for 1000. Every other number must match exactly, as text does, so a numeric operation code such as `"Action": 1` cannot be swapped for another. A list must have the same number of items, so a batch call cannot carry an extra operation.
+
 ## In Relay Logs
 
-The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row and carries that call's model, route and the names of its virtual key, user, team and project. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
+The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row and carries that call's model, route and the names of its virtual key, user, team and project, when that row is already stored. Start rows are written in batches, so a job a caller's status check settles within a few seconds of starting may keep only the link. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
 
 The job row also shows how the job was followed: how many status checks Bifrost sent (a sweep that skips the job because another node is settling it sends nothing, so it does not count), the last job status it read, the HTTP status of the check that ended it, and when it was settled. The replies to those checks are not stored.
 
-A caller's own status check can settle the job too: when its reply shows the job finished, Bifrost charges the job from that reply at once, as it does for a video retrieve, and the job row names that check. Bifrost's own polling stays the backstop, and a job is still charged once whichever check finds it finished first.
+A caller's own status check can also end the wait: when its reply shows the job finished, and Bifrost read that reply whole rather than streaming it back (an event stream, a route that forces streaming, or a reply past the large-response threshold is streamed, and its job is settled by Bifrost's own polling at the same price), Bifrost polls the job itself at once, with the job's stored status check, and charges it from that reply, never from the caller's, so a trimmed or shaped reply cannot change the charge. The job row names the check that triggered it. If Bifrost's poll fails, or the job is past its timeout, the caller's check settles nothing and Bifrost's own polling decides. Bifrost's own polling stays the backstop, and a job is still charged once whichever check finds it finished first.
 
 <Note>
 Jobs are recorded by request logging. With logging off, the start call is still charged its fee, but no job is followed or charged.
