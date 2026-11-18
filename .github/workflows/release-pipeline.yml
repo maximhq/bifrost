@@ -93,11 +93,12 @@ jobs:
             echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
-  # Phone gate. Parks the run on the release-run-approval environment, whose only
-  # protection rule is the bifrost-release-gate GitHub App. The service behind that
-  # App pushes an Approve/Reject prompt to the admin's phone and calls back GitHub
-  # with the answer. Nothing below runs - no provider quota, no runner minutes -
-  # until the tap arrives. Version-bump pushes carry --skip-ci and never reach this
+  # Phone gate. Parks the run on the release-run-approval environment, which needs
+  # two approvals: the bifrost-release-gate GitHub App rule and a required reviewer.
+  # The service behind that App (approve.getbifrost.dev) pushes an Approve/Reject
+  # prompt to the admin's phone and calls back GitHub with the answer; the reviewer
+  # approves separately on the run page. Nothing below runs - no provider quota, no
+  # runner minutes - until both arrive. Version-bump pushes carry --skip-ci and never reach this
   # job. The job holds no secrets, checks out nothing and allows no egress: it is a
   # named point in the graph for the environment rule to hold, nothing more.
   approve-run:
