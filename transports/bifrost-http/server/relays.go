@@ -47,6 +47,8 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 	}
 	s.relays = manager
 	s.RelaysHandler = handlers.NewRelaysHandler(manager, relayManager, s.Config, vkReloader)
+	// The server resolves redacted keys for the LLM logs filter data; Relay Logs use the same.
+	s.RelaysHandler.SetRedactedKeysManager(s)
 	if names := manager.Names(); len(names) > 0 {
 		logger.Info("relays initialized: %d endpoint(s)", len(names))
 	}

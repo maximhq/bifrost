@@ -139,11 +139,15 @@ func (h *VirtualMCPHandler) listVirtualMCPs(ctx *fasthttp.RequestCtx) {
 	offset, _ := strconv.Atoi(string(ctx.QueryArgs().Peek("offset")))
 	limit, offset = ClampPaginationParams(limit, offset)
 	search := string(ctx.QueryArgs().Peek("search"))
+	// Reverse lookup: only the Virtual MCPs that bundle this source server, matched in the query so
+	// total_count is exact and no page has to be scanned client-side.
+	mcpClientID := string(ctx.QueryArgs().Peek("mcp_client_id"))
 
 	defs, total, err := h.store.ConfigStore.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{
-		Limit:  limit,
-		Offset: offset,
-		Search: search,
+		Limit:       limit,
+		Offset:      offset,
+		Search:      search,
+		MCPClientID: mcpClientID,
 	})
 	if err != nil {
 		h.logger.Error("failed to list virtual MCPs: %v", err)

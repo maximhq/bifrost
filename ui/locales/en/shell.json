@@ -14,10 +14,12 @@
 		"logsSettings": "Logs Settings",
 		"models": "Models",
 		"modelCatalog": "Model Catalog",
+		"datasheet": "Datasheet Editor",
 		"modelProviders": "Model Providers",
 		"budgetsLimits": "Budgets & Limits",
 		"routingRules": "Routing Rules",
 		"complexityRouter": "Complexity Router",
+		"routers": "Routers",
 		"circuitBreaker": "Circuit Breaker",
 		"pricingOverrides": "Pricing Overrides",
 		"modelSettings": "Model Settings",
@@ -65,6 +67,7 @@
 		"caching": "Caching",
 		"security": "Security",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "API Keys",
 		"performanceTuning": "Performance Tuning",
@@ -96,6 +99,7 @@
 		"logsSettings": "Logs configuration",
 		"models": "Configure models",
 		"modelCatalog": "Overview of providers, keys, and usage",
+		"datasheet": "Edit model limits, capabilities and prices",
 		"modelProviders": "Configure models",
 		"budgetsLimits": "Budgets and rate limits",
 		"routingRules": "Intelligent routing rules",
@@ -147,6 +151,7 @@
 		"caching": "Caching configuration",
 		"security": "Security settings",
 		"warp": "Warp agent configuration",
+		"gateways": "Coding-client sign-in",
 		"proxy": "Proxy configuration",
 		"apiKeys": "API keys management",
 		"performanceTuning": "Performance tuning settings",
@@ -190,7 +195,6 @@
 			"newTab": "New tab",
 			"back": "Back"
 		},
-		"openHint": "Open command menu",
 		"actions": {
 			"create": "Create…",
 			"copyLink": "Copy link to this page",
@@ -352,6 +356,12 @@
 		"descriptionStuckEnterprise": "The rollout is still in progress. Reload to check again in a minute. If this doesn't work, contact the administrator of your Bifrost deployment.",
 		"waitingEnterprise": "Waiting for the rollout to complete…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Part of the dashboard couldn't load",
+		"bannerDescription": "Check your network, proxy or browser extensions, then reload.",
+		"screenTitle": "This page couldn't load",
+		"screenDescription": "Your browser couldn't download some dashboard files. A proxy, firewall or browser extension may be blocking them. Check your network and reload."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Expand setup checklist",
 		"setupChecklist": "Setup checklist",
@@ -422,6 +432,10 @@
 			"indexStatusUnavailable": "Index status unavailable",
 			"askAdminTurnOn": "Ask an administrator to turn Warp on.",
 			"askAdminSetUp": "Ask an administrator to set Warp up.",
+			"needsBifrostMCP": "Warp needs the Bifrost MCP",
+			"needsBifrostMCPHint": "Set the Bifrost URL so Warp can read this deployment's configuration.",
+			"setUpBifrostMCP": "Set up",
+			"askAdminBifrostMCP": "Ask an administrator to set up the Bifrost MCP for Warp.",
 			"sendsWhenFinished": "Sends when this answer finishes",
 			"remove": "Remove"
 		},
@@ -445,7 +459,15 @@
 			"label": "Question",
 			"skip": "Skip",
 			"orType": "Or type your own answer below.",
-			"skipAnswer": "Use your best judgement and say what you assumed."
+			"skipAnswer": "Use your best judgement and say what you assumed.",
+			"confirm": {
+				"subtitle": "Warp will make this change once you confirm.",
+				"destructiveSubtitle": "Warp will make this change once you confirm. Check it carefully.",
+				"cannotUndo": "This cannot be undone.",
+				"noArguments": "No arguments.",
+				"cancel": "Cancel",
+				"confirm": "Confirm"
+			}
 		},
 		"message": {
 			"whatThisCovers": "What this covers",
@@ -536,6 +558,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp isn't set up on this deployment.",
+				"cause": "Warp needs the Bifrost MCP to read this deployment's configuration, and it is not loaded.",
+				"suggestions": ["Ask an administrator to set the Bifrost URL in Client settings."]
+			},
 			"not_configured": {
 				"summary": "Warp is not configured yet.",
 				"cause": "No provider and model are set, or Warp is switched off in settings.",

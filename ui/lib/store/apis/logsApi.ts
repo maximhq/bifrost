@@ -23,8 +23,10 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { metadataFilterQueryValue, normalizeMetadataFilters } from "@/lib/utils/metadataFilters";
 import { getPeriodTimezone, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
+import { GetLogByIdArg, normalizeGetLogByIdArg } from "./logsApi.utils";
 import { RoutingRule } from "@/lib/types/routingRules";
 
 // Helper function to build filter params
@@ -57,6 +59,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
 		params.routing_rule_ids = filters.routing_rule_ids.join(",");
+	}
+	if (filters.model_router_ids && filters.model_router_ids.length > 0) {
+		params.model_router_ids = filters.model_router_ids.join(",");
 	}
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
@@ -129,10 +134,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.user_agents && filters.user_agents.length > 0) {
 		params.user_agents = JSON.stringify(filters.user_agents);
 	}
-	if (filters.metadata_filters) {
-		for (const [key, value] of Object.entries(filters.metadata_filters)) {
-			params[`metadata_${key}`] = value;
-		}
+	// Normalized because links written before multiple selection hold one string per key.
+	for (const [key, values] of Object.entries(normalizeMetadataFilters(filters.metadata_filters) ?? {})) {
+		params[`metadata_${key}`] = metadataFilterQueryValue(values);
 	}
 
 	return params;
@@ -495,10 +499,17 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
-		// Get a single log entry by ID (includes raw_request and raw_response)
-		getLogById: builder.query<LogEntry, string>({
-			query: (id) => `/logs/${encodeURIComponent(id)}`,
-			providesTags: (result, error, id) => [{ type: "Logs", id }],
+		// Get a single log entry by ID (includes raw_request and raw_response).
+		// Pass the row's timestamp when known: a ClickHouse log store uses it to
+		// prune the lookup instead of scanning the whole logs table.
+		getLogById: builder.query<LogEntry, GetLogByIdArg>({
+			query: (arg) => {
+				const { id, timestamp } = normalizeGetLogByIdArg(arg);
+				return { url: `/logs/${encodeURIComponent(id)}`, params: timestamp ? { timestamp } : undefined };
+			},
+			// The timestamp only narrows the lookup, so callers with and without it share one cache entry per log.
+			serializeQueryArgs: ({ queryArgs }) => ({ id: normalizeGetLogByIdArg(queryArgs).id }),
+			providesTags: (result, error, arg) => [{ type: "Logs", id: normalizeGetLogByIdArg(arg).id }],
 		}),
 	}),
 });

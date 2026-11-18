@@ -84,8 +84,12 @@ func transportError(err error, latency time.Duration) *schemas.BifrostError {
 		return providerUtils.SetErrorLatency(&schemas.BifrostError{
 			Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled, Error: err},
 		}, latency)
-	case errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
+	// A stream that goes quiet past the idle timeout is a timeout, as largeResponseReadError
+	// classifies the same stall on an LLM reply; the sentinel is a plain error, not a net.Error.
+	case errors.Is(err, providerUtils.ErrStreamIdleTimeout), errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
 		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 	}
-	return providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
+	// Any other failure to reach the upstream is a connection failure, as on the LLM path: 502
+	// with provider_connection_failed, not an internal error.
+	return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 }

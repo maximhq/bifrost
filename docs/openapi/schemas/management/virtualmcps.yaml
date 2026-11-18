@@ -61,11 +61,11 @@ VirtualMCP:
 CreateVirtualMCPRequest:
   type: object
   description: |
-    `name` and `tools` are required. `enabled` defaults to `true` and
+    `name` is required. Omitting `tools` (or sending `[]`) creates a Virtual MCP
+    that exposes no tools. `enabled` defaults to `true` and
     `instructions_mode` to `append`.
   required:
     - name
-    - tools
   properties:
     name:
       type: string

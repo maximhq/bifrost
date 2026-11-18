@@ -739,7 +739,7 @@ func parseAgentHistorySearch(ctx *fasthttp.RequestCtx) (logstore.AgentLogHistory
 		VirtualKeyID: values("virtual_key_id"), TeamID: values("team_id"), CustomerID: values("customer_id"),
 		BusinessUnitID: values("business_unit_id"), ProjectID: values("project_id"), RequestID: value("request_id"), TraceID: value("trace_id"),
 		TaskID: value("task_id"), ContextID: value("context_id"), PushConfigID: value("push_config_id"),
-		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
+		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), CallerCorrelationID: value("caller_correlation_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
 		Search: value("search"), GroupSessions: args.GetBool("group_sessions"),
 	}
 	for name, target := range map[string]**time.Time{"start_time": &filter.StartTime, "end_time": &filter.EndTime} {
@@ -1003,7 +1003,7 @@ func (h *AgentGatewayHandler) setCardCachingHeaders(ctx *fasthttp.RequestCtx, na
 		return
 	}
 	ctx.Response.Header.Set(fasthttp.HeaderCacheControl, "private, no-cache")
-	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key")
+	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key, xi-api-key")
 	sum := sha256.Sum256(ctx.Response.Body())
 	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 	ctx.Response.Header.Set(fasthttp.HeaderETag, etag)

@@ -119,11 +119,9 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	if _, set := headers["accept"]; !set && in.Accept != "" {
 		headers["accept"] = in.Accept
 	}
-	// One content type for the whole preview, the one the upstream receives (the operator's wins).
-	contentType := headers["content-type"]
-	if ct, ok := e.operatorHeaders["content-type"]; ok {
-		contentType = ct
-	}
+	// One content type for the whole preview, the one the upstream receives: the sample's, else the
+	// operator's, as a passthrough call's caller header replaces the extra header.
+	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	route := e.matchRoute(method, path, headers)
 	usage, billable := e.usage, billableByDefault(method, nil)
 	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}

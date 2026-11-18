@@ -31,14 +31,13 @@ func newHTTPClient(network *schemas.RelayNetworkConfig, proxyConfig *schemas.Pro
 		insecure, caCertPEM = network.InsecureSkipVerify, network.CACertPEM
 	}
 
+	// No proxy means a direct connection, as for a provider: HTTP(S)_PROXY is read only for a
+	// proxy_config of type "environment" (NetHTTPProxyWithHopTLS), never as a fallback.
 	proxy, proxyTLS, proxyHopTLS, err := providerUtils.NetHTTPProxyWithHopTLS(proxyConfig)
 	if err != nil {
 		return nil, err
 	}
 	proxyFromConfig := proxy != nil
-	if !proxyFromConfig {
-		proxy = providerUtils.EnvProxyFunc()
-	}
 	transport := &http.Transport{
 		Proxy:                 proxy,
 		TLSClientConfig:       proxyTLS,

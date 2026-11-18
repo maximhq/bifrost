@@ -16,9 +16,9 @@ import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
 const statusOf = (status: string): Status => (Statuses.includes(status as Status) ? (status as Status) : "processing");
 
 type ObservabilityT = TFunction<"observability">;
-	
-	/** Column menu labels, resolved through the caller's `t` so they follow the active locale. */
-	export const getRelayColumnLabels = (t: ObservabilityT): Record<string, string> => ({
+
+/** Column menu labels, resolved through the caller's `t` so they follow the active locale. */
+export const getRelayColumnLabels = (t: ObservabilityT): Record<string, string> => ({
 	timestamp: t("labels.time"),
 	relay_name: t("relayLogs.fields.relay"),
 	method: t("relayLogs.fields.method"),
@@ -35,10 +35,11 @@ type ObservabilityT = TFunction<"observability">;
 	customer: t("labels.customer"),
 	business_unit: t("labels.businessUnit"),
 	project: t("labels.project"),
-	});
-	
-	/** Resolved once at import time with the active locale; prefer getRelayColumnLabels(t) inside a component. */
-	export const RELAY_COLUMN_LABELS: Record<string, string> = getRelayColumnLabels(i18n.getFixedT(null, "observability"));
+	session: t("labels.session"),
+});
+
+/** Resolved once at import time with the active locale; prefer getRelayColumnLabels(t) inside a component. */
+export const RELAY_COLUMN_LABELS: Record<string, string> = getRelayColumnLabels(i18n.getFixedT(null, "observability"));
 
 // Same sort header as the LLM table's Time / Latency / Cost columns.
 const sortableHeader =
@@ -59,6 +60,7 @@ export const createRelayColumns = (
 	hasDeleteAccess: boolean,
 	customAppIcons: Record<string, string> = {},
 	t: ObservabilityT = i18n.getFixedT(null, "observability"),
+	onFilterBySessionId?: (sessionId: string) => void,
 ): ColumnDef<RelayLog>[] => [
 	{
 		accessorKey: "status",
@@ -111,10 +113,10 @@ export const createRelayColumns = (
 			// would just restate the primary line above it; show it only when it's new information
 			// (a glob, or no match at all).
 			const routeLabel = !log.route_path
-					? t("relayLogs.columns.noRoute")
-					: log.route_path !== pathOnly
-						? t("relayLogs.columns.route", { route: log.route_path })
-						: null;
+				? t("relayLogs.columns.noRoute")
+				: log.route_path !== pathOnly
+					? t("relayLogs.columns.route", { route: log.route_path })
+					: null;
 			// "Streamed" is not repeated here as plain text: it's already a colored badge on the
 			// detail sheet, the same way LLM's streaming variants get a distinct badge color/label
 			// rather than a text suffix, so a bare "streamed" string in this muted line read as out
@@ -188,14 +190,24 @@ export const createRelayColumns = (
 		size: 170,
 		cell: ({ row }) => <AttributionCell name={row.original.virtual_key_name} id={row.original.virtual_key_id} />,
 	},
-	{ id: "team", header: t("labels.team"), size: 150, cell: ({ row }) => <AttributionCell name={row.original.team_name} id={row.original.team_id} /> },
+	{
+		id: "team",
+		header: t("labels.team"),
+		size: 150,
+		cell: ({ row }) => <AttributionCell name={row.original.team_name} id={row.original.team_id} />,
+	},
 	{
 		id: "customer",
 		header: t("labels.customer"),
 		size: 150,
 		cell: ({ row }) => <AttributionCell name={row.original.customer_name} id={row.original.customer_id} />,
 	},
-	{ id: "user", header: t("labels.user"), size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
+	{
+		id: "user",
+		header: t("labels.user"),
+		size: 150,
+		cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} />,
+	},
 	{
 		id: "business_unit",
 		header: t("labels.businessUnit"),
@@ -208,6 +220,30 @@ export const createRelayColumns = (
 		size: 150,
 		cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 	},
+	{
+		id: "session",
+		accessorKey: "session_id",
+		header: t("labels.session"),
+		size: 170,
+		cell: ({ row }) => {
+			const sessionId = row.original.session_id;
+			if (!sessionId) return null;
+			if (!onFilterBySessionId) return <TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>;
+			return (
+				<button
+					type="button"
+					data-testid="relay-log-session-filter-btn"
+					className="hover:text-foreground cursor-pointer text-left"
+					onClick={(event) => {
+						event.stopPropagation();
+						onFilterBySessionId(sessionId);
+					}}
+				>
+					<TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>
+				</button>
+			);
+		},
+	},
 	...(hasDeleteAccess
 		? [
 				{
@@ -218,7 +254,13 @@ export const createRelayColumns = (
 						<div className="flex justify-center">
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-									<Button variant="ghost" size="icon" data-testid="relay-log-actions-btn" aria-label={t("logs.logActions")} className="h-7 w-7">
+									<Button
+										variant="ghost"
+										size="icon"
+										data-testid="relay-log-actions-btn"
+										aria-label={t("logs.logActions")}
+										className="h-7 w-7"
+									>
 										<MoreHorizontal className="h-4 w-4" />
 									</Button>
 								</DropdownMenuTrigger>

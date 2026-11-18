@@ -193,7 +193,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       ).toBe(true);
     });
 
-    test("creates through the shared createClient helper and shows the stored document on the edit sheet", async ({
+    test("creates through the shared createClient helper and shows the stored document on the view sheet", async ({
       mcpRegistryPage,
     }) => {
       const clientData = createOpenAPIClientData({
@@ -216,6 +216,10 @@ test.describe("MCP Registry - OpenAPI servers", () => {
 
       const toolCount = await mcpRegistryPage.getToolsCount();
       expect(toolCount).toBe(3);
+      // Replacing the document is a settings change, made from the edit sheet only.
+      await expect(
+        mcpRegistryPage.viewSheet.getByTestId("openapi-replace-spec-btn"),
+      ).toHaveCount(0);
       await mcpRegistryPage.closeDetailSheet();
     });
 
@@ -464,7 +468,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "1/3",
       );
 
-      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
 
       // The replacement drops createPet and adds deletePet.
@@ -584,14 +588,17 @@ test.describe("MCP Registry - OpenAPI servers", () => {
           { timeout: 20000 },
         )
         .toBe("1/3");
+      // The view sheet follows the polled list, so it shows the new document once the refresh lands.
       await mcpRegistryPage.viewClientDetails(clientData.name);
       await expect
         .poll(async () => mcpRegistryPage.getOpenAPISummaryText(), {
           timeout: 20000,
         })
         .toContain("E2E Petstore YAML");
+      await mcpRegistryPage.closeDetailSheet();
       // Reopening the replacement shows the saved selection, getPetById still unchecked.
       // The stored document seeds the replacement and parses on its own.
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
       await expect(
         panel.getByTestId("openapi-tool-checkbox-getPetById"),
@@ -618,7 +625,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         await mcpRegistryPage.waitForClientInTable(clientData.name, 15000),
       ).toBe(true);
 
-      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
       const panel = mcpRegistryPage.detailSheet.getByTestId(
         "openapi-replace-spec-panel",

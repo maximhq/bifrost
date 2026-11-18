@@ -3,6 +3,7 @@ package logstore
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -128,6 +129,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
 	putIfPresent(m, "user_id", l.UserID)
 	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "user_email", l.UserEmail)
+	putIfPresent(m, "client_ip", l.ClientIP)
 	putIfPresent(m, "team_id", l.TeamID)
 	putIfPresent(m, "team_name", l.TeamName)
 	putIfPresent(m, "team_ids", l.TeamIDs)
@@ -532,6 +535,49 @@ type relayPayloadV1 struct {
 	SchemaVersion int     `json:"schema_version"`
 	RequestBody   *string `json:"request_body,omitempty"`
 	ResponseBody  *string `json:"response_body,omitempty"`
+	// Set only for a hidden row: content with no body column, kept in the object alone.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+}
+
+// relayMergePayloadV1 is what a relay reconcile queues: the bodies it carries, each with a flag
+// saying whether it was carried at all (a nil body with its flag set clears the stored one).
+type relayMergePayloadV1 struct {
+	SchemaVersion   int     `json:"schema_version"`
+	RequestBody     *string `json:"request_body,omitempty"`
+	SetRequestBody  bool    `json:"set_request_body,omitempty"`
+	ResponseBody    *string `json:"response_body,omitempty"`
+	SetResponseBody bool    `json:"set_response_body,omitempty"`
+	// Hidden content with no body column (see relayPayloadV1), replacing the stored copy when set.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+}
+
+// Reserved keys of a relay row update (UpdateRelayLog) carrying hidden content that has no body
+// column: the full path with its query, and the error with its raw payloads. The hybrid store moves
+// them into the row's object; every store strips them before writing the row.
+const (
+	RelayRetainedPathUpdate         = "__retained_path"
+	RelayRetainedErrorDetailsUpdate = "__retained_error_details"
+)
+
+// takeRelayRetainedUpdates splits the reserved hidden-content keys off a relay row update. The
+// update map is returned as is when it holds neither, so the common reconcile copies nothing.
+func takeRelayRetainedUpdates(updates map[string]any) (*string, *schemas.BifrostError, map[string]any) {
+	pathValue, hasPath := updates[RelayRetainedPathUpdate]
+	errValue, hasErr := updates[RelayRetainedErrorDetailsUpdate]
+	if !hasPath && !hasErr {
+		return nil, nil, updates
+	}
+	rest := make(map[string]any, len(updates))
+	for k, v := range updates {
+		if k != RelayRetainedPathUpdate && k != RelayRetainedErrorDetailsUpdate {
+			rest[k] = v
+		}
+	}
+	path, _ := pathValue.(*string)
+	errDetails, _ := errValue.(*schemas.BifrostError)
+	return path, errDetails, rest
 }
 
 // MarshalRelayLogPayload serializes a Relay Logs row's full bodies for object storage.
@@ -540,7 +586,22 @@ func MarshalRelayLogPayload(l *RelayLog) ([]byte, error) {
 		SchemaVersion: relayObjectSchemaVersion,
 		RequestBody:   l.RequestBody,
 		ResponseBody:  l.ResponseBody,
+		Path:          l.RetainedPath,
+		ErrorDetails:  relayObjectErrorDetails(l),
 	})
+}
+
+// relayObjectErrorDetails is the error a hidden row keeps in its object, since its database row
+// keeps none (PrepareRelayLogDBEntry), as an LLM row offloads error_details: the full error retained
+// with its raw payloads, else the sanitized one.
+func relayObjectErrorDetails(l *RelayLog) *schemas.BifrostError {
+	if l.RetainedErrorDetails != nil {
+		return l.RetainedErrorDetails
+	}
+	if l.ContentHidden {
+		return l.ErrorDetailsParsed
+	}
+	return nil
 }
 
 // MergeRelayLogPayloadFromJSON restores the full bodies read back from object storage.
@@ -554,6 +615,9 @@ func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
 	}
 	l.RequestBody = payload.RequestBody
 	l.ResponseBody = payload.ResponseBody
+	// Kept so a reconcile merged over the object does not drop them; reads never surface them.
+	l.RetainedPath = payload.Path
+	l.RetainedErrorDetails = payload.ErrorDetails
 	return nil
 }
 
@@ -562,8 +626,12 @@ func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
 // object holding them in full.
 func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
 	if l.ContentHidden {
+		// A hidden row carries no content in the database, as an LLM row's ClearPayload leaves none:
+		// the error goes to the object with the bodies (relayObjectErrorDetails).
 		l.RequestBody = nil
 		l.ResponseBody = nil
+		l.ErrorDetails = ""
+		l.ErrorDetailsParsed = nil
 	} else {
 		l.RequestBody = truncateStringPointer(l.RequestBody, maxRelayBodyPreviewRunes)
 		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxRelayBodyPreviewRunes)
@@ -571,9 +639,10 @@ func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
 	l.PayloadReference = &objectKey
 }
 
-// RelayLogHasPayload reports whether a Relay Logs row carries a body to offload.
+// RelayLogHasPayload reports whether a Relay Logs row carries content to offload: a body, or
+// hidden content retained without a body column (the query string, a raw error).
 func RelayLogHasPayload(l *RelayLog) bool {
-	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil)
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.RetainedPath != nil || l.RetainedErrorDetails != nil || (l.ContentHidden && l.ErrorDetailsParsed != nil))
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
@@ -658,6 +727,14 @@ func (l *Log) BuildInputContentSummary() string {
 		}
 	}
 
+	// Agent loops: no user text, so show the latest tool result or tool call.
+	if text := lastChatToolSummary(l.InputHistoryParsed); text != "" {
+		return text
+	}
+	if text := lastResponsesToolSummary(l.ResponsesInputHistoryParsed); text != "" {
+		return text
+	}
+
 	// Speech input
 	if l.SpeechInputParsed != nil && l.SpeechInputParsed.Input != "" {
 		return l.SpeechInputParsed.Input
@@ -684,6 +761,111 @@ func (l *Log) BuildInputContentSummary() string {
 	}
 
 	return ""
+}
+
+// formatToolCall renders a tool call as "name(args)", or just "name" when the
+// arguments are empty.
+func formatToolCall(b *strings.Builder, name, args string) {
+	if name == "" {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	b.WriteString(name)
+	if args = strings.TrimSpace(args); args != "" {
+		b.WriteByte('(')
+		b.WriteString(args)
+		b.WriteByte(')')
+	}
+}
+
+// lastChatToolSummary returns the text of the last tool result, or the
+// "name(args)" calls of the last assistant message that carries tool calls,
+// whichever comes later in the history.
+func lastChatToolSummary(msgs []schemas.ChatMessage) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Role == schemas.ChatMessageRoleTool {
+			if text := extractChatMessageText(msg); text != "" {
+				return text
+			}
+			continue
+		}
+		if msg.Role != schemas.ChatMessageRoleAssistant || msg.ChatAssistantMessage == nil || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		var b strings.Builder
+		for _, tc := range msg.ToolCalls {
+			if tc.Custom != nil && tc.Custom.Name != nil {
+				formatToolCall(&b, *tc.Custom.Name, tc.Custom.Input)
+			} else if tc.Function.Name != nil {
+				formatToolCall(&b, *tc.Function.Name, tc.Function.Arguments)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	return ""
+}
+
+// lastResponsesToolSummary mirrors lastChatToolSummary for Responses API
+// function_call and function_call_output items.
+func lastResponsesToolSummary(msgs []schemas.ResponsesMessage) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Type == nil || msg.ResponsesToolMessage == nil {
+			continue
+		}
+		switch *msg.Type {
+		case schemas.ResponsesMessageTypeFunctionCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
+			if text := extractResponsesToolOutputText(msg.Output); text != "" {
+				return text
+			}
+		case schemas.ResponsesMessageTypeCustomToolCall:
+			if msg.Name == nil || msg.ResponsesCustomToolCall == nil {
+				continue
+			}
+			var b strings.Builder
+			formatToolCall(&b, *msg.Name, msg.ResponsesCustomToolCall.Input)
+			if b.Len() > 0 {
+				return b.String()
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if msg.Name == nil {
+				continue
+			}
+			args := ""
+			if msg.Arguments != nil {
+				args = *msg.Arguments
+			}
+			var b strings.Builder
+			formatToolCall(&b, *msg.Name, args)
+			if b.Len() > 0 {
+				return b.String()
+			}
+		}
+	}
+	return ""
+}
+
+// extractResponsesToolOutputText returns a function_call_output's string
+// output, or the last text block when the output is block-shaped.
+func extractResponsesToolOutputText(output *schemas.ResponsesToolMessageOutputStruct) string {
+	if output == nil {
+		return ""
+	}
+	if output.ResponsesToolCallOutputStr != nil && *output.ResponsesToolCallOutputStr != "" {
+		return *output.ResponsesToolCallOutputStr
+	}
+	var lastText string
+	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+		if block.Text != nil && *block.Text != "" {
+			lastText = *block.Text
+		}
+	}
+	return lastText
 }
 
 // extractChatMessageText returns the text content from a ChatMessage.

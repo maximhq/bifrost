@@ -348,6 +348,16 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_method_column"}, run: migrationAddMethodColumnToMCPToolLogs},
 	{IDs: []string{"add_relay_logs_table"}, run: migrationCreateRelayLogsTable},
 	{IDs: []string{"relay_logs_add_object_columns"}, run: migrationAddRelayLogObjectColumns},
+	{IDs: []string{"logs_add_client_ip_column"}, run: migrationAddClientIPColumn},
+	{IDs: []string{"logs_add_user_email_column"}, run: migrationAddUserEmailColumn},
+	{IDs: []string{"relay_logs_add_session_id"}, run: migrationAddRelayLogSessionID},
+	{IDs: []string{"relay_logs_add_large_payload_response"}, run: migrationAddRelayLogLargePayloadResponse},
+	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
+	{IDs: []string{"mcp_tool_logs_add_round_trip_id_column"}, run: migrationAddRoundTripIDColumnToMCPToolLogs},
+	{IDs: []string{"agent_logs_add_caller_correlation_id_column"}, run: migrationAddCallerCorrelationIDColumnToAgentLogs},
+	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
+	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
+	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3002,6 +3012,11 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_model_router_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_model_router_id ON logs(model_router_id) WHERE model_router_id IS NOT NULL",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_session_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
 	},
@@ -3026,6 +3041,16 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_agent_correlation_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_agent_correlation_id ON mcp_tool_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
+	},
+	{
+		table: "agent_logs",
+		name:  "idx_agent_logs_caller_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_agent_logs_caller_correlation_id ON agent_logs(caller_correlation_id) WHERE caller_correlation_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_round_trip_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_round_trip_id ON mcp_tool_logs(round_trip_id) WHERE round_trip_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -3109,6 +3134,34 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_project_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_project_id ON mcp_tool_logs(project_id)",
+	},
+	{
+		// relay_logs_add_session_id adds only the column on Postgres; see that migration.
+		table: "relay_logs",
+		name:  "idx_relay_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_session_id ON relay_logs(session_id) WHERE session_id IS NOT NULL",
+	},
+	{
+		// Content search on relay rows, as idx_mcp_logs_arguments_fts / idx_mcp_logs_result_fts.
+		table: "relay_logs",
+		name:  "idx_relay_logs_request_body_fts",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_request_body_fts ON relay_logs USING GIN (to_tsvector('simple', left(request_body, %d))) WHERE request_body IS NOT NULL", ftsInputCharLimit),
+	},
+	{
+		table: "relay_logs",
+		name:  "idx_relay_logs_response_body_fts",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_response_body_fts ON relay_logs USING GIN (to_tsvector('simple', left(response_body, %d))) WHERE response_body IS NOT NULL", ftsInputCharLimit),
+	},
+	{
+		// relay_logs_add_correlation_columns adds only the columns on Postgres; see that migration.
+		table: "relay_logs",
+		name:  "idx_relay_logs_parent_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_parent_request_id ON relay_logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
+	},
+	{
+		table: "relay_logs",
+		name:  "idx_relay_logs_agent_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_agent_correlation_id ON relay_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
 	},
 }
 
@@ -4478,6 +4531,59 @@ func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logg
 		return fmt.Errorf("error while adding complexity routing columns: %w", err)
 	}
 	return nil
+}
+
+// migrationAddModelRoutingColumns adds model_router_id and model_router_name
+// to the logs table. They record the model router that took a request after
+// the routing rules, and stay NULL for requests no router took.
+func migrationAddModelRoutingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_model_routing_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{modelRoutingColumnsMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding model routing columns: %w", err)
+	}
+	return nil
+}
+
+// modelRoutingColumns are the logs columns that record the model router a
+// request was routed by.
+var modelRoutingColumns = []string{"model_router_id", "model_router_name"}
+
+func modelRoutingColumnsMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	const migrationName = "logs_add_model_routing_columns"
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRoutingColumns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// The router a request was routed by cannot be recaptured, so a
+			// rollback is refused while any log records one.
+			if err := refuseRollbackWhileRecorded(tx, migrationName, []any{&Log{}}, modelRoutingColumns...); err != nil {
+				return err
+			}
+			for _, column := range modelRoutingColumns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // migrationAddSessionIDColumn adds the generic session identity resolved at
@@ -5967,6 +6073,98 @@ func migrationAddMethodColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
+// migrationAddRoundTripIDColumnToMCPToolLogs adds the column linking the rounds of an MCP gateway tool call
+// that asked its caller for input; other rows leave it null, so there is no backfill. Postgres builds its index
+// concurrently through performanceIndexes; other dialects create it here.
+func migrationAddRoundTripIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_round_trip_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{roundTripIDColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// roundTripIDColumnMigration refuses its rollback while round_trip_id holds a value: the links between a call's
+// rounds cannot be recaptured once dropped.
+func roundTripIDColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "mcp_tool_logs_add_round_trip_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "round_trip_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&MCPToolLog{}, "idx_mcp_logs_round_trip_id") {
+				if err := tx.Migrator().CreateIndex(&MCPToolLog{}, "idx_mcp_logs_round_trip_id"); err != nil {
+					return fmt.Errorf("create idx_mcp_logs_round_trip_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := refuseRollbackWhileRecorded(tx, "mcp_tool_logs_add_round_trip_id_column", []any{&MCPToolLog{}}, "round_trip_id"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &MCPToolLog{}, "round_trip_id")
+		},
+	}
+}
+
+// migrationAddCallerCorrelationIDColumnToAgentLogs adds the column linking a subagent's operation to the A2A task of
+// the agent that delegated it. Older rows leave it null, so there is no backfill. Postgres builds its index
+// concurrently through performanceIndexes; other dialects create it here.
+func migrationAddCallerCorrelationIDColumnToAgentLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "agent_logs_add_caller_correlation_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{callerCorrelationIDColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// callerCorrelationIDColumnMigration refuses its rollback while caller_correlation_id holds a value: the link from
+// a subagent's operation to its caller cannot be recaptured once dropped.
+func callerCorrelationIDColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "agent_logs_add_caller_correlation_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &AgentLog{}, "caller_correlation_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id") {
+				if err := tx.Migrator().CreateIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id"); err != nil {
+					return fmt.Errorf("create idx_agent_logs_caller_correlation_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := refuseRollbackWhileRecorded(tx, "agent_logs_add_caller_correlation_id_column", []any{&AgentLog{}}, "caller_correlation_id"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &AgentLog{}, "caller_correlation_id")
+		},
+	}
+}
+
 // migrationCreateRelayLogsTable creates the Relay Logs table with the indexes its
 // struct tags declare, as agent_logs_init does: AutoMigrate creates the table and
 // only the indexes that do not exist yet, so a rerun after a partial apply is a
@@ -5996,6 +6194,100 @@ func migrationCreateRelayLogsTable(ctx context.Context, db *gorm.DB, logger sche
 	return nil
 }
 
+// migrationAddRelayLogSessionID adds the session_id column, so a relay call carries the same
+// session identity LLM and MCP rows record for correlation.
+//
+// Only the column is added here on Postgres, as logs_add_session_id_column does: a nullable
+// column with no default is a catalog change, while an in-migration CREATE INDEX would scan a
+// populated relay_logs under a lock that blocks inserts, and boot waits on it. The index is built
+// CONCURRENTLY by ensurePerformanceIndexes (an entry appended to performanceIndexes) after
+// migrations. SQLite builds it here. A fresh database gets it from the model's index tag when the
+// table is created.
+func migrationAddRelayLogSessionID(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_session_id",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &RelayLog{}, "SessionID"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&RelayLog{}, "idx_relay_logs_session_id") {
+				if err := tx.Migrator().CreateIndex(&RelayLog{}, "idx_relay_logs_session_id"); err != nil {
+					return fmt.Errorf("create relay_logs session_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_session_id is non-rollbackable: dropping the column would lose the session identity recorded on existing rows")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddRelayLogCorrelationColumns adds parent_request_id and agent_correlation_id, so a
+// relay call carries the same caller correlation an LLM row records: the baggage session-id that
+// names its parent, and x-bf-agent-correlation-id. As relay_logs_add_session_id does, Postgres
+// gets only the columns here and its indexes from ensurePerformanceIndexes; SQLite builds them here.
+func migrationAddRelayLogCorrelationColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_correlation_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range []struct{ field, index string }{
+				{"ParentRequestID", "idx_relay_logs_parent_request_id"},
+				{"AgentCorrelationID", "idx_relay_logs_agent_correlation_id"},
+			} {
+				if err := addColumnIfNotExists(tx, logger, &RelayLog{}, column.field); err != nil {
+					return err
+				}
+				if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&RelayLog{}, column.index) {
+					if err := tx.Migrator().CreateIndex(&RelayLog{}, column.index); err != nil {
+						return fmt.Errorf("create relay_logs %s index: %w", column.index, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_correlation_columns is non-rollbackable: dropping the columns would lose the correlation recorded on existing rows")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddRelayLogLargePayloadResponse adds is_large_payload_response, which marks a row whose
+// reply was forwarded past the large-payload response threshold and is kept as a preview, as the
+// column of that name marks an LLM row. A boolean with a constant default is a catalog change.
+func migrationAddRelayLogLargePayloadResponse(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_large_payload_response",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &RelayLog{}, "IsLargePayloadResponse")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_large_payload_response is non-rollbackable: dropping the column would lose which rows hold a preview")
+		},
+	}})
+	return m.Migrate()
+}
+
 // migrationAddRelayLogObjectColumns adds the columns the hybrid store uses to keep a Relay
 // Logs row's full bodies in object storage, as agent_logs_add_raw_payload_columns does for
 // Agent logs: a separate step, so a database that already ran add_relay_logs_table gets them.
@@ -6021,4 +6313,274 @@ func migrationAddRelayLogObjectColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 	}})
 	return m.Migrate()
+}
+
+// clientIPColumnModels are the log tables that carry client_ip.
+var clientIPColumnModels = []any{&Log{}, &MCPToolLog{}, &RelayLog{}}
+
+// migrationAddClientIPColumn adds client_ip to logs, mcp_tool_logs and relay_logs.
+func migrationAddClientIPColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{clientIPColumnMigration(ctx, logger)}).Migrate()
+}
+
+func clientIPColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, apply func(*gorm.DB, schemas.Logger, interface{}, string) error) error {
+		tx = tx.WithContext(ctx)
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, model := range clientIPColumnModels {
+			if err := apply(tx, logger, model, "ClientIP"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID:      "logs_add_client_ip_column",
+		Migrate: func(tx *gorm.DB) error { return eachTable(tx, addColumnIfNotExists) },
+		Rollback: func(tx *gorm.DB) error {
+			if err := refuseRollbackWhileRecorded(tx.WithContext(ctx), "logs_add_client_ip_column", clientIPColumnModels, "client_ip"); err != nil {
+				return err
+			}
+			return eachTable(tx, dropColumnIfExists)
+		},
+	}
+}
+
+// refuseRollbackWhileRecorded returns an error when any of columns holds a value on any of models. Caller identity
+// cannot be recaptured after the fact, so dropping a populated column deletes data rather than reversing a schema change.
+//
+// On PostgreSQL it first takes the ACCESS EXCLUSIVE lock DROP COLUMN needs anyway, on every table at once and bounded by
+// boundDDLLockWait, so a writer cannot commit a value between the check and the drop. The lock lasts until the
+// migration's transaction ends. Without an index on the column, proving it empty reads the whole table while every
+// reader and writer waits, so a statement timeout bounds the check too: a scan that runs over it fails the rollback
+// before any column is dropped.
+func refuseRollbackWhileRecorded(tx *gorm.DB, migrationID string, models []any, columns ...string) error {
+	migrator := tx.Migrator()
+	if tx.Dialector.Name() == "postgres" {
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec("SET LOCAL statement_timeout = '30s'").Error; err != nil {
+			return fmt.Errorf("could not bound the recorded-value check for %s: %w", migrationID, err)
+		}
+		tables := make([]string, 0, len(models))
+		for _, model := range models {
+			if !migrator.HasTable(model) {
+				continue
+			}
+			stmt := &gorm.Statement{DB: tx}
+			if err := stmt.Parse(model); err != nil {
+				return fmt.Errorf("could not resolve the table for %T before rolling back %s: %w", model, migrationID, err)
+			}
+			tables = append(tables, stmt.Quote(stmt.Schema.Table))
+		}
+		if len(tables) > 0 {
+			if err := tx.Exec("LOCK TABLE " + strings.Join(tables, ", ") + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock the log tables before rolling back %s: %w", migrationID, err)
+			}
+		}
+	}
+	for _, model := range models {
+		if !migrator.HasTable(model) {
+			continue
+		}
+		for _, column := range columns {
+			if !migrator.HasColumn(model, column) {
+				continue
+			}
+			var present []struct{ One int }
+			if err := tx.Model(model).Select("1 AS one").Where(column + " IS NOT NULL").Limit(1).Find(&present).Error; err != nil {
+				return fmt.Errorf("could not check %T.%s before rolling back %s: %w", model, column, migrationID, err)
+			}
+			if len(present) > 0 {
+				return fmt.Errorf("%s is non-rollbackable: %T.%s holds recorded values that cannot be recaptured, and dropping it would delete them; clear the column first if the rollback is genuinely intended", migrationID, model, column)
+			}
+		}
+	}
+	return nil
+}
+
+// userEmailColumnModels are the log tables that carry user_email.
+var userEmailColumnModels = []any{&Log{}, &MCPToolLog{}, &RelayLog{}}
+
+// migrationAddUserEmailColumn adds user_email to logs, mcp_tool_logs and relay_logs.
+func migrationAddUserEmailColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{userEmailColumnMigration(ctx, logger)}).Migrate()
+}
+
+func userEmailColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, apply func(*gorm.DB, schemas.Logger, interface{}, string) error) error {
+		tx = tx.WithContext(ctx)
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, model := range userEmailColumnModels {
+			if err := apply(tx, logger, model, "UserEmail"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID:      "logs_add_user_email_column",
+		Migrate: func(tx *gorm.DB) error { return eachTable(tx, addColumnIfNotExists) },
+		Rollback: func(tx *gorm.DB) error {
+			if err := refuseRollbackWhileRecorded(tx.WithContext(ctx), "logs_add_user_email_column", userEmailColumnModels, "user_email"); err != nil {
+				return err
+			}
+			return eachTable(tx, dropColumnIfExists)
+		},
+	}
+}
+
+// migrationAddComplexitySuggestionTables creates the storage for the
+// complexity router's phrase suggestions: the suggestions, the runs that wrote
+// them, and the retry list of captured request vectors whose delete failed.
+// See complexitysuggestions.go.
+func migrationAddComplexitySuggestionTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_model_routing_suggestion_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies part-way leaves none of the three. No
+	// boundDDLLockWait: this only creates tables that do not exist yet.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&ComplexitySuggestion{}, &ComplexitySuggestionRun{}, &ComplexityVectorDelete{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackComplexitySuggestionTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackComplexitySuggestionTables drops the suggestion tables, but only
+// while model_routing_suggestions and model_routing_vector_deletes are empty. A
+// suggestion row carries the user's accept and dismiss decisions, which no
+// rerun can rebuild; a vector delete row is a deleted log whose vector is
+// still in the vector store, and dropping it would leave the vector there for
+// good. The runs table is history only and is not checked. On PostgreSQL both
+// are locked first, so nothing can write between the check and the DROP.
+func rollbackComplexitySuggestionTables(tx *gorm.DB) error {
+	guarded := []struct {
+		model  any
+		table  string
+		reason string
+	}{
+		{&ComplexitySuggestion{}, "model_routing_suggestions", "model_routing_suggestions holds accepted and dismissed suggestions that cannot be rebuilt from the logs"},
+		{&ComplexityVectorDelete{}, "model_routing_vector_deletes", "model_routing_vector_deletes lists deleted logs whose vectors are still in the vector store"},
+	}
+	for _, g := range guarded {
+		if !tx.Migrator().HasTable(g.model) {
+			continue
+		}
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE " + g.table + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock %s before rollback: %w", g.table, err)
+			}
+		}
+		var present []struct{ One int }
+		if err := tx.Model(g.model).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check %s before rollback: %w", g.table, err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_model_routing_suggestion_tables is non-rollbackable: %s; clear it first if the rollback is genuinely intended", g.reason)
+		}
+	}
+	return tx.Migrator().DropTable(&ComplexityVectorDelete{}, &ComplexitySuggestionRun{}, &ComplexitySuggestion{})
+}
+
+// retentionAutovacuumTables are the tables the retention cleaner deletes from on
+// a schedule (the keys of retentionAdvisoryLockKeys), in a fixed order.
+var retentionAutovacuumTables = []string{"logs", "mcp_tool_logs", "relay_logs", "warp_topic_assignments", "warp_topic_unmatched"}
+
+// retentionAutovacuumOptions are the storage parameters set on each retention
+// table, written as Postgres reports them in pg_class.reloptions.
+var retentionAutovacuumOptions = []string{"autovacuum_vacuum_scale_factor=0.01", "autovacuum_vacuum_threshold=10000"}
+
+// retentionAutovacuumOptionNames returns the parameter names of
+// retentionAutovacuumOptions, so rollback resets exactly what migrate set.
+func retentionAutovacuumOptionNames() []string {
+	names := make([]string, 0, len(retentionAutovacuumOptions))
+	for _, opt := range retentionAutovacuumOptions {
+		name, _, _ := strings.Cut(opt, "=")
+		names = append(names, name)
+	}
+	return names
+}
+
+// migrationTuneRetentionAutovacuum makes autovacuum keep up with retention on
+// Postgres. Retention deletes expired rows every hour, and a DELETE only leaves
+// dead tuples; autovacuum turns them into reusable space, but by default it
+// waits for 20% of a table to be dead. On a 50M-row logs table that is 10M dead
+// rows, so the table and its indexes keep growing between vacuums even though
+// the live row count is steady. Vacuuming after 1% (plus 10000 rows, so small
+// tables are not vacuumed constantly) bounds that bloat. This does not hand
+// space back to the filesystem; only VACUUM FULL or pg_repack do, and VACUUM
+// FULL locks the table for its whole rewrite, so it is never run automatically.
+func migrationTuneRetentionAutovacuum(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{retentionAutovacuumMigration(ctx, logger)}).Migrate()
+}
+
+// retentionAutovacuumMigration sets or resets the autovacuum parameters on every
+// retention table that exists. ALTER TABLE ... SET/RESET takes SHARE UPDATE
+// EXCLUSIVE, which does not block reads or writes; boundDDLLockWait caps the wait
+// behind a running vacuum so the migration retries instead of queueing.
+func retentionAutovacuumMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, stmt func(table string) string) error {
+		tx = tx.WithContext(ctx)
+		if tx.Dialector.Name() != "postgres" {
+			return nil
+		}
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, table := range retentionAutovacuumTables {
+			var exists bool
+			if err := tx.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error; err != nil {
+				return err
+			}
+			if !exists {
+				logger.Debug("[logstore] %s does not exist; skipping autovacuum settings", table)
+				continue
+			}
+			if err := tx.Exec(stmt(table)).Error; err != nil {
+				return fmt.Errorf("could not set autovacuum parameters on %s: %w", table, err)
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID: "logs_tune_retention_autovacuum",
+		Migrate: func(tx *gorm.DB) error {
+			return eachTable(tx, func(table string) string {
+				return "ALTER TABLE " + table + " SET (" + strings.Join(retentionAutovacuumOptions, ", ") + ")"
+			})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return eachTable(tx, func(table string) string {
+				return "ALTER TABLE " + table + " RESET (" + strings.Join(retentionAutovacuumOptionNames(), ", ") + ")"
+			})
+		},
+	}
 }

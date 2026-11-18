@@ -446,7 +446,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		fmt.Sprintf("%s/openai/v1/chat/completions", endpoint),
+		azureChatCompletionURL(ctx, endpoint, request),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -513,7 +513,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/chat/completions", endpoint)
+		url = azureChatCompletionURL(ctx, endpoint, request)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
@@ -904,7 +904,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*openai.OpenAISpeechRequest, error) {
 			reqBody := openai.ToOpenAISpeechRequest(request)
 			if reqBody != nil {
 				reqBody.StreamFormat = schemas.Ptr("sse")
@@ -970,6 +970,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
@@ -1660,13 +1661,17 @@ func (provider *AzureProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
+// UploadsFileSource marks AzureProvider as streaming BifrostFileUploadRequest.FileSource
+// (schemas.FileSourceUploader), so Bifrost does not read the upload into memory first.
+func (provider *AzureProvider) UploadsFileSource() {}
+
 // FileUpload uploads a file to Azure OpenAI.
 func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
-	if len(request.File) == 0 {
+	if len(request.File) == 0 && request.FileSource == nil {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
 
@@ -1674,30 +1679,9 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil)
 	}
 
-	// Create multipart form data
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	// Add purpose field
-	if err := writer.WriteField("purpose", string(request.Purpose)); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err)
-	}
-
-	// Add file field
 	filename := request.Filename
 	if filename == "" {
 		filename = "file.jsonl"
-	}
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := part.Write(request.File); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	// Create request
@@ -1713,14 +1697,23 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType(writer.FormDataContentType())
 
-	// Set Azure authentication
+	// Set Azure authentication before the upload is opened: on an auth error nothing would
+	// attach the opened file to req, so ReleaseRequest could not close it.
 	if err := provider.setAzureAuth(ctx, req, key); err != nil {
 		return nil, err
 	}
 
-	req.SetBody(buf.Bytes())
+	// The file is streamed from its source while the request is written, never copied into a
+	// buffer: uploads run to hundreds of MB. ReleaseRequest closes the body stream.
+	upload, err := providerUtils.NewMultipartFileUpload(
+		[]providerUtils.MultipartField{{Name: "purpose", Value: string(request.Purpose)}},
+		"file", filename, providerUtils.FileUploadSource(request))
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to build multipart upload body", err)
+	}
+	req.Header.SetContentType(upload.ContentType)
+	req.SetBodyStream(upload.Body, upload.Size)
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -3316,100 +3309,120 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	// A container lives on one key's resource: the first page finds that key, and the cursor keeps later pages on it.
 	helper, herr := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if herr != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", herr)
 	}
 
-	key, nativeCursor, ok := helper.GetCurrentKey()
-	if !ok {
-		return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
-	}
-	if resolveAzureEndpoint(ctx, key) == "" {
-		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	fetchPage := func(key schemas.Key, nativeCursor string) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+		if resolveAzureEndpoint(ctx, key) == "" {
+			return nil, providerUtils.NewConfigurationError("endpoint not set")
+		}
+
+		requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID))
+		queryParams := url.Values{}
+		if request.Limit > 0 {
+			queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
+		}
+		if nativeCursor != "" {
+			queryParams.Set("after", nativeCursor)
+		}
+		if request.Order != nil {
+			queryParams.Set("order", *request.Order)
+		}
+		if len(queryParams) > 0 {
+			requestURL += "?" + queryParams.Encode()
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(requestURL)
+		req.Header.SetMethod(http.MethodGet)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		defer wait()
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if resp.StatusCode() >= 400 {
+			return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+		}
+
+		responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		}
+
+		var listResp struct {
+			Object  string                        `json:"object"`
+			Data    []schemas.ContainerFileObject `json:"data"`
+			FirstID *string                       `json:"first_id"`
+			LastID  *string                       `json:"last_id"`
+			HasMore bool                          `json:"has_more"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &listResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := &schemas.BifrostContainerFileListResponse{
+			Object:      listResp.Object,
+			Data:        listResp.Data,
+			FirstID:     listResp.FirstID,
+			LastID:      listResp.LastID,
+			HasMore:     listResp.HasMore,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if sendBackRawRequest {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if sendBackRawResponse {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+		return response, nil
 	}
 
-	requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID))
-	queryParams := url.Values{}
-	if request.Limit > 0 {
-		queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
+	var response *schemas.BifrostContainerFileListResponse
+	var keyIndex int
+	var bifrostErr *schemas.BifrostError
+	if helper.Cursor != nil {
+		key, nativeCursor, ok := helper.GetCurrentKey()
+		if !ok {
+			return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
+		}
+		keyIndex = helper.GetCurrentKeyIndex()
+		response, bifrostErr = fetchPage(key, nativeCursor)
+	} else {
+		response, keyIndex, bifrostErr = providerUtils.LookupAcrossKeys(ctx, keys, func(key schemas.Key) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+			return fetchPage(key, "")
+		})
 	}
-	if nativeCursor != "" {
-		queryParams.Set("after", nativeCursor)
-	}
-	if request.Order != nil {
-		queryParams.Set("order", *request.Order)
-	}
-	if len(queryParams) > 0 {
-		requestURL += "?" + queryParams.Encode()
-	}
-
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(requestURL)
-	req.Header.SetMethod(http.MethodGet)
-
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	for k, v := range authHeaders {
-		req.Header.Set(k, v)
-	}
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() >= 400 {
-		return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
-	}
-
-	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-
-	var listResp struct {
-		Object  string                        `json:"object"`
-		Data    []schemas.ContainerFileObject `json:"data"`
-		FirstID *string                       `json:"first_id"`
-		LastID  *string                       `json:"last_id"`
-		HasMore bool                          `json:"has_more"`
-	}
-
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &listResp, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	cursorID := ""
-	if listResp.LastID != nil {
-		cursorID = *listResp.LastID
+	if response.LastID != nil {
+		cursorID = *response.LastID
 	}
-	nextCursor, hasMore := helper.BuildNextCursor(listResp.HasMore, cursorID)
-
-	response := &schemas.BifrostContainerFileListResponse{
-		Object:      listResp.Object,
-		Data:        listResp.Data,
-		FirstID:     listResp.FirstID,
-		LastID:      listResp.LastID,
-		HasMore:     hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
-	}
+	nextCursor, hasMore := providerUtils.BuildNextCursorWithinKey(keyIndex, response.HasMore, cursorID)
+	response.HasMore = hasMore
 	if nextCursor != "" {
 		response.After = &nextCursor
-	}
-	if sendBackRawRequest {
-		response.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
 	}
 	return response, nil
 }
@@ -3730,6 +3743,10 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 	return nil, lastErr
 }
 
+// SendsPassthroughBodySource marks AzureProvider as streaming BifrostPassthroughRequest.BodySource
+// (schemas.PassthroughBodySourceSender), so Bifrost does not read a multipart upload into memory first.
+func (provider *AzureProvider) SendsPassthroughBodySource() {}
+
 // Passthrough forwards a raw request to Azure's API without any transformation.
 func (provider *AzureProvider) Passthrough(
 	ctx *schemas.BifrostContext,
@@ -3763,7 +3780,9 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
@@ -3781,7 +3800,7 @@ func (provider *AzureProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
+		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req), body, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3837,7 +3856,9 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
@@ -3877,9 +3898,10 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError("provider returned an empty stream body", fmt.Errorf("provider returned an empty stream body"))
 	}
 
+	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
-		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
+		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
@@ -3901,7 +3923,7 @@ func (provider *AzureProvider) PassthroughStream(
 				if anthropicUsage != nil {
 					return anthropicUsage.ObserveEvent(event)
 				}
-				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
 			},
 		},
 	), nil

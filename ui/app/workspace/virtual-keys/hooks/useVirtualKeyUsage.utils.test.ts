@@ -1,6 +1,6 @@
 import { RateLimit } from "@/lib/types/governance";
 import { describe, expect, it } from "vitest";
-import { resolveDisplayRateLimit, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
+import { resolveDisplayRateLimit, sharedBudgetNote, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
 
 const vkRateLimit: RateLimit = {
 	id: "vk-rl",
@@ -77,5 +77,31 @@ describe("virtualKeyManagement", () => {
 			isUserProfileManaged: false,
 		});
 		expect(virtualKeyManagement(undefined)).toEqual({ isOwnerGoverned: false, isUserProfileManaged: false });
+	});
+});
+describe("sharedBudgetNote", () => {
+	const t = ((key: string, opts?: { name?: string }) => (opts?.name ? `${key}:${opts.name}` : key)) as unknown as Parameters<
+		typeof sharedBudgetNote
+	>[0];
+
+	it("says nothing for a key with its own budget", () => {
+		expect(sharedBudgetNote(t, { isManagedByProfile: false, isOwnerGoverned: false, assignee: { name: "Ann" } })).toBeUndefined();
+	});
+
+	it("names the assignee for a user's managed key", () => {
+		expect(sharedBudgetNote(t, { isManagedByProfile: true, isOwnerGoverned: false, assignee: { name: "Ann" } })).toBe(
+			"virtualKeys.sharedBudgetUser:Ann",
+		);
+	});
+
+	it("falls back to the email, then to an unnamed user", () => {
+		expect(sharedBudgetNote(t, { isManagedByProfile: true, isOwnerGoverned: false, assignee: { name: "", email: "a@x.io" } })).toBe(
+			"virtualKeys.sharedBudgetUser:a@x.io",
+		);
+		expect(sharedBudgetNote(t, { isManagedByProfile: true, isOwnerGoverned: false })).toBe("virtualKeys.sharedBudgetUserUnnamed");
+	});
+
+	it("points at the owning entity for an owner-governed key", () => {
+		expect(sharedBudgetNote(t, { isManagedByProfile: true, isOwnerGoverned: true })).toBe("virtualKeys.sharedBudgetOwner");
 	});
 });

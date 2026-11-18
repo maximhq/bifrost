@@ -1871,6 +1871,61 @@ func TestResponsesFallbackRawResponseKeepsEveryFrameExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestResponsesFallbackRawRidesWithItsText verifies a chat frame carrying text is attached to the Responses delta that
+// streams that text, never to an earlier lifecycle event of its expansion, and follows a change to that delta.
+func TestResponsesFallbackRawRidesWithItsText(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL},
+		SendBackRawResponse: true,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{ChatCompletionStream: true, ResponsesStream: false},
+		},
+	}, testNoopLogger{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var carrier *schemas.BifrostResponsesStreamResponse
+	for _, chunk := range collectChunks(t, stream) {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, _ := event.ExtraFields.RawResponse.(string); strings.Contains(raw, rawContentFrame) {
+			carrier = event
+		}
+	}
+	if carrier == nil {
+		t.Fatal("no event carried the content frame")
+	}
+	if carrier.Type != schemas.ResponsesStreamResponseTypeOutputTextDelta || carrier.Delta == nil || *carrier.Delta != "hello" {
+		t.Fatalf("content frame rides on %s (delta %v), want the output_text.delta streaming its text", carrier.Type, carrier.Delta)
+	}
+
+	redacted := *carrier
+	redacted.Delta = schemas.Ptr("[REDACTED]")
+	synced, err := schemas.SyncRawResponseText(carrier.ExtraFields.RawResponse, carrier.ExtraFields.RawResponseFormat, carrier, &redacted)
+	if err != nil {
+		t.Fatalf("raw payload did not follow the delta: %v", err)
+	}
+	if strings.Contains(synced.(string), `"content":"hello"`) || !strings.Contains(synced.(string), `"content":"[REDACTED]"`) {
+		t.Fatalf("raw payload after sync = %s", synced)
+	}
+}
+
 // Raw capture queues every frame that produces no client chunk, and nothing drains
 // that queue until a chunk is actually forwarded. An upstream that streams only
 // such frames therefore grows it for the life of the connection - and because every
@@ -1941,5 +1996,221 @@ func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
 	const limit = (1 << 20) + (8 << 10)
 	if capturedBytes > limit {
 		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
+	}
+}
+
+// Responses stream events in the OpenAI wire shape, ending with a completed response.
+const (
+	rawResponsesCreatedEvent   = `{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","output":[]}}`
+	rawResponsesItemAdded      = `{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}`
+	rawResponsesTextDelta      = `{"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`
+	rawResponsesTextDone       = `{"type":"response.output_text.done","sequence_number":3,"item_id":"msg_1","output_index":0,"content_index":0,"text":"hello"}`
+	rawResponsesCompletedEvent = `{"type":"response.completed","sequence_number":4,"response":{"id":"resp_1","object":"response","status":"completed","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[]}]}]}}`
+)
+
+// TestStreamRawResponseDeclaresOpenAIFormat verifies every chunk that carries a raw payload also declares the
+// OpenAI wire shape of that payload, so plugins can keep it consistent when they change normalized text.
+func TestStreamRawResponseDeclaresOpenAIFormat(t *testing.T) {
+	assertDeclared := func(t *testing.T, chunks []*schemas.BifrostStreamChunk, want schemas.RawResponseFormat) {
+		t.Helper()
+		withRaw := 0
+		for _, chunk := range chunks {
+			var extra *schemas.BifrostResponseExtraFields
+			switch {
+			case chunk.BifrostChatResponse != nil:
+				extra = &chunk.BifrostChatResponse.ExtraFields
+			case chunk.BifrostTextCompletionResponse != nil:
+				extra = &chunk.BifrostTextCompletionResponse.ExtraFields
+			case chunk.BifrostResponsesStreamResponse != nil:
+				extra = &chunk.BifrostResponsesStreamResponse.ExtraFields
+			default:
+				continue
+			}
+			if extra.RawResponse == nil {
+				continue
+			}
+			withRaw++
+			if extra.RawResponseFormat != want {
+				t.Errorf("chunk %d carries raw %v with format %q, want %q", extra.ChunkIndex, extra.RawResponse, extra.RawResponseFormat, want)
+			}
+		}
+		if withRaw == 0 {
+			t.Fatal("no chunk carried a raw response; the assertion would be vacuous")
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		server := completeSSEServer(t, fullShapeSSEBody())
+		defer server.Close()
+		stream, bifrostErr := rawCaptureStreamProvider(server.URL).ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		assertDeclared(t, collectChunks(t, stream), schemas.RawResponseFormatOpenAIChatCompletionChunk)
+	})
+
+	t.Run("text completion", func(t *testing.T) {
+		server := completeSSEServer(t, `data: {"id":"cmpl-1","object":"text_completion","created":1,"model":"m","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+"data: [DONE]\n\n")
+		defer server.Close()
+		request := &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "m", Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")}}
+		stream, bifrostErr := rawCaptureStreamProvider(server.URL).TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		assertDeclared(t, collectChunks(t, stream), schemas.RawResponseFormatOpenAITextCompletionChunk)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		body := ""
+		for _, event := range []string{rawResponsesCreatedEvent, rawResponsesItemAdded, rawResponsesTextDelta, rawResponsesTextDone, rawResponsesCompletedEvent} {
+			body += "data: " + event + "\n\n"
+		}
+		server := completeSSEServer(t, body)
+		defer server.Close()
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "m",
+			Input: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		}
+		stream, bifrostErr := rawCaptureStreamProvider(server.URL).ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		assertDeclared(t, collectChunks(t, stream), schemas.RawResponseFormatOpenAIResponsesStreamEvent)
+	})
+}
+
+// TestChatStreamRawResponseFollowsNormalizedTextChanges runs the raw synchronizer over the chunks this handler
+// really produces (role, content, and the finish+usage bundle on the terminal chunk). It mirrors what a plugin
+// that holds text back does: the content chunk's text is emptied and released on the terminal chunk, and the
+// reconstructed raw response must carry the text exactly once, in the finish frame.
+func TestChatStreamRawResponseFollowsNormalizedTextChanges(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+	stream, bifrostErr := rawCaptureStreamProvider(server.URL).ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+
+	var contentChunk, terminalChunk *schemas.BifrostChatResponse
+	for _, chunk := range chunks {
+		response := chunk.BifrostChatResponse
+		if response == nil || len(response.Choices) == 0 || response.Choices[0].ChatStreamResponseChoice == nil {
+			continue
+		}
+		if delta := response.Choices[0].Delta; delta != nil && delta.Content != nil && *delta.Content == "hello" {
+			contentChunk = response
+		}
+		if response.Choices[0].FinishReason != nil {
+			terminalChunk = response
+		}
+	}
+	if contentChunk == nil || terminalChunk == nil {
+		t.Fatalf("expected a content chunk and a terminal chunk, got content=%v terminal=%v", contentChunk != nil, terminalChunk != nil)
+	}
+
+	sync := func(before *schemas.BifrostChatResponse, mutate func(*schemas.BifrostChatResponse)) {
+		t.Helper()
+		after := *before
+		after.Choices = []schemas.BifrostResponseChoice{before.Choices[0]}
+		streamChoice := *before.Choices[0].ChatStreamResponseChoice
+		delta := schemas.ChatStreamResponseChoiceDelta{}
+		if before.Choices[0].Delta != nil {
+			delta = *before.Choices[0].Delta
+		}
+		streamChoice.Delta = &delta
+		after.Choices[0].ChatStreamResponseChoice = &streamChoice
+		mutate(&after)
+		synced, err := schemas.SyncRawResponseText(before.ExtraFields.RawResponse, before.ExtraFields.RawResponseFormat, before, &after)
+		if err != nil {
+			t.Fatalf("raw synchronization failed: %v", err)
+		}
+		before.ExtraFields.RawResponse = synced
+	}
+	sync(contentChunk, func(after *schemas.BifrostChatResponse) { after.Choices[0].Delta.Content = schemas.Ptr("") })
+	sync(terminalChunk, func(after *schemas.BifrostChatResponse) { after.Choices[0].Delta.Content = schemas.Ptr("hello") })
+
+	raw := reconstructRawResponse(t, chunks)
+	if strings.Count(raw, `"content":"hello"`) != 1 {
+		t.Fatalf("expected the text exactly once in the raw response, got:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"delta":{"content":"hello"},"finish_reason":"stop"`) {
+		t.Errorf("expected the text in the finish frame, got:\n%s", raw)
+	}
+	if !strings.Contains(raw, rawUsageOnlyFrame) || !strings.Contains(raw, rawRoleOnlyFrame) {
+		t.Errorf("frames the synchronizer did not need to touch must stay byte-identical, got:\n%s", raw)
+	}
+}
+
+// panicOnResponsePostHook panics on every chunk that carries a response, the way a
+// buggy converter or plugin hook on the provider goroutine does, and passes errors.
+func panicOnResponsePostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if resp != nil {
+		var chunk *schemas.BifrostChatResponse
+		_ = chunk.ID // nil dereference: a runtime.Error panic
+	}
+	return resp, err
+}
+
+// TestStreamPanicOnProviderGoroutineEndsWithErrorChunk pins that a panic on the
+// provider's streaming goroutine is recovered there: nothing above that goroutine can
+// catch it, so without its own recover it ends the process. The client must get one
+// terminal error chunk and then a closed stream, never a silently truncated one.
+func TestStreamPanicOnProviderGoroutineEndsWithErrorChunk(t *testing.T) {
+	stop := "stop"
+	cases := map[string]struct {
+		body string
+		open func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+	}{
+		"chat": {
+			body: chatChunk("hello", nil) + chatChunk("", &stop) + "data: [DONE]\n\n",
+			open: func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.ChatCompletionStream(newStreamTestContext(), panicOnResponsePostHook, nil, testKey(), basicChatRequest())
+			},
+		},
+		"responses": {
+			body: "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"m1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+				"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"r1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"output\":[]}}\n\n",
+			open: func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.ResponsesStream(newStreamTestContext(), panicOnResponsePostHook, nil, testKey(), &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI,
+					Model:    "repro-model",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+					}},
+				})
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := completeSSEServer(t, tc.body)
+			defer server.Close()
+
+			stream, bifrostErr := tc.open(newStreamTestProvider(server.URL))
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			if len(chunks) != 1 {
+				t.Fatalf("got %d chunks, want exactly the terminal error chunk", len(chunks))
+			}
+			got := chunks[0].BifrostError
+			if got == nil || got.Error == nil {
+				t.Fatalf("terminal chunk carries no error: %+v", chunks[0])
+			}
+			if got.Error.Message != providerUtils.ErrStreamPanicMessage {
+				t.Errorf("error message = %q, want %q", got.Error.Message, providerUtils.ErrStreamPanicMessage)
+			}
+			if got.StatusCode == nil || *got.StatusCode != 500 {
+				t.Errorf("status = %v, want 500", got.StatusCode)
+			}
+		})
 	}
 }

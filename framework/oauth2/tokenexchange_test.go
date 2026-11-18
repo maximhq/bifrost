@@ -895,6 +895,14 @@ func storedSubjectGateCases() []storedSubjectGateCase {
 			stored: true,
 		},
 		{
+			// A workload token is a non-human caller's credential, never a user's own sign-in,
+			// even when it is recorded with the user's ID.
+			name: "workload token",
+			ctx: func() *schemas.BifrostContext {
+				return settleCredential(storedSubjectContext(grant.CredentialWorkloadToken), grant.NewCredential(grant.CredentialWorkloadToken, "user-1"))
+			},
+		},
+		{
 			name: "user replaced after authentication",
 			ctx: func() *schemas.BifrostContext {
 				ctx := storedSubjectContext(grant.CredentialEdgeSession)

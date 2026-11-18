@@ -611,6 +611,14 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_creation_input_token_cost_above_12hr?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_12hr_priority?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_above_12hr_flex?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex?: number;
+	cache_creation_input_token_cost_above_12hr_ultrafast?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast?: number;
 	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;

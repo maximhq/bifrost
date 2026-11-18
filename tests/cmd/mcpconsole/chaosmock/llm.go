@@ -465,7 +465,7 @@ func (s *Server) ServeLLM(w http.ResponseWriter, r *http.Request, path string) {
 		call.Scenario = string(m[1])
 	}
 
-	f := s.faults.forRequest("")
+	f := s.faults.forRequest("", "")
 	if f.Refuse || f.Status != 0 {
 		if !f.Refuse {
 			call.Status = f.Status

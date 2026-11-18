@@ -52,6 +52,7 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 		}
 	}
 	base = warp.WithGrant(base, warpGrantSettler(ctx))
+	base = warpManagementCaller(base, ctx)
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
 }
@@ -127,6 +128,10 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured,
 			"Warp is not configured. Set a provider and model in Settings to enable it.")
 		return
+	case errors.Is(err, warp.ErrNoBifrostMCP):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoBifrostMCP,
+			"Warp needs the Bifrost MCP, which is not loaded. An admin can turn it on by setting the Bifrost URL in Client settings.")
+		return
 	case errors.Is(err, warp.ErrNoModelClient):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured, "Warp has no model client available.")
 		return
@@ -145,6 +150,8 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	agentCtx, cancel, scopeErr := snapshotWarpContext(ctx, turn.Budget)
 	if scopeErr != nil {
 		cancel()
+		// The turn never runs, so it returns its lease on the management catalog here.
+		turn.Release()
 		SendError(ctx, fasthttp.StatusInternalServerError, "Warp could not establish this request's data scope")
 		return
 	}

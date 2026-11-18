@@ -1133,17 +1133,24 @@ func GetActualToolNameFromServer(t *testing.T, clientName string) string {
 	}
 
 	client := clients[0]
-	if len(client.ToolMap) == 0 {
+	toolMap := clientTools(manager, client.ExecutionConfig.ID)
+	if len(toolMap) == 0 {
 		t.Fatal("No tools available from server")
 	}
 
 	// Return the first tool name
-	for toolName := range client.ToolMap {
+	for toolName := range toolMap {
 		return toolName
 	}
 
 	t.Fatal("No tools found")
 	return ""
+}
+
+// clientTools reads a client's tool map from the manager's discovery store —
+// client state snapshots carry connection state only.
+func clientTools(manager *mcp.MCPManager, clientID string) map[string]schemas.ChatTool {
+	return manager.GetToolsForClient(context.Background(), clientID)
 }
 
 // GetActualToolNamesFromServer gets multiple actual tool names from the HTTP server
@@ -1164,12 +1171,13 @@ func GetActualToolNamesFromServer(t *testing.T, count int) []string {
 	}
 
 	client := clients[0]
-	if len(client.ToolMap) < count {
-		t.Fatalf("Expected at least %d tools, got %d", count, len(client.ToolMap))
+	toolMap := clientTools(manager, client.ExecutionConfig.ID)
+	if len(toolMap) < count {
+		t.Fatalf("Expected at least %d tools, got %d", count, len(toolMap))
 	}
 
 	tools := make([]string, 0, count)
-	for toolName := range client.ToolMap {
+	for toolName := range toolMap {
 		tools = append(tools, toolName)
 		if len(tools) >= count {
 			break

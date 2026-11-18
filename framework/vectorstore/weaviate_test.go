@@ -2,13 +2,19 @@ package vectorstore
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-openapi/strfmt"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate/entities/models"
 )
@@ -897,4 +903,111 @@ func TestWeaviateStore_DeleteMissingIDSucceeds(t *testing.T) {
 	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
 	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
 	assert.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, generateUUID()))
+}
+
+// TestWeaviateStore_MissingClassIsNotFound pins reading a class that was never
+// created (or was dropped) as ErrNotFound, as on Chromem. Weaviate answers that
+// read with a GraphQL error, which callers cannot tell from a real failure, so
+// a capture namespace not yet written reads as a failed run instead of an
+// empty one. A query error on a class that exists stays a plain error.
+func TestWeaviateStore_MissingClassIsNotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	missing := "BifrostMissingClass" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	_, _, err := setup.Store.GetAll(setup.ctx, missing, nil, []string{"type"}, nil, 10)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = setup.Store.GetNearest(setup.ctx, missing, make([]float32, 384), nil, []string{"type"}, 0, 10)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
+	_, _, err = setup.Store.GetAll(setup.ctx, TestClassName, nil, []string{"not_a_property"}, nil, 10)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound, "an unknown field on a class that exists is not a missing class")
+}
+
+// A Weaviate with no classes at all has no GraphQL provider, and answers every
+// read with a 422 instead of a GraphQL error, so the class lookup never runs.
+// That is still nothing stored yet. Any other 422 stays a plain error.
+func TestWeaviateStore_EmptySchemaReadIsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		message  string
+		notFound bool
+	}{
+		{"no schema", "no graphql provider present, this is most likely because no schema is present. Import a schema first!", true},
+		{"other 422", "invalid query", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"error":[{"message":"` + tc.message + `"}]}`))
+			}))
+			defer srv.Close()
+			client, err := weaviate.NewClient(weaviate.Config{Scheme: "http", Host: strings.TrimPrefix(srv.URL, "http://")})
+			require.NoError(t, err)
+			store := &WeaviateStore{client: client, config: &WeaviateConfig{}, logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+			ctx := context.Background()
+
+			_, _, getAllErr := store.GetAll(ctx, "BifrostAnyClass", nil, []string{"type"}, nil, 10)
+			_, nearestErr := store.GetNearest(ctx, "BifrostAnyClass", make([]float32, 3), nil, []string{"type"}, 0, 10)
+			for _, err := range []error{getAllErr, nearestErr} {
+				require.Error(t, err)
+				if tc.notFound {
+					assert.ErrorIs(t, err, ErrNotFound)
+				} else {
+					assert.NotErrorIs(t, err, ErrNotFound)
+				}
+			}
+		})
+	}
+}
+
+// DeleteAll removes every match, not only the first batch: Weaviate deletes
+// at most QUERY_MAXIMUM_RESULTS objects (10,000 by default) per batch delete,
+// and a sweep that stopped there would fall behind for good.
+func TestWeaviateStore_DeleteAllPastTheBatchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+	const className = "TestDeleteAllPastTheBatchLimit"
+	ctx := setup.ctx
+	_ = setup.Store.DeleteNamespace(ctx, className)
+	require.NoError(t, setup.Store.CreateNamespace(ctx, className, 4, map[string]VectorStoreProperties{"kind": {DataType: VectorStorePropertyTypeString}}))
+	defer func() { _ = setup.Store.DeleteNamespace(context.Background(), className) }()
+
+	const n = 10_050
+	for start := 0; start < n; start += 1000 {
+		batch := setup.Store.client.Batch().ObjectsBatcher()
+		for i := start; i < min(start+1000, n); i++ {
+			batch = batch.WithObjects(&models.Object{
+				Class:      className,
+				ID:         strfmt.UUID(generateUUID()),
+				Properties: map[string]any{"kind": "sweep"},
+				Vector:     []float32{1, 0, 0, 0},
+			})
+		}
+		res, err := batch.Do(ctx)
+		require.NoError(t, err)
+		for _, obj := range res {
+			if obj.Result != nil && obj.Result.Errors != nil {
+				require.Empty(t, obj.Result.Errors.Error, "batch insert")
+			}
+		}
+	}
+
+	query := []Query{{Field: "kind", Operator: QueryOperatorEqual, Value: "sweep"}}
+	_, err := setup.Store.DeleteAll(ctx, className, query)
+	require.NoError(t, err)
+	left, _, err := setup.Store.GetAll(ctx, className, query, nil, nil, 10)
+	require.NoError(t, err)
+	assert.Empty(t, left, "every match is deleted, past the first batch")
 }

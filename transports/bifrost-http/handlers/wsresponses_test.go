@@ -62,6 +62,7 @@ func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { r
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
+func (s testWSHandlerStore) ShouldCaptureClientIP() bool                     { return false }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -161,6 +162,20 @@ func TestCreateBifrostContextFromHeaders_SettlesIdentity(t *testing.T) {
 				t.Fatalf("credential = %+v, want kind %q value %q", got, tc.wantKind, tc.wantKey)
 			}
 		})
+	}
+}
+
+// An ElevenLabs client sends its key as xi-api-key: a virtual key there is the connection's identity, and a
+// provider key is not.
+func TestCreateBifrostContextFromHeaders_XiAPIKey(t *testing.T) {
+	for value, wantKind := range map[string]string{"sk-bf-elevenlabs": string(grant.CredentialVirtualKey), "elevenlabs-key": ""} {
+		ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{xiAPIKey: value})
+
+		got := ctx.Grant().Identity().Credential()
+		cancel()
+		if got.Kind != wantKind {
+			t.Errorf("xi-api-key %q: credential kind = %q, want %q", value, got.Kind, wantKind)
+		}
 	}
 }
 

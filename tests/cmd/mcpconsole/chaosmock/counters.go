@@ -45,6 +45,10 @@ type CountersSnapshot struct {
 	// Handshakes lists every negotiation the server answered, in order, with the version the
 	// client asked for and the one it got, which is how a version cap becomes checkable.
 	Handshakes []Handshake `json:"handshakes"`
+	// MethodsByIdentity counts every JSON-RPC method by the identity that
+	// sent it, identity first, so a test can prove which credential a
+	// discovery used. Requests from no identity are only in Methods.
+	MethodsByIdentity map[string]map[string]int64 `json:"methods_by_identity"`
 }
 
 // TotalCalls sums Calls across every tool.
@@ -81,11 +85,12 @@ func newCounters() *Counters {
 // newSnapshot is an all-zero snapshot with its maps and lists allocated.
 func newSnapshot() CountersSnapshot {
 	return CountersSnapshot{
-		Calls:           map[string]int64{},
-		CallsByIdentity: map[string]int64{},
-		Methods:         map[string]int64{},
-		SessionRequests: map[string]int64{},
-		Handshakes:      []Handshake{},
+		Calls:             map[string]int64{},
+		CallsByIdentity:   map[string]int64{},
+		Methods:           map[string]int64{},
+		SessionRequests:   map[string]int64{},
+		MethodsByIdentity: map[string]map[string]int64{},
+		Handshakes:        []Handshake{},
 	}
 }
 
@@ -110,12 +115,19 @@ func (c *Counters) session() {
 	c.mu.Unlock()
 }
 
-// method counts one JSON-RPC method, and the request against its session when it has one.
-func (c *Counters) method(m, sessionID string) {
+// method counts one JSON-RPC method, the request against its session when it has one, and the
+// method against the identity that sent it when it has one.
+func (c *Counters) method(m, sessionID, identity string) {
 	c.mu.Lock()
 	c.d.Methods[m]++
 	if sessionID != "" {
 		c.d.SessionRequests[sessionID]++
+	}
+	if identity != "" {
+		if c.d.MethodsByIdentity[identity] == nil {
+			c.d.MethodsByIdentity[identity] = map[string]int64{}
+		}
+		c.d.MethodsByIdentity[identity][m]++
 	}
 	c.mu.Unlock()
 }
@@ -187,6 +199,10 @@ func (c *Counters) Snapshot() CountersSnapshot {
 	out.Methods = copyCounts(c.d.Methods)
 	out.SessionRequests = copyCounts(c.d.SessionRequests)
 	out.Handshakes = append([]Handshake{}, c.d.Handshakes...)
+	out.MethodsByIdentity = make(map[string]map[string]int64, len(c.d.MethodsByIdentity))
+	for identity, methods := range c.d.MethodsByIdentity {
+		out.MethodsByIdentity[identity] = copyCounts(methods)
+	}
 	return out
 }
 

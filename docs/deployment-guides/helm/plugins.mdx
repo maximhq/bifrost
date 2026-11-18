@@ -87,10 +87,14 @@ bifrost:
 ```yaml
 serviceMonitor:
   enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack   # must match your Prometheus serviceMonitorSelector
   interval: 30s
   scrapeTimeout: 10s
   namespace: monitoring     # namespace where Prometheus is deployed
 ```
+
+With auth enabled, `/metrics` needs credentials, so also set `serviceMonitor.basicAuth.enabled: true`. Secret references resolve in the `ServiceMonitor`'s namespace, so when `namespace` differs from the release namespace, point `serviceMonitor.basicAuth.existingSecret` (and `usernameKey` / `passwordKey`) at a Secret in that namespace; the render fails otherwise. See [Monitoring](/deployment-guides/helm#monitoring) for the full auth setup.
 
 </Tab>
 

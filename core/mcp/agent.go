@@ -192,8 +192,14 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			toolName := *toolCall.Function.Name
-			client := clientManager.GetClientForTool(toolName)
+			client, _ := clientManager.GetClientForTool(ctx, toolName)
 			if client == nil {
+				// A connect call reaches no upstream tool: it hands back a
+				// sign-in link or connects, so the model gets either inline.
+				if clientManager.ConnectToolClient(ctx, toolName) != nil {
+					autoExecutableTools = append(autoExecutableTools, toolCall)
+					continue
+				}
 				// Allow code mode list, read, and docs tools (all read-only operations)
 				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
 					autoExecutableTools = append(autoExecutableTools, toolCall)
@@ -511,7 +517,7 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 		allClientNames = append(allClientNames, clientName)
 
 		// Only include code mode clients
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 

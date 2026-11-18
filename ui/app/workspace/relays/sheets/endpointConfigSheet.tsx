@@ -97,6 +97,8 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 	const proxyType = form.watch("proxy.type");
 	// A relay with no proxy set uses the global proxy only when it is on for inference (as providers
 	// do); otherwise it connects directly, so that is what the unset select shows.
+	// Until the core config has loaded (or when it fails to), which of the two applies is unknown,
+	// so the select names neither.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalProxy = coreConfig?.proxy_config;
 	const inheritsGlobalProxy = !!globalProxy?.enabled && !!globalProxy.enable_for_inference && !!globalProxy.url?.trim();
@@ -152,7 +154,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<Waypoints className="h-5 w-5" />
-								{t("relays.endpointConfig.title")}
+							{t("relays.endpointConfig.title")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>
@@ -177,10 +179,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											name="base_url"
 											render={({ field }) => (
 												<FormItem>
-													<InfoLabel
-														label={t("relays.fields.baseUrlLabel")}
-														info={t("relays.fields.baseUrlInfo")}
-													/>
+													<InfoLabel label={t("relays.fields.baseUrlLabel")} info={t("relays.fields.baseUrlInfo")} />
 													<FormControl>
 														<Input placeholder="https://api.example.com" disabled={!canUpdate} data-testid="relay-base-url" {...field} />
 													</FormControl>
@@ -193,7 +192,10 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											name="description"
 											render={({ field }) => (
 												<FormItem>
-													<InfoLabel label={t("relays.endpointConfig.descriptionLabel")} info={t("relays.endpointConfig.descriptionInfo")} />
+													<InfoLabel
+														label={t("relays.endpointConfig.descriptionLabel")}
+														info={t("relays.endpointConfig.descriptionInfo")}
+													/>
 													<FormControl>
 														<Textarea rows={2} disabled={!canUpdate} {...field} value={field.value ?? ""} />
 													</FormControl>
@@ -212,17 +214,13 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										{skipRouteCheck && (
 											<Alert variant="warning" data-testid="relay-all-routes-warning">
 												<AlertTriangle className="h-4 w-4" />
-												<AlertDescription>
-													{t("relays.endpointConfig.anyPathWarning")}
-												</AlertDescription>
+												<AlertDescription>{t("relays.endpointConfig.anyPathWarning")}</AlertDescription>
 											</Alert>
 										)}
 										<Separator />
 										<div className="space-y-1">
 											<div className="text-sm font-medium">{t("relays.endpointConfig.pricingTitle")}</div>
-											<p className="text-muted-foreground text-sm">
-												{t("relays.endpointConfig.pricingInfo")}
-											</p>
+											<p className="text-muted-foreground text-sm">{t("relays.endpointConfig.pricingInfo")}</p>
 										</div>
 										<UsageFields
 											control={usageControl}
@@ -272,12 +270,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 										<div className="flex w-full flex-row items-start gap-4">
 											{(
 												[
-													[
-														"cost_path",
-														t("relays.endpointConfig.costPathLabel"),
-											"usage.cost",
-											t("relays.endpointConfig.costPathInfo"),
-													],
+													["cost_path", t("relays.endpointConfig.costPathLabel"), "usage.cost", t("relays.endpointConfig.costPathInfo")],
 													["model_path", t("relays.endpointConfig.modelPathLabel"), "model", t("relays.endpointConfig.modelPathInfo")],
 												] as const
 											).map(([key, label, placeholder, description]) => (
@@ -388,9 +381,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 									<TabsContent value="network" className="space-y-6 px-4 md:px-6">
 										<Alert>
 											<Info className="h-4 w-4" />
-											<AlertDescription>
-												{t("relays.endpointConfig.networkInfo")}
-											</AlertDescription>
+											<AlertDescription>{t("relays.endpointConfig.networkInfo")}</AlertDescription>
 										</Alert>
 										{/* Laid out as the provider config's Network tab: plain labels, the help text under each input. */}
 										<div className="flex w-full flex-row items-start gap-4">
@@ -418,7 +409,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 														</FormControl>
 														<FormDescription>
 															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}
-														{t("relays.endpointConfig.timeoutHelp")}
+															{t("relays.endpointConfig.timeoutHelp")}
 														</FormDescription>
 														<FormMessage />
 													</FormItem>
@@ -448,7 +439,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 														</FormControl>
 														<FormDescription>
 															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}
-														{t("relays.endpointConfig.streamIdleHelp")}
+															{t("relays.endpointConfig.streamIdleHelp")}
 														</FormDescription>
 														<FormMessage />
 													</FormItem>
@@ -495,10 +486,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											name="network.ca_cert_pem"
 											render={({ field }) => (
 												<FormItem>
-													<InfoLabel
-														label={t("relays.endpointConfig.caCertLabel")}
-														info={t("relays.endpointConfig.caCertInfo")}
-													/>
+													<InfoLabel label={t("relays.endpointConfig.caCertLabel")} info={t("relays.endpointConfig.caCertInfo")} />
 													<FormControl>
 														<Textarea
 															rows={5}
@@ -519,31 +507,35 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 									<TabsContent value="proxy" className="space-y-6 px-4 md:px-6">
 										<Alert>
 											<Info className="h-4 w-4" />
-											<AlertDescription>
-												{t("relays.endpointConfig.proxyInfo")}
-											</AlertDescription>
+											<AlertDescription>{t("relays.endpointConfig.proxyInfo")}</AlertDescription>
 										</Alert>
 										<FormField
 											control={form.control}
 											name="proxy.type"
 											render={({ field }) => (
 												<FormItem>
-													<InfoLabel
-														label={t("relays.endpointConfig.proxyTypeLabel")}
-														info={t("relays.endpointConfig.proxyTypeInfo")}
-													/>
+													<InfoLabel label={t("relays.endpointConfig.proxyTypeLabel")} info={t("relays.endpointConfig.proxyTypeInfo")} />
 													<Select
 														onValueChange={field.onChange}
-														value={field.value === "inherit" ? (inheritsGlobalProxy ? "" : "none") : field.value}
+														// "none" is an unconfigured proxy, as for providers: the relay inherits the
+														// global proxy when it is on for inference, and otherwise connects directly.
+														value={field.value === "inherit" || field.value === "none" ? "" : field.value}
 														disabled={!canUpdate}
 													>
 														<FormControl>
 															<SelectTrigger className="w-48" data-testid="relay-proxy-type">
-																<SelectValue placeholder={t("relays.endpointConfig.globalProxy")} />
+																<SelectValue
+																	placeholder={
+																		!coreConfig
+																			? t("proxy.selectType")
+																			: inheritsGlobalProxy
+																				? t("relays.endpointConfig.globalProxy")
+																				: t("relays.endpointConfig.proxyNone")
+																	}
+																/>
 															</SelectTrigger>
 														</FormControl>
 														<SelectContent>
-															<SelectItem value="none">{t("relays.endpointConfig.proxyNone")}</SelectItem>
 															<SelectItem value="http">HTTP</SelectItem>
 															<SelectItem value="socks5">SOCKS5</SelectItem>
 															<SelectItem value="environment">{t("relays.endpointConfig.proxyEnvironment")}</SelectItem>
@@ -624,10 +616,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												name="proxy.ca_cert_pem"
 												render={({ field }) => (
 													<FormItem>
-														<InfoLabel
-															label={t("relays.endpointConfig.caCertLabel")}
-															info={t("relays.endpointConfig.proxyCaCertInfo")}
-														/>
+														<InfoLabel label={t("relays.endpointConfig.caCertLabel")} info={t("relays.endpointConfig.proxyCaCertInfo")} />
 														<FormControl>
 															<SecretVarInput
 																variant="textarea"
@@ -648,18 +637,29 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 											/>
 										</div>
 										<div className="bg-card sticky bottom-0 z-10 -mx-4 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:-mx-6 md:px-6">
+											{/* The select has no unset entry, so an unsaved proxy choice is undone here, without
+											    saving the sheet's other edits. */}
+											{form.formState.dirtyFields.proxy && (
+												<Button
+													type="button"
+													variant="ghost"
+													disabled={isLoading}
+													onClick={() => form.resetField("proxy")}
+													data-testid="relay-discard-proxy"
+												>
+													{t("relays.endpointConfig.discardProxy")}
+												</Button>
+											)}
 											<Button
 												type="button"
 												variant="outline"
-												disabled={!canUpdate || isLoading || !endpoint.proxy_config}
+												disabled={!canUpdate || isLoading || !endpoint.proxy_config || endpoint.proxy_config.type === "none"}
 												onClick={() => {
 													form.setValue("proxy", { type: "inherit" }, { shouldDirty: true });
 													void form.handleSubmit(onSubmit, onInvalid)();
 												}}
 											>
-												
-													{t("relays.endpointConfig.removeConfig")}
-
+												{t("relays.endpointConfig.removeConfig")}
 											</Button>
 											<Button
 												type="submit"
@@ -667,9 +667,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												isLoading={isLoading}
 												data-testid="relay-save-proxy"
 											>
-												
-													{t("relays.endpointConfig.saveProxy")}
-
+												{t("relays.endpointConfig.saveProxy")}
 											</Button>
 										</div>
 									</TabsContent>

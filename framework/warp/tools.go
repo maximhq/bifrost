@@ -204,6 +204,7 @@ const FilterSchema = `{
     "max_cost": {"type": "number"},
     "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
     "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
+    "model_router_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model routers that classified the request for its complexity tier, by router id. Only requests a router classified have one. Ids come from a query_usage_by model_router ranking - never guess one."},
     "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
     "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
     "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model aliases the request was addressed to before Bifrost resolved them to a model."},
@@ -268,7 +269,7 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"cache_hit_types": true, "content_search": true, "scope": true,
 		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
 		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
-		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
+		"model_router_ids": true, "complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
 		"missing_cost_only": true, "agent_names": true, "agent_correlation_id": true,
 	}
@@ -332,6 +333,7 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
 		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
+		"model_router_ids": &filters.ModelRouterIDs,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
 		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
 		"tool_call_names": &filters.ToolCallNames, "user_agents": &filters.UserAgents,
@@ -685,7 +687,7 @@ func exactStringField(raw map[string]any, key string) (string, error) {
 
 // metadataFiltersField reads metadata_filters: a non-empty object of string
 // values, every pair of which must match.
-func metadataFiltersField(raw map[string]any) (map[string]string, error) {
+func metadataFiltersField(raw map[string]any) (map[string][]string, error) {
 	value, present := raw["metadata_filters"]
 	if !present {
 		return nil, nil
@@ -694,13 +696,13 @@ func metadataFiltersField(raw map[string]any) (map[string]string, error) {
 	if !ok || len(pairs) == 0 {
 		return nil, fmt.Errorf(`metadata_filters must be a non-empty object of key to value, like {"env": "prod"}; omit the field to leave it unfiltered`)
 	}
-	out := make(map[string]string, len(pairs))
+	out := make(map[string][]string, len(pairs))
 	for key, item := range pairs {
 		text, ok := item.(string)
 		if !ok || strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("metadata_filters values must be strings, got %v for %q", item, key)
 		}
-		out[key] = text
+		out[key] = []string{text}
 	}
 	return out, nil
 }

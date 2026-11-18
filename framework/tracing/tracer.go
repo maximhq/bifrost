@@ -1250,6 +1250,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
+		accResult.RawResponseFormat = processedResp.Data.RawResponseFormat
 
 		// Fall back to the provider-reported cost when the catalog could not price
 		// the stream, unless the provider is configured with ignore_provider_cost.

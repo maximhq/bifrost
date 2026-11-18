@@ -1,8 +1,10 @@
 package chaosmock
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -31,6 +33,7 @@ type Server struct {
 	llm      *llmSurface
 	prompts  *promptSurface
 	versions *versionState
+	gates    *gateSet
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -42,6 +45,9 @@ type Server struct {
 
 	// instructions is served in the initialize result, empty for none.
 	instructions string
+
+	// identityInstructions replaces instructions for one caller.
+	identityInstructions map[string]string
 
 	// stdioPID is the process id of the child currently bridging this server
 	// over stdin and stdout, when one has registered. It exists so a scenario
@@ -70,6 +76,7 @@ func NewServer(name string) *Server {
 		llm:      newLLMSurface(),
 		prompts:  &promptSurface{},
 		versions: newVersionState(),
+		gates:    newGateSet(),
 		version:  "1.0.0",
 	}
 }
@@ -136,6 +143,11 @@ func (s *Server) NotifyToolListChanged() int {
 	return s.streams.broadcast(payload)
 }
 
+// ReleaseGates removes every gate, letting through whatever they hold. The
+// fleet calls it before it stops or replaces a server, so no held request
+// outlives the server it was waiting on.
+func (s *Server) ReleaseGates() { _ = s.gates.remove("") }
+
 // DropStreams closes every open server-to-client stream without touching
 // sessions or the listener. A client sees its stream end while its session
 // stays valid, which is the shape of a proxy reaping an idle connection.
@@ -157,6 +169,55 @@ func (s *Server) SetInstructions(text string) {
 func (s *Server) Instructions() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.instructions
+}
+
+// SetIdentityInstructions gives one identity instructions of its own, served
+// in place of the server-wide text when that identity initializes.
+func (s *Server) SetIdentityInstructions(identity, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.identityInstructions == nil {
+		s.identityInstructions = map[string]string{}
+	}
+	s.identityInstructions[identity] = text
+}
+
+// ClearIdentityInstructions returns one identity to the server-wide text,
+// reporting whether it had instructions of its own.
+func (s *Server) ClearIdentityInstructions(identity string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.identityInstructions[identity]; !ok {
+		return false
+	}
+	delete(s.identityInstructions, identity)
+	return true
+}
+
+// IdentityInstructions returns a copy of every identity's own instructions,
+// nil when there are none.
+func (s *Server) IdentityInstructions() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.identityInstructions) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(s.identityInstructions))
+	for identity, text := range s.identityInstructions {
+		out[identity] = text
+	}
+	return out
+}
+
+// instructionsFor is what identity's initialize result carries: its own
+// instructions, else the server-wide text.
+func (s *Server) instructionsFor(identity string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if text, ok := s.identityInstructions[identity]; ok && identity != "" {
+		return text
+	}
 	return s.instructions
 }
 
@@ -268,8 +329,9 @@ type contentBlock struct {
 }
 
 type callResult struct {
-	Content []contentBlock `json:"content"`
-	IsError bool           `json:"isError,omitempty"`
+	Content           []contentBlock  `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	IsError           bool            `json:"isError,omitempty"`
 }
 
 // handleResult is what the protocol layer hands back to a transport. Most
@@ -321,17 +383,17 @@ func (s *Server) Handle(req *request, sessionID, identity string, f Faults) hand
 	case MethodToolsCall:
 		return s.handleToolsCall(req, identity, f)
 	case MethodPromptsList:
-		return s.handlePromptsList(req)
+		return s.handlePromptsList(req, identity, f)
 	case MethodPromptsGet:
-		return s.handlePromptsGet(req)
+		return s.handlePromptsGet(req, identity)
 	case MethodResourcesList:
-		return s.handleResourcesList(req)
+		return s.handleResourcesList(req, identity, f)
 	case MethodResourceTemplatesList:
-		return s.handleResourceTemplatesList(req)
+		return s.handleResourceTemplatesList(req, identity, f)
 	case MethodResourcesRead:
-		return s.handleResourcesRead(req)
+		return s.handleResourcesRead(req, identity)
 	case MethodCompletionComplete:
-		return s.handleCompletionComplete(req)
+		return s.handleCompletionComplete(req, identity)
 	default:
 		return handleResult{Response: newError(req.ID, CodeMethodNotFound,
 			fmt.Sprintf("method %q is not supported by chaosmock", req.Method))}
@@ -397,7 +459,7 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 		ProtocolVersion: version,
 		Capabilities:    s.capabilities(),
 		ServerInfo:      serverInfo{Name: s.name, Version: s.version},
-		Instructions:    s.Instructions(),
+		Instructions:    s.instructionsFor(identity),
 	}
 	return handleResult{Response: newResult(req.ID, result), NewSession: sess}
 }
@@ -439,13 +501,8 @@ func (s *Server) handlePing(req *request, f Faults) handleResult {
 // handleToolsList answers tools/list with the tools the caller's identity sees, unless a fault fails it.
 func (s *Server) handleToolsList(req *request, identity string, f Faults) handleResult {
 	s.counters.toolsList()
-	if f.ListFail {
-		s.counters.faulted()
-		return handleResult{Response: newError(req.ID, CodeInternalError, f.text("tools/list failed (injected)"))}
-	}
-	if f.Malformed {
-		s.counters.faulted()
-		return handleResult{Malformed: true}
+	if res, failed := s.listFault(req, f); failed {
+		return res
 	}
 	tools := s.tools.List(identity)
 	wire := make([]wireTool, len(tools))
@@ -527,6 +584,27 @@ func (s *Server) handleToolsCall(req *request, identity string, f Faults) handle
 		})}
 	}
 
+	if len(tool.OutputSchema) > 0 {
+		// A tool with an output schema answers with structuredContent, and
+		// with the same JSON as text for a client that does not read it, as
+		// MCP asks of a server.
+		args := params.Arguments
+		if trimmed := bytes.TrimSpace(args); len(trimmed) == 0 || string(trimmed) == "null" {
+			args = json.RawMessage(`{}`)
+		}
+		structured, err := json.Marshal(struct {
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}{tool.Name, args})
+		if err != nil {
+			return handleResult{Response: newError(req.ID, CodeInternalError, "failed to marshal structuredContent")}
+		}
+		return handleResult{Response: newResult(req.ID, callResult{
+			Content:           []contentBlock{{Type: "text", Text: string(structured)}},
+			StructuredContent: structured,
+		})}
+	}
+
 	// Echo the tool name and arguments. Naming the tool in its own reply means
 	// a test can catch a misdispatch from the response alone, before it even
 	// consults the counters.
@@ -553,13 +631,46 @@ func (s *Server) callFaults(req *request, identity string, f Faults) Faults {
 	return f
 }
 
+// callerIdentity resolves who sent r without answering it, so the faults,
+// counters and gates that depend on the caller can be resolved before the
+// credential and session checks do. A request on a known session is the
+// session's identity, as it is everywhere else; initialize, and a request with
+// no session, is whoever its credential names. An unknown or rejected
+// credential resolves to no one.
+func (s *Server) callerIdentity(r *http.Request, method, sessionID string) string {
+	if method != MethodInitialize {
+		if sess, ok := s.sessions.get(sessionID); ok {
+			return sess.Identity
+		}
+	}
+	a := s.auth.get()
+	if a.OAuth == nil {
+		return s.auth.check(r.Header).Identity
+	}
+	token := bearerToken(r.Header)
+	if identity, ok := a.Bearer[token]; ok && token != "" {
+		return identity
+	}
+	identity, _ := s.oauth.identityFor(token)
+	return identity
+}
+
+// SetIdentityFaults gives one identity a fault set of its own, which replaces
+// the server-wide set for that identity's MCP requests.
+func (s *Server) SetIdentityFaults(identity string, f Faults) { s.faults.setIdentity(identity, f) }
+
+// ClearIdentityFaults returns one identity to the server-wide set, reporting
+// whether it had a set of its own.
+func (s *Server) ClearIdentityFaults(identity string) bool { return s.faults.clearIdentity(identity) }
+
 // countMethod records a parsed request as it arrives, before any fault,
 // credential or session check can answer it, so a request the client sent is
 // counted even when the mock refused it. The per-session tally only takes ids
-// the server issued, so a stale id cannot grow it.
-func (s *Server) countMethod(method, sessionID string) {
+// the server issued, so a stale id cannot grow it, and the per-identity tally
+// takes the caller callerIdentity resolved.
+func (s *Server) countMethod(method, sessionID, identity string) {
 	if _, ok := s.sessions.get(sessionID); !ok {
 		sessionID = ""
 	}
-	s.counters.method(method, sessionID)
+	s.counters.method(method, sessionID, identity)
 }

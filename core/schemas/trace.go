@@ -25,9 +25,11 @@ type Trace struct {
 	mu                    sync.Mutex // Mutex for thread-safe span operations
 }
 
-// Trace-level attribute keys. Unlike span attributes, trace attributes are never
-// exported as OTEL/Datadog span attributes — observability connectors (BigQuery,
-// Datadog) read them directly off the completed trace.
+// Trace-level attribute keys. Unlike span attributes, trace attributes are not
+// exported as OTEL/Datadog span attributes by default — observability connectors
+// (BigQuery, Datadog) read them directly off the completed trace. The one exception
+// is an OTEL profile with apply_trace_dimensions_to_child_spans, which merges
+// TraceAttrDimensions onto every exported span.
 const (
 	// TraceAttrSessionID holds the session ID from the x-bf-session-id request
 	// header. The key matches the header name because connectors already read it.
@@ -1254,6 +1256,7 @@ const (
 	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
 	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
 	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+	AttrBifrostRelayDurationMs         = "bifrost.relay.duration_ms"          // the whole call, pre-hooks to the end of the reply
 
 	// RelayMethodLabelOther is the method label for a request method outside the set a relay
 	// route can name, so a relay that skips the route check cannot grow a metric's series.
@@ -1460,4 +1463,20 @@ func RelayMethodLabel(method string) string {
 		return strings.ToUpper(strings.TrimSpace(method))
 	}
 	return RelayMethodLabelOther
+}
+
+// RelaySpanDurationSeconds is a relay call's duration for the relay metrics: the whole call the
+// span records (AttrBifrostRelayDurationMs, which covers a call the pre-hooks refused), else the
+// span's own extent.
+func RelaySpanDurationSeconds(span *Span) float64 {
+	if span == nil {
+		return 0
+	}
+	if ms, ok := GetFloat64AttrOK(span.Attributes, AttrBifrostRelayDurationMs); ok && ms > 0 {
+		return ms / 1000
+	}
+	if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+		return span.EndTime.Sub(span.StartTime).Seconds()
+	}
+	return 0
 }

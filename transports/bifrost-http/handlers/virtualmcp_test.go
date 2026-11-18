@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -57,4 +58,47 @@ func TestVirtualMCPStoreError(t *testing.T) {
 
 	_, _, ok = virtualMCPStoreError(errors.New("disk on fire"))
 	assert.False(t, ok, "anything else stays a server error")
+}
+
+// TestListVirtualMCPs_FiltersByMCPClientID pins the mcp_client_id query parameter the MCP server sheet
+// uses for its reverse lookup. Without it the sheet scanned one capped page client-side, so a Virtual
+// MCP past the first 100 read as "not part of any virtual MCP" (#8645). total_count counts only the
+// matches, and a match older than the requested page is still returned.
+func TestListVirtualMCPs_FiltersByMCPClientID(t *testing.T) {
+	store := setupPricingOverrideHandlerStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateVirtualMCP(ctx, &configstoreTables.TableVirtualMCP{
+		Name: "Bundles target", Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{{MCPClientID: "target", ToolNames: []string{"*"}}},
+	}))
+	for _, name := range []string{"Filler one", "Filler two", "Filler three"} {
+		require.NoError(t, store.CreateVirtualMCP(ctx, &configstoreTables.TableVirtualMCP{
+			Name: name, Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{{MCPClientID: "other", ToolNames: []string{"*"}}},
+		}))
+	}
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: store}, logger: &mockLogger{}}
+
+	list := func(query string) map[string]any {
+		t.Helper()
+		reqCtx := newTestRequestCtx("")
+		reqCtx.Request.SetRequestURI("/api/mcp/virtual-mcps?" + query)
+		h.listVirtualMCPs(reqCtx)
+		require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(reqCtx.Response.Body(), &body))
+		return body
+	}
+
+	body := list("limit=2&mcp_client_id=target")
+	assert.Equal(t, float64(1), body["total_count"])
+	vmcps, ok := body["virtual_mcps"].([]any)
+	require.True(t, ok)
+	require.Len(t, vmcps, 1)
+	assert.Equal(t, "Bundles target", vmcps[0].(map[string]any)["name"])
+
+	body = list("limit=2&mcp_client_id=missing")
+	assert.Equal(t, float64(0), body["total_count"])
+	assert.Empty(t, body["virtual_mcps"])
+
+	body = list("limit=2")
+	assert.Equal(t, float64(4), body["total_count"], "without the parameter every Virtual MCP is listed")
 }

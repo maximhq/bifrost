@@ -19,6 +19,51 @@ func IsInteractionsPassthroughPath(path string) bool {
 	return strings.Contains(path, "/interactions")
 }
 
+// interactionsPathRest returns what follows the /interactions segment of a passthrough path ("" for
+// the collection, "/{id}", "/{id}/cancel"), and false when the path does not address Interactions.
+func interactionsPathRest(path string) (string, bool) {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.TrimRight(path, "/")
+	const segment = "/interactions"
+	idx := strings.LastIndex(path, segment)
+	if idx < 0 {
+		return "", false
+	}
+	rest := path[idx+len(segment):]
+	if rest != "" && rest[0] != '/' {
+		return "", false // e.g. "/interactionsFoo"
+	}
+	return rest, true
+}
+
+// IsInteractionsCreatePath reports whether a passthrough request creates an interaction: a POST to
+// the /interactions collection, whose body names the model or agent that runs.
+func IsInteractionsCreatePath(method, path string) bool {
+	rest, ok := interactionsPathRest(path)
+	return ok && rest == "" && method == "POST"
+}
+
+// IsInteractionsResourcePath reports whether a passthrough request reads, deletes or cancels an
+// existing interaction by id. These run nothing new: the model or agent was checked when the
+// interaction was created, and the request itself names none.
+func IsInteractionsResourcePath(method, path string) bool {
+	rest, ok := interactionsPathRest(path)
+	if !ok || len(rest) < 2 {
+		return false
+	}
+	id := rest[1:]
+	if strings.HasSuffix(id, "/cancel") || strings.HasSuffix(id, ":cancel") {
+		id = id[:len(id)-len("/cancel")]
+		return method == "POST" && id != "" && !strings.Contains(id, "/")
+	}
+	if strings.Contains(id, "/") {
+		return false
+	}
+	return method == "GET" || method == "DELETE"
+}
+
 // ClassifyPassthroughPath maps a Gemini/Vertex passthrough path to the Bifrost request type its
 // :action suffix addresses. :generateContent and :streamGenerateContent are Responses-shaped
 // (Bifrost routes GenAI generation through the Responses schema), :predict is Imagen and
@@ -244,31 +289,83 @@ type geminiInteractionsUsage struct {
 	CachedTokens  int `json:"total_cached_tokens"`
 }
 
-type geminiInteractionsWrapper struct {
+type geminiInteractionsRun struct {
+	ID          string                   `json:"id"`
+	Agent       string                   `json:"agent"`
+	Model       string                   `json:"model"`
+	Status      string                   `json:"status"`
 	Usage       *geminiInteractionsUsage `json:"usage"`
 	ServiceTier *string                  `json:"service_tier"`
-	// Streaming InteractionCompletedEvent nests the completed interaction object.
-	Interaction *struct {
-		Usage       *geminiInteractionsUsage `json:"usage"`
-		ServiceTier *string                  `json:"service_tier"`
-	} `json:"interaction"`
 }
 
-func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsage {
-	if len(body) == 0 {
-		return nil
-	}
+type geminiInteractionsWrapper struct {
+	geminiInteractionsRun
+	InteractionID string `json:"interaction_id"` // interaction.status_update events name the run here
+	// Streaming interaction.created / interaction.completed events nest the interaction object.
+	Interaction *geminiInteractionsRun `json:"interaction"`
+}
 
+// InteractionsPassthroughInfo is what one Interactions response body or stream event says about
+// the run it belongs to. Usage is nil when the body reports none.
+type InteractionsPassthroughInfo struct {
+	ID     string
+	Model  string // the agent that ran, else the model
+	Status string
+	Usage  *schemas.BifrostPassthroughUsage
+}
+
+// terminal reports whether the run has stopped. A run still in progress (or waiting on a
+// continuation token) reports usage that a later read will report in full; a read that names no
+// status cannot say, so it is left for a poll to settle.
+func (i InteractionsPassthroughInfo) terminal() bool {
+	switch i.Status {
+	case "", "in_progress", "requires_continuation":
+		return false
+	}
+	return true
+}
+
+// ParseInteractionsPassthrough decodes an Interactions response body or SSE event once, for its
+// run id, agent or model, status and usage.
+func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
+	var info InteractionsPassthroughInfo
+	if len(body) == 0 {
+		return info
+	}
 	var w geminiInteractionsWrapper
 	if err := sonic.Unmarshal(body, &w); err != nil {
-		return nil
+		return info
 	}
-
+	run := w.geminiInteractionsRun
+	if w.Interaction != nil {
+		run = *w.Interaction
+	}
+	info.ID = run.ID
+	if info.ID == "" {
+		info.ID = w.InteractionID
+	}
+	info.Model = run.Agent
+	if info.Model == "" {
+		info.Model = run.Model
+	}
+	info.Status = run.Status
+	if info.Status == "" {
+		info.Status = w.Status
+	}
 	// Streaming takes priority: nested under "interaction" with a non-zero total.
 	u, tier := w.Usage, w.ServiceTier
 	if w.Interaction != nil && w.Interaction.Usage != nil && w.Interaction.Usage.TotalTokens > 0 {
 		u, tier = w.Interaction.Usage, w.Interaction.ServiceTier
 	}
+	info.Usage = interactionsUsage(u, tier)
+	return info
+}
+
+func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return ParseInteractionsPassthrough(body).Usage
+}
+
+func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.BifrostPassthroughUsage {
 	if u == nil || u.TotalTokens == 0 {
 		return nil
 	}
@@ -296,6 +393,122 @@ func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsag
 		result.ServiceTier = &t
 	}
 	return result
+}
+
+// interactionsRequest is the part of a passthrough request that decides whether its response
+// reports on a stored interaction, and how to read that interaction again.
+type interactionsRequest struct {
+	method     string
+	path       string
+	apiVersion string
+}
+
+func newInteractionsRequest(req *schemas.BifrostPassthroughRequest) interactionsRequest {
+	if req == nil {
+		return interactionsRequest{}
+	}
+	return interactionsRequest{method: req.Method, path: req.Path, apiVersion: req.APIVersion}
+}
+
+// job names the stored run a create, read or cancel reports on. A list, a delete and a body with no
+// run id report on none, and the usage of a response that names no run stays billable on the request.
+func (r interactionsRequest) job(info InteractionsPassthroughInfo) *schemas.BifrostPassthroughJob {
+	if info.ID == "" {
+		return nil
+	}
+	created := IsInteractionsCreatePath(r.method, r.path)
+	if !created && !IsInteractionsResourcePath(r.method, r.path) {
+		return nil
+	}
+	pollPath := interactionsPollPath(r.path, info.ID)
+	if pollPath == "" {
+		return nil
+	}
+	return &schemas.BifrostPassthroughJob{
+		ID:         info.ID,
+		Status:     info.Status,
+		Terminal:   info.terminal(),
+		Created:    created,
+		PollPath:   pollPath,
+		APIVersion: r.apiVersion,
+		Usage:      info.Usage,
+	}
+}
+
+// interactionsPollPath is the path that reads interaction id, built from the request's own path so
+// a Vertex project/location prefix is kept.
+func interactionsPollPath(path, id string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.TrimRight(path, "/")
+	const segment = "/interactions"
+	idx := strings.LastIndex(path, segment)
+	if idx < 0 {
+		return ""
+	}
+	return path[:idx+len(segment)] + "/" + id
+}
+
+// InteractionsPassthroughResult reads a non-streaming Interactions response for the agent or model
+// that ran and the run it reports on. Every read of a stored run repeats the run's full usage, so
+// that usage is returned on the job, to be settled once, and never as usage billable on this request.
+// A response that names no stored run returns its usage for the request as before.
+func InteractionsPassthroughResult(req *schemas.BifrostPassthroughRequest, body []byte) (*schemas.BifrostPassthroughUsage, string, *schemas.BifrostPassthroughJob) {
+	info := ParseInteractionsPassthrough(body)
+	if job := newInteractionsRequest(req).job(info); job != nil {
+		return nil, info.Model, job
+	}
+	return info.Usage, info.Model, nil
+}
+
+// HasInteractionsStreamInfo is the cheap gate for Interactions SSE events worth parsing: those that
+// carry usage, the interaction object (its id, agent and status) or a status update naming the run.
+func HasInteractionsStreamInfo(event []byte) bool {
+	return providerUtils.GetJSONField(event, "usage").Exists() ||
+		providerUtils.GetJSONField(event, "interaction").Exists() ||
+		providerUtils.GetJSONField(event, "interaction_id").Exists()
+}
+
+// InteractionsStreamObserver follows an Interactions SSE stream (a create with stream=true, or a GET
+// resuming one) for its run id, served model, status and usage.
+type InteractionsStreamObserver struct {
+	req  interactionsRequest
+	last InteractionsPassthroughInfo
+}
+
+// NewInteractionsStreamObserver starts observing the stream req opened.
+func NewInteractionsStreamObserver(req *schemas.BifrostPassthroughRequest) *InteractionsStreamObserver {
+	return &InteractionsStreamObserver{req: newInteractionsRequest(req)}
+}
+
+// Observe records one event and returns its usage, if any.
+func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
+	info := ParseInteractionsPassthrough(event)
+	if info.ID != "" {
+		o.last.ID = info.ID
+	}
+	if info.Model != "" {
+		o.last.Model = info.Model
+	}
+	if info.Status != "" {
+		o.last.Status = info.Status
+	}
+	if info.Usage != nil {
+		o.last.Usage = info.Usage
+	}
+	return info.Usage
+}
+
+// Finalize names the model the stream reported running and moves the observed usage onto the run
+// it reports on. A stream that ended before the run did reports a job that is not terminal, so the
+// run is settled from a later read instead of from the partial usage seen here.
+func (o *InteractionsStreamObserver) Finalize(resp *schemas.BifrostPassthroughResponse) {
+	resp.ServedModel = o.last.Model
+	if job := o.req.job(o.last); job != nil {
+		resp.ProviderJob = job
+		resp.PassthroughUsage = nil
+	}
 }
 
 // ---- :predictLongRunning (Veo video generation) ----

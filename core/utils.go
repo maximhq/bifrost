@@ -33,6 +33,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Bedrock,
 	schemas.BedrockMantle,
 	schemas.SageMaker,
+	schemas.Baseten,
 	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
@@ -42,6 +43,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.Kimchi,
 	schemas.MiniMax,
 	schemas.Mistral,
 	schemas.Nebius,
@@ -50,6 +52,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Parasail,
 	schemas.Perplexity,
 	schemas.Sarvam,
+	schemas.Soniox,
 	schemas.Vertex,
 	schemas.Wafer,
 	schemas.XAI,
@@ -282,6 +285,34 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 	return strings.Join(parts, " ")
 }
 
+// fallbackAttemptOf records what became of one fallback for the primary's error, which is what the
+// caller gets once the whole chain has failed (see schemas.FallbackAttempt). A nil err is a fallback
+// that was skipped before any attempt.
+func fallbackAttemptOf(fallback schemas.Fallback, err *schemas.BifrostError) schemas.FallbackAttempt {
+	attempt := schemas.FallbackAttempt{Provider: fallback.Provider, Model: fallback.Model}
+	if err == nil {
+		attempt.Skipped = true
+		return attempt
+	}
+	if err.StatusCode != nil {
+		attempt.StatusCode = new(*err.StatusCode)
+	}
+	// The nested type first, as in routingErrorSummary: a Responses stream failure's top-level type
+	// is the event name ("response.failed", "error"), not the provider's error type.
+	if err.Error != nil && err.Error.Type != nil && *err.Error.Type != "" {
+		attempt.Type = *err.Error.Type
+	} else if err.Type != nil {
+		attempt.Type = *err.Type
+	}
+	if err.Error != nil {
+		attempt.Message = err.Error.Message
+		if attempt.Message == "" && err.Error.Error != nil {
+			attempt.Message = err.Error.Error.Error()
+		}
+	}
+	return attempt
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error) *schemas.BifrostError {
@@ -435,6 +466,8 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
+	// A fallback model decides its own structured-output path.
+	ctx.ClearValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
 	// previous provider's headers would otherwise survive on the context and
@@ -534,7 +567,6 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
-	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
@@ -620,6 +652,19 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isKeyScopedLookupRequest reports whether the request addresses one stored object by id through a single-key provider call;
+// core tries each key in turn because the object lives on whichever key created it.
+func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
+	switch br.RequestType {
+	case schemas.ContainerFileCreateRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	case schemas.VideoEditRequest:
+		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""
+	}
+	return isResponsesLifecycleRequestType(br.RequestType)
 }
 
 // isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
@@ -828,7 +873,7 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 			return fmt.Errorf("link-local IP addresses are not allowed")
 		}
 		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
-			return fmt.Errorf("private IP addresses are not allowed")
+			return fmt.Errorf("private IP addresses are not allowed: set network_config.allow_private_network to true to use a private endpoint")
 		}
 	}
 	return nil
@@ -917,6 +962,8 @@ func isPromptOptionalVideoEditType(t *string) bool {
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
 	var identity chatStreamIdentity
+	var streamedInput map[string]struct{} // custom calls whose input arrived as deltas
+	var toolIndexes map[int]uint16        // chat tool call index by Responses output index
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -930,8 +977,10 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				}
 			case schemas.ResponsesRequest:
 				// chat→responses: convert responses stream chunk back to chat
-				if result.ResponsesStreamResponse != nil {
-					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+				if event := result.ResponsesStreamResponse; event != nil {
+					event, streamedInput = customInputAsDelta(event, streamedInput)
+					if converted := event.ToBifrostChatResponse(); converted != nil {
+						toolIndexes = setChatToolCallIndex(converted, event, toolIndexes)
 						roleSent = setAssistantRoleOnce(converted, roleSent)
 						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType
@@ -942,6 +991,58 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setChatToolCallIndex numbers a converted stream's tool calls in the order their items were added.
+func setChatToolCallIndex(chunk *schemas.BifrostChatResponse, event *schemas.BifrostResponsesStreamResponse, indexes map[int]uint16) map[int]uint16 {
+	if event.OutputIndex == nil || len(chunk.Choices) == 0 {
+		return indexes
+	}
+	choice := chunk.Choices[0].ChatStreamResponseChoice
+	if choice == nil || choice.Delta == nil || len(choice.Delta.ToolCalls) == 0 {
+		return indexes
+	}
+	index, ok := indexes[*event.OutputIndex]
+	if !ok {
+		if event.Type != schemas.ResponsesStreamResponseTypeOutputItemAdded {
+			return indexes
+		}
+		if indexes == nil {
+			indexes = make(map[int]uint16)
+		}
+		index = uint16(len(indexes))
+		indexes[*event.OutputIndex] = index
+	}
+	choice.Delta.ToolCalls[0].Index = index
+	return indexes
+}
+
+// customInputAsDelta returns a custom_tool_call_input.done event as a delta when no delta
+// carried that call's input, which is how a restored custom call arrives.
+func customInputAsDelta(event *schemas.BifrostResponsesStreamResponse, streamed map[string]struct{}) (*schemas.BifrostResponsesStreamResponse, map[string]struct{}) {
+	switch event.Type {
+	case schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta:
+		if event.ItemID != nil {
+			if streamed == nil {
+				streamed = make(map[string]struct{})
+			}
+			streamed[*event.ItemID] = struct{}{}
+		}
+	case schemas.ResponsesStreamResponseTypeCustomToolCallInputDone:
+		if event.Input == nil {
+			break
+		}
+		if event.ItemID != nil {
+			if _, ok := streamed[*event.ItemID]; ok {
+				break
+			}
+		}
+		delta := *event
+		delta.Type = schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta
+		delta.Delta = event.Input
+		return &delta, streamed
+	}
+	return event, streamed
 }
 
 // chatStreamIdentity holds the id, model and created of a converted chat stream.

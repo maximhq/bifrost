@@ -83,6 +83,78 @@ func TestAppendGuardrailJudgeCallRejectsEmptyUsage(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// TestAppendGuardrailJudgeCallKeepsUsageUnitsWithoutTokens verifies an external
+// guardrail service call, which reports usage units instead of tokens, is kept.
+func TestAppendGuardrailJudgeCallKeepsUsageUnitsWithoutTokens(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	ruleID := uint(17)
+	call := BifrostGuardrailJudgeCall{
+		Phase:             "input",
+		RuleID:            &ruleID,
+		RuleName:          "pii",
+		GuardrailName:     "vendor-profile",
+		GuardrailProvider: "vendor",
+		Action:            "NONE",
+		UsageUnits:        map[string]int{"content_policy_units": 1, "topic_policy_units": 2},
+		EstimatedCost:     0.00045,
+	}
+
+	require.True(t, AppendGuardrailJudgeCallOnContext(ctx, call))
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, metadata.JudgeCalls, 1)
+	assert.Equal(t, call, metadata.JudgeCalls[0])
+}
+
+// TestAppendGuardrailJudgeCallRejectsEstimatedCostWithoutUsage verifies a cost
+// alone, with no reported tokens or units, is not enough to record a call.
+func TestAppendGuardrailJudgeCallRejectsEstimatedCostWithoutUsage(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	assert.False(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{EstimatedCost: 0.001}))
+	assert.False(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{UsageUnits: map[string]int{}}))
+	_, ok := GuardrailMetadataFromContext(ctx)
+	assert.False(t, ok)
+}
+
+// TestGuardrailMetadataUsageUnitsSnapshotIsOwned verifies usage units cannot alias context state.
+func TestGuardrailMetadataUsageUnitsSnapshotIsOwned(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	require.True(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{
+		UsageUnits: map[string]int{"content_policy_units": 1},
+	}))
+
+	first, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	first.JudgeCalls[0].UsageUnits["content_policy_units"] = 999
+	first.JudgeCalls[0].UsageUnits["injected_units"] = 1
+
+	second, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, map[string]int{"content_policy_units": 1}, second.JudgeCalls[0].UsageUnits)
+}
+
+// TestGuardrailJudgeCallUsageFieldsSerialize verifies the stored JSON carries
+// usage units and estimated cost for external calls, and omits both for LLM
+// judge calls so their stored shape is unchanged.
+func TestGuardrailJudgeCallUsageFieldsSerialize(t *testing.T) {
+	external, err := json.Marshal(BifrostGuardrailJudgeCall{
+		GuardrailProvider: "vendor",
+		UsageUnits:        map[string]int{"content_policy_units": 2},
+		EstimatedCost:     0.0003,
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"guardrail_provider":"vendor","usage_units":{"content_policy_units":2},"estimated_cost":0.0003}`, string(external))
+
+	judge, err := json.Marshal(BifrostGuardrailJudgeCall{JudgeProvider: OpenAI, JudgeModel: "gpt-4o-mini", TotalTokens: 10})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"judge_provider":"openai","judge_model":"gpt-4o-mini","total_tokens":10}`, string(judge))
+
+	var decoded BifrostGuardrailJudgeCall
+	require.NoError(t, json.Unmarshal(external, &decoded))
+	assert.Equal(t, map[string]int{"content_policy_units": 2}, decoded.UsageUnits)
+	assert.InDelta(t, 0.0003, decoded.EstimatedCost, 1e-12)
+}
+
 func TestLegacyGuardrailDebugAPIsRemainCompatible(t *testing.T) {
 	ctx := NewBifrostContext(nil, NoDeadline)
 	metadata := &BifrostGuardrailDebug{JudgeCalls: []BifrostGuardrailJudgeCall{{TotalTokens: 1}}}

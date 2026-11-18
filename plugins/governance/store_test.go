@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"sync"
 	"sync/atomic"
@@ -2302,28 +2303,333 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 
 	// The dated alias on openai reaches every tier. "exact-any" shares its key with "base-any"
 	// (provider-less configs collapse to the base model), so whichever was indexed last answers.
-	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName))
+	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName, nil))
 	require.Len(t, got, 5)
 	assert.Equal(t, []string{"exact-pair", "base-pair"}, got[:2])
 	assert.Contains(t, []string{"exact-any", "base-any"}, got[2])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[3:])
 
 	// The base name skips the dated pair but still finds its own.
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName, nil))
 	require.Len(t, got, 4)
 	assert.Equal(t, "base-pair", got[0])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[2:])
 
 	// A sibling model only reaches the wildcards.
-	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName)))
+	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName, nil)))
 
 	// Another provider skips the openai-scoped tiers entirely.
 	anthropic := "anthropic"
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic, nil))
 	assert.NotContains(t, got, "exact-pair")
 	assert.NotContains(t, got, "base-pair")
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
+}
+
+// A key alias names a model the keys resolve only after governance has run, so a limit set on the
+// model the alias stands for has to reach a request that names the alias. Targets the keys
+// disagree on all apply; a key that key selection never picks for the name does not count.
+func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
+	ctx := context.Background()
+	provider := "bedrock"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
+	anyModel := schemas.WhiteList{"*"}
+	mk := func(id, model string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+	withKeys := func(keys ...schemas.Key) *LocalGovernanceStore {
+		store := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: keys},
+		}}
+		return store
+	}
+	off := false
+	// collect resolves the targets the way every entry point does, then walks the global scope.
+	collect := func(store *LocalGovernanceStore, model string, prov *string) []*configstoreTables.TableModelConfig {
+		return store.collectModelConfigsFor(ctx, global, "", model, prov, store.aliasTargets(ctx, prov, model))
+	}
+
+	t.Run("the alias reaches the limit of the model it stands for", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, sonnet, &provider)))
+	})
+	t.Run("keys that disagree apply every target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.ElementsMatch(t, []string{"sonnet-limit", "opus-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a key that cannot serve the name contributes nothing", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: schemas.WhiteList{"titan-*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Enabled: &off, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("no aliases leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel})
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("a lookup without a provider cannot resolve an alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Empty(t, collect(store, "claude-sonnet", nil))
+	})
+
+	t.Run("the real entry point finds the limit through the alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		budgets, _ := store.GlobalModelLimits(ctx, schemas.Bedrock, "claude-sonnet")
+		require.Len(t, budgets, 1)
+		assert.Equal(t, "b-sonnet-limit", budgets[0].ID)
+	})
+	t.Run("two keys that agree yield each limit once, and the alias name's own limit stays", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+		)
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+
+		store = modelKeyStore(t, mk("sonnet-limit", sonnet), mk("alias-limit", "claude-sonnet"))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"alias-limit", "sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a provider-less config on the target is found", func(t *testing.T) {
+		store := modelKeyStore(t, buildModelConfig("any-provider", sonnet, nil, buildBudget("b-any", 100.0, "1d"), nil))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"any-provider"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a virtual-key-scoped config on the target is found when charging", func(t *testing.T) {
+		scoped := mk("vk-sonnet", sonnet)
+		scoped.Scope = configstoreTables.ModelConfigScopeVirtualKey
+		vkID := "vk-1"
+		scoped.ScopeID = &vkID
+		store := modelKeyStore(t, scoped)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.Bedrock, "claude-sonnet")
+		assert.Equal(t, []string{"b-vk-sonnet"}, budgetIDs)
+	})
+	t.Run("a store that cannot see provider config leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		store.inMemoryStore = nil
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+		assert.Nil(t, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+	})
+	t.Run("a provider missing from the in-memory store adds nothing", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		other := "openai"
+		assert.Empty(t, collect(store, "claude-sonnet", &other))
+	})
+	// Core serves a pinned request from the pinned key alone (a routing-rule pin first, then the
+	// caller's id, then the caller's name), so only that key's alias decides what the name becomes.
+	t.Run("a pinned key contributes only its own target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{ID: "k-alias", Name: "alias-key", Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{ID: "k-plain", Name: "plain-key", Models: anyModel},
+		)
+		pinned := func(key schemas.BifrostContextKey, value string) context.Context {
+			return context.WithValue(ctx, key, value)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "unpinned: every eligible key's target")
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-plain"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyName, "plain-key"), &provider, "claude-sonnet"))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-missing"), &provider, "claude-sonnet"), "core refuses an unknown pin, so nothing is added")
+
+		routed := context.WithValue(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "k-plain")
+		assert.Nil(t, store.aliasTargets(routed, &provider, "claude-sonnet"), "a routing-rule pin overrides the caller's pin")
+		assert.Empty(t, ids(store.collectModelConfigsFor(routed, global, "", "claude-sonnet", &provider, store.aliasTargets(routed, &provider, "claude-sonnet"))))
+	})
+
+	// A model that runs at the provider exactly as written is never resolved through a key alias,
+	// so the limits of the alias's target must not be added to it.
+	t.Run("a model that runs as written takes no alias target's limits", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		bifrostCtx := func(key, value any) *schemas.BifrostContext {
+			c := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			c.SetValue(key, value)
+			return c
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "an ordinary request is resolved through the alias")
+		for name, marked := range map[string]context.Context{
+			"literal marker":               context.WithValue(ctx, literalLimitsContextKey, true),
+			"literal on a bifrost context": bifrostCtx(literalLimitsContextKey, true),
+			"direct key":                   bifrostCtx(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"}),
+			"skip key selection":           bifrostCtx(schemas.BifrostContextKeySkipKeySelection, true),
+		} {
+			assert.Nil(t, store.aliasTargets(marked, &provider, "claude-sonnet"), name)
+			assert.Empty(t, ids(store.collectModelConfigsFor(marked, global, "", "claude-sonnet", &provider, store.aliasTargets(marked, &provider, "claude-sonnet"))), name)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(bifrostCtx(literalLimitsContextKey, false), &provider, "claude-sonnet"), "an unmarked literal flag leaves the alias in force")
+	})
+	t.Run("an exhausted limit on the alias target does not reach the aliased name when it runs as written", func(t *testing.T) {
+		sonnetCfg := buildModelConfig("sonnet-cfg", "claude-sonnet-4-6", &provider, buildBudget("b-sonnet-cfg", 100.0, "1d"), nil)
+		store := modelKeyStore(t, sonnetCfg)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+		}}
+		normal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal.SetValue(literalLimitsContextKey, true)
+
+		budgets, _, err := store.GatherLimits(normal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1, "the alias is resolved, so the target's limit applies")
+		budgets, _, err = store.GatherLimits(literal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		assert.Empty(t, budgets, "the name runs as written, so the target's limit does not apply")
+
+		sonnetBudgets, _ := store.CollectModelScopedGovernanceIDs(normal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Equal(t, []string{"b-sonnet-cfg"}, sonnetBudgets)
+		sonnetBudgets, _ = store.CollectModelScopedGovernanceIDs(literal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Empty(t, sonnetBudgets)
+	})
+}
+
+// Resolving what an alias stands for takes the provider lookup, a shared read lock in production,
+// so it is done once per attempt and once per charge however many scopes and permits the walks
+// cover, not once per scope.
+func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := "bedrock"
+	const sonnet = "us.anthropic.claude-sonnet-4-6"
+	mk := func(id, model, scope, scopeID string) *configstoreTables.TableModelConfig {
+		mc := buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+		mc.Scope = scope
+		if scopeID != "" {
+			mc.ScopeID = &scopeID
+		}
+		return mc
+	}
+	counting := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+	}}}
+	store := modelKeyStore(t,
+		mk("global-sonnet", sonnet, configstoreTables.ModelConfigScopeGlobal, ""),
+		mk("vk-a-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-a"),
+		mk("vk-b-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-b"),
+	)
+	store.inMemoryStore = counting
+
+	t.Run("GatherLimits with no access", func(t *testing.T) {
+		counting.single = 0
+		budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1)
+		assert.Equal(t, 1, counting.single)
+	})
+	t.Run("GatherLimits with two permits", func(t *testing.T) {
+		counting.single = 0
+		access := grant.NewAccess([]schemas.Permit{
+			permitWithProviders(grant.PermitVirtualKey, "vk-a", "a", "bedrock"),
+			permitWithProviders(grant.PermitVirtualKey, "vk-b", "b", "bedrock"),
+		}, "", nil, "", nil)
+		budgets, _, err := store.GatherLimits(ctx, access, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		var got []string
+		for _, b := range budgets {
+			got = append(got, b.ID)
+		}
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet", "b-vk-b-sonnet"}, got)
+		assert.Equal(t, 1, counting.single, "the alias targets are resolved once for the whole attempt")
+	})
+	t.Run("CollectModelScopedGovernanceIDs", func(t *testing.T) {
+		counting.single = 0
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-a", "", schemas.Bedrock, "claude-sonnet")
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet"}, budgetIDs)
+		assert.Equal(t, 1, counting.single)
+	})
+}
+
+// lockedProviderStore reads the provider under a shared lock, as the production store does, so a
+// benchmark of the lookup includes what it costs there.
+type lockedProviderStore struct {
+	mockInMemoryStore
+	mu sync.RWMutex
+}
+
+func (s *lockedProviderStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	config, ok := s.configuredProviders[provider]
+	return config, ok
+}
+
+func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
+	provider := "bedrock"
+	mc := buildModelConfig("sonnet-limit", "us.anthropic.claude-sonnet-4-6", &provider, buildBudget("b-sonnet-limit", 100.0, "1d"), nil)
+	cfg := &configstore.GovernanceConfig{ModelConfigs: []configstoreTables.TableModelConfig{*mc}, Budgets: mc.Budgets}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	aliased := schemas.KeyAliases{}
+	for a := 0; a < 20; a++ {
+		aliased[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
+	}
+	aliased["claude-sonnet"] = schemas.AliasConfig{ModelID: "us.anthropic.claude-sonnet-4-6"}
+	plain := []schemas.Key{{Models: schemas.WhiteList{"*"}}, {Models: schemas.WhiteList{"*"}}}
+	withAliases := []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}, {Models: schemas.WhiteList{"*"}, Aliases: aliased}}
+	withAliases[0].ID = "k-aliased"
+	for _, tc := range []struct {
+		name  string
+		keys  []schemas.Key
+		noMem bool
+		model string
+		want  int
+		set   func(*schemas.BifrostContext)
+	}{
+		// baseline and no_aliases name the canonical model too, so every row does the same limit work and the
+		// allocation difference between rows is the alias resolution alone.
+		{"baseline_no_store", nil, true, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"no_aliases", plain, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"aliases_unused", withAliases, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"alias_used", withAliases, false, "claude-sonnet", 1, nil},
+		// A pinned key resolves through that key alone; a direct key runs the name as written.
+		{"alias_used_pinned_key", withAliases, false, "claude-sonnet", 1, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-aliased")
+		}},
+		{"alias_direct_key", withAliases, false, "claude-sonnet", 0, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+		}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.set != nil {
+				tc.set(ctx)
+			}
+			if tc.noMem {
+				store.inMemoryStore = nil
+			} else {
+				store.inMemoryStore = &lockedProviderStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: tc.keys}}}}
+			}
+			budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			if err != nil || len(budgets) != tc.want {
+				b.Fatalf("%s: %d budgets (err %v), want %d", tc.name, len(budgets), err, tc.want)
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _, _ = store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			}
+		})
+	}
 }
 
 // TestResolveAccessStampsVirtualKeyMetadata checks that resolving access publishes the key's
@@ -2519,4 +2825,280 @@ func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer checks a team's keys charge and log its new
+// customer as soon as the team changes, and none once it is cleared.
+func TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer(t *testing.T) {
+	ctx := context.Background()
+	budgetA := buildBudgetWithUsage("budget-a", 1000.0, 0.0, "1d")
+	budgetB := buildBudgetWithUsage("budget-b", 1000.0, 0.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", budgetA)
+	customerB := buildCustomer("customer-b", "Customer B", budgetB)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk", "sk-bf-team", "Team key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	vk.TeamID = &team.ID
+	vk.Team = team
+
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budgetA, *budgetB},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// chargedAndStamped reports the customer budgets charged and the customer logged.
+	chargedAndStamped := func() (charged []string, stamped string) {
+		key, ok := store.GetVirtualKey(ctx, "sk-bf-team")
+		require.True(t, ok)
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk")
+		require.True(t, ok)
+		require.Same(t, key, byID, "both lookups serve the same refreshed key")
+		reqCtx := emptyCtx()
+		budgets, _ := store.HolderLimits(reqCtx, store.permitForVirtualKey(reqCtx, key))
+		for _, b := range budgets {
+			if b.ID == "budget-a" || b.ID == "budget-b" {
+				charged = append(charged, b.ID)
+			}
+		}
+		reqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-team"), nil, nil, nil, nil, nil, nil))
+		StampVirtualKeyScope(reqCtx, key)
+		if identity := reqCtx.Grant().Identity(); identity != nil && len(identity.Customers()) > 0 {
+			stamped = identity.Customers()[0].ID
+		}
+		return charged, stamped
+	}
+
+	charged, stamped := chargedAndStamped()
+	require.Equal(t, []string{"budget-a"}, charged)
+	require.Equal(t, "customer-a", stamped)
+
+	moved := *team
+	moved.CustomerID = &customerB.ID
+	moved.Customer = customerB
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	charged, stamped = chargedAndStamped()
+	require.Equal(t, []string{"budget-b"}, charged, "the new customer is charged, the old one is not")
+	require.Equal(t, "customer-b", stamped)
+
+	cleared := *team
+	cleared.CustomerID = nil
+	cleared.Customer = nil
+	store.UpdateTeamInMemory(ctx, &cleared, nil)
+	charged, stamped = chargedAndStamped()
+	require.Empty(t, charged, "a team with no customer charges none")
+	require.Empty(t, stamped)
+}
+
+// TestGovernanceStore_TeamChangesReachGracePeriodAlias checks a team update and delete reach a
+// key's rotated-out value as well as its current one.
+func TestGovernanceStore_TeamChangesReachGracePeriodAlias(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+
+	moved := *team
+	moved.CustomerID = &customer.ID
+	moved.Customer = customer
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		require.NotNil(t, key.Team, value)
+		assert.Equal(t, "customer-b", *key.Team.CustomerID, value)
+	}
+
+	store.DeleteTeamInMemory(ctx, "team")
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		assert.Nil(t, key.Team, value)
+		assert.Nil(t, key.TeamID, value)
+	}
+}
+
+// TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh races key deletes against team refreshes and
+// checks a deleted key never survives in either lookup.
+func TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh(t *testing.T) {
+	ctx := context.Background()
+	team := buildTeam("team", "Team", nil)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Teams: []configstoreTables.TableTeam{*team},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+		vk.TeamID = &team.ID
+		vk.Team = team
+		store.CreateVirtualKeyInMemory(ctx, vk)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			renamed := *team
+			store.UpdateTeamInMemory(ctx, &renamed, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			store.DeleteVirtualKeyInMemory(ctx, "vk1")
+		}()
+		wg.Wait()
+
+		_, found := store.GetVirtualKey(ctx, "sk-bf-key")
+		require.False(t, found, "iteration %d: deleted key still authenticates", i)
+		_, found = store.GetVirtualKeyByID(ctx, "vk1")
+		require.False(t, found, "iteration %d: deleted key still in the ID index", i)
+	}
+}
+
+// TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent races team updates, key edits and key
+// rotations, then checks a key's value, ID and grace-period entries agree and follow the last team.
+func TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent(t *testing.T) {
+	ctx := context.Background()
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk1", "sk-bf-v0", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	for round := 0; round < 200; round++ {
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			moved := *team
+			moved.CustomerID = &customerB.ID
+			moved.Customer = customerB
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			moved := *team
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func(round int) {
+			defer wg.Done()
+			current, ok := store.GetVirtualKeyByID(ctx, "vk1")
+			if !ok {
+				return
+			}
+			rotated := *current
+			rotated.PreviousValue = current.Value
+			rotated.PreviousValueExpiresAt = &exp
+			rotated.Value = *schemas.NewSecretVar(fmt.Sprintf("sk-bf-v%d", round+1))
+			store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+		}(round)
+		wg.Wait()
+
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk1")
+		require.True(t, ok)
+		byValue, ok := store.GetVirtualKey(ctx, byID.Value.GetValue())
+		require.True(t, ok, "round %d: current value resolves", round)
+		require.Same(t, byID, byValue, "round %d: ID and value entries agree", round)
+		if prev := byID.PreviousValue.GetValue(); prev != "" {
+			alias, ok := store.GetVirtualKey(ctx, prev)
+			require.True(t, ok, "round %d: grace alias resolves", round)
+			require.Same(t, byID, alias, "round %d: grace alias agrees", round)
+		}
+		cachedTeam, _ := store.teams.Load("team")
+		require.Same(t, cachedTeam, byID.Team, "round %d: the key follows the cached team", round)
+	}
+}
+
+// TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst checks a key cached before its
+// team picks up the team's customer once the team lands.
+func TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-a", "Customer A", nil)
+	stale := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+	vk.TeamID = &stale.ID
+	vk.Team = stale
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customer.ID
+	team.Customer = customer
+	store.CreateTeamInMemory(ctx, team)
+
+	key, ok := store.GetVirtualKey(ctx, "sk-bf-key")
+	require.True(t, ok)
+	require.NotNil(t, key.Team)
+	require.NotNil(t, key.Team.CustomerID)
+	assert.Equal(t, "customer-a", *key.Team.CustomerID)
+}
+
+// TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit checks a budget reset that read a team
+// before a team edit applies its reset to the edited team instead of putting the old one back.
+func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
+	ctx := context.Background()
+	budget := buildBudgetWithUsage("team-budget", 100.0, 40.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", budget)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Budgets:   []configstoreTables.TableBudget{*budget},
+		Teams:     []configstoreTables.TableTeam{*team},
+		Customers: []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// The reset reads the team, then a team edit moves it to customer B before the reset writes.
+	readByReset, ok := store.teams.Load("team")
+	require.True(t, ok)
+	edited := *readByReset.(*configstoreTables.TableTeam)
+	edited.CustomerID = &customerB.ID
+	edited.Customer = customerB
+	store.teams.Store("team", &edited)
+
+	patchCached(&store.teams, "team", readByReset, func(cur *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+		clone := *cur
+		clone.Budgets = append([]configstoreTables.TableBudget(nil), cur.Budgets...)
+		clone.Budgets[0].CurrentUsage = 0
+		return &clone
+	})
+
+	got, _ := store.teams.Load("team")
+	final := got.(*configstoreTables.TableTeam)
+	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
+	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
 }

@@ -141,8 +141,8 @@ func requireCodeModeClientsReady(t *testing.T, manager *mcp.MCPManager, configs 
 		if !client.ExecutionConfig.IsCodeModeClient {
 			t.Fatalf("MCP client %q (%s) is not configured as a code-mode client", config.Name, config.ID)
 		}
-		if countExecutableTools(client.ToolMap, client.ExecutionConfig.ToolsToExecute) == 0 {
-			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(client.ToolMap), client.ExecutionConfig.ToolsToExecute)
+		if countExecutableTools(clientTools(manager, client.ExecutionConfig.ID), client.ExecutionConfig.ToolsToExecute) == 0 {
+			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(clientTools(manager, client.ExecutionConfig.ID)), client.ExecutionConfig.ToolsToExecute)
 		}
 	}
 }

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import i18n from "@/lib/i18n";
 import { globalProxyConfigSchema } from "./schemas";
 
 const base = {
@@ -72,5 +73,18 @@ describe("globalProxyConfigSchema SOCKS5 url", () => {
 		expect(urlIssues("socks5://proxy.corp:1080", "http")).toContain("An HTTP proxy URL must start with http:// or https://");
 		expect(urlIssues("https://proxy.corp:3128", "http")).toEqual([]);
 		expect(urlIssues("proxy.corp:3128", "http")).toEqual([]);
+	});
+});
+
+// The schema is built once at module load, so a message fixed then would stay in that language.
+describe("globalProxyConfigSchema scheme messages follow the UI language", () => {
+	afterEach(async () => {
+		await i18n.changeLanguage("en");
+	});
+
+	it("localizes the SOCKS5 and HTTP scheme errors after a language switch", async () => {
+		await i18n.changeLanguage("de");
+		expect(urlIssues("http://proxy.corp:1080")).toContain("Eine SOCKS5-Proxy-URL muss mit socks5:// oder socks5h:// beginnen");
+		expect(urlIssues("socks5://proxy.corp:1080", "http")).toContain("Eine HTTP-Proxy-URL muss mit http:// oder https:// beginnen");
 	});
 });

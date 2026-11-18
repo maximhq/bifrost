@@ -6,7 +6,7 @@ import { waitForNetworkIdle } from "../../../core/utils/test-helpers";
 export type RelayLogsUrlKey =
   | "relay_names"
   | "methods"
-  | "statuses"
+  | "status"
   | "kinds"
   | "virtual_key_ids"
   | "user_ids"

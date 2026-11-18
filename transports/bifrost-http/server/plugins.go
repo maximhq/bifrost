@@ -80,6 +80,21 @@ func mergeCustomLabels(clientLabels, pluginLabels []string) []string {
 	return out
 }
 
+// loggingPluginConfig decodes the logging plugin config and sets the fields that come from logs_store. A reload decodes
+// the stored plugin config, which does not carry them, so they are set on every load rather than only at startup.
+func loggingPluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*logging.Config, error) {
+	loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
+	if err != nil {
+		return nil, err
+	}
+	if loggingConfig != nil {
+		loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
+			bifrostConfig.LogsStoreConfig.ObjectStorage != nil
+		loggingConfig.CaptureClientIP = bifrostConfig.ShouldCaptureClientIP()
+	}
+	return loggingConfig, nil
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
@@ -115,13 +130,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return prompts.Init(ctx, bifrostConfig.ConfigStore, logger)
 
 	case logging.PluginName:
-		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
+		loggingConfig, err := loggingPluginConfig(pluginConfig, bifrostConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal logging plugin config: %w", err)
-		}
-		if loggingConfig != nil {
-			loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
-				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
 		}
 		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
 			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
@@ -269,6 +280,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		}
 		if s.Config.LogsStoreConfig != nil {
 			config.Writer = s.Config.LogsStoreConfig.Writer
+			config.CaptureClientIP = s.Config.LogsStoreConfig.CaptureClientIP
 		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {

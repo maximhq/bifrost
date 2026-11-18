@@ -261,6 +261,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.
@@ -442,6 +447,57 @@ cases to the folder named after it.
 The cases are skipped unless `workloadIdentityFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Relay and log-store matrix
+
+`runners/run-log-store-matrix.mjs` checks that relays behave as documented and that relay rows
+follow every logging setting the way LLM rows do, on every log store. It is hermetic: every
+upstream is a local server (an echo LLM provider, a programmable relay upstream, an HTTPS twin,
+local HTTP and SOCKS5 proxies, and an S3-compatible bucket), so it needs no keys and makes no
+paid calls.
+
+```bash
+make run-log-store-matrix POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres PARALLEL=3
+make run-log-store-matrix BINARY=tmp/bifrost-http CELLS=sqlite SUITES=pricing,proxy SKIP_CONTENT_MATRIX=1
+```
+
+It boots one gateway per log-store cell, because the store is read at boot only:
+
+| Cell | Log store |
+|---|---|
+| `sqlite`, `postgres` | RDB store |
+| `sqlite+s3`, `postgres+s3` | Hybrid store over `lib/fake-s3.mjs` |
+| `sqlite+s3-exclude-types` | Hybrid, `relay` and `chat_completion` in `object_storage_exclude_request_types` |
+| `sqlite+s3-exclude-fields` | Hybrid, `request_body` in `object_storage_exclude_fields` |
+
+Postgres cells need `POSTGRES_URL` (an admin connection; each cell gets a fresh database) and are
+skipped without it. Against each cell it runs:
+
+- `run-content-logging-matrix.mjs`: every combination of client, virtual key, per-request
+  header and OTel connector content settings. Each case sends an LLM request and a relay request
+  on the same key and header, and the relay row must keep or drop content exactly as its LLM twin,
+  checked through the API and in the raw `logs` and `relay_logs` rows.
+- `run-relay-matrix.mjs`: the relay suites below. Run it alone against any gateway with
+  `BIFROST_E2E_BASE_URL` (and `--suites`).
+
+| Suite | Covers |
+|---|---|
+| `pricing` | Every usage mapping (source, measure, rate, fee, block, minimum, reported cost, `ignore_upstream_cost`) through an inherit, an override and a waive route, checked against an independent reference of the pricing rules (`lib/relay-matrix.mjs`) |
+| `streaming` | Route `stream` flag, `streaming.paths` and upstream content type, with SSE last-value usage and byte-priced bodies |
+| `billing` | Method, `billable` flag and upstream status |
+| `routes` | Path globs, header matchers, operator headers, route order, disabled routes, `skip_route_check` |
+| `auth` | `bearer`, `header`, `query`, `basic`, `none`, `aws_sigv4`, extra headers, credential stripping |
+| `governance` | Grants, inactive and unknown keys, inference auth, attribution parity with LLM rows, budgets and request limits at key, team and customer level, the request counter LLM and relay traffic share |
+| `settings` | `logging_headers`, `x-bf-lh-*`, `x-bf-dim-*`, key metadata, session ids, user agent and app, `hide_deleted_virtual_keys_in_filters`, query-string redaction, each compared with an LLM row |
+| `logsapi` | Shared filters, stats, histogram bucket sizes, sort, paging and delete on `/api/logs` and `/api/relay-logs` |
+| `network` | Timeouts, stream idle timeout, redirects, TLS with a private CA, unreachable upstreams, a reply past the old 64 MiB cap, a caller that hangs up mid-stream |
+| `proxy` | A relay's `proxy_config` (`http`, `socks5`, `none`, credentials, an HTTPS upstream through CONNECT) and the inherited global proxy |
+| `hybrid` | Offload, previews, hydration, hidden retention, exclusions and deletes, each compared with an LLM row (hybrid cells only) |
+
+A parity check that differs by design is listed in `KNOWN_GAPS` (`lib/relay-matrix.mjs`) and
+reports `GAP`; a listed gap that stops reproducing fails the run as `STALE`. The squid, stunnel
+and microsocks proxy matrix (`make run-e2e-api PROXY=1`) also sends the relays-e2e rows through
+every proxy cell, with the profile's relays given each cell's proxy.
 
 ## Contents
 

@@ -705,4 +705,123 @@ wait "$pid" 2>/dev/null || true
   assert.match(log, /^client\[\d+\] 127\.0\.0\.1: connected to api\.openai\.com:443$/m, `no record after the reset: ${JSON.stringify(log)}`);
 });
 
+// Relays reach their fixture over plain HTTP, which squid logs as an absolute-form request,
+// not a CONNECT. The log readers must count those too, or the relay pillar could never pass.
+await test("proxy_hosts_on_port reads plain-HTTP requests as well as CONNECT tunnels", () => {
+  const lib = readFileSync(path.join(REPO_ROOT, "tests/e2e/api/runners/proxy/proxy-lib.sh"), "utf8");
+  const libFunction = (name) => {
+    const m = lib.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?\\n\\}`, "m"));
+    return m ? m[0] : "";
+  };
+  const dir = mkdtempSync(path.join(tmpdir(), "proxy-matrix-plainhttp-"));
+  writeFileSync(
+    path.join(dir, "squid-access.log"),
+    [
+      "3128 127.0.0.1 CONNECT api.openai.com:443 200 u 1000.000 100",
+      "3128 127.0.0.1 POST http://10.1.2.3:8783/v1/echo?tag=x 200 u 1001.000 5",
+      "3128 127.0.0.1 GET http://example.com/x 200 u 1002.000 5",
+      "3128 127.0.0.1 POST http://10.1.2.3:8783/v1/echo 407 - 1003.000 1",
+      "3130 127.0.0.1 POST http://10.1.2.3:8783/v1/echo 200 u 1004.000 5",
+    ].join("\n") + "\n",
+  );
+  const script = `set -euo pipefail
+PROXY_DIR="$1"
+${libFunction("proxy_hosts_on_port")}
+${libFunction("proxy_hosts_on_port_since")}
+proxy_hosts_on_port 3128
+echo ---
+proxy_hosts_on_port_since 3128 1001
+`;
+  let out;
+  try {
+    out = execFileSync("bash", ["-c", script, "bash", dir], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.strictEqual(out, "api.openai.com:443\n10.1.2.3:8783\nexample.com:80\n---\nexample.com:80\n", "plain-HTTP targets are read; a 407 and another port are not");
+});
+
+// Every relay in the profile must take the cell's proxy the way the providers do, and reach
+// its fixture by the host's address so no proxy exempts it as loopback.
+await test("seed_cell gives the relays the cell's proxy and the fixture's address", () => {
+  const fn = shellFunction("seed_cell");
+  const profile = path.join(REPO_ROOT, "tests/integrations/python/config.json");
+  const relays = JSON.parse(readFileSync(profile, "utf8")).relays ?? [];
+  assert.ok(relays.length > 0 && relays.every((r) => r.base_url.startsWith("http://127.0.0.1:")), "precondition: the profile's relays point at 127.0.0.1");
+  const want = {
+    global: (r) => r.proxy_config === undefined,
+    provider: (r) => r.proxy_config?.type === "http" && r.proxy_config.url === "http://127.0.0.1:3128" && r.proxy_config.username === "u",
+    env: (r) => r.proxy_config?.type === "environment",
+  };
+  for (const mode of Object.keys(want)) {
+    const dir = mkdtempSync(path.join(tmpdir(), "proxy-matrix-relays-"));
+    const script = `set -euo pipefail
+APP_DIR="$1/app"; PROXY_DIR="$1"; NO_PROXY_LIST=localhost; INFRA_PROXY=http://127.0.0.1:3129; CA_BUNDLE=""
+PROXY_USER=u; PROXY_PASS=p; RELAY_UPSTREAM_IP=10.1.2.3
+harness_seed_app_dir() { mkdir -p "$1"; cp "${profile}" "$1/config.json"; }
+cell_proxy_url() { echo "http://127.0.0.1:3128"; }
+${fn}
+seed_cell ${mode} http
+jq -c '.relays' "$APP_DIR/config.json"
+`;
+    let out;
+    try {
+      out = execFileSync("bash", ["-c", script, "bash", dir], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const seeded = JSON.parse(out);
+    assert.strictEqual(seeded.length, relays.length, `${mode}: relays were dropped`);
+    for (const r of seeded) {
+      assert.ok(r.base_url.startsWith("http://10.1.2.3:"), `${mode}: ${r.name} still points at ${r.base_url}`);
+      assert.ok(want[mode](r), `${mode}: ${r.name} has proxy_config ${JSON.stringify(r.proxy_config)}`);
+    }
+  }
+});
+
+// The relay pillar's host is RELAY_UPSTREAM, which stands for the address the relays reach their
+// fixture on: it must resolve to that address, and a cell that never proxied it must fail.
+await test("assert_cell_routes resolves RELAY_UPSTREAM to the relay fixture's address", () => {
+  const fn = ["cell_proxy_hosts", "assert_cell_routes"].map(shellFunction).join("\n");
+  const dir = mkdtempSync(path.join(tmpdir(), "proxy-matrix-relayhost-"));
+  const manifest = path.join(dir, "manifest.json");
+  writeFileSync(manifest, JSON.stringify({ pillars: [{ key: "relay", hosts: ["RELAY_UPSTREAM"] }] }));
+  const run = (seen) => {
+    writeFileSync(path.join(dir, "seen"), seen);
+    const script = `set -euo pipefail
+MANIFEST="${manifest}"; RELAY_UPSTREAM_IP=10.1.2.3
+SEEN="$1/seen"; PROXY_HTTP_PORT=3128; PROXY_INFRA_PORT=3130
+proxy_hosts_on_port() { if [ "$1" = 3128 ]; then cat "$SEEN"; fi; }
+proxy_hosts_on_port_since() { :; }
+${fn}
+assert_cell_routes provider http
+`;
+    try {
+      execFileSync("bash", ["-c", script, "bash", dir], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      return 0;
+    } catch (err) {
+      return err.status;
+    }
+  };
+  try {
+    assert.strictEqual(run("10.1.2.3:8783\n"), 0, "the relay fixture's address in the cell proxy's log satisfies the pillar");
+    assert.notStrictEqual(run("10.1.2.30:8783\n"), 0, "another address must not satisfy it");
+    assert.notStrictEqual(run("110.1.2.3:8783\n"), 0, "an address ending in the fixture's must not satisfy it");
+    assert.notStrictEqual(run("api.openai.com:443\n"), 0, "a cell that never proxied the relay must fail");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The fixture health probe must reach the fixture directly: a runner that exports http_proxy or
+// ALL_PROXY without the fixture's address in NO_PROXY would send it to that proxy and report a
+// ready fixture as down.
+await test("the relay fixture health probes bypass inherited proxies", () => {
+  const probes = source.split("\n").filter((line) => line.includes("/__relay/health") && /\bcurl\b/.test(line));
+  assert.ok(probes.length >= 2, "expected the polling probe and the final check");
+  for (const probe of probes) {
+    assert.ok(probe.includes("--noproxy '*'"), `probe does not bypass inherited proxies: ${probe.trim()}`);
+  }
+});
+
 console.log(`\n${passed} passed`);
