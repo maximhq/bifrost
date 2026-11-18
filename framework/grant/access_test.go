@@ -1987,6 +1987,26 @@ func TestAccessLevels_AHigherLevelTakesAwayWhatTheCallerHolds(t *testing.T) {
 	assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-c"), caller)
 }
 
+// WithModelMatcher swaps how names are matched and nothing else: the copy keeps every level, so a
+// literal-name check is capped exactly as the access it was made from. Rebuilding from Bases, which
+// is only the granting level, would drop the cap and allow more than the access does.
+func TestAccessLevels_WithModelMatcherKeepsTheLevels(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	byName := func(_, model string, allowed []string) bool { return schemas.WhiteList(allowed).IsAllowed(model) }
+
+	access := NewAccess(held(caller, team), Intersect, nil, "", byName)
+	literal := access.WithModelMatcher(byName)
+
+	for _, a := range []*Access{access, literal} {
+		assert.True(t, a.IsModelAllowed("openai", "model-a"))
+		assert.False(t, a.IsModelAllowed("openai", "model-b"), "the level above caps model-b")
+	}
+	assert.Equal(t, access.LevelMode(), literal.LevelMode())
+	assert.Len(t, literal.Bases(), len(access.Bases()))
+	assert.Nil(t, (*Access)(nil).WithModelMatcher(byName))
+}
+
 func TestAccessLevels_ALevelIsReadAsOne(t *testing.T) {
 	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
 	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)

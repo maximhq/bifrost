@@ -1771,6 +1771,26 @@ func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
 	})
 }
 
+// The access a literal model name is checked against is the request's own access with only its
+// matcher changed. A request capped by a higher level stays capped: rebuilding the access from Bases,
+// which returns only the granting level, would drop the cap and admit what the access refuses.
+func TestLiteralAccessKeepsTheLevelsThatCapTheAccess(t *testing.T) {
+	caller := grant.NewPermit(grant.PermitVirtualKey, "vk1", "Key", true, false, []schemas.ProviderPermit{{
+		Provider: "openai", AllowedModels: []string{"gpt-4o", "gpt-4o-mini"}, KeyIDs: []string{"*"},
+	}}, nil)
+	team := grant.NewPermit(grant.PermitTeamAccessProfile, "t1", "Team", true, false, []schemas.ProviderPermit{{
+		Provider: "openai", AllowedModels: []string{"gpt-4o-mini"}, KeyIDs: []string{"*"},
+	}}, nil, grant.WithLevel(1))
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
+	access := grant.NewAccess([]schemas.Permit{caller, team}, grant.Intersect, nil, "", nil)
+	require.False(t, access.IsModelAllowed("openai", "gpt-4o"), "the team level caps gpt-4o")
+
+	literal := literalAccessFor(access, modelcatalog.NewTestCatalog(nil), store)
+
+	assert.True(t, literal.IsModelAllowed("openai", "gpt-4o-mini"))
+	assert.False(t, literal.IsModelAllowed("openai", "gpt-4o"), "the literal access must stay capped by the team level")
+}
+
 // BenchmarkLimitsForKeyThatRan is the charge-time step PostLLMHook adds: "no_alias" is every request
 // that named no alias (one context read); "keys_agree" is an alias every key maps to one model, which
 // the key that ran did; "keys_disagree" re-gathers the limits for the key that ran.
