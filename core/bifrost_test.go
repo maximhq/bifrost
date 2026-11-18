@@ -10448,3 +10448,104 @@ func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) 
 		t.Fatalf("expected a single attempt, got %d", callCount)
 	}
 }
+
+// plainFileProvider is a provider that does not stream uploads (no FileSourceUploader).
+type plainFileProvider struct{ schemas.Provider }
+
+// streamingFileProvider is a provider that streams BifrostFileUploadRequest.FileSource.
+type streamingFileProvider struct{ schemas.Provider }
+
+func (streamingFileProvider) UploadsFileSource() {}
+
+// openCountingSource is a BodySource that counts Open calls, to assert a file is not read.
+type openCountingSource struct {
+	schemas.BodySource
+	opens int
+}
+
+func (s *openCountingSource) Open() (io.ReadCloser, error) {
+	s.opens++
+	return s.BodySource.Open()
+}
+
+// TestPrepareFileUploadContent asserts an upload passed as a FileSource is read into File only
+// for a provider that needs the bytes, and is left as a handle for one that streams it.
+func TestPrepareFileUploadContent(t *testing.T) {
+	newReq := func() *schemas.BifrostFileUploadRequest {
+		return &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	}
+
+	req := newReq()
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.File) != "file-bytes" {
+		t.Errorf("plain provider: File = %q, want the source read into memory", req.File)
+	}
+
+	source := &openCountingSource{BodySource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	req = &schemas.BifrostFileUploadRequest{FileSource: source}
+	if err := prepareFileUploadContent(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.File != nil {
+		t.Errorf("streaming provider: File = %q, want nil (the file must stay a stream)", req.File)
+	}
+	if req.FileSource != schemas.BodySource(source) {
+		t.Errorf("streaming provider: FileSource = %v, want the caller's source kept for the provider to stream", req.FileSource)
+	}
+	if source.opens != 0 {
+		t.Errorf("streaming provider: the source was opened %d times, want 0 (preparation must not read the file)", source.opens)
+	}
+
+	req = &schemas.BifrostFileUploadRequest{File: []byte("sdk-bytes")}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil || string(req.File) != "sdk-bytes" {
+		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
+	}
+
+	// FileSource is used instead of File, for every provider: a provider that needs bytes must
+	// read the source even when File already holds other bytes, as OpenAI streams the source.
+	// The source is cleared once read, so a retry or fallback reuses File instead of reading again.
+	req = &schemas.BifrostFileUploadRequest{File: []byte("stale"), FileSource: schemas.NewBytesBodySource([]byte("from source"))}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider with File and FileSource: %v", err.Error.Message)
+	}
+	if string(req.File) != "from source" || req.FileSource != nil {
+		t.Errorf("plain provider with File and FileSource: File = %q, FileSource set = %v; want the source's bytes and the source cleared", req.File, req.FileSource != nil)
+	}
+	got, readErr := schemas.ReadBodySource(providerUtils.FileUploadSource(req))
+	if readErr != nil || string(got) != "from source" {
+		t.Errorf("a fallback to a streaming provider would send %q, want the same bytes", got)
+	}
+}
+
+func (streamingFileProvider) SendsPassthroughBodySource() {}
+
+// TestPreparePassthroughBody asserts a passthrough body passed as a BodySource is read into Body
+// only for a provider that needs the bytes, and stays a stream for one that sends it.
+func TestPreparePassthroughBody(t *testing.T) {
+	newReq := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("form-bytes"))}
+	}
+
+	req := newReq()
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.Body) != "form-bytes" {
+		t.Errorf("plain provider: Body = %q, want the source read into memory", req.Body)
+	}
+
+	req = newReq()
+	if err := preparePassthroughBody(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.Body != nil {
+		t.Errorf("streaming provider: Body = %q, want nil (the body must stay a stream)", req.Body)
+	}
+
+	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
+		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
+}
