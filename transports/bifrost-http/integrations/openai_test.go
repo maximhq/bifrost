@@ -587,6 +587,7 @@ type fileUploadUpstream struct {
 	path          string
 	contentLength int64
 	fields        map[string]string
+	fieldTypes    map[string]string // Content-Type of each part without a filename
 	filename      string
 	fileSize      int64
 	fileSum       [sha256.Size]byte
@@ -598,6 +599,7 @@ func (u *fileUploadUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.path = r.URL.Path
 	u.contentLength = r.ContentLength
 	u.fields = map[string]string{}
+	u.fieldTypes = map[string]string{}
 	mr, err := r.MultipartReader()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -615,6 +617,7 @@ func (u *fileUploadUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if part.FileName() == "" {
 			v, _ := io.ReadAll(part)
 			u.fields[part.FormName()] = string(v)
+			u.fieldTypes[part.FormName()] = part.Header.Get("Content-Type")
 			continue
 		}
 		h := sha256.New()

@@ -1,12 +1,15 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // MultipartField is one plain form field of a multipart upload body.
@@ -80,3 +83,102 @@ type multipartUploadReader struct {
 }
 
 func (r multipartUploadReader) Close() error { return r.file.Close() }
+
+// SetPassthroughRequestBody sets the outgoing body of a passthrough request: BodySource as a
+// stream with its exact length when the transport passed one (a multipart upload), else Body.
+// Call it after copying the client's headers, so the streamed length wins over theirs.
+// ReleaseRequest closes the stream.
+func SetPassthroughRequestBody(req *fasthttp.Request, passthrough *schemas.BifrostPassthroughRequest) error {
+	if passthrough.BodySource == nil || len(passthrough.Body) > 0 {
+		req.SetBody(passthrough.Body)
+		return nil
+	}
+	body, err := passthrough.BodySource.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open passthrough request body: %w", err)
+	}
+	req.SetBodyStream(body, int(passthrough.BodySource.Size()))
+	return nil
+}
+
+// maxUsageFieldBytes bounds one plain field read from a source-only multipart body for usage.
+const maxUsageFieldBytes = 64 << 10
+
+// PassthroughUsageRequestBody returns the request body that passthrough usage extraction reads.
+// For a streamed multipart upload that is only its plain fields, re-encoded as multipart: usage
+// reads scalar fields (n, size, seconds), never file contents, so the files are left out. The
+// fields come from the parsed Form, or, for a caller that set only BodySource (a Go SDK or plugin
+// request), from one pass over the source that keeps the parts without a filename (each up to
+// maxUsageFieldBytes) and discards file contents. A body that cannot be read as multipart gives
+// nil, and usage falls back to its defaults.
+func PassthroughUsageRequestBody(passthrough *schemas.BifrostPassthroughRequest) []byte {
+	if len(passthrough.Body) > 0 {
+		return passthrough.Body
+	}
+	var values map[string][]string
+	switch {
+	case passthrough.Form != nil:
+		values = passthrough.Form.Value
+	case passthrough.BodySource != nil:
+		values = multipartSourceFields(passthrough.BodySource)
+		if values == nil {
+			return nil
+		}
+	default:
+		return passthrough.Body
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for name, vs := range values {
+		for _, v := range vs {
+			if err := w.WriteField(name, v); err != nil {
+				return nil
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+// multipartSourceFields reads the parts without a filename from a multipart body source, by name
+// in body order. The boundary is taken from the body's first line. It returns nil when the source
+// does not read as multipart.
+func multipartSourceFields(source schemas.BodySource) map[string][]string {
+	rc, err := source.Open()
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	br := bufio.NewReader(rc)
+	first, err := br.ReadString('\n')
+	if err != nil {
+		return nil
+	}
+	boundary, ok := strings.CutPrefix(strings.TrimRight(first, "\r\n"), "--")
+	if !ok || boundary == "" {
+		return nil
+	}
+	mr := multipart.NewReader(io.MultiReader(strings.NewReader(first), br), boundary)
+	fields := map[string][]string{}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			return fields
+		}
+		if err != nil {
+			return nil
+		}
+		name := part.FormName()
+		if name == "" || part.FileName() != "" {
+			io.Copy(io.Discard, part) //nolint:errcheck // NextPart reports a read error
+			continue
+		}
+		value, err := io.ReadAll(io.LimitReader(part, maxUsageFieldBytes))
+		if err != nil {
+			return nil
+		}
+		fields[name] = append(fields[name], string(value))
+	}
+}

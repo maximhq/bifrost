@@ -2,8 +2,10 @@ package schemas
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"mime/multipart"
+	"os"
 	"strings"
 	"testing"
 )
@@ -95,5 +97,179 @@ func TestReadBodySource(t *testing.T) {
 	}
 	if _, err := ReadBodySource(fixedBodySource{size: 10, content: "abc"}); err == nil {
 		t.Error("short source: want an error, got nil")
+	}
+}
+
+// TestMultipartFormBodySource asserts the streamed form has exactly the size it declares (it is
+// sent as Content-Length), reads back to the same fields and files, including a file the parser
+// kept in a temp file, and is byte-identical on every Open (a retry sends the same body).
+func TestMultipartFormBodySource(t *testing.T) {
+	small := []byte("small file")
+	large := bytes.Repeat([]byte("L"), 64<<10)
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("purpose", "batch")
+	w.WriteField("tag", "a")
+	w.WriteField("tag", "b")
+	part, _ := w.CreateFormFile("file", "large.jsonl")
+	part.Write(large)
+	part, _ = w.CreateFormFile("attachment", "small.txt")
+	part.Write(small)
+	w.Close()
+	form, err := multipart.NewReader(&body, w.Boundary()).ReadForm(1024) // large goes to a temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer form.RemoveAll()
+
+	src, err := NewMultipartFormBodySource(form, "stream-boundary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ReadBodySource(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(first)) != src.Size() {
+		t.Fatalf("read %d bytes, Size says %d", len(first), src.Size())
+	}
+	second, _ := ReadBodySource(src)
+	if !bytes.Equal(first, second) {
+		t.Error("two Opens produced different bodies")
+	}
+
+	got, err := multipart.NewReader(bytes.NewReader(first), "stream-boundary").ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.RemoveAll()
+	if got.Value["purpose"][0] != "batch" || strings.Join(got.Value["tag"], ",") != "a,b" {
+		t.Errorf("fields = %v, want purpose=batch tag=a,b", got.Value)
+	}
+	for field, want := range map[string][]byte{"file": large, "attachment": small} {
+		f, err := got.File[field][0].Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, _ := io.ReadAll(f)
+		f.Close()
+		if !bytes.Equal(content, want) {
+			t.Errorf("%s: got %d bytes that differ from the %d uploaded", field, len(content), len(want))
+		}
+	}
+	if fn := got.File["file"][0].Filename; fn != "large.jsonl" {
+		t.Errorf("file name = %q, want large.jsonl", fn)
+	}
+}
+
+// TestMultipartFormBodySourceKeepsValueContentType asserts a part without a filename is forwarded
+// with the Content-Type it arrived with (valueTypes), which the parsed form alone has lost, and a
+// plain field stays a plain field. Size stays exact.
+func TestMultipartFormBodySourceKeepsValueContentType(t *testing.T) {
+	form := &multipart.Form{Value: map[string][]string{"mask": {"mask-bytes"}, "model": {"whisper-1"}, `we"ird`: {"v"}}}
+	types := map[string][]string{"mask": {"application/octet-stream"}, "model": {""}, `we"ird`: {"text/plain"}}
+	src, err := NewMultipartFormBodySource(form, "b", types)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := ReadBodySource(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(body)) != src.Size() {
+		t.Fatalf("read %d bytes, Size says %d", len(body), src.Size())
+	}
+	got := map[string]string{}
+	values := map[string]string{}
+	r := multipart.NewReader(bytes.NewReader(body), "b")
+	for {
+		p, err := r.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(p)
+		got[p.FormName()] = p.Header.Get("Content-Type")
+		values[p.FormName()] = string(data)
+	}
+	want := map[string]string{"mask": "application/octet-stream", "model": "", `we"ird`: "text/plain"}
+	for name, ct := range want {
+		if got[name] != ct {
+			t.Errorf("part %q forwarded with Content-Type %q, want %q", name, got[name], ct)
+		}
+	}
+	if values["mask"] != "mask-bytes" || values["model"] != "whisper-1" || values[`we"ird`] != "v" {
+		t.Errorf("part values changed: %v", values)
+	}
+}
+
+// openFDs counts this process's open file descriptors (Linux /proc).
+func openFDs(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skipf("cannot count open files: %v", err)
+	}
+	return len(entries)
+}
+
+// TestMultipartFormBodySourceOpensFilesOneAtATime asserts a streamed form opens each file part
+// only when the reader reaches it and closes it when its segment ends, so a form with many
+// disk-backed parts holds at most one descriptor at a time. Opening every part on Open held one
+// descriptor per part for the whole upstream send.
+func TestMultipartFormBodySourceOpensFilesOneAtATime(t *testing.T) {
+	const parts = 5
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for i := 0; i < parts; i++ {
+		part, _ := w.CreateFormFile("image[]", fmt.Sprintf("image-%d.png", i))
+		part.Write(bytes.Repeat([]byte{byte('a' + i)}, 8<<10))
+	}
+	w.Close()
+	form, err := multipart.NewReader(&body, w.Boundary()).ReadForm(1) // every part goes to disk
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer form.RemoveAll()
+	src, err := NewMultipartFormBodySource(form, "b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	baseline := openFDs(t)
+	r, err := src.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extra := openFDs(t) - baseline; extra > 0 {
+		t.Errorf("Open held %d file descriptors before anything was read, want none", extra)
+	}
+	maxOpen := 0
+	buf := make([]byte, 4<<10)
+	var read int
+	for {
+		n, err := r.Read(buf)
+		read += n
+		maxOpen = max(maxOpen, openFDs(t)-baseline)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if maxOpen > 1 {
+		t.Errorf("reading held up to %d file descriptors at once, want at most 1", maxOpen)
+	}
+	if int64(read) != src.Size() {
+		t.Errorf("read %d bytes, want %d", read, src.Size())
+	}
+	if extra := openFDs(t) - baseline; extra != 0 {
+		t.Errorf("%d file descriptors still open after Close", extra)
 	}
 }
