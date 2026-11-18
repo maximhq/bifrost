@@ -1555,6 +1555,21 @@ expect_render_failure "networkPolicy: schema rejects a null selector as a peer" 
 expect_render_failure "networkPolicy: schema rejects an egress.to ipBlock without cidr" \
   "/networkPolicy/egress/to/0" \
   --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.to=[{"ipBlock":{}}]'
+expect_render_failure "networkPolicy: schema rejects a malformed ipBlock cidr" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"not-a-cidr"}}]'
+expect_render_failure "networkPolicy: schema rejects a cidr with an out-of-range prefix" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"10.0.0.0/33"}}]'
+expect_render_failure "networkPolicy: schema rejects a malformed ipBlock except entry" \
+  "/networkPolicy/egress/to/0/ipBlock/except/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set-json 'networkPolicy.egress.to=[{"ipBlock":{"cidr":"10.0.0.0/8","except":["10.1.0.0"]}}]'
+check_workload "networkPolicy: IPv4 and IPv6 ipBlocks with except are accepted" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"ipBlock": {"cidr": "10.0.0.0/8", "except": ["10.1.0.0/16"]}}, {"ipBlock": {"cidr": "2001:db8::/32"}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
+  --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"10.0.0.0/8","except":["10.1.0.0/16"]}},{"ipBlock":{"cidr":"2001:db8::/32"}}]'
 check_workload "networkPolicy: an empty selector is a valid peer (all pods in the namespace)" \
   "$NP"'
 assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"podSelector": {}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
