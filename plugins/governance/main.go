@@ -44,8 +44,8 @@ const (
 // team and customer update handlers, and the config reconcile that applies governance.budgets from
 // config.json. In the OSS build nothing is registered, so nothing is refused.
 const (
-	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
-	// hold several budgets; a business unit holds at most one.
+	// The kinds of entity that can hold budgets and a rate limit of their own. Each may hold several
+	// budgets, one per reset window, and one rate limit.
 	LegacyLimitHolderTeam         = "team"
 	LegacyLimitHolderCustomer     = "customer"
 	LegacyLimitHolderBusinessUnit = "business_unit"
@@ -1063,19 +1063,19 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
-	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	bases, levelMode, scoping, mode := p.store.ResolvePermits(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := p.newAccess(ctx, bases, scoping, mode)
+	access := p.newAccess(ctx, bases, levelMode, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
 }
 
 // newAccess folds the permits into an access whose model checks resolve key aliases the way key
 // selection will for this request: through the model catalog, over the keys that can serve it.
-func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
-	return grant.NewAccess(bases, scoping, mode, nil).
+func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, levelMode grant.CompositionMode, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
+	return grant.NewAccess(bases, levelMode, scoping, mode, nil).
 		WithKeyScopedMatcher(p.modelMatcher(ctx)).
 		WithAliasTargets(p.aliasTargets(ctx))
 }
@@ -1755,6 +1755,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
+	if requestType == schemas.PassthroughRequest && result != nil && result.PassthroughResponse != nil &&
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
+		p.filterPassthroughModelList(ctx, access, string(provider), result.PassthroughResponse)
+	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
@@ -2100,11 +2104,12 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 		var scoping schemas.Permit
 		var mode grant.CompositionMode
 		if access != nil {
+			// Only the granting permits decide agents (see grant.Access), so they're all this needs.
 			bases = append(access.Bases(), defaultPermit)
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = p.newAccess(ctx, bases, scoping, mode)
+		access = p.newAccess(ctx, bases, "", scoping, mode)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)

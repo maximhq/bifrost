@@ -151,6 +151,7 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/baseten",
                   "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
@@ -163,6 +164,8 @@
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/kimchi",
+                  "providers/supported-providers/machgen",
                   "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
@@ -178,6 +181,7 @@
                   "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/soniox",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
@@ -287,6 +291,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/routers",
               "features/complexity-router",
               "features/warp",
               "features/compat-plugin",
@@ -589,6 +594,13 @@
                 "icon": "c",
                 "pages": [
                   "integrations/cohere-sdk/overview"
+                ]
+              },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
                 ]
               },
               "integrations/litellm-sdk",
@@ -1454,7 +1466,9 @@
                 "pages": [
                   "GET /api/logs",
                   "DELETE /api/logs",
+                  "GET /api/logs/search",
                   "GET /api/logs/{id}",
+                  "GET /api/logs/{id}/trace",
                   "GET /api/logs/sessions/{session_id}",
                   "GET /api/logs/sessions/{session_id}/summary",
                   "GET /api/logs/stats",
@@ -1702,10 +1716,7 @@
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
                   "GET /api/governance/users/me/vk-creation-policy",
-                  "PUT /api/governance/users/{user_id}/role",
-                  "POST /api/governance/users/{user_id}/governance",
-                  "PUT /api/governance/users/{user_id}/governance",
-                  "DELETE /api/governance/users/{user_id}/governance"
+                  "PUT /api/governance/users/{user_id}/role"
                 ]
               },
               {
@@ -1855,7 +1866,25 @@
                 ]
               },
               {
-                "group": "Complexity Analyzer",
+                "group": "Routers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers",
+                  "POST /api/routing/model-routers",
+                  "GET /api/routing/model-routers/defaults",
+                  "GET /api/routing/model-routers/{router_id}",
+                  "PUT /api/routing/model-routers/{router_id}",
+                  "DELETE /api/routing/model-routers/{router_id}",
+                  "POST /api/routing/model-routers/{router_id}/reset",
+                  "PUT /api/routing/model-routers/{router_id}/targets",
+                  "PUT /api/routing/model-routers/{router_id}/routing",
+                  "GET /api/routing/model-routers/{router_id}/status",
+                  "POST /api/routing/model-routers/{router_id}/status/retry",
+                  "POST /api/routing/model-routers/{router_id}/classify"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
@@ -2497,6 +2526,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.49",
               "changelogs/helm-v2.1.48",
               "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.46",

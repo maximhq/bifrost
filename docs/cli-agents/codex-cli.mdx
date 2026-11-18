@@ -63,13 +63,29 @@ long-running Codex session reaches token expiry, exit and relaunch it through
 Bifrost so the CLI can refresh the Enterprise session first.
 </Warning>
 
+## Persist a virtual key for direct Codex launches
+
+```bash
+bifrost configure codex --model openai/gpt-5
+codex
+# Restore the original configuration when finished:
+bifrost unconfigure codex
+```
+
+This writes the current context's Bifrost virtual key as `experimental_bearer_token`
+on the `bifrost` provider in `$CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`). It preserves your OpenAI/ChatGPT login in `auth.json`.
+A virtual key is required; Enterprise SSO tokens are not persisted. See
+[Persistent coding-agent configuration](/quickstart/cli/coding-agents#persist-configuration-for-direct-use).
+
 ## Configure Codex manually with a virtual key
 
-<Warning>
-Codex prefers an existing OpenAI OAuth session over custom API credentials. Run
-`/logout` before using a manually configured Bifrost provider. This is not
-required for `bifrost run codex`, which uses an isolated temporary home.
-</Warning>
+<Note>
+An existing ChatGPT or OpenAI login does not need `/logout`. With
+`requires_openai_auth = false`, Codex authenticates the `bifrost` provider with
+its own key (`env_key` here, or `experimental_bearer_token` when written by
+`bifrost configure codex`) and leaves the login in `auth.json` for other providers.
+</Note>
 
 Export the virtual key in the same terminal used to start Codex:
 
@@ -129,7 +145,7 @@ name = "Bifrost"
 base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
 wire_api = "responses"
 requires_openai_auth = true
-supports_websockets = false
+supports_websockets = true
 env_http_headers = { "x-bf-vk" = "BIFROST_VIRTUAL_KEY" }
 ```
 
@@ -143,8 +159,20 @@ codex
 ```
 
 Bifrost forwards two routes under this base URL: `GET /models` for the Codex
-model picker and `POST /responses` for each turn. Bifrost refuses every other
-path and method.
+model picker and `/responses` for each turn. Bifrost refuses every other path
+and method.
+
+With `supports_websockets = true`, Codex opens one WebSocket to `/responses` per
+session and sends each turn over it, so later turns carry only the new input.
+Bifrost relays that socket to ChatGPT frame by frame and runs every turn
+through the virtual key's checks, logging and billing, the same way it does for a
+turn sent over HTTP. If Bifrost refuses the upgrade, for example because the
+request carries no ChatGPT token, Codex switches to HTTP for the rest of the
+session on its own. Set `supports_websockets = false` to always use HTTP.
+
+Bifrost closes a socket that has no response in progress and no traffic for 15
+minutes, and Codex opens a new one for its next turn. Each caller can hold up
+to 32 of these sockets at once.
 
 <Note>
 Model names are the ones your ChatGPT plan offers, such as `gpt-5.5`, without
@@ -155,9 +183,11 @@ fallbacks, and non-OpenAI models do not apply on this path. Use the
 
 The virtual key's governance still applies. Bifrost checks each turn's model
 against the key's allowed models, and budgets and rate limits count the usage
-ChatGPT reports. The model list request names no model, so a key that allows
-only some OpenAI models can still load the picker. Picking a model the key does
-not allow fails on the first turn.
+ChatGPT reports. The model list Codex fetches for its `/model` picker is
+trimmed to the OpenAI models the key allows, so a key limited to `gpt-5.5`
+shows only `gpt-5.5`. Codex caches that list, so a change to the key's allowed
+models reaches the picker on the next refresh. Without a Bifrost credential the
+list comes back as ChatGPT sent it.
 
 The ChatGPT token stands in for a Bifrost provider key, so no OpenAI key is
 picked for these requests. Provider-key limits, key weights, and the key column
@@ -201,7 +231,7 @@ name = "Bifrost"
 base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
 wire_api = "responses"
 requires_openai_auth = true
-supports_websockets = false
+supports_websockets = true
 
 [model_providers.bifrost.gateway_oauth]
 authorization_url = "https://your-org.okta.com/oauth2/default/v1/authorize"

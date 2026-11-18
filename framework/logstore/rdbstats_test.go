@@ -263,6 +263,36 @@ func TestListAgentLogHistoryFiltersWithoutSelectingPayloads(t *testing.T) {
 
 func ptrTime(value time.Time) *time.Time { return &value }
 
+// TestListAgentLogHistoryFiltersByCallerCorrelationID verifies that a caller's task finds the operations it delegated,
+// and that the list projection returns the link the trace tree nests on.
+func TestListAgentLogHistoryFiltersByCallerCorrelationID(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AgentLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	parentTask, childTask, contextID, caller := "task-parent", "task-child", "context-1", "task-parent"
+	rows := []*AgentLog{
+		{ID: "parent", Timestamp: now, RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "revops-copilot", RequestID: "request-parent", TaskID: &parentTask, ContextID: &contextID},
+		{ID: "child", Timestamp: now.Add(time.Second), RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "support-analyst", RequestID: "request-child", TaskID: &childTask, ContextID: &contextID, CallerCorrelationID: &caller},
+		{ID: "sibling-context", Timestamp: now.Add(2 * time.Second), RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "publisher", RequestID: "request-other", ContextID: &contextID},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, rows)))
+
+	result, err := store.ListAgentLogHistory(ctx, AgentLogHistoryFilter{CallerCorrelationID: parentTask}, PaginationOptions{Limit: 10, Order: "desc"})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	require.Equal(t, "child", result.Logs[0].ID)
+	require.NotNil(t, result.Logs[0].CallerCorrelationID)
+	require.Equal(t, parentTask, *result.Logs[0].CallerCorrelationID)
+
+	detail, err := store.FindAgentLog(ctx, "child")
+	require.NoError(t, err)
+	require.NotNil(t, detail.CallerCorrelationID)
+	require.Equal(t, parentTask, *detail.CallerCorrelationID)
+}
+
 // TestAgentLogLatencyBreakdownRoundTrip verifies that the upstream/overhead
 // latency columns and the JSON overhead breakdown survive persistence
 // (BeforeCreate/AfterFind) and appear in both the list projection and the

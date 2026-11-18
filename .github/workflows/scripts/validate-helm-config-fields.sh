@@ -186,6 +186,7 @@ bifrost:
     mcpCodeModeBindingLevel: "server"
     mcpToolSyncInterval: 60
     hideDeletedVirtualKeysInFilters: true
+    mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json"
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -218,6 +219,7 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
+assert_field_value 'client.mcp_client_metadata_url' '.client.mcp_client_metadata_url' '"https://public.example.com/bifrost/client.json"'
 
 ###############################################################################
 # 1b. Server Config
@@ -791,6 +793,7 @@ bifrost:
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
+        serverTypeOnSlug: "disabled"
         toolSyncInterval: "5m"
         maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
@@ -879,6 +882,7 @@ assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
+assert_field_value 'mcp client[0] server_type_on_slug' '.mcp.client_configs.[0].server_type_on_slug' '"disabled"'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
 assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
@@ -2267,6 +2271,180 @@ for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reason
     report_result "warp {$bad} is rejected" 0
   else
     report_result "warp {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# 2.1.49 config.schema.json sync: usage estimation tokenizers, datasheet overrides,
+# Baseten (alias deployment_url, semantic cache provider)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.49 config.schema.json sync${NC}"
+
+cat > "$TMPDIR/values-2149.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    usageEstimationTokenizers: ["anthropic", "llama3"]
+  providers:
+    baseten:
+      keys:
+        - name: "baseten-key"
+          value: "env.BASETEN_API_KEY"
+          aliases:
+            my-llama:
+              model_id: "not-required"
+              deployment_url: "https://model-abc.api.baseten.co/environments/production/sync/v1"
+  datasheetOverrides:
+    - provider: "openai"
+      model: "gpt-4o"
+      mode: "chat"
+      pricing_patch:
+        input_cost_per_token: 0.0000022
+        max_output_tokens: null
+      params_patch:
+        supports_reasoning: false
+    - provider: "openai"
+      model: "ft:gpt-4o-mini:acme:support"
+      mode: "chat"
+      is_custom: true
+VALS
+render_config "$TMPDIR/values-2149.yaml"
+assert_field_value 'client.usage_estimation_tokenizers' '.client.usage_estimation_tokenizers' '["anthropic", "llama3"]'
+assert_field_value 'providers.baseten alias deployment_url' '.providers.baseten.keys.[0].aliases.my-llama.deployment_url' '"https://model-abc.api.baseten.co/environments/production/sync/v1"'
+assert_field_value 'datasheet_overrides[0].pricing_patch (null kept for merge patch)' '.datasheet_overrides.[0].pricing_patch' '{"input_cost_per_token": 2.2e-06, "max_output_tokens": None}'
+assert_field_value 'datasheet_overrides[0].params_patch' '.datasheet_overrides.[0].params_patch' '{"supports_reasoning": False}'
+assert_field_value 'datasheet_overrides[1].is_custom' '.datasheet_overrides.[1].is_custom' 'true'
+
+# An explicit [] must render: with config.json as the source of truth it removes stored
+# overrides. Omitted, the key stays out of config.json and stored overrides are left alone.
+cat > "$TMPDIR/values-2149-empty.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  datasheetOverrides: []
+VALS
+render_config "$TMPDIR/values-2149-empty.yaml"
+assert_field_value 'datasheet_overrides [] kept' '.datasheet_overrides' '[]'
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; c = json.load(open('$TMPDIR/config.json')); sys.exit(0 if 'datasheet_overrides' not in c and 'usage_estimation_tokenizers' not in c.get('client', {}) else 1)"; then
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 0
+else
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 1
+fi
+
+if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set bifrost.plugins.semanticCache.enabled=true \
+     --set bifrost.plugins.semanticCache.config.provider=baseten > "$TMPDIR/render-err.txt" 2>&1; then
+  report_result 'semanticCache provider baseten is accepted' 0
+else
+  report_result 'semanticCache provider baseten is accepted' 1
+  head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'bifrost.client.usageEstimationTokenizers=["gpt2"]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai"}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","is_custom":true}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","params_patch":{"provider":"y"}}]'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "{$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "values don't meet the specifications" "$TMPDIR/render-err.txt"; then
+    report_result "{$bad} is rejected" 0
+  else
+    report_result "{$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# Bifrost MCP and Warp management writes: client.bifrost_url,
+# client.bifrost_mcp_allow_writes, client.mcp_openapi_max_spec_mb,
+# framework.pricing.openapi_url, warp.management_writes
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 Bifrost MCP and Warp management writes${NC}"
+
+cat > "$TMPDIR/values-bifrost-mcp.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    bifrostUrl: "https://bifrost.example.com/bifrost"
+    bifrostMcpAllowWrites: true
+    mcpOpenapiMaxSpecMb: 64
+  framework:
+    pricing:
+      openapiUrl: "openapi.json"
+  warp:
+    managementWrites: ["create", "delete"]
+VALS
+render_config "$TMPDIR/values-bifrost-mcp.yaml"
+assert_field_value 'client.bifrost_url' '.client.bifrost_url' '"https://bifrost.example.com/bifrost"'
+assert_field_value 'client.bifrost_mcp_allow_writes' '.client.bifrost_mcp_allow_writes' 'true'
+assert_field_value 'client.mcp_openapi_max_spec_mb' '.client.mcp_openapi_max_spec_mb' '64'
+assert_field_value 'framework.pricing.openapi_url' '.framework.pricing.openapi_url' '"openapi.json"'
+assert_field_value 'warp.management_writes' '.warp.management_writes' '["create", "delete"]'
+
+# Explicit false, 0, [] and "" must reach config.json: the default writes switch is true,
+# 0 is the 32 MiB default, [] makes Warp reads only and "" picks the build's spec, while an
+# omitted key keeps the stored value. bifrostUrl also takes a secret reference.
+cat > "$TMPDIR/values-bifrost-mcp-zero.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    bifrostUrl:
+      type: "env"
+      env_var: "BIFROST_PUBLIC_URL"
+    bifrostMcpAllowWrites: false
+    mcpOpenapiMaxSpecMb: 0
+  framework:
+    pricing:
+      openapiUrl: ""
+  warp:
+    managementWrites: []
+VALS
+render_config "$TMPDIR/values-bifrost-mcp-zero.yaml"
+assert_field_value 'client.bifrost_url secret reference kept' '.client.bifrost_url' '{"env_var": "BIFROST_PUBLIC_URL", "type": "env"}'
+assert_field_value 'client.bifrost_mcp_allow_writes false kept' '.client.bifrost_mcp_allow_writes' 'false'
+assert_field_value 'client.mcp_openapi_max_spec_mb 0 kept' '.client.mcp_openapi_max_spec_mb' '0'
+assert_field_value 'framework.pricing.openapi_url "" kept' '.framework.pricing.openapi_url' '""'
+assert_field_value 'warp.management_writes [] kept' '.warp.management_writes' '[]'
+
+# Unset, none of the keys render, so values stored from the dashboard stay in force.
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "
+import json, sys
+c = json.load(open('$TMPDIR/config.json'))
+client = c.get('client', {})
+pricing = c.get('framework', {}).get('pricing', {})
+present = [k for k in ('bifrost_url', 'bifrost_mcp_allow_writes', 'mcp_openapi_max_spec_mb') if k in client]
+present += ['framework.pricing.openapi_url'] if 'openapi_url' in pricing else []
+present += ['warp.management_writes'] if 'management_writes' in c.get('warp', {}) else []
+print(', '.join(present))
+sys.exit(1 if present else 0)
+" > "$TMPDIR/present.txt"; then
+  report_result 'Bifrost MCP and management writes keys omitted when unset' 0
+else
+  report_result 'Bifrost MCP and management writes keys omitted when unset' 1
+  echo -e "${YELLOW}    rendered without being set: $(cat "$TMPDIR/present.txt")${NC}"
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'bifrost.warp.managementWrites=["drop"]' \
+           'bifrost.client.mcpOpenapiMaxSpecMb=300'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "{$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "values don't meet the specifications" "$TMPDIR/render-err.txt"; then
+    report_result "{$bad} is rejected" 0
+  else
+    report_result "{$bad} is rejected" 1
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

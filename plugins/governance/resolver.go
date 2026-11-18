@@ -349,5 +349,10 @@ func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog,
 			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
 		}
 	}
-	return grant.NewAccess(access.Bases(), access.Scoping(), grant.CompositionMode(access.Mode()), matcher)
+	// A copy of the access itself keeps every permit and level; Bases is only the granting level, so
+	// rebuilding from it would drop the levels that cap the access.
+	if full, ok := access.(*grant.Access); ok {
+		return full.WithModelMatcher(matcher)
+	}
+	return grant.NewAccess(access.Bases(), grant.CompositionMode(access.LevelMode()), access.Scoping(), grant.CompositionMode(access.Mode()), matcher)
 }

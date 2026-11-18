@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -470,6 +471,52 @@ func TestWarpConversationUsageTotals(t *testing.T) {
 	require.Empty(t, empty)
 }
 
+// A question swap is a compare-and-swap on one message, scoped to the owner's
+// thread: it writes only while the stored value is still the expected one, so a
+// confirmation card is claimed once.
+func TestWarpConversationSwapQuestion(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	seedWarpConversation(t, store, "u", "c1", "thread", time.Now().UTC())
+	require.NoError(t, store.db.Model(&WarpMessage{}).Where("id = ?", "c1-a").Update("question_json", `{"pending":{"token":"t"}}`).Error)
+
+	swapped, err := store.SwapWarpQuestion(ctx, "other", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "another owner's thread is not touched")
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"stale":true}`, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "a stale expected value does not match")
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	thread, err := store.GetWarpConversation(ctx, "u", "c1")
+	require.NoError(t, err)
+	require.Equal(t, `{}`, thread.Messages[1].QuestionJSON)
+}
+
+// A card a later turn has overtaken is not claimed, even though its stored
+// question still matches: only the thread's newest message can be confirmed.
+func TestWarpConversationSwapQuestionRefusesOvertakenCard(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	at := time.Now().UTC()
+	seedWarpConversation(t, store, "u", "c1", "thread", at)
+	pending := `{"pending":{"token":"t"}}`
+	require.NoError(t, store.db.Model(&WarpMessage{}).Where("id = ?", "c1-a").Update("question_json", pending).Error)
+	require.NoError(t, store.AppendWarpMessages(ctx, "u", "c1", []WarpMessage{{ID: "c1-later", Role: "user", Content: "never mind", CreatedAt: at.Add(time.Second)}}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", pending, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "an overtaken card is not claimed")
+	thread, err := store.GetWarpConversation(ctx, "u", "c1")
+	require.NoError(t, err)
+	require.Equal(t, pending, thread.Messages[1].QuestionJSON)
+}
+
 // The failed-first-append cleanup must never take a thread that has messages,
 // whoever wrote them, and must say whether it deleted anything.
 func TestWarpConversationDeleteIfEmpty(t *testing.T) {
@@ -496,4 +543,69 @@ func TestWarpConversationDeleteIfEmpty(t *testing.T) {
 	require.True(t, deleted)
 	_, err = store.GetWarpConversation(ctx, "u", "c-empty")
 	require.ErrorIs(t, err, ErrWarpConversationNotFound)
+}
+
+// On SQLite, a transaction that reads and then writes cannot wait for another
+// writer: the busy timeout does not cover upgrading its read to a write, so it
+// fails at once with "database is locked". A Confirm's claim and a turn's append
+// both read first, so under concurrent writes a claim refused a Confirm and an
+// append dropped a turn from history. They are retried whole until the lock is
+// free, so concurrent claims and appends all go through, and each card is still
+// claimed exactly once.
+func TestWarpWritesWaitOutSQLiteWriteLocks(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	const threads = 12
+	at := time.Now().UTC()
+	pending := `{"pending":{"token":"t"}}`
+	for i := range threads {
+		id := fmt.Sprintf("c%d", i)
+		seedWarpConversation(t, store, "u", id, "thread", at)
+		require.NoError(t, store.db.Model(&WarpMessage{}).Where("id = ?", id+"-a").Update("question_json", pending).Error)
+	}
+
+	var wg sync.WaitGroup
+	var claimedMu sync.Mutex
+	claimed := map[string]int{} // successful claims per card
+	errs := make(chan error, threads*8)
+	for i := range threads {
+		id := fmt.Sprintf("c%d", i)
+		// Two claims race for each card while other threads append.
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				swapped, err := store.SwapWarpQuestion(ctx, "u", id, id+"-a", pending, `{}`)
+				if err != nil {
+					errs <- fmt.Errorf("claim %s: %w", id, err)
+				}
+				if swapped {
+					claimedMu.Lock()
+					claimed[id]++
+					claimedMu.Unlock()
+				}
+			}()
+		}
+		other := fmt.Sprintf("c%d", (i+1)%threads)
+		for n := range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				msg := WarpMessage{ID: fmt.Sprintf("%s-x%d-%d", other, i, n), Role: "user", Content: "more", CreatedAt: at.Add(time.Second)}
+				if err := store.AppendWarpMessages(ctx, "u", other, []WarpMessage{msg}); err != nil {
+					errs <- fmt.Errorf("append %s: %w", other, err)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	// Each card is claimed at most once. Not every card has to be claimed: an
+	// append that lands first makes its card stale, and a stale card is refused.
+	for id, n := range claimed {
+		require.LessOrEqual(t, n, 1, "card %s was claimed %d times", id, n)
+	}
 }

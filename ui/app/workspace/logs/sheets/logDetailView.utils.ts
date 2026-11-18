@@ -1,5 +1,5 @@
 import { isReservedMetadataKey } from "@/lib/registries/logs";
-import type { LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
+import type { GuardrailJudgeCall, LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -292,4 +292,25 @@ export function fallbackChainOutcome(chain: LogEntry[]): FallbackChainOutcome {
 	const last = chain[chain.length - 1];
 	if (!last || last.status === "processing") return "in_progress";
 	return last.status === "success" ? "succeeded" : "failed";
+}
+
+// Reports whether a guardrail call went to an external guardrail service, which reports vendor
+// usage units instead of the tokens an LLM judge is priced from.
+export function isExternalGuardrailCall(call: GuardrailJudgeCall): call is GuardrailJudgeCall & { usage_units: Record<string, number> } {
+	return call.usage_units != null && Object.keys(call.usage_units).length > 0;
+}
+
+// Sums the estimated cost of external guardrail service calls. The backend never adds it to the
+// stored guardrail cost, the total, or budgets, so the detail view adds it for display only. LLM
+// judge calls are skipped: their cost is already in the stored guardrail cost.
+export function getExternalGuardrailCost(calls: GuardrailJudgeCall[] | undefined): number {
+	return (calls ?? []).reduce((sum, call) => (isExternalGuardrailCall(call) ? sum + (call.estimated_cost ?? 0) : sum), 0);
+}
+
+// Lists vendor usage units as "name: count" pairs, sorted by name so the order is stable.
+export function formatGuardrailUsageUnits(units: Record<string, number>): string {
+	return Object.entries(units)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([name, count]) => `${name}: ${count}`)
+		.join(" · ");
 }

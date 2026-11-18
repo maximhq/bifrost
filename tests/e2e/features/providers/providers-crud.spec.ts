@@ -365,6 +365,137 @@ test.describe("Providers", () => {
       expect((await savedAlias()).vertex_endpoint).toBeUndefined();
     });
 
+    test("should route a Baseten alias to a dedicated deployment URL and back to Model APIs", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("baseten"))) {
+        await providersPage.addKnownProviderFromDropdown("baseten");
+        createdProviders.push("baseten");
+      }
+      const keyName = `Baseten-Deployment-${Date.now()}`;
+      createdKeys.push({ provider: "baseten", keyName });
+      const created = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-baseten-key",
+          models: ["*"],
+          weight: 1,
+          aliases: { "dedicated-glm": { model_id: "not-required", model_name: "zai-org/GLM-5.3" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("baseten");
+      const deploymentUrl = page.getByTestId("deployment-baseten-deployment-url");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-dedicated-glm").click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedAlias = async () => {
+        const response = await page.request.get("/api/providers/baseten/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases["dedicated-glm"];
+      };
+
+      await edit();
+      await deploymentUrl.fill("http://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toBeVisible();
+      await providersPage.keySaveBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      expect((await savedAlias()).deployment_url, "the http:// deployment URL must not be saved").toBeUndefined();
+
+      await deploymentUrl.fill("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toHaveCount(0);
+      await save();
+      let alias = await savedAlias();
+      expect(alias.model_id).toBe("not-required");
+      expect(alias.deployment_url.value).toBe("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+
+      await edit();
+      await expect(deploymentUrl).toHaveValue("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await deploymentUrl.fill("");
+      await save();
+      alias = await savedAlias();
+      expect(alias.deployment_url).toBeUndefined();
+    });
+
+    test("should flag a pattern deployment whose model ID names a missing capture group", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("baseten"))) {
+        await providersPage.addKnownProviderFromDropdown("baseten");
+        createdProviders.push("baseten");
+      }
+      const keyName = `Baseten-Pattern-${Date.now()}`;
+      createdKeys.push({ provider: "baseten", keyName });
+      const pattern = "regex:(claude-.*)";
+      const created = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-baseten-key",
+          models: ["regex:claude-.*"],
+          weight: 1,
+          aliases: { [pattern]: { model_id: "global.anthropic.$1" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      const rejected = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: `${keyName}-bad`,
+          value: "e2e-baseten-key",
+          models: ["*"],
+          weight: 1,
+          aliases: { [pattern]: { model_id: "global.anthropic.$2" } },
+        },
+      });
+      expect(rejected.status(), await rejected.text()).toBe(400);
+      const savedAliases = async () => {
+        const response = await page.request.get("/api/providers/baseten/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases;
+      };
+
+      await page.reload();
+      await providersPage.selectProvider("baseten");
+      await providersPage.dismissToasts();
+      await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+      await page.getByRole("menuitem", { name: /Edit/i }).click();
+      await expect(providersPage.keyForm).toBeVisible();
+      await expect(page.getByTestId(`deployment-pattern-${pattern}`)).toBeVisible();
+      await expect(page.getByTestId(`deployment-pattern-error-${pattern}`)).toHaveCount(0);
+
+      // Without a capture group the saved model ID's $1 points at nothing.
+      const groupless = "regex:claude-.*";
+      await page.getByTestId(`deployment-name-${pattern}`).fill(groupless);
+      await expect(page.getByTestId(`deployment-pattern-error-${groupless}`)).toBeVisible();
+      await providersPage.keySaveBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      expect(await savedAliases(), "the groupless pattern must not be saved").toHaveProperty([pattern]);
+
+      // A different valid pattern keeps the form dirty; restoring the saved one would disable Save.
+      const corrected = "regex:(claude-opus-.*)";
+      await page.getByTestId(`deployment-name-${groupless}`).fill(corrected);
+      await expect(page.getByTestId(`deployment-pattern-error-${corrected}`)).toHaveCount(0);
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible();
+      const saved = await savedAliases();
+      expect(saved, "the replaced pattern must be gone").not.toHaveProperty([pattern]);
+      // An alias with only model_id comes back in the legacy string shape.
+      const correctedAlias: string | { model_id: string } = saved[corrected];
+      expect(typeof correctedAlias === "string" ? correctedAlias : correctedAlias.model_id).toBe("global.anthropic.$1");
+    });
+
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
       if (!(await providersPage.providerExists("azure"))) {
         await providersPage.addKnownProviderFromDropdown("azure");
@@ -487,6 +618,40 @@ test.describe("Providers", () => {
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
     });
+
+    test("should add MachGen from the provider list and save a key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("machgen"))) {
+        await providersPage.addKnownProviderFromDropdown("machgen");
+        createdProviders.push("machgen");
+      }
+      await expect(providersPage.getProviderItem("machgen")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("machgen");
+
+      const keyData = createProviderKeyData({
+        name: `MachGen-Key-${Date.now()}`,
+        value: "MGA_e2e-machgen-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "machgen", keyName: keyData.name });
+
+      // Model discovery runs on save and fails against a fake key; the key must still save.
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/machgen/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; models?: string[] }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.models).toEqual(["*"]);
+    });
   });
 
   test.describe("Custom Providers", () => {
@@ -605,6 +770,27 @@ test.describe("Providers", () => {
       await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
       // A custom provider stays off until it is given a policy.
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
+    });
+
+    test("should show the elevenlabs passthrough route on the built-in ElevenLabs provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      if (!(await providersPage.providerExists("elevenlabs"))) {
+        await providersPage.addKnownProviderFromDropdown("elevenlabs");
+        createdProviders.push("elevenlabs");
+      }
+      await expect(providersPage.getProviderItem("elevenlabs")).toBeVisible({ timeout: 15000 });
+
+      // Reload so the sheet opens on the saved provider, not on the list that was refreshing after the add.
+      await providersPage.goto();
+      await providersPage.selectProvider("elevenlabs");
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/elevenlabs_passthrough/");
+      await expect(hint).not.toContainText("x-model-provider");
+      // A built-in provider forwards every route until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("All routes");
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
@@ -976,7 +1162,7 @@ test.describe("Providers", () => {
 
       // Change only the weight, then save without touching the auth method.
       await providersPage.openKeyEditor(keyName);
-      await page.getByLabel("Weight").fill("2");
+      await page.getByLabel("Weight").fill("0.5");
       await providersPage.keySaveBtn.click();
       await providersPage.waitForSuccessToast();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
@@ -986,7 +1172,7 @@ test.describe("Providers", () => {
       const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
       const saved = body.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
-      expect(saved?.weight).toBe(2);
+      expect(saved?.weight).toBe(0.5);
       expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
     });
 
