@@ -3892,6 +3892,30 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(resp, nil))
 }
 
+// A read or cancel of a stored response is a status read too: every GET of a finished Gemini
+// Interaction repeats the run's full usage. Only the create is priced; job accounting settles a
+// background run once, so a retrieve, a replayed stream and a cancel price at zero.
+func TestCalculateCost_ResponsesLifecycleReadsAreNotBilled(t *testing.T) {
+	model := chatPricing(0.000002, 0.000012)
+	model.Provider, model.Model = "gemini", "gemini-3.8-flash"
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized(model.Model, model.Provider, model.Mode): model,
+	})
+	priced := func(requestType schemas.RequestType) float64 {
+		return store.CalculateCost(&schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: requestType,
+				RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.8-flash"),
+			},
+		}}, nil)
+	}
+	assert.Greater(t, priced(schemas.ResponsesRequest), 0.0, "the create is billed")
+	assert.Zero(t, priced(schemas.ResponsesRetrieveRequest))
+	assert.Zero(t, priced(schemas.ResponsesRetrieveStreamRequest))
+	assert.Zero(t, priced(schemas.ResponsesCancelRequest))
+}
+
 // A Gemini Interactions poll names no model on the request: the agent that ran comes back on the
 // response as ServedModel, and the run is priced at that agent's rates. Without it the record has
 // no model to look up and is left unpriced.

@@ -15,18 +15,18 @@ import (
 // request that reported it ended.
 const interactionFirstPoll = time.Minute
 
-// handleInteractionJob records and, once finished, settles the stored run a passthrough response
-// reports on (a Gemini Interaction). The request row itself is never billed for the run: every read
-// of a finished run repeats its full usage, so the provider reports that usage on ProviderJob rather
-// than on PassthroughUsage, and the run is billed once, as its own row under the create.
+// handleInteractionJob records and, once finished, settles the stored run a passthrough or typed
+// Responses result reports on (a Gemini Interaction). The request row itself is never billed for
+// the run: every read of a finished run repeats its full usage, so the provider reports that usage
+// on ProviderJob rather than on the request's own usage, and the run is billed once, as its own row
+// under the create.
 //
-// Callers check result.PassthroughResponse.ProviderJob first, so a request that reports no run pays
-// only that nil check.
+// Callers check ProviderJob first, so a request that reports no run pays only that nil check.
 func (p *LoggerPlugin) handleInteractionJob(ctx *schemas.BifrostContext, entry *logstore.Log, result *schemas.BifrostResponse) {
-	if entry == nil || result == nil || result.PassthroughResponse == nil || p.batchStore == nil {
+	if entry == nil || p.batchStore == nil {
 		return
 	}
-	run := result.PassthroughResponse.ProviderJob
+	run, servedModel := interactionJobOf(result)
 	if run == nil || run.ID == "" {
 		return
 	}
@@ -34,8 +34,26 @@ func (p *LoggerPlugin) handleInteractionJob(ctx *schemas.BifrostContext, entry *
 		return
 	}
 	if run.Terminal && p.pricingManager != nil && p.store != nil {
-		p.accountInteractionJob(ctx, entry, result)
+		p.accountInteractionJob(ctx, entry, run, servedModel)
 	}
+}
+
+// interactionJobOf returns the stored run a result reports on and the model or agent that ran it.
+func interactionJobOf(result *schemas.BifrostResponse) (*schemas.BifrostPassthroughJob, string) {
+	if result == nil {
+		return nil, ""
+	}
+	if result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil {
+		return result.PassthroughResponse.ProviderJob, result.PassthroughResponse.ServedModel
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.ProviderJob != nil {
+		return result.ResponsesResponse.ProviderJob, result.ResponsesResponse.Model
+	}
+	// A streamed typed create hands a still-running background run off on its final chunk.
+	if stream := result.ResponsesStreamResponse; stream != nil && stream.Response != nil && stream.Response.ProviderJob != nil {
+		return stream.Response.ProviderJob, stream.Response.Model
+	}
+	return nil, ""
 }
 
 // recordInteractionJob persists the coordination row for a run, and reports whether one exists.
@@ -105,8 +123,7 @@ func (p *LoggerPlugin) recordInteractionJob(entry *logstore.Log, run *schemas.Bi
 // accountInteractionJob settles a finished run from the read that found it finished, rather than
 // leaving the sweeper to read it all over again. Whichever read gets here first settles it; every
 // later read takes the engine's mirror path and writes nothing.
-func (p *LoggerPlugin) accountInteractionJob(ctx *schemas.BifrostContext, entry *logstore.Log, result *schemas.BifrostResponse) {
-	run := result.PassthroughResponse.ProviderJob
+func (p *LoggerPlugin) accountInteractionJob(ctx *schemas.BifrostContext, entry *logstore.Log, run *schemas.BifrostPassthroughJob, servedModel string) {
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 
 	// Bounded for the same reason as video settlement: p.ctx has no deadline, and a stalled store
@@ -127,7 +144,7 @@ func (p *LoggerPlugin) accountInteractionJob(ctx *schemas.BifrostContext, entry 
 		UsageReporter: usageReporter,
 		ClaimedBy:     p.batchRunnerID("logging"),
 		Scopes:        pricingScopes,
-		Payload:       jobaccounting.InteractionPayload{Run: run, Model: result.PassthroughResponse.ServedModel},
+		Payload:       jobaccounting.InteractionPayload{Run: run, Model: servedModel},
 	})
 	if err != nil {
 		p.logger.Warn("failed to account interaction for provider=%s interaction_id=%s: %v", entry.Provider, run.ID, err)
