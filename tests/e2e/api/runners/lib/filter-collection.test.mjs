@@ -130,4 +130,55 @@ test("a declared provider puts an upload and its delete only in that provider's 
   assert.deepEqual(declaredPartitions.openai, ["upload a file to the openai route"], "the openai partition must not claim the azure pair");
 });
 
+// The Interactions folders mix three kinds of rows: native Gemini creates on /genai, translated creates
+// whose raw model names openai/, and a Gemini turn sent through the OpenAI SDK route. Each must land in
+// the partition of the provider it reaches, and a filtered run must keep the cleanup step that deletes
+// what its producer stored, unless the caller excluded cleanup outright.
+const interactionsScratch = mkdtempSync(join(tmpdir(), "filter-collection-interactions-"));
+const interactions = {};
+try {
+  const augmented = join(interactionsScratch, "augmented.json");
+  execFileSync("node", [AUGMENT, "--source", SOURCE, "--out", augmented], { stdio: "pipe" });
+  const run = (label, args) => {
+    const out = join(interactionsScratch, `${label}.json`);
+    execFileSync("node", [FILTER, "--source", augmented, "--out", out, ...args], { stdio: "pipe" });
+    interactions[label] = rowNames(JSON.parse(readFileSync(out, "utf8"))).map((n) => n.split(" / ")[1].split(" ")[0]);
+  };
+  run("gemini", ["--provider", "gemini"]);
+  run("openai", ["--provider", "openai"]);
+  run("cancel", ["--feature", "384.10 gemini"]);
+  run("cancelNoCleanup", ["--feature", "384.10 gemini", "--exclude-feature-any", "interactions cleanup:"]);
+} finally {
+  rmSync(interactionsScratch, { recursive: true, force: true });
+}
+
+test("translated Interactions creates run only in the openai partition", () => {
+  for (const id of ["384.13", "384.14", "384.15", "384.21"]) {
+    assert.ok(interactions.openai.includes(id), `${id} missing from the openai partition`);
+    assert.ok(!interactions.gemini.includes(id), `${id} leaked into the gemini partition`);
+  }
+});
+
+test("a Gemini turn on the OpenAI SDK route runs only in the gemini partition", () => {
+  assert.ok(interactions.gemini.includes("382.16"), "382.16 missing from the gemini partition");
+  assert.ok(!interactions.openai.includes("382.16"), "382.16 leaked into the openai partition");
+});
+
+test("a filtered Interactions run keeps the cleanup of what its producer stored", () => {
+  assert.ok(interactions.cancel.includes("384.9"), "the producer is kept");
+  assert.ok(interactions.cancel.includes("384.19"), "the cleanup that deletes the producer's run is kept");
+});
+
+test("an excluded cleanup step is not added back", () => {
+  assert.ok(interactions.cancelNoCleanup.includes("384.10"), "the selected case is kept");
+  assert.ok(!interactions.cancelNoCleanup.includes("384.19"), "--exclude-feature-any must drop the cleanup step");
+});
+
+test("Gemini-first refusals with an openai fallback stay in the gemini partition", () => {
+  for (const id of ["384.20", "384.22"]) {
+    assert.ok(interactions.gemini.includes(id), `${id} missing from gemini`);
+    assert.ok(!interactions.openai.includes(id), `${id} leaked into openai`);
+  }
+});
+
 console.log(`${passed} passed`);

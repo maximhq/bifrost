@@ -298,6 +298,31 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
   return aliases.some((alias) => haystack.includes(alias));
 };
 
+// sdkRouteProviderOf returns the provider a typed Interactions request on /genai, or a Responses
+// request on the OpenAI SDK route, names through a "<provider>/" prefix on its body's model or
+// agent, when the route's own family does not cover it. A typed Interactions request with no such
+// prefix returns the route's family (an array), so the caller keeps it out of every other partition.
+// Anything else returns undefined.
+// Scoped to the rows this rule was written for: the typed Interactions route, and Interactions rows
+// that reach Gemini through the OpenAI SDK's Responses route. Widening it re-partitions hundreds of
+// rows that other folders already rely on.
+const SDK_ROUTE_FAMILY = [
+  [/\/genai\/v1(beta1?)?\/(projects\/[^/]+\/locations\/[^/]+\/)?interactions/, ["gemini", "vertex"], false],
+  [/\/openai\/v1\/responses/, ["openai"], true],
+];
+const sdkRouteProviderOf = (item, ancestorNames) => {
+  const req = item.request || {};
+  const url = (typeof req.url === "string" ? req.url : req.url?.raw) || "";
+  const route = SDK_ROUTE_FAMILY.find(([re]) => re.test(url));
+  if (!route) return undefined;
+  if (route[2] && !(ancestorNames || []).some((n) => /interactions/i.test(n))) return undefined;
+  const m = (req.body?.raw || "").match(/"(?:model|agent)"\s*:\s*"([a-z_-]+)\//);
+  if (m && Object.hasOwn(PROVIDER_KEYWORDS, m[1]) && !route[1].includes(m[1])) return m[1];
+  // A typed Interactions row with no foreign prefix runs on the route's own family, whatever
+  // provider a fallback or the case name mentions.
+  return route[2] ? undefined : route[1];
+};
+
 // The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
 // and so must evaluate this predicate once per provider in the roster. Defaulting to the global
 // keeps every normal call site unchanged, and routing the collision rules through the parameter
@@ -309,6 +334,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // /openai/v1/files), and that keyword must not pull it into the other partition.
   const declared = declaredProviderOf(item);
   if (declared && Object.hasOwn(PROVIDER_KEYWORDS, declared)) return declared === provider;
+  // A request on a provider SDK route (/genai, /openai) whose body names its model or agent with
+  // another provider's prefix runs on that provider: the route only picks the wire shape. The
+  // route keyword must not pull it into the route's own partition, and the prefix decides.
+  const routed = sdkRouteProviderOf(item, ancestorNames);
+  if (typeof routed === "string") return routed === provider;
+  if (routed && !routed.includes(provider)) return false;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
@@ -576,6 +607,19 @@ const expandWithProducers = (selected, entries) => {
       queue.push(dep);
       pulled.push(`${item.name} <- ${variable} <- ${producer}`);
     }
+  }
+  // An "interactions cleanup" step whose every producer already runs is kept too, although it comes
+  // later: producers are pulled in for any consumer, so a filtered run creates the stored run and
+  // would otherwise never delete it. It is added alone, never expanded, so it brings in no other
+  // request. Scoped to the Interactions folders; other suites keep their own cleanup arrangements.
+  for (const { item, ancestors } of entries) {
+    if (keep.has(item) || !/interactions cleanup:/i.test(item.name || "")) continue;
+    // An explicit exclusion still wins: the cleanup is added for its producers, not re-selected.
+    if (itemIsExcluded(item, ancestors)) continue;
+    const deps = depsOf(item);
+    if (!deps.length || !deps.every(({ producerItem }) => producerItem && keep.has(producerItem))) continue;
+    keep.add(item);
+    pulled.push(`${item.name} (cleanup of ${deps.map((d) => d.variable).join(", ")})`);
   }
   if (pulled.length) {
     console.error(`[filter-collection] pulled in ${pulled.length} prerequisite request(s) for chained variables:`);
