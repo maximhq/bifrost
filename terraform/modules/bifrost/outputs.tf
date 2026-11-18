@@ -23,3 +23,16 @@ output "config_json" {
   value       = local.config_json
   sensitive   = true
 }
+
+# --- PostgreSQL ---
+
+output "postgresql_endpoint" {
+  description = "PostgreSQL endpoint (host:port). Null when create_postgresql is false."
+  value       = var.create_postgresql ? "${local.pg_host}:5432" : null
+}
+
+output "postgresql_password" {
+  description = "PostgreSQL master password. Null when create_postgresql is false."
+  value       = local.pg_password
+  sensitive   = true
+}
