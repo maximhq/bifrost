@@ -1,5 +1,8 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- $np := .Values.networkPolicy }}
+{{- if and $np.allowExternal $np.ingressFrom }}
+{{- fail "ERROR: networkPolicy.ingressFrom is set while networkPolicy.allowExternal is true, so it would be ignored and the Bifrost API port would accept every source. Set allowExternal to false to admit only ingressFrom, or remove ingressFrom." }}
+{{- end }}
 {{- $vs := .Values.vectorStore }}
 {{- /* Same conditions as the store Deployments: a policy exists only for a store the chart runs. */}}
 {{- $postgres := and (eq .Values.storage.mode "postgres") .Values.postgresql.enabled (not .Values.postgresql.external.enabled) }}

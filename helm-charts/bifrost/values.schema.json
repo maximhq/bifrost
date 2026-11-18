@@ -425,7 +425,7 @@
           "items": {
             "type": "object"
           },
-          "description": "NetworkPolicyPeers that can reach the Bifrost API port and the Redis exporter when allowExternal is false."
+          "description": "NetworkPolicyPeers that can reach the Bifrost API port and the Redis exporter when allowExternal is false. Must be empty while allowExternal is true; the chart fails otherwise."
         },
         "egress": {
           "type": "object",
@@ -449,9 +449,11 @@
               },
               "description": "NetworkPolicyPeers for those ports. Empty allows any destination."
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "volumes": {
       "type": "array"

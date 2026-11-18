@@ -1545,6 +1545,16 @@ check_workload "networkPolicy: allowExternal false with no ingressFrom admits no
   "$NP"'
 assert "ingress" not in nps["bifrost"]["spec"], "an API rule rendered: %r" % nps["bifrost"]["spec"].get("ingress")' \
   --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false
+expect_render_failure "networkPolicy: ingressFrom while allowExternal is true fails instead of being ignored" \
+  "networkPolicy.ingressFrom is set while networkPolicy.allowExternal is true" \
+  --set networkPolicy.enabled=true \
+  --set-json 'networkPolicy.ingressFrom=[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}}}]'
+expect_render_failure "networkPolicy: schema rejects an unknown key" \
+  "additional properties 'ingressFromm' not allowed" \
+  --set networkPolicy.enabled=true --set-json 'networkPolicy.ingressFromm=[]'
+expect_render_failure "networkPolicy: schema rejects an unknown egress key" \
+  "additional properties 'allowDNS' not allowed" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.allowDNS=true
 check_workload "networkPolicy: egress allows DNS, egress.ports and the bundled stores" \
   "$NP"'
 spec = nps["bifrost"]["spec"]

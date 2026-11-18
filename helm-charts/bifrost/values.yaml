@@ -273,7 +273,8 @@ podDisruptionBudget:
 networkPolicy:
   enabled: false
   allowExternal: true
-  # NetworkPolicyPeers that can reach the Bifrost API port when allowExternal is false, e.g.:
+  # NetworkPolicyPeers that can reach the Bifrost API port when allowExternal is false. Must be empty while
+  # allowExternal is true; the chart fails otherwise. E.g.:
   # - namespaceSelector:
   #     matchLabels:
   #       kubernetes.io/metadata.name: ingress-nginx
