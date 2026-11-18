@@ -593,3 +593,65 @@ func TestSupportsPerMessageOutputConfig_DatasheetFalseDisablesAnthropic(t *testi
 	assert.False(t, providerUtils.JSONFieldExists(out, "messages.1.output_config"), "body=%s", out)
 	assert.Equal(t, "medium", providerUtils.GetJSONField(out, "output_config.effort").String(), "top-level effort must survive")
 }
+
+// The Anthropic converter ignores the older supports_mid_conversation_system_messages key, which
+// production holds false so released gateways keep inlining: with it false on every row, this
+// build still takes the native form wherever DefaultSupportsMidConversationSystem says so,
+// including a Claude 5.x version the datasheet has not seen yet.
+func TestMidConversationSystemSupported_IgnoresOlderKey(t *testing.T) {
+	no := false
+	providerUtils.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsMidConversationSystem: &no}
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-5", true},
+		{schemas.Bedrock, "anthropic.claude-opus-5-20261001-v1:0", true},
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-6", true},
+		{schemas.Bedrock, "us-gov.anthropic.claude-sonnet-5-5", true},
+		{schemas.Vertex, "claude-opus-5-5@20261101", true},
+		{schemas.Vertex, "claude-fable-5-1", true},
+		{schemas.Azure, "claude-opus-5", true},
+		{schemas.BedrockMantle, "anthropic.claude-haiku-5-5", true},
+		{schemas.Anthropic, "claude-opus-5-5", true},
+		{schemas.Bedrock, "us.anthropic.claude-opus-6", false},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-5", false},
+		{schemas.Vertex, "claude-mythos-5", false},
+		{schemas.Bedrock, "anthropic.claude-opus-4-8", false},
+		{schemas.OpenRouter, "anthropic/claude-opus-5-5", false},
+	} {
+		assert.Equal(t, tc.want, midConversationSystemSupported(schemas.ResolveModelCaps(tc.provider, tc.model)), "%s/%s", tc.provider, tc.model)
+	}
+}
+
+// supports_native_mid_conversation_system wins over the default both ways: false turns the
+// native form off for a model the default enables, and true turns it on for a model the default
+// does not know yet (a new Claude generation needs no release).
+func TestMidConversationSystemSupported_NativeKeyWins(t *testing.T) {
+	no, yes := false, true
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		native   bool
+	}{
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-5", false},
+		{schemas.Anthropic, "claude-opus-5-5", false},
+		{schemas.Bedrock, "us.anthropic.claude-opus-6", true},
+		{schemas.Vertex, "claude-opus-6", true},
+	} {
+		native := &no
+		if tc.native {
+			native = &yes
+		}
+		providerUtils.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &no, SupportsNativeMidConversationSystem: native}
+		})
+		assert.Equal(t, tc.native, midConversationSystemSupported(schemas.ResolveModelCaps(tc.provider, tc.model)), "%s/%s native=%v", tc.provider, tc.model, tc.native)
+	}
+}
