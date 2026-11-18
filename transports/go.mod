@@ -16,18 +16,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v1.5.0
-	github.com/maximhq/bifrost/core v1.15.2
-	github.com/maximhq/bifrost/framework v1.12.2
-	github.com/maximhq/bifrost/plugins/compat v0.5.6
-	github.com/maximhq/bifrost/plugins/governance v1.12.2
-	github.com/maximhq/bifrost/plugins/logging v1.12.2
-	github.com/maximhq/bifrost/plugins/maxim v1.7.17
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.17
-	github.com/maximhq/bifrost/plugins/otel v1.6.7
-	github.com/maximhq/bifrost/plugins/prompts v1.1.17
-	github.com/maximhq/bifrost/plugins/routing v1.3.2
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.7
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.7
+	github.com/maximhq/bifrost/core v1.16.0
+	github.com/maximhq/bifrost/framework v1.13.0
+	github.com/maximhq/bifrost/plugins/compat v0.5.7
+	github.com/maximhq/bifrost/plugins/governance v1.12.3
+	github.com/maximhq/bifrost/plugins/logging v1.12.3
+	github.com/maximhq/bifrost/plugins/maxim v1.7.18
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.18
+	github.com/maximhq/bifrost/plugins/otel v1.6.8
+	github.com/maximhq/bifrost/plugins/prompts v1.1.18
+	github.com/maximhq/bifrost/plugins/routing v1.4.0
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.8
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.8
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -104,6 +104,7 @@ require (
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
@@ -159,7 +160,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.17 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.18 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -203,6 +204,7 @@ require (
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tiktoken-go/tokenizer v0.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
