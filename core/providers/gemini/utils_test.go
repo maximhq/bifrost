@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -201,6 +202,71 @@ func TestResolveChatAudioURLsCancelledContextIsNotBadRequest(t *testing.T) {
 	_, err := ResolveChatAudioURLs(ctx, chatAudioURLRequest("https://audio.example/sample.wav"))
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, providerUtils.IsInvalidRequestError(err), "a cancelled request is not the caller's bad input")
+}
+
+// A deadline or cancellation that interrupts an audio URL download must reach the client as a
+// timeout or cancellation, not as a 500 conversion fault, and the upstream must never be called.
+func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		newCtx    func() (context.Context, context.CancelFunc)
+		wantType  string
+		wantCode  *int
+		wantCause error
+	}{
+		{
+			name: "deadline",
+			newCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), time.Millisecond)
+			},
+			wantType:  schemas.RequestTimedOut,
+			wantCode:  schemas.Ptr(http.StatusGatewayTimeout),
+			wantCause: context.DeadlineExceeded,
+		},
+		{
+			name: "cancellation",
+			newCtx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				go func() {
+					time.Sleep(time.Millisecond)
+					cancel()
+				}()
+				return ctx, cancel
+			},
+			wantType:  schemas.RequestCancelled,
+			wantCause: context.Canceled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAudioFetch(t, func(ctx context.Context, _ string) (string, string, error) {
+				<-ctx.Done()
+				return "", "", ctx.Err()
+			})
+			var upstreamHits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHits.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			provider := NewGeminiProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			}, testNoopLogger{})
+			key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+
+			parent, cancel := tc.newCtx()
+			defer cancel()
+			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+			_, bErr := provider.ChatCompletion(ctx, key, chatAudioURLRequest("https://audio.example/sample.wav"))
+			require.NotNil(t, bErr)
+			require.NotNil(t, bErr.Error)
+			require.NotNil(t, bErr.Error.Type, "message: %s", bErr.Error.Message)
+			require.Equal(t, tc.wantType, *bErr.Error.Type)
+			require.Equal(t, tc.wantCode, bErr.StatusCode)
+			require.ErrorIs(t, bErr.Error.Error, tc.wantCause)
+			require.Zero(t, upstreamHits.Load())
+		})
+	}
 }
 
 // Three 10 MiB clips pass the 25 MiB per-URL cap one by one, but not the per-request total.

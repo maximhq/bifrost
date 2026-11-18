@@ -2850,8 +2850,10 @@ func CheckContextAndGetRequestBodyFromInterface(ctx context.Context, request Req
 }
 
 // endConvertorPhase closes the "convertor" phase span and maps a converter error to the
-// client error: caller-fault refusals carry their own 400, everything else is a
-// conversion bug on our side and keeps the 500 default.
+// client error: caller-fault refusals carry their own 400, a deadline or cancellation hit
+// while the converter fetched remote input (e.g. audio URLs) keeps its timeout or
+// cancellation type, and everything else is a conversion bug on our side and keeps the
+// 500 default.
 func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *schemas.BifrostError {
 	if err != nil {
 		if ct != nil {
@@ -2859,6 +2861,19 @@ func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *s
 		}
 		if badRequest, ok := AsBifrostBadRequestError(err); ok {
 			return badRequest
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+		}
+		if errors.Is(err, context.Canceled) {
+			return &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
 		}
 		return NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
 	}
