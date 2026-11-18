@@ -2214,3 +2214,85 @@ func TestStreamPanicOnProviderGoroutineEndsWithErrorChunk(t *testing.T) {
 		})
 	}
 }
+
+// A terminal error may arrive without EOF. Processing it longer than the idle
+// window must not leave deferred response cleanup draining a parked body forever.
+func TestResponsesStreamTerminalErrorClosesParkedBody(t *testing.T) {
+	for _, event := range []string{
+		`{"type":"error","message":"terminal failure","code":"server_error"}`,
+		`{"type":"response.failed","response":{"error":{"message":"terminal failure","code":"server_error"}}}`,
+	} {
+		t.Run(event, func(t *testing.T) {
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\n", event)
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer server.Close()
+			defer close(release) // also unblock the upstream if the regression returns
+			ctx := newStreamTestContext()
+			ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 20*time.Millisecond)
+			hook := func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				time.Sleep(60 * time.Millisecond)
+				return resp, err
+			}
+			stream, setupErr := newStreamTestProvider(server.URL).ResponsesStream(ctx, hook, nil, testKey(), &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI, Model: "repro-model",
+				Input: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			})
+			if setupErr != nil {
+				t.Fatalf("stream setup: %v", setupErr)
+			}
+			timer := time.NewTimer(time.Second)
+			defer timer.Stop()
+			errorCount := 0
+			for {
+				select {
+				case chunk, ok := <-stream:
+					if !ok {
+						if errorCount != 1 {
+							t.Fatalf("got %d terminal errors, want 1", errorCount)
+						}
+						return
+					}
+					if chunk.BifrostError != nil {
+						errorCount++
+						if chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Message != "terminal failure" {
+							t.Errorf("provider error was replaced: %+v", chunk.BifrostError)
+						}
+					}
+				case <-timer.C:
+					t.Fatal("terminal error stream did not close while upstream body remained open")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkResponsesStreamTerminalError(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"error\",\"message\":\"terminal failure\"}\n\n")
+	}))
+	defer server.Close()
+	provider := newStreamTestProvider(server.URL)
+	key := testKey()
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "repro-model",
+		Input: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stream, err := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, key, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range stream {
+		}
+	}
+}

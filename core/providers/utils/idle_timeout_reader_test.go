@@ -30,11 +30,11 @@ import (
 //
 // Close() triggers the panic (by closing panicTrigger) and then blocks on
 // allowReturn until the test signals it. This keeps SetupStreamCancellation
-// stuck inside Close() so BifrostContextKeyConnectionClosed is guaranteed to
-// be unset when idleTimeoutReader.Read's recover block runs — the exact race
-// window that exists in the current code.
+// inside Close() while idleTimeoutReader.Read unwinds, exercising the ownership
+// claim that must be visible before the body is closed.
 type syncedPanicBody struct {
 	panicTrigger chan struct{}
+	abortRead    chan struct{} // test-only escape hatch; does not count as a close
 	allowReturn  chan struct{}
 	closeOnce    sync.Once
 	closes       atomic.Int32
@@ -47,13 +47,18 @@ func (s *syncedPanicBody) closeCount() int { return int(s.closes.Load()) }
 func newSyncedPanicBody() *syncedPanicBody {
 	return &syncedPanicBody{
 		panicTrigger: make(chan struct{}),
+		abortRead:    make(chan struct{}),
 		allowReturn:  make(chan struct{}),
 	}
 }
 
 func (s *syncedPanicBody) Read(_ []byte) (int, error) {
-	<-s.panicTrigger
-	panic("use of closed network connection")
+	select {
+	case <-s.panicTrigger:
+		panic("use of closed network connection")
+	case <-s.abortRead:
+		return 0, io.ErrClosedPipe
+	}
 }
 
 func (s *syncedPanicBody) Close() error {
@@ -778,7 +783,17 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 		}
 		stop()
 		cleanup()
-		<-readDone
+		select {
+		case <-readDone:
+		case <-time.After(2 * time.Second):
+			t.Errorf("iteration %d: read did not exit after cancellation/timeout", i)
+			close(body.abortRead) // unblock without masking a missing owner close
+			select {
+			case <-readDone:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iteration %d: test reader did not exit after forced unblock", i)
+			}
+		}
 
 		if got := body.closeCount(); got != 1 {
 			t.Fatalf("iteration %d: CloseWithError called %d times, want exactly 1", i, got)
@@ -1107,6 +1122,7 @@ func TestIdleTimeoutReader_CancelAndTimeoutOverlap(t *testing.T) {
 func TestIdleTimeoutReader_HTTPConsumerPause(t *testing.T) {
 	t.Parallel()
 	nextChunk := make(chan struct{})
+	secondWritten := make(chan struct{})
 	var sendOnce sync.Once
 	sendNext := func() { sendOnce.Do(func() { close(nextChunk) }) }
 	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
@@ -1116,12 +1132,14 @@ func TestIdleTimeoutReader_HTTPConsumerPause(t *testing.T) {
 		writeAll(t, conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nfirst\r\n")
 		<-nextChunk
 		writeAll(t, conn, "6\r\nsecond\r\n0\r\n\r\n")
+		close(secondWritten)
 	})
 	defer sendNext()
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	req, resp := streamGet(t, BuildStreamingClient(srv.client(time.Second)), "GET")
 	defer fasthttp.ReleaseRequest(req)
 	defer ReleaseStreamingResponse(ctx, resp)
+	defer sendNext() // release the producer before deferred draining on assertion failure
 	reader, cleanup := NewIdleTimeoutReader(resp.BodyStream(), resp.BodyStream(), 100*time.Millisecond, ctx)
 	defer cleanup()
 	buf := make([]byte, 5)
@@ -1130,6 +1148,11 @@ func TestIdleTimeoutReader_HTTPConsumerPause(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	sendNext()
+	select {
+	case <-secondWritten:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not write second HTTP chunk")
+	}
 	buf = make([]byte, 6)
 	if _, err := io.ReadFull(reader, buf); err != nil || string(buf) != "second" {
 		t.Fatalf("HTTP chunk after consumer pause: %q, %v", buf, err)
@@ -1179,4 +1202,30 @@ func TestIdleTimeoutReader_CleanupPreventsRearming(t *testing.T) {
 			t.Fatalf("body closed %d times after cleanup", got)
 		}
 	})
+}
+
+// Abandonment must claim the same ownership as cancellation and release, and
+// must never attempt to drain a terminal error's potentially unending body.
+func TestAbandonStreamingResponseDoesNotDrainOrCloseTwice(t *testing.T) {
+	for _, alreadyClosed := range []bool{false, true} {
+		t.Run(fmt.Sprint(alreadyClosed), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			body := &countingStreamCloser{}
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+			if alreadyClosed {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+				body.CloseWithError(context.Canceled)
+			}
+			AbandonStreamingResponse(ctx, resp)
+			AbandonStreamingResponse(ctx, resp)
+			ReleaseStreamingResponse(ctx, resp)
+			if got := body.closeCount.Load(); got != 1 {
+				t.Errorf("closed %d times, want 1", got)
+			}
+			if got := body.readCount.Load(); got != 0 {
+				t.Errorf("drained %d times, want 0", got)
+			}
+		})
+	}
 }

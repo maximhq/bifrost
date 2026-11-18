@@ -343612,6 +343612,151 @@
           }
         }
       ]
+    },
+    {
+      "name": "370. Stream idle timeout excludes consumer processing (#10165 / PR #10172)",
+      "description": "Fixture-gated regression, not live coverage yet. Requires a dedicated gateway with a stream-idle-pause-v1 provider post-hook and a controlled OpenAI-compatible upstream. The fixture is not implemented in this collection; its contract is recorded under Stream lifecycle in HARNESS_COVERAGE_BACKLOG.md. A delayed upstream or slow Newman client is not a substitute. Enable include_preview=1 and streamIdlePauseFixtureReady=v1 only after installing the fixture. The hook must pause after the first returned upstream read for at least three idle windows, with no upstream Read pending, then deliver the second content chunk. A measured receipt is emitted as an SSE comment before [DONE]. A second fixture-gated case covers a terminal Responses error with a slow post-hook while the upstream body remains open.",
+      "item": [
+        {
+          "name": "370.1 [PREVIEW] openai gpt-4o-mini streaming survives a controlled consumer pause - #10165",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-test-fixture",
+                "value": "stream-idle-pause-v1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run the controlled stream idle consumer pause fixture.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enabled = (pm.environment.get('include_preview') || pm.variables.get('include_preview') || '') === '1';",
+                  "if (enabled && pm.variables.get('streamIdlePauseFixtureReady') !== 'v1') {",
+                  "  pm.test('controlled consumer-pause fixture is configured', function () {",
+                  "    pm.expect.fail('Requires stream-idle-pause-v1 fixture; see HARNESS_COVERAGE_BACKLOG.md. Do not substitute an upstream delay.');",
+                  "  });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('consumer pause preserves the next SSE chunk and normal completion', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', text).to.include('text/event-stream');",
+                  "  pm.expect(text, text).not.to.include('stream idle timeout');",
+                  "  var content = '';",
+                  "  var done = false;",
+                  "  text.split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    var event = JSON.parse(data);",
+                  "    pm.expect(event.error, text).to.equal(undefined);",
+                  "    (event.choices || []).forEach(function (choice) { content += (choice.delta && choice.delta.content) || ''; });",
+                  "  });",
+                  "  pm.expect(content, text).to.equal('before-pauseafter-pause');",
+                  "  pm.expect(done, text).to.equal(true);",
+                  "});",
+                  "pm.test('fixture proves the pause happened between upstream reads', function () {",
+                  "  var receipts = text.split(/\\r?\\n/).filter(function (line) { return line.indexOf(': bifrost-idle-pause-fixture ') === 0; });",
+                  "  pm.expect(receipts.length, text).to.equal(1);",
+                  "  var receipt = JSON.parse(receipts[0].slice(': bifrost-idle-pause-fixture '.length));",
+                  "  pm.expect(receipt.version, text).to.equal(1);",
+                  "  pm.expect(receipt.pending_reads_during_pause, text).to.equal(0);",
+                  "  pm.expect(receipt.idle_timeout_ms, text).to.be.above(0);",
+                  "  pm.expect(receipt.pause_ms, text).to.be.at.least(3 * receipt.idle_timeout_ms);",
+                  "  pm.expect(receipt.second_chunk_ready_before_resume, text).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "370.2 [PREVIEW] openai gpt-4o-mini Responses error closes after a controlled consumer pause - #10165",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-test-fixture",
+                "value": "stream-terminal-error-v1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Run the controlled terminal stream error fixture.\",\n  \"stream\": true,\n  \"max_output_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enabled = (pm.environment.get('include_preview') || pm.variables.get('include_preview') || '') === '1';",
+                  "if (enabled && pm.variables.get('streamIdlePauseFixtureReady') !== 'v1') {",
+                  "  pm.test('controlled consumer-pause fixture is configured', function () {",
+                  "    pm.expect.fail('Requires stream-idle-pause-v1 fixture; see HARNESS_COVERAGE_BACKLOG.md. Do not substitute an upstream delay.');",
+                  "  });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('terminal provider error completes without waiting for upstream EOF', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', text).to.include('text/event-stream');",
+                  "  pm.expect(text, text).to.include('terminal failure');",
+                  "  pm.expect(text, text).to.include('bifrost_terminal_error_fixture');",
+                  "  pm.expect(text, text).not.to.include('stream idle timeout');",
+                  "  pm.expect(pm.response.responseTime, text).to.be.below(10000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

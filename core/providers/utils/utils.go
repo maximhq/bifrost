@@ -4860,6 +4860,27 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	}
 }
 
+// AbandonStreamingResponse closes an incomplete response after a terminal event.
+// No drain is attempted: an upstream may keep its body open after reporting an
+// error. Call before processing the terminal error, so slow hooks cannot retain
+// an upstream connection that will no longer be read.
+func AbandonStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	if resp == nil || resp.BodyStream() == nil {
+		return
+	}
+	if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			getLogger().Debug("stream already closed in AbandonStreamingResponse: %v", r)
+		}
+	}()
+	// A non-nil error discards fasthttp's half-read connection. Leave resp to GC:
+	// ReleaseResponse would invoke the pooled body's close callback a second time.
+	closeBodyStream(resp.BodyStream(), ErrStreamClosed)
+}
+
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	if resp == nil {
