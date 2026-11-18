@@ -59,6 +59,8 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 
 // startEndpointJobSweeper (re)starts the sweeper that settles async jobs relay
 // routes started. It runs on every reload so the reporter tracks the live governance plugin.
+// It ticks every 10s, so a job's interval_seconds below 30 is honoured; each tick is one indexed
+// query for due relay jobs.
 func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.RelayUsageReporter) {
 	s.endpointSweeperMu.Lock()
 	defer s.endpointSweeperMu.Unlock()
@@ -79,7 +81,7 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 	}
 	sweepCtx, cancel := context.WithCancel(base)
 	s.endpointSweeperCancel = cancel
-	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, jobaccounting.RelayJobSweeperConfig{Interval: 30 * time.Second, Logger: logger})
+	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, jobaccounting.RelayJobSweeperConfig{Interval: 10 * time.Second, Logger: logger})
 	go sweeper.Run(sweepCtx)
 }
 

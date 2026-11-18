@@ -262,3 +262,26 @@ func (route *compiledRoute) jobHandle(contentType string, body []byte) (*schemas
 	}
 	return &schemas.RelayJobHandle{ID: id, IntervalSeconds: route.jobInterval, Params: route.jobParams}, nil
 }
+
+// checkJobStatusRoutes refuses a job whose status check would be charged when a caller sends it:
+// the job is billed once when it settles, so a billable route (or a billable method default on a
+// relay that relays any path) matching the poll request would charge every check on top.
+func (e *endpoint) checkJobStatusRoutes() error {
+	for i := range e.routes {
+		job := e.routes[i].job
+		if job == nil {
+			continue
+		}
+		poll := (&JobSnapshot{Job: *job}).PollRequest("job-id")
+		p := e.plan(poll.Method, poll.Path, poll.Headers)
+		if !p.allowed || !p.billing {
+			continue
+		}
+		matched := "no route matches it and skip_route_check relays it as a billable " + poll.Method
+		if p.index >= 0 {
+			matched = fmt.Sprintf("it matches routes[%d], which is billable", p.index)
+		}
+		return fmt.Errorf("routes[%d].job: a caller's status check (%s %s) would be charged on every call as well as the job: %s; add a route for it with billable: false ahead of that route", i, poll.Method, job.Poll.Path, matched)
+	}
+	return nil
+}
