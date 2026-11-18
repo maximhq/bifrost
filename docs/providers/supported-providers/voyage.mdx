@@ -132,7 +132,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 | `auto_truncate` (the typed `AutoTruncate` field) or `truncation` (extra param) | `truncation` | Voyage truncates by default. Only these two set the field; `auto_truncate` passed as an extra param is not read. |
 | `encoding_format` | `output_dtype` / `encoding_format` | `float`, `int8`, `uint8`, `binary`, `ubinary` select the dtype; `base64` selects base64 transport. `output_dtype` (extra param) sets the dtype next to `base64`. |
 
-Every input item must be a single text part, and items cannot carry their own params. Quantized dtypes are returned as integer arrays labelled with `encoding_format`. With `encoding_format: "base64"` each embedding is instead a base64 string labelled `base64`, whatever the dtype. When the request parameters are not parsed (large-payload passthrough), a quantized response is labelled `float`; read its values as integers.
+Every input item must be a single text part, and items cannot carry their own params. Quantized dtypes are returned as integer arrays labelled with `encoding_format`. With `encoding_format: "base64"` each embedding is instead a base64 string labelled `base64`, whatever the dtype. When the request parameters are not parsed (large-payload passthrough) but the response is still converted, an array-valued quantized embedding is labelled `float`; read its values as integers. A base64 string is labelled `base64` in every case, and a response large enough to be streamed through is not converted at all.
 
 ---
 
