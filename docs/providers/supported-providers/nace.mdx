@@ -146,7 +146,7 @@ curl -X POST http://localhost:8080/v1/decisions \
 
 Only `drex-max`, `drex-max-v1.1`, and `drex-max-finance` read images. The alias `drex-v1.0` follows `drex-max` for this check. On `/v1/decisions` and `/openai/v1/decisions`, text-only models, including `drex-v2.0` and `drex-v1.5`, reject `input_image` parts before an upstream request.
 
-On these two routes, send ordered inline `input_image` parts without an `id`. Bifrost removes them from the message state and sends a top-level `images` array to Nace in encounter order. Images must be base64 data or PNG, JPEG, or WebP base64 data URLs. HTTP URLs, file paths, and image asset references are rejected. Bifrost accepts at most eight images, with a 16 MiB limit per image.
+On these two routes, send ordered inline `input_image` parts without an `id`. Bifrost removes them from the message state and sends a top-level `images` array to Nace in encounter order. Images must be base64 data or PNG, JPEG, or WebP base64 data URLs. Bifrost rejects any other value that is not base64 or a supported data URL, such as an HTTP URL, and rejects image asset references. Bifrost accepts at most eight images, with a 16 MiB limit per image.
 
 See [decision input](/quickstart/gateway/decisions#input) for the message and image part shape. On `/typesafe/v1/systemone`, use Nace's top-level `images` array rather than TypeSafe's `assets` references. Bifrost passes this array through as an extra parameter, and Nace validates it. Bifrost's local checks above apply only to `input_image` parts, not this top-level array.
 
