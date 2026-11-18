@@ -117,6 +117,7 @@ type ComplexitySuggestionScheduleStore interface {
 // complexitySuggestions is the plugin's suggestion-run state.
 type complexitySuggestions struct {
 	backfills sync.Map // router id -> chan struct{}: one backfill per router at a time
+	examples  sync.Map // router id -> *decisionExampleVectors; see decisionSuggestionSpace
 	deps      atomic.Pointer[complexitySuggestionDeps]
 	jobs      atomic.Pointer[complexitySuggestionJobs]
 	schedules atomic.Pointer[ComplexitySuggestionScheduleStore]
@@ -705,13 +706,18 @@ func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, rou
 }
 
 // ComplexitySuggestionMessageHistoryCount is how many user turns a router
-// embeds, so request text read back from logs matches what was captured. It
-// is the serving generation's count: a config change that has not warmed, or
-// failed to, leaves the serving bank classifying with the old one.
+// embeds, so request text read back from logs matches what was captured. For
+// a semantic router it is the serving generation's count: a config change
+// that has not warmed, or failed to, leaves the serving bank classifying with
+// the old one. For a decision-model router it is the turns its decision model
+// reads.
 func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount(routerID string) int {
 	router, ok := p.suggestionRouter(routerID)
 	if !ok {
 		return 1
+	}
+	if router.config != nil && router.config.Classifier == complexity.ClassifierDecision {
+		return complexity.DecisionPreviousMessageCount(router.config.Decision) + 1
 	}
 	if router.classifier != nil {
 		if count, serving := router.classifier.ServingMessageHistoryCount(); serving {
@@ -1502,4 +1508,107 @@ func decisionConfidenceLabel(confidence float64) string {
 		return "medium"
 	}
 	return "low"
+}
+
+// decisionExampleVectors is a decision-model router's examples embedded in
+// its suggestions embedding model, kept so an estimate or a run embeds only
+// the examples edited since the last one. One entry per router, replaced by
+// each space built and dropped with the router: at most the router's examples
+// (60 per tier), 6 KB each at 1536 dimensions, about 1 MB.
+type decisionExampleVectors struct {
+	provider schemas.ModelProvider
+	model    string
+	vectors  map[string][]float32
+}
+
+// decisionSuggestionSpace builds a decision-model router's suggestion space:
+// its examples (as the decision model reads them, shipped defaults included)
+// embedded with its suggestions embedding model, the capture namespace that
+// model names, and the tiers its decision model logged, read from its logs.
+// Embedding goes through the same path as a semantic router's warmup, billed
+// to no request.
+func (p *RoutingPlugin) decisionSuggestionSpace(ctx context.Context, router suggestionRouter) (*complexity.DecisionSuggestionSpace, error) {
+	cfg := router.config
+	if cfg == nil || cfg.Classifier != complexity.ClassifierDecision || cfg.Suggestions == nil || cfg.Suggestions.Embedding == nil {
+		return nil, complexity.ErrNoDecisionEmbedding
+	}
+	if p.embeddingExecutor() == nil {
+		return nil, ErrEmbeddingRequestExecutorNotConfigured
+	}
+	embedding := *cfg.Suggestions.Embedding
+	criteria := cfg.Decision.ResolvedCriteria()
+	examples := make(map[string][]string, len(criteria))
+	for tier, c := range criteria {
+		examples[tier] = c.Examples
+	}
+	var logs ComplexitySuggestionRouterLogs
+	if deps := p.suggestionDeps(); deps != nil {
+		logs, _ = deps.store.(ComplexitySuggestionRouterLogs)
+	}
+	var known map[string][]float32
+	if p.suggestions != nil {
+		if cached, ok := p.suggestions.examples.Load(router.id); ok {
+			if c := cached.(*decisionExampleVectors); c.provider == embedding.Provider && c.model == embedding.Model {
+				known = c.vectors
+			}
+		}
+	}
+	space, err := complexity.NewDecisionSuggestionSpace(ctx, complexity.DecisionSpaceConfig{
+		RouterID:            router.id,
+		Store:               p.captureStore(),
+		Provider:            embedding.Provider,
+		Model:               embedding.Model,
+		MessageHistoryCount: complexity.DecisionPreviousMessageCount(cfg.Decision) + 1,
+		Examples:            examples,
+		Known:               known,
+		Embed:               p.embedSuggestionText,
+		EmbedBatch:          p.embedComplexityTexts,
+		LoggedTiers:         routerLoggedTiers(logs, router.id),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if p.suggestions != nil {
+		vectors := make(map[string][]float32, len(space.Examples))
+		for _, e := range space.Examples {
+			vectors[e.Text] = e.Vector
+		}
+		p.suggestions.examples.Store(router.id, &decisionExampleVectors{provider: embedding.Provider, model: embedding.Model, vectors: vectors})
+	}
+	return space, nil
+}
+
+// embedSuggestionText embeds one text for a suggestion run, for a model that
+// takes one input per request. It goes through the batch path, which bills a
+// suggestion run as warmup is billed; the single-text path would bill the
+// request a run's context may come from.
+func (p *RoutingPlugin) embedSuggestionText(ctx context.Context, model *complexity.SemanticConfig, text string) ([]float32, error) {
+	vectors, err := p.embedComplexityTexts(ctx, model, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("expected one embedding, got %d", len(vectors))
+	}
+	return vectors[0], nil
+}
+
+// routerLoggedTiers reads the tier a router's decision model logged for each
+// request it took, from its logs; nil without logs to read.
+func routerLoggedTiers(logs ComplexitySuggestionRouterLogs, routerID string) complexity.LoggedTiers {
+	if logs == nil {
+		return nil
+	}
+	return func(ctx context.Context, from, to time.Time) (map[string]string, error) {
+		tiers := map[string]string{}
+		err := logs.EachComplexityRouterLog(ctx, routerID, from, to, func(page []logstore.ComplexityRouterLog) error {
+			for _, l := range page {
+				if l.Mechanism == complexity.MechanismDecision && l.Tier != "" {
+					tiers[l.ID] = l.Tier
+				}
+			}
+			return ctx.Err()
+		})
+		return tiers, err
+	}
 }

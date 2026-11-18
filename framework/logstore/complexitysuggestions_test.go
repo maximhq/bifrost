@@ -581,22 +581,34 @@ func TestEachComplexityRouterLog(t *testing.T) {
 	// is never a candidate: kept in, it would be tried again on every pass.
 	hiddenAt := base.Add(45 * time.Second)
 	require.NoError(t, store.Create(ctx, &Log{ID: "hidden", Timestamp: hiddenAt, CreatedAt: hiddenAt, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ModelRouterID: &support, ContentHidden: true}))
+	// A row carries the tier the router logged and how it was classified, so a
+	// decision-model router's run can compare its own tier call with the
+	// model's; a row that logged neither reads as empty.
+	tier, mechanism := "COMPLEX", "decision"
+	tieredAt := base.Add(50 * time.Second)
+	require.NoError(t, store.Create(ctx, &Log{ID: "tiered", Timestamp: tieredAt, CreatedAt: tieredAt, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ModelRouterID: &support, ComplexityTier: &tier, ComplexityMechanism: &mechanism}))
 
 	saved := complexityRouterLogPage
 	complexityRouterLogPage = 2 // the boundary falls inside the shared timestamp
 	t.Cleanup(func() { complexityRouterLogPage = saved })
 
 	var ids []string
+	rows := map[string]ComplexityRouterLog{}
 	pages := 0
 	require.NoError(t, store.EachComplexityRouterLog(ctx, support, base, base.Add(time.Hour), func(page []ComplexityRouterLog) error {
 		pages++
 		for _, row := range page {
 			ids = append(ids, row.ID)
+			rows[row.ID] = row
 			assert.False(t, row.Timestamp.IsZero())
 		}
 		return nil
 	}))
-	assert.Equal(t, []string{"a", "b", "c", "e", "d"}, ids)
+	assert.Equal(t, []string{"a", "b", "c", "e", "tiered", "d"}, ids)
+	assert.Equal(t, "COMPLEX", rows["tiered"].Tier)
+	assert.Equal(t, "decision", rows["tiered"].Mechanism)
+	assert.Empty(t, rows["a"].Tier, "a row with no tier reads as empty")
+	assert.Empty(t, rows["a"].Mechanism)
 	assert.GreaterOrEqual(t, pages, 2)
 
 	stop := errors.New("stop")

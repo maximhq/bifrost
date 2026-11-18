@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
@@ -134,32 +136,39 @@ func readServingPhrases(ctx context.Context, generation *semanticGeneration) ([]
 
 // Embed embeds texts in the space, in order.
 func (s *SuggestionSpace) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return embedTexts(ctx, s.semantic, s.embed, s.embedBatch, texts, s.Dimension)
+}
+
+// embedTexts embeds texts with a model, in order: in one batch when there is a
+// batch function, one text at a time when there is not or when the model
+// refuses several inputs in one request. Every vector must be non-empty and,
+// when dimension is set, that long.
+func embedTexts(ctx context.Context, model *SemanticConfig, embed EmbeddingFunc, embedBatch BatchEmbeddingFunc, texts []string, dimension int) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 	var vectors [][]float32
-	if s.embedBatch != nil {
-		batch, err := s.embedBatch(ctx, s.semantic, texts)
-		if err != nil {
-			return nil, err
-		}
-		vectors = batch
-	} else {
-		vectors = make([][]float32, len(texts))
+	var err error
+	if embedBatch != nil {
+		vectors, err = embedBatch(ctx, model, texts)
+	}
+	if embed != nil && (embedBatch == nil || errors.Is(err, ErrBatchEmbeddingsUnsupported)) {
+		vectors, err = make([][]float32, len(texts)), nil
 		for i, text := range texts {
-			vector, err := s.embed(ctx, s.semantic, text)
-			if err != nil {
-				return nil, err
+			if vectors[i], err = embed(ctx, model, text); err != nil {
+				break
 			}
-			vectors[i] = vector
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 	if len(vectors) != len(texts) {
 		return nil, fmt.Errorf("embedded %d of %d texts", len(vectors), len(texts))
 	}
 	for _, vector := range vectors {
-		if len(vector) != s.Dimension {
-			return nil, fmt.Errorf("embedding dimension %d does not match the serving dimension %d", len(vector), s.Dimension)
+		if len(vector) == 0 || (dimension > 0 && len(vector) != dimension) {
+			return nil, fmt.Errorf("embedding dimension %d does not match the space's dimension %d", len(vector), dimension)
 		}
 	}
 	return vectors, nil
@@ -172,6 +181,20 @@ func (s *SuggestionSpace) EachCaptured(ctx context.Context, from, to time.Time, 
 		return ErrNoCaptureStore
 	}
 	return EachCaptured(ctx, s.Store, s.CaptureNamespace, from, to, fn)
+}
+
+// CaptureTarget is where a space's captured requests are kept, and how their
+// text is cut from a log, which a backfill from logs writes to.
+type CaptureTarget struct {
+	Store               vectorstore.VectorStore
+	Namespace           string
+	Dimension           int
+	MessageHistoryCount int
+}
+
+// Target is where the space's captured requests are kept.
+func (s *SuggestionSpace) Target() CaptureTarget {
+	return CaptureTarget{Store: s.Store, Namespace: s.CaptureNamespace, Dimension: s.Dimension, MessageHistoryCount: s.MessageHistoryCount}
 }
 
 // Close releases the hold on the generation. It is safe to call twice.
@@ -210,4 +233,166 @@ func (s *SuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time)
 		}
 	}
 	return CountCaptured(ctx, s.Store, s.CaptureNamespace, from, to)
+}
+
+// A decision-model router has no embedding space of its own: it sends each
+// request to its decision model, which reads the tiers' definitions, signals
+// and examples. Its suggestion runs cluster its requests with an embedding
+// model of their own choosing (suggestions.embedding), and its examples are
+// embedded with the same model to stand where a semantic router's phrases
+// do. Nothing is captured on the request path: a run embeds a sample of the
+// router's logged requests first (see the routing plugin's backfill), into a
+// capture namespace named like a semantic router's, by the router, the
+// embedding model and the slice of each request embedded. Each request is
+// read back with the tier the decision model logged for it, which is what a
+// run compares its own tier call with.
+
+// LoggedTiers returns the tier the decision model logged for each request a
+// router took from from through to, by log ID. A request logged without one
+// (the model failed, a session tier stood in) is left out.
+type LoggedTiers func(ctx context.Context, from, to time.Time) (map[string]string, error)
+
+// DecisionSpaceConfig is what a decision-model router's suggestion space is
+// built from.
+type DecisionSpaceConfig struct {
+	RouterID            string
+	Store               vectorstore.VectorStore // where captured requests are kept; nil without a configured store
+	Provider            schemas.ModelProvider   // the suggestions embedding model
+	Model               string
+	MessageHistoryCount int                  // the user turns the decision model reads: its previous messages and the current one
+	Examples            map[string][]string  // tier -> the examples the router classifies with
+	Known               map[string][]float32 // example text -> its vector in this model, already embedded; reused rather than embedded again
+	Embed               EmbeddingFunc
+	EmbedBatch          BatchEmbeddingFunc
+	LoggedTiers         LoggedTiers
+}
+
+// ErrNoDecisionEmbedding is returned when a decision-model router's
+// suggestion space cannot embed: no embedding model is set, or the embedding
+// path is not wired yet.
+var ErrNoDecisionEmbedding = errors.New("decision-model suggestions need an embedding model to cluster requests with")
+
+// DecisionSuggestionSpace is a decision-model router's suggestion space, held
+// for one run: its examples embedded, where its requests are captured, and
+// the tiers its decision model logged for them. Unlike a semantic router's,
+// it holds no generation, so there is nothing to release.
+type DecisionSuggestionSpace struct {
+	Store               vectorstore.VectorStore
+	CaptureNamespace    string
+	Dimension           int
+	MessageHistoryCount int
+	Examples            []SuggestionPhrase // in tier order, then as configured
+
+	model       *SemanticConfig // the embedding model, as the embedding path takes it
+	embed       EmbeddingFunc
+	embedBatch  BatchEmbeddingFunc
+	loggedTiers LoggedTiers
+}
+
+// NewDecisionSuggestionSpace embeds the router's examples, those not already
+// known, and names the capture namespace by the dimension they come back
+// with.
+func NewDecisionSuggestionSpace(ctx context.Context, cfg DecisionSpaceConfig) (*DecisionSuggestionSpace, error) {
+	if cfg.RouterID == "" || cfg.Provider == "" || cfg.Model == "" || (cfg.Embed == nil && cfg.EmbedBatch == nil) {
+		return nil, ErrNoDecisionEmbedding
+	}
+	space := &DecisionSuggestionSpace{
+		Store:               cfg.Store,
+		MessageHistoryCount: max(1, cfg.MessageHistoryCount),
+		model:               &SemanticConfig{Provider: cfg.Provider, EmbeddingModel: cfg.Model},
+		embed:               cfg.Embed,
+		embedBatch:          cfg.EmbedBatch,
+		loggedTiers:         cfg.LoggedTiers,
+	}
+	var missing []string
+	queued := map[string]struct{}{}
+	for _, tier := range OrderedTiers() {
+		for _, text := range cfg.Examples[tier] {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			space.Examples = append(space.Examples, SuggestionPhrase{Tier: tier, Text: text, Vector: cfg.Known[text]})
+			if _, done := queued[text]; cfg.Known[text] == nil && !done {
+				queued[text] = struct{}{}
+				missing = append(missing, text)
+			}
+		}
+	}
+	if len(space.Examples) == 0 {
+		return nil, errors.New("the router has no tier examples to suggest against")
+	}
+	embedded := make(map[string][]float32, len(missing))
+	if len(missing) > 0 {
+		vectors, err := space.Embed(ctx, missing)
+		if err != nil {
+			return nil, fmt.Errorf("embed the router's tier examples: %w", err)
+		}
+		for i, text := range missing {
+			embedded[text] = vectors[i]
+		}
+	}
+	for i := range space.Examples {
+		if space.Examples[i].Vector == nil {
+			space.Examples[i].Vector = embedded[space.Examples[i].Text]
+		}
+		if dimension := len(space.Examples[i].Vector); space.Dimension == 0 {
+			space.Dimension = dimension
+		} else if dimension != space.Dimension {
+			return nil, fmt.Errorf("example vectors disagree on their dimension: %d and %d", space.Dimension, dimension)
+		}
+	}
+	if space.Dimension == 0 {
+		return nil, errors.New("the embedding model returned empty vectors")
+	}
+	space.CaptureNamespace = CaptureNamespace(cfg.RouterID, cfg.Provider, cfg.Model, space.Dimension, space.MessageHistoryCount)
+	return space, nil
+}
+
+// Embed embeds texts with the space's model, in order.
+func (s *DecisionSuggestionSpace) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return embedTexts(ctx, s.model, s.embed, s.embedBatch, texts, s.Dimension)
+}
+
+// EachCaptured reads the requests captured from from through to, each with
+// the tier the decision model logged for it. One logged without a tier, or
+// whose log is gone, is left out: there is no call of the router's to compare
+// with.
+func (s *DecisionSuggestionSpace) EachCaptured(ctx context.Context, from, to time.Time, fn func([]CapturedRequest) error) error {
+	if s.Store == nil {
+		return ErrNoCaptureStore
+	}
+	if s.loggedTiers == nil {
+		return errors.New("no logs to read the decision model's tiers from")
+	}
+	tiers, err := s.loggedTiers(ctx, from, to)
+	if err != nil {
+		return fmt.Errorf("read the router's logged tiers: %w", err)
+	}
+	return EachCaptured(ctx, s.Store, s.CaptureNamespace, from, to, func(page []CapturedRequest) error {
+		kept := page[:0]
+		for _, r := range page {
+			if tier := tiers[r.LogID]; tier != "" {
+				r.Tier = tier
+				kept = append(kept, r)
+			}
+		}
+		if len(kept) == 0 {
+			return nil
+		}
+		return fn(kept)
+	})
+}
+
+// Namespace names the space's captured requests; suggestions record it as
+// their embedding signature.
+func (s *DecisionSuggestionSpace) Namespace() string { return s.CaptureNamespace }
+
+// LivePhrases returns the router's examples, which stand where a semantic
+// router's phrases do.
+func (s *DecisionSuggestionSpace) LivePhrases() []SuggestionPhrase { return s.Examples }
+
+// Target is where the space's captured requests are kept.
+func (s *DecisionSuggestionSpace) Target() CaptureTarget {
+	return CaptureTarget{Store: s.Store, Namespace: s.CaptureNamespace, Dimension: s.Dimension, MessageHistoryCount: s.MessageHistoryCount}
 }

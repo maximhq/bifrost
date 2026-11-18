@@ -358,14 +358,19 @@ type ComplexityReplayUsage struct {
 }
 
 // ComplexityRouterLog is one request a model router took, as a suggestion
-// run's backfill pages through them: its log ID and when it was logged.
+// run pages through them: its log ID, when it was logged, and the tier the
+// router logged for it with how that tier was classified (empty when it
+// logged none). A decision-model router's run reads the tier as the decision
+// model's own call on the request.
 type ComplexityRouterLog struct {
 	ID        string    `gorm:"column:id"`
 	Timestamp time.Time `gorm:"column:timestamp"`
+	Tier      string    `gorm:"column:complexity_tier"`
+	Mechanism string    `gorm:"column:complexity_mechanism"`
 }
 
 // complexityRouterLogPage is how many logs one EachComplexityRouterLog page
-// reads: IDs and timestamps only, so a page is small.
+// reads: IDs, timestamps and two short labels, so a page is small.
 var complexityRouterLogPage = 5000
 
 // complexityReplayUsageBatch bounds the IDs one usage read binds.
@@ -771,7 +776,7 @@ func (s *RDBLogStore) EachComplexityRouterLog(ctx context.Context, routerID stri
 	var afterID string
 	for {
 		query := s.ScopedDB(ctx).Model(&Log{}).
-			Select("id", "timestamp").
+			Select("id", "timestamp", "COALESCE(complexity_tier, '') AS complexity_tier", "COALESCE(complexity_mechanism, '') AS complexity_mechanism").
 			Where("model_router_id = ? AND (parent_request_id IS NULL OR parent_request_id = id) AND timestamp >= ? AND timestamp <= ?", routerID, from, to).
 			// A request logged with content logging off has no text to read
 			// back, so it can never be backfilled; kept in, it would be picked

@@ -19,9 +19,11 @@ import (
 // that reaches further back would see part of it. Before reading, the window
 // is filled from the router's logs: the requests it took (model_router_id),
 // sampled exactly as live capture samples them (complexity.CaptureSampled, a
-// function of the request ID), less those already captured, are embedded with
-// the router's model and written into its capture namespace under their log
-// time. They are then ordinary captured requests: later runs reuse them, the
+// function of the request ID), less those already captured, are embedded in
+// the router's space (its semantic embedding model, or for a decision-model
+// router its suggestions embedding model) and written into its capture
+// namespace under their log time. A decision-model router captures nothing on
+// the request path, so this is how all of its requests get there. They are then ordinary captured requests: later runs reuse them, the
 // age sweep and log deletes reach them, and none is embedded twice. A log that
 // is gone, hides its content, or predates model_router_id gives nothing.
 
@@ -45,6 +47,25 @@ const (
 // content) is skipped, and the next newest takes its place.
 const backfillCandidateFactor = 2
 
+// backfillableSpace is the space a backfill embeds requests in and writes them
+// to: a semantic router's serving space, or a decision-model router's.
+type backfillableSpace interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	Target() complexity.CaptureTarget
+}
+
+// backfills reports whether a router's suggestions have a use for a log: any
+// request for a semantic router, which routes them against its phrases
+// again; for a decision-model router only one its decision model logged a
+// tier for, since that tier is what a run checks. A request routed while the
+// router classified another way, or by a session tier, has none.
+func backfills(router suggestionRouter, l logstore.ComplexityRouterLog) bool {
+	if router.config != nil && router.config.Classifier == complexity.ClassifierDecision {
+		return l.Mechanism == complexity.MechanismDecision && l.Tier != ""
+	}
+	return true
+}
+
 // backfillPlan is what a backfill of one window would do.
 type backfillPlan struct {
 	candidates []logstore.ComplexityRouterLog // sampled, not captured; newest first; at most backfillCandidateFactor times the limit
@@ -56,8 +77,12 @@ type backfillPlan struct {
 // is left is filled by the next run. It keeps only the newest candidates as
 // it pages the logs, so its memory is the window's captured IDs and a bounded
 // candidate list, not every request the router took.
-func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRouter, space *complexity.SuggestionSpace, logs ComplexitySuggestionRouterLogs, from, to time.Time, limit int) (backfillPlan, error) {
-	if logs == nil || space == nil || space.Store == nil || router.config == nil || router.config.Suggestions == nil || limit <= 0 {
+func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRouter, space backfillableSpace, logs ComplexitySuggestionRouterLogs, from, to time.Time, limit int) (backfillPlan, error) {
+	if logs == nil || space == nil || router.config == nil || router.config.Suggestions == nil || limit <= 0 {
+		return backfillPlan{}, nil
+	}
+	target := space.Target()
+	if target.Store == nil {
 		return backfillPlan{}, nil
 	}
 	rate := router.config.Suggestions.SampleRate
@@ -68,7 +93,7 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 	// a result ceiling on Weaviate (it fails) and Redis (it ends early), and
 	// a captured request read as missing is embedded again.
 	captured := map[string]struct{}{}
-	if err := space.EachCaptured(ctx, from, to, func(page []complexity.CapturedRequest) error {
+	if err := complexity.EachCaptured(ctx, target.Store, target.Namespace, from, to, func(page []complexity.CapturedRequest) error {
 		for _, r := range page {
 			captured[r.LogID] = struct{}{}
 		}
@@ -80,7 +105,7 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 	var plan backfillPlan
 	if err := logs.EachComplexityRouterLog(ctx, router.id, from, to, func(page []logstore.ComplexityRouterLog) error {
 		for _, l := range page {
-			if _, done := captured[l.ID]; done || !complexity.CaptureSampled(l.ID, rate) {
+			if _, done := captured[l.ID]; done || !complexity.CaptureSampled(l.ID, rate) || !backfills(router, l) {
 				continue
 			}
 			if keep.offer(l) {
@@ -159,7 +184,7 @@ func (h *newestLogs) newestFirst() []logstore.ComplexityRouterLog {
 // embedding cost is bounded by the backfill's limit. Each request
 // is held in the router's capture from before its text is read until it is
 // written, so a log deleted in the meantime leaves no vector.
-func (p *RoutingPlugin) backfillWindow(ctx context.Context, router suggestionRouter, space *complexity.SuggestionSpace, deps *complexitySuggestionDeps, from, to time.Time) (int, error) {
+func (p *RoutingPlugin) backfillWindow(ctx context.Context, router suggestionRouter, space backfillableSpace, deps *complexitySuggestionDeps, from, to time.Time) (int, error) {
 	if deps == nil || router.capture == nil {
 		return 0, nil
 	}
@@ -194,7 +219,8 @@ func (p *RoutingPlugin) backfillWindow(ctx context.Context, router suggestionRou
 
 // backfillBatch reads, embeds and writes one batch of candidates, at most room
 // of them, and reports how many it wrote.
-func (p *RoutingPlugin) backfillBatch(ctx context.Context, router suggestionRouter, space *complexity.SuggestionSpace, deps *complexitySuggestionDeps, batch []logstore.ComplexityRouterLog, room int) (int, error) {
+func (p *RoutingPlugin) backfillBatch(ctx context.Context, router suggestionRouter, space backfillableSpace, deps *complexitySuggestionDeps, batch []logstore.ComplexityRouterLog, room int) (int, error) {
+	target := space.Target()
 	ids := make([]string, len(batch))
 	for i, l := range batch {
 		ids[i] = l.ID
@@ -213,7 +239,7 @@ func (p *RoutingPlugin) backfillBatch(ctx context.Context, router suggestionRout
 		}
 		router.capture.ReleaseBackfill(rest)
 	}()
-	texts, err := backfillTexts(ctx, deps.texts, batch, space.MessageHistoryCount)
+	texts, err := backfillTexts(ctx, deps.texts, batch, target.MessageHistoryCount)
 	if err != nil {
 		return 0, err
 	}
@@ -237,14 +263,14 @@ func (p *RoutingPlugin) backfillBatch(ctx context.Context, router suggestionRout
 	}
 	requests := make([]complexity.CapturedRequest, 0, len(readable))
 	for i, id := range readable {
-		if i < len(vectors) && len(vectors[i]) == space.Dimension {
+		if i < len(vectors) && len(vectors[i]) == target.Dimension {
 			requests = append(requests, complexity.CapturedRequest{LogID: id, Vector: vectors[i], At: at[id]})
 		}
 	}
 	for _, r := range requests {
 		delete(held, r.LogID)
 	}
-	if err := router.capture.WriteBackfilled(ctx, space.Store, space.CaptureNamespace, space.Dimension, requests); err != nil {
+	if err := router.capture.WriteBackfilled(ctx, target.Store, target.Namespace, target.Dimension, requests); err != nil {
 		return 0, err
 	}
 	return len(requests), nil
