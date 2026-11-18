@@ -1626,6 +1626,70 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }
 
+func TestSonic_ToolFunctionParameters_DeepCopy_PreservesExplicitEmptyRequired(t *testing.T) {
+	copied := DeepCopyToolFunctionParameters(&ToolFunctionParameters{Type: "object", Required: []string{}})
+
+	require.NotNil(t, copied)
+	assert.NotNil(t, copied.Required, "an explicit empty required must stay distinct from an absent one")
+	assert.Empty(t, copied.Required)
+}
+
+// --- ToolFunctionParameters required: nil vs [] (#6404) ---
+// Strict zero-argument tools need required: [] on the wire, so an explicit empty
+// slice is emitted while a nil one stays omitted.
+
+func TestSonic_ToolFunctionParameters_ProgrammaticEmptyRequiredKeepsSchemaOrder(t *testing.T) {
+	params := ToolFunctionParameters{
+		Type:                 "object",
+		Required:             []string{},
+		AdditionalProperties: &AdditionalPropertiesStruct{AdditionalPropertiesBool: Ptr(false)},
+	}
+
+	out, err := MarshalSorted(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object","properties":{},"required":[],"additionalProperties":false}`, string(out))
+}
+
+func TestSonic_ToolFunctionParameters_NilRequiredStaysOmitted(t *testing.T) {
+	var params ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"type":"object","properties":{}}`), &params))
+	require.Nil(t, params.Required)
+
+	out, err := MarshalSorted(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object","properties":{}}`, string(out))
+}
+
+func TestSonic_ToolFunctionParameters_NormalizedPreservesEmptyRequired(t *testing.T) {
+	var params ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"additionalProperties":false,"required":[],"properties":{},"type":"object"}`), &params))
+
+	out, err := MarshalSorted(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object","properties":{},"required":[],"additionalProperties":false}`, string(out))
+}
+
+// An explicit raw {} must not swallow a required list set after decoding, which
+// is what the Anthropic, Bedrock and Gemini converters do.
+func TestSonic_ToolFunctionParameters_ExplicitEmptyObjectKeepsLaterRequired(t *testing.T) {
+	var params ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{}`), &params))
+	params.Required = []string{"x"}
+
+	out, err := MarshalSorted(params)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"required":["x"]`)
+}
+
+func TestSonic_ToolFunctionParameters_ExplicitEmptyObjectStaysEmpty(t *testing.T) {
+	var params ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{}`), &params))
+
+	out, err := MarshalSorted(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(out))
+}
+
 // --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
 // Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
 // writes must not be folded in, or spec consumers price cache writes as cache reads.

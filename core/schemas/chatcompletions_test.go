@@ -571,3 +571,23 @@ func TestChatToolChoiceAllowedTools_CustomEntryRoundTrip(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", out, in)
 	}
 }
+
+// TestChatToolRoundTripPreservesExplicitEmptyRequired pins #6404 on the
+// /v1/chat/completions ingress, the sibling of the Responses tool round trip.
+func TestChatToolRoundTripPreservesExplicitEmptyRequired(t *testing.T) {
+	in := `{"type":"function","function":{"name":"run_tests","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}}`
+	var tool ChatTool
+	if err := Unmarshal([]byte(in), &tool); err != nil {
+		t.Fatal(err)
+	}
+	if tool.Function == nil || tool.Function.Parameters == nil || tool.Function.Parameters.Required == nil {
+		t.Fatal("decode must keep an explicit [] distinct from an absent required")
+	}
+	out, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("got  %s\nwant %s", out, in)
+	}
+}
