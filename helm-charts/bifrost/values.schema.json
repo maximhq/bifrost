@@ -423,7 +423,7 @@
         "ingressFrom": {
           "type": "array",
           "items": {
-            "type": "object"
+            "$ref": "#/$defs/networkPolicyPeer"
           },
           "description": "NetworkPolicyPeers that can reach the Bifrost API port and the Redis exporter when allowExternal is false. Must be empty while allowExternal is true; the chart fails otherwise."
         },
@@ -445,7 +445,7 @@
             "to": {
               "type": "array",
               "items": {
-                "type": "object"
+                "$ref": "#/$defs/networkPolicyPeer"
               },
               "description": "NetworkPolicyPeers for those ports. Empty allows any destination."
             }
@@ -7475,6 +7475,19 @@
     }
   },
   "$defs": {
+    "networkPolicyPeer": {
+      "type": "object",
+      "description": "A NetworkPolicyPeer: podSelector and/or namespaceSelector, or ipBlock alone (Kubernetes rejects an empty peer and ipBlock with a selector).",
+      "anyOf": [
+        { "required": ["podSelector"] },
+        { "required": ["namespaceSelector"] },
+        { "required": ["ipBlock"] }
+      ],
+      "not": {
+        "required": ["ipBlock"],
+        "anyOf": [{ "required": ["podSelector"] }, { "required": ["namespaceSelector"] }]
+      }
+    },
     "modelRouter": {
       "type": "object",
       "description": "One model router: an id, a name and a description beside the settings of governance.complexityAnalyzerConfig, whose definitions these properties reuse; the model each tier gets; and the routing that decides which requests it takes.",

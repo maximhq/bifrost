@@ -1544,7 +1544,15 @@ assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"namespaceSelector": {"
 check_workload "networkPolicy: allowExternal false with no ingressFrom admits nobody, not everybody" \
   "$NP"'
 assert "ingress" not in nps["bifrost"]["spec"], "an API rule rendered: %r" % nps["bifrost"]["spec"].get("ingress")' \
-  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[]'
+# Kubernetes rejects a peer that names nothing, and an ipBlock together with a selector.
+expect_render_failure "networkPolicy: schema rejects an empty ingressFrom peer" \
+  "/networkPolicy/ingressFrom/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{}]'
+expect_render_failure "networkPolicy: schema rejects an egress.to peer with ipBlock and a selector" \
+  "/networkPolicy/egress/to/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set-json 'networkPolicy.egress.to=[{"ipBlock":{"cidr":"10.0.0.0/8"},"namespaceSelector":{}}]'
 expect_render_failure "networkPolicy: ingressFrom while allowExternal is true fails instead of being ignored" \
   "networkPolicy.ingressFrom is set while networkPolicy.allowExternal is true" \
   --set networkPolicy.enabled=true \
