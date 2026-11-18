@@ -77,3 +77,40 @@ func TestIsTransientWriteErrorRealSQLiteBusy(t *testing.T) {
 	require.True(t, IsTransientWriteError(err), "real SQLITE_BUSY must be transient: %v", err)
 	require.False(t, IsPostgresStatementTimeoutError(err))
 }
+
+// retryWarpWriteOnLock runs a write again only while SQLite refuses it for a
+// lock: a busy write is retried until it goes through, any other error comes
+// back at once, and a cancelled request stops waiting.
+func TestRetryWarpWriteOnLock(t *testing.T) {
+	busy := sqlite3.Error{Code: sqlite3.ErrBusy}
+
+	attempts := 0
+	err := retryWarpWriteOnLock(context.Background(), func() error {
+		attempts++
+		if attempts < 3 {
+			return busy
+		}
+		return nil
+	})
+	if err != nil || attempts != 3 {
+		t.Fatalf("busy then success: err=%v attempts=%d, want nil after 3", err, attempts)
+	}
+
+	attempts = 0
+	other := errors.New("constraint failed")
+	if err := retryWarpWriteOnLock(context.Background(), func() error { attempts++; return other }); !errors.Is(err, other) || attempts != 1 {
+		t.Fatalf("other error: err=%v attempts=%d, want it back after 1", err, attempts)
+	}
+
+	attempts = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := retryWarpWriteOnLock(ctx, func() error { attempts++; return busy }); err == nil || attempts != 1 {
+		t.Fatalf("cancelled: err=%v attempts=%d, want the lock error after 1", err, attempts)
+	}
+
+	attempts = 0
+	if err := retryWarpWriteOnLock(context.Background(), func() error { attempts++; return busy }); err == nil || attempts != warpWriteLockAttempts {
+		t.Fatalf("always busy: err=%v attempts=%d, want the lock error after %d", err, attempts, warpWriteLockAttempts)
+	}
+}

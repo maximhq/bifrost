@@ -77,7 +77,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 
@@ -103,7 +103,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 		var availableServers []string
 		for name := range availableToolsPerClient {
 			client := s.clientManager.GetClientByName(name)
-			if client != nil && client.ExecutionConfig.IsCodeModeClient {
+			if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 				availableServers = append(availableServers, name)
 			}
 		}
@@ -131,7 +131,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }

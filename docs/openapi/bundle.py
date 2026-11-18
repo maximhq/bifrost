@@ -14,9 +14,15 @@ This is fully generic - adding new component types (securitySchemes, headers,
 requestBodies, links, callbacks, etc.) to openapi.yaml requires no changes here.
 
 Usage:
-    python bundle.py                    # Output to openapi.json
-    python bundle.py --output spec.json # Output to custom file
+    python bundle.py                    # Output to openapi.json, and openapi-oss.json beside it
+    python bundle.py --output spec.json # Output to custom file (that file only)
     python bundle.py --format yaml      # Output as YAML
+    python bundle.py --edition oss --output openapi-oss.json  # OSS operations only
+
+The default run writes both specs: openapi.json (every operation, what an
+enterprise gateway serves) and openapi-oss.json (enterprise-only operations
+removed, what an OSS gateway's /v1/mcp builds its tools from). Regenerating one
+regenerates the other, so the two cannot drift.
 
 Requirements:
     pip install pyyaml
@@ -404,6 +410,49 @@ def annotate_deprecated_operations(spec: Dict[str, Any]) -> int:
 
 
 # -----------------------------------------------------------------------------
+# Editions
+# -----------------------------------------------------------------------------
+
+ENTERPRISE_TAG = "Enterprise"
+
+
+def is_enterprise_operation(operation: Dict[str, Any]) -> bool:
+    """An operation marked enterprise-only with `x-mint.metadata.tag: Enterprise`."""
+    metadata = (operation.get("x-mint") or {}).get("metadata") or {}
+    return metadata.get("tag") == ENTERPRISE_TAG
+
+
+def filter_oss_edition(spec: Dict[str, Any]) -> int:
+    """
+    Drop the enterprise-only operations, leaving the OSS gateway's API.
+
+    A deprecated alias carries the deprecation tag rather than its successor's
+    (see annotate_deprecated_operations), so it goes with its successor: it is
+    dropped when the operation it redirects to is enterprise-only. Paths left
+    with no operation are removed. Returns the number of operations dropped.
+    """
+    paths = spec.get("paths", {})
+
+    def successor_is_enterprise(operation: Dict[str, Any], method: str) -> bool:
+        successor = paths.get(str(operation.get("x-bifrost-successor") or ""))
+        return isinstance(successor, dict) and isinstance(successor.get(method), dict) and is_enterprise_operation(successor[method])
+
+    dropped = [
+        (path, method)
+        for path, item in paths.items()
+        if isinstance(item, dict)
+        for method in HTTP_METHODS
+        if isinstance(item.get(method), dict)
+        and (is_enterprise_operation(item[method]) or successor_is_enterprise(item[method], method))
+    ]
+    for path, method in dropped:
+        del paths[path][method]
+    for path in [p for p, item in paths.items() if isinstance(item, dict) and not any(m in item for m in HTTP_METHODS)]:
+        del paths[path]
+    return len(dropped)
+
+
+# -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
@@ -428,6 +477,10 @@ def main() -> None:
         "--indent", type=int, default=2,
         help="Indentation level for output (default: 2)",
     )
+    parser.add_argument(
+        "--edition", choices=["full", "oss"], default="full",
+        help="full: every operation (default); oss: enterprise-only operations removed",
+    )
 
     args = parser.parse_args()
 
@@ -437,6 +490,8 @@ def main() -> None:
     try:
         bundler = OpenAPIBundler(base_path)
         spec = bundler.bundle(args.input)
+        if args.edition == "oss":
+            print(f"  - Enterprise-only operations removed: {filter_oss_edition(spec)}")
 
         output_path = base_path / args.output
         with open(output_path, "w", encoding="utf-8") as f:
@@ -446,6 +501,17 @@ def main() -> None:
                 yaml.dump(spec, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
         print(f"✓ Bundled specification written to: {output_path}")
+
+        # The default run also writes the OSS edition beside openapi.json, so the
+        # committed pair always comes from one bundle. A custom --output (a check
+        # bundling to a temp file) writes only what it asked for.
+        if args.edition == "full" and args.format == "json" and args.output == "openapi.json":
+            oss_spec = copy.deepcopy(spec)
+            removed = filter_oss_edition(oss_spec)
+            oss_path = base_path / "openapi-oss.json"
+            with open(oss_path, "w", encoding="utf-8") as f:
+                json.dump(oss_spec, f, indent=args.indent, ensure_ascii=False)
+            print(f"✓ OSS edition written to: {oss_path} ({removed} enterprise-only operations removed)")
 
         paths_count = len(spec.get("paths", {}))
         print(f"  - Paths: {paths_count}")

@@ -1256,6 +1256,8 @@ func PopulateFileUploadRequestAttributes(req *schemas.BifrostFileUploadRequest, 
 	}
 	if len(req.File) > 0 {
 		attrs[schemas.AttrFileBytes] = len(req.File)
+	} else if req.FileSource != nil && req.FileSource.Size() >= 0 {
+		attrs[schemas.AttrFileBytes] = int(req.FileSource.Size())
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {

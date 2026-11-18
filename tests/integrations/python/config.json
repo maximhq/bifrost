@@ -466,6 +466,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "soniox": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Soniox API Key",
+          "value": "env.SONIOX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "byteplus": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -482,6 +498,38 @@
             "seedream-4-5-251128",
             "dreamina-seedance-2-5-260628"
           ]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "baseten": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Baseten API Key",
+          "value": "env.BASETEN_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "kimchi": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Kimchi API Key",
+          "value": "env.KIMCHI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -693,6 +741,22 @@
         {
           "name": "Runware API Key",
           "value": "env.RUNWARE_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "machgen": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "MachGen API Key",
+          "value": "env.MACHGEN_API_KEY",
           "weight": 1,
           "models": ["*"]
         }
@@ -1691,6 +1755,18 @@
             "weight": 1.0
           },
           {
+            "provider": "baseten",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "kimchi",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
             "provider": "openrouter",
             "allowed_models": ["*"],
             "key_ids": ["*"],
@@ -1951,6 +2027,7 @@
     "read_buffer_size": 65536
   },
   "client": {
+    "bifrost_url": "http://localhost:8080",
     "allow_per_request_raw_override": true,
     "allow_direct_keys": true,
     "drop_excess_requests": false,
@@ -1961,7 +2038,17 @@
     "max_request_body_size_mb": 100,
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
-      "issuer_url": "http://localhost:8080"
+      "issuer_url": "http://localhost:8080",
+      "gateways": {
+        "claude_code": {
+          "enabled": true,
+          "managed_settings": {
+            "env": {
+              "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+            }
+          }
+        }
+      }
     }
   },
   "vector_store": {

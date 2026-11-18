@@ -41,6 +41,7 @@ func main() {
 	fleetURL := flag.String("fleet", "", "fleet base URL to bridge to (with -stdio)")
 	serverName := flag.String("server", "", "virtual server to bridge (with -stdio)")
 	tlsAddr := flag.String("tls-addr", "", "also serve the fleet over HTTPS on this address")
+	proxyAddr := flag.String("proxy-addr", "", "also run a forward proxy on this address that resolves *.proxy.test to the fleet")
 	flag.Parse()
 
 	// In stdio mode this process is spawned by whatever is under test, so it
@@ -90,6 +91,17 @@ func main() {
 		fmt.Printf("mcpchaos TLS listening on %s\n", tlsURL)
 	}
 
+	var shutdownProxy func(context.Context) error
+	if *proxyAddr != "" {
+		proxyURL, stop, err := fleet.ServeProxy(*proxyAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcpchaos: proxy listen: %v\n", err)
+			os.Exit(1)
+		}
+		shutdownProxy = stop
+		fmt.Printf("mcpchaos proxy listening on %s\n", proxyURL)
+	}
+
 	fmt.Printf("mcpchaos listening on %s\n", url)
 	fmt.Printf("  fleet control  %s/control\n", url)
 	for _, name := range fleet.Names() {
@@ -105,6 +117,9 @@ func main() {
 	defer cancel()
 	if shutdownTLS != nil {
 		_ = shutdownTLS(ctx)
+	}
+	if shutdownProxy != nil {
+		_ = shutdownProxy(ctx)
 	}
 	if err := shutdown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "mcpchaos: shutdown: %v\n", err)

@@ -97,7 +97,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			continue
 		}
 		for alias := range e.Aliases {
-			if blacklisted.IsBlocked(alias) {
+			if schemas.IsRegexEntry(alias) || blacklisted.IsBlocked(alias) {
 				continue
 			}
 			if allowed == nil || !allowed.IsAllowed(alias) {

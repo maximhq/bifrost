@@ -119,7 +119,16 @@ func (u *liveUsage) bifrost() *schemas.BifrostLLMUsage {
 // an extended-thinking model can generate more than once for one response. Following the chat
 // converter, thinking tokens count as output, with their own share under reasoning_tokens.
 func (u *liveUsage) add(metadata *GeminiLiveUsageMetadata) {
-	output := metadata.ResponseTokenCount + metadata.ThoughtsTokenCount
+	// A frame carries one spelling of the response fields, response* from the Gemini API or candidates* from Vertex AI.
+	response := metadata.ResponseTokenCount
+	if response == 0 {
+		response = metadata.CandidatesTokenCount
+	}
+	responseDetails := metadata.ResponseTokensDetails
+	if len(responseDetails) == 0 {
+		responseDetails = metadata.CandidatesTokensDetails
+	}
+	output := response + metadata.ThoughtsTokenCount
 	u.InputTokens += metadata.PromptTokenCount
 	u.OutputTokens += output
 	u.TotalTokens += metadata.PromptTokenCount + output
@@ -135,7 +144,7 @@ func (u *liveUsage) add(metadata *GeminiLiveUsageMetadata) {
 			u.InputTokenDetails.ImageTokens += int(detail.TokenCount)
 		}
 	}
-	for _, detail := range metadata.ResponseTokensDetails {
+	for _, detail := range responseDetails {
 		switch detail.Modality {
 		case ModalityText:
 			u.OutputTokenDetails.TextTokens += int(detail.TokenCount)
