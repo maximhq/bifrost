@@ -16,6 +16,37 @@ const (
 	MaxTestExamples = 32
 )
 
+// MaxExampleTestRequests bounds one example test, for a decision-model
+// router: every request is sent to its decision model twice, with its
+// examples as they are and with the draft added.
+const MaxExampleTestRequests = 16
+
+// DecisionRouting is the tier a router's decision model picked for one
+// request, empty when it gave no usable answer, with the confidence it
+// reported, if any.
+type DecisionRouting struct {
+	Tier       string   `json:"tier"`
+	Confidence *float64 `json:"confidence,omitempty"`
+}
+
+// TestedRequest is one request before and after adding draft examples.
+type TestedRequest struct {
+	LogID   string          `json:"log_id"`
+	Text    string          `json:"text"`
+	Current DecisionRouting `json:"current"`
+	With    DecisionRouting `json:"with_examples"`
+	Changed bool            `json:"changed"` // the tier picked changes
+}
+
+// ExampleTest is the outcome of asking a decision-model router's decision
+// model about requests with and without draft examples, and what the calls
+// cost.
+type ExampleTest struct {
+	Requests []TestedRequest `json:"requests"`
+	Changed  int             `json:"changed"`
+	Cost     float64         `json:"cost"`
+}
+
 // ErrInvalidPhraseTest is a phrase test asked with phrases it cannot route.
 var ErrInvalidPhraseTest = errors.New("invalid phrase test")
 

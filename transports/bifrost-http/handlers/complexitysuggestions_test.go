@@ -53,6 +53,11 @@ type suggestionManagerFake struct {
 	draftFloor *float64
 	impact     ComplexitySuggestionImpactReport
 	impactErr  error
+	// draftExamples and requested are what an examples test was given;
+	// examplesErr answers it.
+	draftExamples []complexity.SuggestionPhrase
+	requested     []suggestrun.TestExample
+	examplesErr   error
 }
 
 var _ ComplexitySuggestionManager = (*suggestionManagerFake)(nil)
@@ -73,7 +78,15 @@ func (m *suggestionManagerFake) ComplexitySuggestionImpact(_ context.Context, _ 
 }
 
 func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (string, bool) {
-	return m.version, routerID == "default"
+	return m.version, routerID == "default" || routerID == "decision"
+}
+
+func (m *suggestionManagerFake) TestComplexitySuggestionExamples(_ context.Context, _ string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
+	m.draftExamples, m.requested = draft, requests
+	if m.examplesErr != nil {
+		return suggestrun.ExampleTest{}, m.examplesErr
+	}
+	return suggestrun.ExampleTest{Changed: 1, Cost: 0.004}, nil
 }
 
 func (m *suggestionManagerFake) EstimateComplexitySuggestionRun(_ context.Context, _ string, window time.Duration) (suggestrun.Estimate, error) {
@@ -175,6 +188,20 @@ func suggestionTestRouter() *configstore.ModelRouter {
 	}}
 }
 
+// suggestionDecisionRouter is a saved decision-model router with suggestions
+// on, its SIMPLE tier's examples edited.
+func suggestionDecisionRouter() *configstore.ModelRouter {
+	return &configstore.ModelRouter{ID: "decision", Name: "Decision", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
+		Classifier: configstore.ComplexityClassifierDecision,
+		Keywords:   configstore.ComplexityEditableKeywordConfig{SimpleKeywords: []string{"say hello"}, MediumKeywords: []string{"summarize this"}, ComplexKeywords: []string{"design a system"}},
+		Decision: &configstore.ComplexityDecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+			"SIMPLE": {Examples: []string{"Answer a direct everyday question"}},
+		}},
+		Suggestions: &configstore.ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-4o-mini",
+			Embedding: &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "text-embedding-3-small"}},
+	}}
+}
+
 func (s suggestionsConfigStore) GetComplexityAnalyzerConfig(context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
 	return s.config, nil
 }
@@ -205,7 +232,7 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	// Suggestions are set per model router; the global config cannot hold
 	// them, so a schedule read from it would report them off.
 	config := &configstore.ComplexityAnalyzerConfig{}
-	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config, routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter()}})
+	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config, routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter(), "decision": suggestionDecisionRouter()}})
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
@@ -961,4 +988,96 @@ func TestPriceComplexitySuggestionImpactUsesCurrentTargetsForLive(t *testing.T) 
 	assert.InDelta(t, 30.0, got.LiveCost, 1e-9)
 	assert.InDelta(t, 3.0, got.DraftCost, 1e-9)
 	assert.InDelta(t, 27.0, got.Savings, 1e-9, "moving all three down saves money")
+}
+
+// A decision-model router's examples test reads requests as a phrase test
+// does, at most MaxExampleTestRequests of them, and hands the draft over
+// trimmed, its tiers in upper case; what the router refuses maps to the
+// status the rest of the API uses.
+func TestComplexitySuggestionsTestExamples(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	ids := make([]string, 0, suggestrun.MaxExampleTestRequests+2)
+	for i := range suggestrun.MaxExampleTestRequests + 2 {
+		id := fmt.Sprintf("req-%d", i)
+		manager.texts[id] = "request " + id
+		ids = append(ids, id)
+	}
+	payload, err := json.Marshal(map[string]any{"examples": []map[string]string{{"tier": " simple ", "text": "  Check the status of a refund "}}, "log_ids": ids})
+	require.NoError(t, err)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples", string(payload))
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "Check the status of a refund"}}, manager.draftExamples)
+	assert.Len(t, manager.requested, suggestrun.MaxExampleTestRequests, "each request is two decision calls, so fewer are read")
+	assert.Equal(t, "req-0", manager.requested[0].LogID)
+	assert.Equal(t, 1.0, body["changed"])
+	assert.Equal(t, 0.004, body["cost"])
+	assert.Equal(t, []any{}, body["requests"])
+
+	for name, payload := range map[string]string{
+		"no examples": `{"examples":[]}`,
+		"too many":    `{"examples":[` + strings.TrimSuffix(strings.Repeat(`{"tier":"SIMPLE","text":"x"},`, suggestrun.MaxTestPhrases+1), ",") + `]}`,
+		"not json":    `{`,
+	} {
+		code, _ := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples", payload)
+		assert.Equal(t, fasthttp.StatusBadRequest, code, name)
+	}
+	for _, tc := range []struct {
+		err  error
+		code int
+	}{
+		{routing.ErrComplexitySuggestionExamplesOnly, fasthttp.StatusConflict},
+		{suggestrun.ErrInvalidPhraseTest, fasthttp.StatusBadRequest},
+		{routing.ErrDecisionRequestExecutorNotConfigured, fasthttp.StatusServiceUnavailable},
+		{routing.ErrUnknownComplexityRouter, fasthttp.StatusServiceUnavailable},
+		{errors.New("decision model down"), fasthttp.StatusBadGateway},
+	} {
+		manager.examplesErr = tc.err
+		code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples", `{"examples":[{"tier":"SIMPLE","text":"x"}]}`)
+		assert.Equal(t, tc.code, code, "%v: %v", tc.err, body)
+	}
+}
+
+// A decision-model router's suggestions are examples: accepting adds them to
+// its decision guidance (a tier never edited keeping its shipped examples),
+// not to the phrase bank; an impact replay is refused before the draft is
+// built, since a phrase bank has nothing to say about it; and a run or
+// estimate the router cannot make yet answers as the rest of the API does.
+func TestComplexitySuggestionsForADecisionRouter(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/phrases",
+		`{"phrases":{"SIMPLE":["Check the status of a refund"],"COMPLEX":["Plan a migration across several services"]}}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	saved := body["router"].(map[string]any)
+	criteria := saved["decision"].(map[string]any)["criteria"].(map[string]any)
+	assert.Equal(t, []any{"Answer a direct everyday question", "Check the status of a refund"}, criteria["SIMPLE"].(map[string]any)["examples"])
+	complexExamples := criteria["COMPLEX"].(map[string]any)["examples"].([]any)
+	assert.Len(t, complexExamples, len(configstore.DefaultComplexityDecisionGuidance().Criteria["COMPLEX"].Examples)+1, "the shipped examples are kept")
+	assert.Equal(t, "Plan a migration across several services", complexExamples[len(complexExamples)-1])
+	assert.Equal(t, []any{"say hello"}, saved["keywords"].(map[string]any)["simple_keywords"], "the phrase bank is untouched")
+	assert.Equal(t, 1, manager.reloads["decision"])
+
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/phrases", `{"phrases":{"MEDIUM":["Check the status of a refund"]}}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "an example another tier has: %v", body)
+
+	manager.impactErr = nil
+	manager.draft = nil
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/impact", `{"phrases":{"SIMPLE":["x"]}}`)
+	assert.Equal(t, fasthttp.StatusConflict, code, body)
+	assert.Contains(t, errorText(body), "for semantic routers")
+	assert.Nil(t, manager.draft, "the replay is never asked for")
+
+	for _, tc := range []struct {
+		err  error
+		code int
+	}{
+		{complexity.ErrNoDecisionEmbedding, fasthttp.StatusConflict},
+		{routing.ErrEmbeddingRequestExecutorNotConfigured, fasthttp.StatusServiceUnavailable},
+		{routing.ErrComplexitySuggestionsClassifier, fasthttp.StatusConflict},
+	} {
+		manager.runErr, manager.estimateErr = tc.err, tc.err
+		code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/runs", "")
+		assert.Equal(t, tc.code, code, "run: %v: %v", tc.err, body)
+		code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/decision/suggestions/runs/estimate", "")
+		assert.Equal(t, tc.code, code, "estimate: %v: %v", tc.err, body)
+	}
 }

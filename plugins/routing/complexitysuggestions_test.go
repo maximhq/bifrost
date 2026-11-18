@@ -951,36 +951,110 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	assert.Empty(t, runs)
 }
 
-// A decision-model router's suggestion settings are accepted, but this gateway
-// does not run them yet: the schedule records nothing for it (rather than a
-// skipped run every slot while a semantic classifier it never uses "warms"),
-// and a run or an estimate asked on demand is refused as such.
-func TestComplexitySuggestionsDecisionRouterIsNotRunYet(t *testing.T) {
+// A decision-model router's suggestions run like a semantic router's, as
+// examples: a scheduled slot before the embedding path is up is recorded as
+// skipped, and once it is, a run embeds the router's logged requests, and a
+// cluster its decision model sends to a tier the judge disagrees with gets
+// examples, kept against the router's examples version. The estimate sizes
+// what was backfilled. Phrase tests and impact replays are for semantic
+// routers, and an llm-classifier router has no suggestions at all.
+func TestComplexitySuggestionsDecisionRouterRuns(t *testing.T) {
 	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 	p, store := scheduledSuggestionPlugin(t, start, suggestionScheduleStore(t))
 	settings := suggestionTestSettings()
 	settings.Schedule = hourlyFrom(start)
 	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
-	cfg := captureTestConfig(settings)
-	cfg.Classifier, cfg.Semantic, cfg.Decision = complexity.ClassifierDecision, nil, &complexity.DecisionConfig{}
-	const decisionRouterID = "decision-router"
-	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: decisionRouterID, Name: decisionRouterID, ComplexityAnalyzerConfig: *cfg}))
-	_, ok := p.suggestionRouter(decisionRouterID)
-	require.True(t, ok, "the router is served with its suggestion settings")
-
+	const routerID = "decision-router"
+	serveDecisionRouter(t, p, routerID, settings, nil)
 	ctx := context.Background()
-	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(time.Hour + time.Second), start.Add(2*time.Hour + time.Second)} {
+
+	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(time.Hour + time.Second)} {
 		require.NoError(t, p.scheduleComplexitySuggestions(ctx, at))
 	}
 	p.suggestions.wg.Wait()
+	var skipped []string
 	for _, run := range runsOf(t, store) {
-		assert.NotEqual(t, decisionRouterID, run.RouterID, "no run is recorded for the decision router: %+v", run)
+		if run.RouterID == routerID {
+			skipped = append(skipped, run.Status+": "+run.Error)
+		}
 	}
+	assert.Equal(t, []string{logstore.ComplexitySuggestionRunSkipped + ": the embedding path was not ready yet"}, skipped)
+	_, err := p.StartComplexitySuggestionRunNow(ctx, routerID, 0)
+	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured, "refused up front, not recorded as a failed run")
 
-	_, err := p.StartComplexitySuggestionRunNow(ctx, decisionRouterID, 0)
+	p.SetEmbeddingRequestExecutor((&decisionEmbeddings{}).execute)
+	now := time.Now().UTC()
+	for i := range 6 {
+		addDecisionLog(t, store, fmt.Sprintf("decided-%d", i), routerID, now.Add(-time.Hour), complexity.TierComplex, complexity.MechanismDecision)
+	}
+	runID, err := p.StartComplexitySuggestionRunNow(ctx, routerID, 0)
+	require.NoError(t, err)
+	var run logstore.ComplexitySuggestionRun
+	require.Eventually(t, func() bool {
+		for _, r := range runsOf(t, store) {
+			if r.ID == runID && r.FinishedAt != nil {
+				run = r
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond)
+	require.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
+	assert.EqualValues(t, 6, run.RequestsRead, "the router's logged requests, embedded from its logs")
+	assert.Equal(t, PromptHashOf(t, p, routerID), run.PromptHash)
+
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, []string{"a short question"}, rows[0].Phrases(), "the judge's example, as written")
+	assert.Equal(t, complexity.TierSimple, rows[0].Tier)
+	assert.Equal(t, string(suggest.CategoryMisrouted), rows[0].Category)
+	assert.Equal(t, map[string]int64{complexity.TierComplex: 6}, rows[0].CurrentRouting())
+	assert.Equal(t, p.ComplexitySuggestionRouterVersion(routerID), rows[0].RouterVersion)
+	assert.NotEmpty(t, rows[0].RouterVersion)
+
+	estimate, err := p.EstimateComplexitySuggestionRun(ctx, routerID, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 6, estimate.Requests)
+	assert.Zero(t, estimate.Backfill, "the run embedded them already")
+
+	_, err = p.TestComplexitySuggestionPhrases(ctx, routerID, []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: "x"}}, nil)
 	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
-	_, err = p.EstimateComplexitySuggestionRun(ctx, decisionRouterID, 0)
+	_, _, err = p.ComplexitySuggestionImpact(ctx, routerID, 0, nil, nil)
 	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
+
+	llm := captureTestConfig(&configstore.ComplexitySuggestionsConfig{Provider: "openai", Model: "gpt-test"})
+	llm.Classifier, llm.Semantic, llm.LLM = complexity.ClassifierLLM, nil, &complexity.LLMConfig{Provider: "openai", Model: "gpt-test"}
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: "llm-router", Name: "llm-router", ComplexityAnalyzerConfig: *llm}))
+	_, err = p.StartComplexitySuggestionRunNow(ctx, "llm-router", 0)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
+	_, err = p.EstimateComplexitySuggestionRun(ctx, "llm-router", 0)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
+}
+
+// PromptHashOf is the prompt hash a router's run records.
+func PromptHashOf(t *testing.T, p *RoutingPlugin, routerID string) string {
+	t.Helper()
+	router, ok := p.suggestionRouter(routerID)
+	require.True(t, ok)
+	_, tierPrompt, _, err := p.newSuggestionTierDecider(router)
+	require.NoError(t, err)
+	return suggestrun.PromptHash(suggest.DefaultExampleInstructions(), tierPrompt)
+}
+
+// serveDecisionRouter serves a decision-model router with the given
+// suggestions settings and previous-message count (the default when nil).
+func serveDecisionRouter(t *testing.T, p *RoutingPlugin, id string, settings *configstore.ComplexitySuggestionsConfig, decision *complexity.DecisionConfig) *complexity.AnalyzerConfig {
+	t.Helper()
+	cfg := captureTestConfig(settings)
+	cfg.Classifier, cfg.Semantic, cfg.Decision = complexity.ClassifierDecision, nil, decision
+	if cfg.Decision == nil {
+		cfg.Decision = &complexity.DecisionConfig{}
+	}
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: id, Name: id, ComplexityAnalyzerConfig: *cfg}))
+	_, ok := p.suggestionRouter(id)
+	require.True(t, ok)
+	return cfg
 }
 
 // A scheduled run that comes due while a manual one is queued or running is
@@ -1635,8 +1709,11 @@ func (e *decisionEmbeddings) execute(_ *schemas.BifrostContext, req *schemas.Bif
 		text := *item.Content[0].Text
 		e.texts = append(e.texts, text)
 		vector := []float64{1, 0}
-		if strings.Contains(text, "hard") {
+		switch {
+		case strings.Contains(text, "hard"):
 			vector = []float64{0, 1}
+		case strings.Contains(text, "short question"):
+			vector = []float64{0.6, 0.8}
 		}
 		resp.Data = append(resp.Data, schemas.EmbeddingData{Index: i, Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}})
 	}
@@ -1649,6 +1726,17 @@ func (e *decisionEmbeddings) take() []string {
 	texts := e.texts
 	e.texts = nil
 	return texts
+}
+
+// countedRouterLogs counts the passes over a router's logs.
+type countedRouterLogs struct {
+	logstore.LogStore
+	reads atomic.Int64
+}
+
+func (l *countedRouterLogs) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]logstore.ComplexityRouterLog) error) error {
+	l.reads.Add(1)
+	return l.LogStore.EachComplexityRouterLog(ctx, routerID, from, to, fn)
 }
 
 // addDecisionLog writes a request the decision router took, with the tier
@@ -1675,7 +1763,8 @@ func TestComplexitySuggestionDecisionRouterSource(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	reads := &textReads{}
 	var historyCounts []int
-	p.SetComplexitySuggestionStore(store, func(ctx context.Context, ids []string, count int) (map[string]string, error) {
+	logs := &countedRouterLogs{LogStore: store}
+	p.SetComplexitySuggestionStore(logs, func(ctx context.Context, ids []string, count int) (map[string]string, error) {
 		historyCounts = append(historyCounts, count)
 		return reads.read(ctx, ids, count)
 	})
@@ -1686,15 +1775,11 @@ func TestComplexitySuggestionDecisionRouterSource(t *testing.T) {
 	settings := suggestionTestSettings()
 	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
 	previous := 2
-	cfg := captureTestConfig(settings)
-	cfg.Classifier, cfg.Semantic = complexity.ClassifierDecision, nil
-	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &previous, Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
-		complexity.TierComplex: {Examples: []string{"a hard proof"}},
-	}}
 	const routerID = "decision-router"
-	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: routerID, Name: routerID, ComplexityAnalyzerConfig: *cfg}))
-	router, ok := p.suggestionRouter(routerID)
-	require.True(t, ok)
+	cfg := serveDecisionRouter(t, p, routerID, settings, &complexity.DecisionConfig{PreviousMessageCount: &previous, Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		complexity.TierComplex: {Examples: []string{"a hard proof"}},
+	}})
+	router, _ := p.suggestionRouter(routerID)
 	assert.Equal(t, 3, p.ComplexitySuggestionMessageHistoryCount(routerID), "the decision model reads two previous turns and the current one")
 
 	space, err := p.decisionSuggestionSpace(ctx, router)
@@ -1730,6 +1815,8 @@ func TestComplexitySuggestionDecisionRouterSource(t *testing.T) {
 		return nil
 	}))
 	assert.Equal(t, map[string]string{"decided-simple": complexity.TierSimple, "decided-complex": complexity.TierComplex}, got)
+	require.NoError(t, space.EachCaptured(ctx, now.Add(-24*time.Hour), now, func([]complexity.CapturedRequest) error { return nil }))
+	assert.EqualValues(t, 1, logs.reads.Load(), "the backfill's pass over the logs is the only one: reading the window twice reads them no more")
 
 	// A second space embeds nothing it already has; an edited example alone.
 	_, err = p.decisionSuggestionSpace(ctx, router)
@@ -1758,10 +1845,78 @@ func TestComplexitySuggestionDecisionSpaceNeedsAnEmbeddingModel(t *testing.T) {
 
 	settings := suggestionTestSettings()
 	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
-	cfg := captureTestConfig(settings)
-	cfg.Classifier, cfg.Semantic, cfg.Decision = complexity.ClassifierDecision, nil, &complexity.DecisionConfig{}
-	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: "decision-router", Name: "decision-router", ComplexityAnalyzerConfig: *cfg}))
+	serveDecisionRouter(t, p, "decision-router", settings, nil)
 	router, _ := p.suggestionRouter("decision-router")
 	_, err = p.decisionSuggestionSpace(ctx, router)
 	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured, "no embedding path wired yet")
+}
+
+// The examples test asks the router's own decision model about each request
+// twice, exactly as routing asks, with the router's examples and with the
+// draft added, and reports which requests change tier. The draft is checked
+// as accepting it would be; the test is for decision-model routers only.
+func TestComplexitySuggestionExamplesTest(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	settings := suggestionTestSettings()
+	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
+	serveDecisionRouter(t, p, "decision-router", settings, &complexity.DecisionConfig{Provider: "typesafe", Model: "jev-latest"})
+	requests := []suggestrun.TestExample{{LogID: "a", Text: "where is my refund"}, {LogID: "b", Text: "plan our migration"}}
+	draft := []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: "Check the status of a refund"}}
+
+	_, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, requests)
+	require.ErrorIs(t, err, ErrDecisionRequestExecutorNotConfigured)
+
+	var mu sync.Mutex
+	var asked []*schemas.BifrostDecisionRequest
+	p.SetDecisionRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		mu.Lock()
+		asked = append(asked, req)
+		mu.Unlock()
+		// The refund request is SIMPLE once the draft example describes it.
+		simple := req.Questions[0].Choices[0].Description.Structured.(map[string]interface{})
+		text := *req.Input.Messages[0].Content.Text
+		if strings.Contains(text, "refund") && strings.Contains(strings.Join(simple["examples"].([]string), "\n"), "Check the status of a refund") {
+			return decisionChoiceResponse(complexity.TierSimple), nil
+		}
+		return decisionChoiceResponse(complexity.TierComplex), nil
+	})
+	result, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, requests)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Changed)
+	require.Len(t, result.Requests, 2)
+	assert.Equal(t, suggestrun.TestedRequest{LogID: "a", Text: "where is my refund", Current: suggestrun.DecisionRouting{Tier: complexity.TierComplex},
+		With: suggestrun.DecisionRouting{Tier: complexity.TierSimple}, Changed: true}, result.Requests[0])
+	assert.False(t, result.Requests[1].Changed)
+	require.Len(t, asked, 4, "two calls per request")
+	for _, req := range asked {
+		assert.Equal(t, schemas.ModelProvider("typesafe"), req.Provider, "the router's own decision model")
+		assert.Equal(t, "jev-latest", req.Model)
+		assert.Equal(t, routerDecisionRequest(req.Provider, req.Model, nil, nil).Questions[0].Instructions, req.Questions[0].Instructions, "asked as routing asks")
+		assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, choiceTiers(req.Questions[0]))
+	}
+
+	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex].Examples[0]}}, requests)
+	require.ErrorIs(t, err, suggestrun.ErrInvalidPhraseTest, "another tier's example")
+	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", nil, requests)
+	require.ErrorIs(t, err, suggestrun.ErrInvalidPhraseTest)
+	_, err = p.TestComplexitySuggestionExamples(ctx, captureRouterID, draft, requests)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier, "a semantic router tests phrases")
+}
+
+// A router's runs cluster with the same seed every time, so a scheduled run
+// over the same traffic refreshes its suggestions instead of replacing them;
+// routers do not share one.
+func TestComplexitySuggestionRunsKeepTheirSeed(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	router, ok := p.suggestionRouter(captureRouterID)
+	require.True(t, ok)
+	first := runSettings(router, "run-1", logstore.ComplexitySuggestionTriggerSchedule, 0)
+	time.Sleep(time.Millisecond)
+	second := runSettings(router, "run-2", logstore.ComplexitySuggestionTriggerManual, time.Hour)
+	assert.NotZero(t, first.Seed)
+	assert.Equal(t, first.Seed, second.Seed)
+	other := router
+	other.id = "another-router"
+	assert.NotEqual(t, first.Seed, runSettings(other, "run-3", logstore.ComplexitySuggestionTriggerSchedule, 0).Seed)
 }

@@ -822,7 +822,7 @@ complexity-suggestion-test:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Test phrases against routed requests
     description: |
-      Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.
+      Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model. A decision-model router's suggestions are examples, tried with POST /api/routing/model-routers/{router_id}/suggestions/test-examples; this endpoint answers 409 for one.
     tags:
       - Routing
     security:
@@ -860,6 +860,12 @@ complexity-suggestion-test:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The router is a decision-model router, whose examples are tested with the examples test
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         description: The suggestion or the example logs could not be read
         content:
@@ -874,6 +880,83 @@ complexity-suggestion-test:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
         description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-test-examples:
+  post:
+    operationId: testComplexitySuggestionExamples
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Test examples against a decision-model router
+    description: |
+      The decision-model router's counterpart of the phrase test. Asks the router's decision model about each request twice, exactly as routing asks it, once with the router's tier examples as they are and once with the given examples added, and reports the tier picked each time, without saving anything. Use it to try an edited example before staging it. The examples are checked as adding them would check them: an example another tier has, one past 300 characters, or a tier past 60 examples is 400. Each request's text is the user turns the decision model reads (its previous_message_count and the current one), joined and sent as one message. Every request costs two decision-model calls, so at most 16 are asked about; `cost` is what the calls cost at list price. A semantic router answers 409.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityExampleTestRequest'
+    responses:
+      '200':
+        description: Examples tested
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityExampleTest'
+      '400':
+        description: No examples, too many, an example without text or a valid tier, one another tier has, one over 300 characters, a tier past 60 examples, or more than 256 log IDs
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router is not saved, or the suggestion_id sent is not one of its suggestions
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The router is not a decision-model router; a semantic router's phrases are tested with the phrase test
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion or the request logs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '502':
+        description: The decision model failed a call
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Suggestions are not available (no log store, or the routing plugin is not loaded), the decision-model request path is not wired yet, or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -967,6 +1050,8 @@ complexity-suggestion-runs:
     summary: Start a phrase suggestion run now
     description: |
       Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. It needs the router's suggestions settings and a suggestion model, not suggestions turned on: with enabled false the run is a one-off, never scheduled, and first embeds the router's logged requests in its window that are not yet captured (the sample_rate share of those whose content was logged, newest first, up to max_clustered_requests). A run started without a suggestion model is accepted and then fails. Refused while the router has no suggestions settings, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).
+
+      A decision-model router's run suggests tier examples rather than phrases. It captures nothing as requests are routed, so every request it reads is first embedded from its logs with suggestions.embedding, only those its decision model logged a tier for; a request held to a session's tier, or routed while the router classified another way, is left out. A cluster the router already sends where the suggestion model's tier step puts it is covered, at one call; one it sends elsewhere is written examples for that tier, up to 60 examples per tier counting those the tier has. Refused while it has no suggestions.embedding, or the embedding path is not up yet. An llm-classifier router has no suggestions: 409.
     tags:
       - Routing
     security:
@@ -1009,7 +1094,7 @@ complexity-suggestion-runs:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: The router has no suggestions settings, or a run is already queued or running
+        description: The router has no suggestions settings, a run is already queued or running, the router uses the llm classifier, or a decision-model router has no suggestions.embedding
         content:
           application/json:
             schema:
@@ -1021,7 +1106,7 @@ complexity-suggestion-runs:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or it has no warmed phrase bank to suggest against yet
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, it has no warmed phrase bank to suggest against yet, or (a decision-model router) there is no shared vector store or the embedding path is not up yet
         content:
           application/json:
             schema:
@@ -1041,7 +1126,7 @@ complexity-suggestion-run-estimate:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Estimate a phrase suggestion run
     description: |
-      Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there.
+      Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there. For a decision-model router the estimate first embeds the router's tier examples with suggestions.embedding (once per change of examples or model; later estimates and runs reuse them), and counts as backfill only requests its decision model logged a tier for.
     tags:
       - Routing
     security:
@@ -1081,7 +1166,7 @@ complexity-suggestion-run-estimate:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: The router has no suggestions settings
+        description: The router has no suggestions settings, uses the llm classifier, or is a decision-model router without suggestions.embedding
         content:
           application/json:
             schema:
@@ -1093,7 +1178,7 @@ complexity-suggestion-run-estimate:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or (a decision-model router) the embedding path is not up yet
         content:
           application/json:
             schema:
@@ -1693,6 +1778,8 @@ complexity-suggestion-impact:
       Adds the phrases given, by tier, to the router's saved phrases for this replay only, routes the router's captured requests from the window, by nearest phrase, against the saved bank and against the bank with the phrases added, and reports what would change. Nothing is saved: the phrases are dropped after the replay, and only the add phrases endpoint saves phrases. A phrase its tier already holds is skipped and reported; one another tier holds is refused. A window that reaches back before the router captured requests is first filled from its logs. Reported: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.
 
       Only requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.
+
+      A decision-model router routes by asking its decision model, so a replay would be a decision call per request in the window: it answers 409, and its draft examples are tried on a few requests with the examples test instead.
     tags:
       - Routing
     security:
@@ -1738,7 +1825,7 @@ complexity-suggestion-impact:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: The router has no suggestions settings, or the stored router is in a form this version cannot read; save or reset it
+        description: The router has no suggestions settings, is a decision-model router, or the stored router is in a form this version cannot read; save or reset it
         content:
           application/json:
             schema:
@@ -1777,6 +1864,8 @@ model-router-phrases:
     summary: Add phrases to a model router
     description: |
       Appends phrases, by tier, to the router's saved phrase bank and serves it; the one phrase suggestion endpoint that changes routing. A phrase its tier already holds is skipped and reported. A phrase another tier holds, a bank past its phrase limit, or a suggestion named that is not the router's or not open refuses the request, and nothing is saved. Once the phrases are saved, the suggestions named are marked accepted: the phrases stay saved even when one cannot be (a run superseded it meanwhile, or its status could not be written), and `accepted` lists only those that were. The router is served again even when every phrase was already there, so a retry after a failed reload reaches it. Unknown fields are refused with 400. Changed phrases are re-embedded in the background, as any phrase save is.
+
+      For a decision-model router the phrases are tier examples, added to decision.criteria under the same rules: compared case- and whitespace-insensitively, at most 300 characters each and 60 per tier. A tier whose examples were never edited starts from its shipped examples, which an override would otherwise replace, and only tiers given an example are written. The phrase bank is left as it is.
     tags:
       - Routing
     security:
@@ -1803,7 +1892,7 @@ model-router-phrases:
             schema:
               $ref: '../../schemas/management/governance.yaml#/AddModelRouterPhrasesResponse'
       '400':
-        description: No phrases, an empty or too-long phrase, an unknown tier, a tier given twice, a phrase another tier already holds, or a bank past its phrase limit
+        description: No phrases, an empty or too-long phrase, an unknown tier, a tier given twice, a phrase another tier already holds, or a bank past its phrase limit (for a decision-model router, a tier past 60 examples)
         content:
           application/json:
             schema:

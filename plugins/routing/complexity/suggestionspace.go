@@ -2,9 +2,12 @@ package complexity
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -224,15 +227,21 @@ func (s *SuggestionSpace) ServedVersion() string { return s.Version }
 // CreateNamespace, so after a restart an estimate made before anything was
 // captured would fail. Creating a namespace that exists changes nothing.
 func (s *SuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time) (int, error) {
-	if s.Store == nil {
+	return s.Target().count(ctx, from, to)
+}
+
+// count counts the requests captured in the target from from through to,
+// creating its namespace first; see SuggestionSpace.CountCaptured.
+func (t CaptureTarget) count(ctx context.Context, from, to time.Time) (int, error) {
+	if t.Store == nil {
 		return 0, ErrNoCaptureStore
 	}
-	if s.CaptureNamespace != "" {
-		if err := s.Store.CreateNamespace(ctx, s.CaptureNamespace, s.Dimension, captureProperties); err != nil {
+	if t.Namespace != "" {
+		if err := t.Store.CreateNamespace(ctx, t.Namespace, t.Dimension, captureProperties); err != nil {
 			return 0, fmt.Errorf("create capture namespace: %w", err)
 		}
 	}
-	return CountCaptured(ctx, s.Store, s.CaptureNamespace, from, to)
+	return CountCaptured(ctx, t.Store, t.Namespace, from, to)
 }
 
 // A decision-model router has no embedding space of its own: it sends each
@@ -282,11 +291,38 @@ type DecisionSuggestionSpace struct {
 	Dimension           int
 	MessageHistoryCount int
 	Examples            []SuggestionPhrase // in tier order, then as configured
+	Version             string             // names the examples and model; see DecisionExamplesVersion
 
 	model       *SemanticConfig // the embedding model, as the embedding path takes it
 	embed       EmbeddingFunc
 	embedBatch  BatchEmbeddingFunc
 	loggedTiers LoggedTiers
+
+	// tiers is the last window's logged tiers, kept for the space's life: a
+	// run reads its window twice (to sample, then to count the rest in) and
+	// its backfill has read the same logs before, so the logs are read once.
+	// One entry per request the router logged a tier for in the window.
+	tiersMu     sync.Mutex
+	tiersWindow [2]time.Time
+	tiers       map[string]string
+}
+
+// DecisionExamplesVersion names a decision-model router's examples as an
+// embedding model sees them, as a semantic router's serving version names
+// its phrase bank: a suggestion made against other examples, or another
+// model, is shown as made against an earlier version.
+func DecisionExamplesVersion(provider schemas.ModelProvider, model string, examples map[string][]string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "decision-examples-v1\x00%s\x00%s", provider, model)
+	for _, tier := range OrderedTiers() {
+		fmt.Fprintf(h, "\x00%s", tier)
+		for _, text := range examples[tier] {
+			if text = strings.TrimSpace(text); text != "" {
+				fmt.Fprintf(h, "\x00%s", text)
+			}
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // NewDecisionSuggestionSpace embeds the router's examples, those not already
@@ -303,6 +339,7 @@ func NewDecisionSuggestionSpace(ctx context.Context, cfg DecisionSpaceConfig) (*
 		embed:               cfg.Embed,
 		embedBatch:          cfg.EmbedBatch,
 		loggedTiers:         cfg.LoggedTiers,
+		Version:             DecisionExamplesVersion(cfg.Provider, cfg.Model, cfg.Examples),
 	}
 	var missing []string
 	queued := map[string]struct{}{}
@@ -362,12 +399,9 @@ func (s *DecisionSuggestionSpace) EachCaptured(ctx context.Context, from, to tim
 	if s.Store == nil {
 		return ErrNoCaptureStore
 	}
-	if s.loggedTiers == nil {
-		return errors.New("no logs to read the decision model's tiers from")
-	}
-	tiers, err := s.loggedTiers(ctx, from, to)
+	tiers, err := s.windowTiers(ctx, from, to)
 	if err != nil {
-		return fmt.Errorf("read the router's logged tiers: %w", err)
+		return err
 	}
 	return EachCaptured(ctx, s.Store, s.CaptureNamespace, from, to, func(page []CapturedRequest) error {
 		kept := page[:0]
@@ -383,6 +417,45 @@ func (s *DecisionSuggestionSpace) EachCaptured(ctx context.Context, from, to tim
 		return fn(kept)
 	})
 }
+
+// windowTiers returns the logged tiers of a window, read from the logs the
+// first time the window is asked for, or as its backfill recorded them.
+func (s *DecisionSuggestionSpace) windowTiers(ctx context.Context, from, to time.Time) (map[string]string, error) {
+	s.tiersMu.Lock()
+	defer s.tiersMu.Unlock()
+	if s.tiers != nil && s.tiersWindow == [2]time.Time{from, to} {
+		return s.tiers, nil
+	}
+	if s.loggedTiers == nil {
+		return nil, errors.New("no logs to read the decision model's tiers from")
+	}
+	tiers, err := s.loggedTiers(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("read the router's logged tiers: %w", err)
+	}
+	s.tiers, s.tiersWindow = tiers, [2]time.Time{from, to}
+	return tiers, nil
+}
+
+// RecordLoggedTiers keeps a window's logged tiers that were read already, by
+// a backfill that paged the same logs, so reading the window does not page
+// them again.
+func (s *DecisionSuggestionSpace) RecordLoggedTiers(from, to time.Time, tiers map[string]string) {
+	s.tiersMu.Lock()
+	defer s.tiersMu.Unlock()
+	s.tiers, s.tiersWindow = tiers, [2]time.Time{from, to}
+}
+
+// CountCaptured counts the requests captured from from through to; see
+// SuggestionSpace.CountCaptured. Every request a decision-model router's
+// space holds was backfilled because its decision model logged a tier for
+// it, so this is what a run reads unless logs were deleted since.
+func (s *DecisionSuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time) (int, error) {
+	return s.Target().count(ctx, from, to)
+}
+
+// ServedVersion names the examples the space was built from.
+func (s *DecisionSuggestionSpace) ServedVersion() string { return s.Version }
 
 // Namespace names the space's captured requests; suggestions record it as
 // their embedding signature.

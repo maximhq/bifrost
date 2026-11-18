@@ -3936,6 +3936,72 @@ ComplexityPhraseTest:
       type: number
       description: Share of the examples whose nearest phrase is one of the tested phrases. It counts the nearest phrase whether or not its similarity clears min_similarity, so it is not the share the router would route by the tested phrases; each example's with_phrases.accepted says that.
 
+ComplexityExampleTestRequest:
+  type: object
+  required: [examples]
+  properties:
+    examples:
+      type: array
+      minItems: 1
+      maxItems: 10
+      items:
+        type: object
+        required: [tier, text]
+        properties:
+          tier:
+            type: string
+            enum: [SIMPLE, MEDIUM, COMPLEX]
+          text:
+            type: string
+            minLength: 1
+            maxLength: 300
+            description: At most 300 characters once trimmed, the decision guidance's own limit.
+    suggestion_id:
+      type: string
+      description: Ask about this suggestion's examples.
+    log_ids:
+      type: array
+      maxItems: 256
+      items:
+        type: string
+      description: Ask about these logs, instead of or as well as a suggestion's examples. They are asked about first; a log that is gone or cannot be read is skipped, and at most 16 readable requests are asked about. More than 256 is 400.
+
+ComplexityDecisionRouting:
+  type: object
+  properties:
+    tier:
+      type: string
+      description: The tier the decision model picked; empty when its answer had no valid tier.
+    confidence:
+      type: number
+      description: The confidence it reported, from 0 to 1; omitted when it reported none.
+
+ComplexityExampleTest:
+  type: object
+  properties:
+    requests:
+      type: array
+      items:
+        type: object
+        properties:
+          log_id:
+            type: string
+          text:
+            type: string
+          current:
+            $ref: '#/ComplexityDecisionRouting'
+          with_examples:
+            $ref: '#/ComplexityDecisionRouting'
+          changed:
+            type: boolean
+            description: Whether the tier picked changes with the examples added.
+    changed:
+      type: integer
+      description: How many requests change tier.
+    cost:
+      type: number
+      description: What the decision-model calls cost, in USD at list price; 0 when the model has no known price.
+
 ComplexitySessionConfig:
   type: object
   description: Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.
