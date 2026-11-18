@@ -27,10 +27,7 @@ func (r *sharedOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, con
 	if err != nil {
 		return nil, err
 	}
-
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+accessToken)
-	return headers, nil
+	return bearerHeader(accessToken), nil
 }
 
 func (r *sharedOAuthResolver) RequiresPerCallConnection() bool { return false }
@@ -40,13 +37,23 @@ func (r *sharedOAuthResolver) RequiresPerCallConnection() bool { return false }
 // provider-availability check) now happens entirely inside the provider —
 // see schemas.OAuth2Provider.ForceRefreshAccessToken.
 func (r *sharedOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
-	if r.provider == nil {
-		return schemas.ErrOAuth2ProviderNotAvailable
-	}
-	return r.provider.ForceRefreshAccessToken(ctx, config)
+	return forceRefreshShared(r.provider, ctx, config)
 }
 
-// AdminConnectionHeaders delegates to ConnectionHeaders for a client
+// forceRefreshShared refreshes a credential shared by every caller of config.
+func forceRefreshShared(provider schemas.OAuth2Provider, ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	if provider == nil {
+		return schemas.ErrOAuth2ProviderNotAvailable
+	}
+	return provider.ForceRefreshAccessToken(ctx, config)
+}
+
+// AdminConnectionHeaders: see sharedAdminConnectionHeaders.
+func (r *sharedOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	return sharedAdminConnectionHeaders(ctx, config, schemas.MCPAuthTypeOauth, r.ConnectionHeaders)
+}
+
+// sharedAdminConnectionHeaders delegates to connectionHeaders for a client
 // currently running per-call (needs_session_stickiness nil/false) — there is
 // no separate "admin" credential distinct from the one used for real calls,
 // so the periodic connection checker's per-call discovery cycle
@@ -56,9 +63,9 @@ func (r *sharedOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *
 // connectToMCPClient) — erroring rather than silently delegating turns a
 // caller-chain bug into an immediate, loud failure instead of a
 // quietly-redundant credential resolution.
-func (r *sharedOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+func sharedAdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig, authType schemas.MCPAuthType, connectionHeaders func(*schemas.BifrostContext, *schemas.MCPClientConfig) (http.Header, error)) (http.Header, error) {
 	if !needsSessionStickiness(config) {
-		return r.ConnectionHeaders(schemas.NewBifrostContext(ctx, schemas.NoDeadline), config)
+		return connectionHeaders(schemas.NewBifrostContext(ctx, schemas.NoDeadline), config)
 	}
-	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q on a sticky connection", "oauth")
+	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q on a sticky connection", authType)
 }

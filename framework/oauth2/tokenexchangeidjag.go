@@ -307,7 +307,7 @@ func (p *OAuth2Provider) redeemIDJAG(ctx context.Context, config *schemas.MCPCli
 	form := url.Values{}
 	form.Set("grant_type", grantTypeJWTBearer)
 	form.Set("assertion", assertion)
-	opts, err := resourceClientAuth(form, cfg, clientID, upstream)
+	opts, err := upstreamClientAuthForm(form, cfg.ResourceClientAuth(), clientID, upstream.endpoint, upstream.authMethods)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate to the upstream authorization server for MCP client %s: %w", config.Name, err)
 	}
@@ -327,21 +327,22 @@ func (p *OAuth2Provider) redeemIDJAG(ctx context.Context, config *schemas.MCPCli
 	return response, nil
 }
 
-// resourceClientAuth adds Bifrost's client authentication at the upstream
-// authorization server to form, returning any request options it needs: a
-// client assertion signed with the configured key (RFC 7523 §2.2; audience the
+// upstreamClientAuthForm adds Bifrost's client authentication at an upstream
+// token endpoint to form, returning any request options it needs: a client
+// assertion signed with the configured key (RFC 7523 §2.2; audience the
 // configured one, else the token endpoint); else the client secret, sent as
-// resource_client_auth_method says or, when unset, with HTTP Basic unless the
-// upstream admits only the body; else client_id alone for a public client.
-func resourceClientAuth(form url.Values, cfg *schemas.MCPTokenExchangeConfig, clientID string, upstream resourceEndpoint) ([]tokenRequestOption, error) {
-	if cfg.UsesResourcePrivateKey() {
+// auth.Method says or, when unset, with HTTP Basic unless authMethods (the
+// server's token_endpoint_auth_methods_supported) admits only the body; else
+// client_id alone for a public client.
+func upstreamClientAuthForm(form url.Values, auth schemas.UpstreamClientAuth, clientID, tokenEndpoint string, authMethods []string) ([]tokenRequestOption, error) {
+	if auth.UsesPrivateKey() {
 		clientAssertion, err := tokencache.SignAssertion(tokencache.JWTBearerConfig{
-			PrivateKeyPEM: cfg.ResourcePrivateKey.GetValue(),
+			PrivateKeyPEM: auth.PrivateKey.GetValue(),
 			Issuer:        clientID,
 			Subject:       clientID,
-			Audience:      cmp.Or(strings.TrimSpace(cfg.ResourceAssertionAudience), upstream.endpoint),
-			KeyID:         cfg.ResourceKeyID,
-			Algorithm:     cfg.ResourceSigningAlgorithm,
+			Audience:      cmp.Or(strings.TrimSpace(auth.AssertionAudience), tokenEndpoint),
+			KeyID:         auth.KeyID,
+			Algorithm:     auth.SigningAlgorithm,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("sign the client assertion: %w", err)
@@ -351,11 +352,11 @@ func resourceClientAuth(form url.Values, cfg *schemas.MCPTokenExchangeConfig, cl
 		form.Set("client_assertion", clientAssertion)
 		return nil, nil
 	}
-	switch secret := strings.TrimSpace(cfg.ResourceClientSecret.GetValue()); {
+	switch secret := strings.TrimSpace(auth.ClientSecret.GetValue()); {
 	case secret == "":
 		form.Set("client_id", clientID)
-	case cfg.ResourceClientAuthMethod == schemas.ResourceClientAuthPost,
-		cfg.ResourceClientAuthMethod == "" && onlyClientSecretPost(upstream.authMethods):
+	case auth.Method == schemas.ClientSecretPost,
+		auth.Method == "" && onlyClientSecretPost(authMethods):
 		form.Set("client_id", clientID)
 		form.Set("client_secret", secret)
 	default:
