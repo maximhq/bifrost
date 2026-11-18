@@ -499,6 +499,13 @@ OAuthKeyConfig:
       then:
         required: [subject_token_file]
         description: token_exchange needs the subject token file
+      else:
+        not:
+          anyOf:
+            - required: [subject_token_file]
+            - required: [subject_token_type]
+            - required: [request_encoding]
+        description: subject_token_file, subject_token_type and request_encoding only apply to token_exchange
 
 Key:
   type: object

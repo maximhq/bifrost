@@ -1739,7 +1739,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									</FormItem>
 								)}
 							/>
-							{oauthGrantType === "client_credentials" && (
+							{(oauthGrantType === "client_credentials" || oauthGrantType === "token_exchange") && (
 								<FormField
 									control={control}
 									name="key.oauth_key_config.audience"
