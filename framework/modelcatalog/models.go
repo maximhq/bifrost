@@ -7,6 +7,7 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -456,11 +457,33 @@ func HasKeyAliases(keys []schemas.Key) bool {
 }
 
 // aliasNameIndex is the set of alias names a provider's keys carry, case-folded, for one published
-// keys slice.
+// keys slice and the alias maps its keys held when it was built.
 type aliasNameIndex struct {
-	keys  *schemas.Key // first element of the indexed slice; holding it keeps the address from being reused
-	n     int
-	names map[string]struct{}
+	keys    *schemas.Key // first element of the indexed slice; holding it keeps the address from being reused
+	n       int
+	aliases []schemas.KeyAliases // each key's alias map; holding them keeps their identities from being reused
+	sizes   []int                // each alias map's length when indexed
+	names   map[string]struct{}
+}
+
+// matches reports whether the index was built from keys as they are now: the same slice, and on each
+// key the same alias map with the same number of names. It allocates nothing.
+func (idx *aliasNameIndex) matches(keys []schemas.Key) bool {
+	if idx.keys != &keys[0] || idx.n != len(keys) {
+		return false
+	}
+	for i := range keys {
+		if len(keys[i].Aliases) != idx.sizes[i] || !sameAliasMap(keys[i].Aliases, idx.aliases[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameAliasMap reports whether a and b are the same map, not merely equal ones. A map value is a
+// single pointer to the map's header, so comparing the two words compares identity.
+func sameAliasMap(a, b schemas.KeyAliases) bool {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&a)) == *(*unsafe.Pointer)(unsafe.Pointer(&b))
 }
 
 // aliasNameIndexes holds one aliasNameIndex per provider; a new keys slice replaces its entry.
@@ -472,23 +495,27 @@ var aliasNameIndexes sync.Map // schemas.ModelProvider -> *aliasNameIndex
 // with aliases otherwise pays on every request. True decides nothing: the scan still decides.
 //
 // keys must be the provider's whole published keys slice, not a narrowed one. The set is built once
-// per slice and reused while the provider's configuration hands back that same slice. Provider
-// configuration is copy-on-write (an edited key publishes a new slice) and alias maps are never
-// edited in place, so the slice's identity stands for its aliases. Memory: one entry per provider,
-// holding each distinct alias name once, freed when the provider's next keys slice replaces it.
+// per slice and reused while the provider's configuration hands back that same slice with the same
+// alias maps (by identity and length), so an edited key, a replaced alias map, or a name added to or
+// removed from a map in place rebuilds it. Renaming an alias in place, which keeps the map and its
+// length, is not detected; alias maps are replaced, never renamed into, by every store here. Memory:
+// one entry per provider, holding each distinct alias name once plus a map reference per key, freed
+// when the provider's next keys slice replaces it.
 func MayBeKeyAlias(provider schemas.ModelProvider, model string, keys []schemas.Key) bool {
 	if len(keys) == 0 {
 		return false
 	}
 	var idx *aliasNameIndex
 	if v, ok := aliasNameIndexes.Load(provider); ok {
-		if cached := v.(*aliasNameIndex); cached.keys == &keys[0] && cached.n == len(keys) {
+		if cached := v.(*aliasNameIndex); cached.matches(keys) {
 			idx = cached
 		}
 	}
 	if idx == nil {
-		idx = &aliasNameIndex{keys: &keys[0], n: len(keys), names: map[string]struct{}{}}
+		idx = &aliasNameIndex{keys: &keys[0], n: len(keys), aliases: make([]schemas.KeyAliases, len(keys)), sizes: make([]int, len(keys)), names: map[string]struct{}{}}
 		for i := range keys {
+			idx.aliases[i] = keys[i].Aliases
+			idx.sizes[i] = len(keys[i].Aliases)
 			for name := range keys[i].Aliases {
 				idx.names[foldName(name)] = struct{}{}
 			}

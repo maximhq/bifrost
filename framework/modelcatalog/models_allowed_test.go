@@ -253,6 +253,24 @@ func TestMayBeKeyAlias(t *testing.T) {
 	if MayBeKeyAlias(provider, "claude-opus", nil) {
 		t.Error("no keys carry no alias")
 	}
+	// A store may edit the alias maps of the slice it already published. The index must not answer
+	// from the names it saw before: a new alias would be rejected, skipping its rules.
+	inPlace := []schemas.Key{{ID: "a", Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "x"}}}, {ID: "b"}}
+	if !MayBeKeyAlias(provider, "claude-sonnet", inPlace) {
+		t.Fatal("claude-sonnet is an alias")
+	}
+	inPlace[0].Aliases["claude-opus"] = schemas.AliasConfig{ModelID: "y"}
+	if !MayBeKeyAlias(provider, "claude-opus", inPlace) {
+		t.Error("an alias added to a key's map in place was rejected")
+	}
+	inPlace[1].Aliases = schemas.KeyAliases{"claude-haiku": {ModelID: "z"}}
+	if !MayBeKeyAlias(provider, "claude-haiku", inPlace) {
+		t.Error("an alias map set on a key in place was rejected")
+	}
+	inPlace[0].Aliases = schemas.KeyAliases{"claude-fable": {ModelID: "w"}}
+	if !MayBeKeyAlias(provider, "claude-fable", inPlace) || MayBeKeyAlias(provider, "claude-opus", inPlace) {
+		t.Error("an alias map replaced in place was answered from the old map")
+	}
 	// Every name an alias scan resolves passes the index.
 	for _, model := range []string{"Claude-Sonnet", "claude-sonnet", "CLAUDE-SONNET"} {
 		resolved := false
