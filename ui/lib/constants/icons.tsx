@@ -1017,6 +1017,26 @@ export const ProviderIcons = {
 	// source art uses currentColor, so the icon follows the surrounding text in
 	// both themes without a theme branch. The wordmark's remaining letterforms are
 	// dropped: at icon sizes only the mark stays legible.
+	subquadratic: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Subquadratic</title>
+				<rect x="2.5" y="2.5" width="19" height="19" rx="3.5" stroke="currentColor" strokeWidth="2" />
+				<path
+					d="M7.5 15.5V8.5h3.2c1.7 0 2.8 1 2.8 2.45 0 1.05-.55 1.85-1.45 2.2L14.7 15.5h-2.15l-2.05-2.85H9.4V15.5H7.5zm1.9-4.55h1.15c.75 0 1.2-.4 1.2-1.05s-.45-1.05-1.2-1.05H9.4v2.1z"
+					fill="currentColor"
+				/>
+			</svg>
+		);
+	},
 	typesafe: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (

@@ -1,0 +1,145 @@
+---
+title: "Subquadratic"
+description: "Subquadratic (SubQ) provider guide - Savant chat and Responses, Snap decisions, Files API, and SubQ-specific parameter rewrites"
+icon: "square-root-variable"
+---
+
+## Overview
+
+Subquadratic (SubQ) is an OpenAI-compatible provider at `https://api.subq.ai`. Bifrost registers it as `subquadratic` and covers:
+
+- **Chat Completions and Responses** for `subq-savant-1.4` (alias `subq-savant-latest`) — early access, 4M-token context, always reasons
+- **Decisions** for `subq-snap-1.2` via SubQ's System One endpoint (`/v1/systemone`)
+- **Files** — upload, list, retrieve, and delete (`purpose=assistants` only; no content download)
+- **List Models** — OpenAI list shape from `GET /v1/models`
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Decisions | ✅ | - | `/v1/decisions` → `/v1/systemone` |
+| List Models | ✅ | - | `/v1/models` |
+| Files (upload/list/retrieve/delete) | ✅ | - | `/v1/files` |
+| File Content | ❌ | - | - |
+| Embeddings | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Image / Audio / Batch / Containers | ❌ | ❌ | - |
+
+<Note>
+**Savant early access**: without org access enabled, Savant requests return `403 model_not_allowed`. Snap decisions and Files still work with a normal API key.
+
+**Responses and images**: SubQ's native Responses endpoint silently ignores image parts. When the input contains images, Bifrost falls back to Chat Completions so images still reach the model.
+
+**Responses store**: SubQ stores conversation state server-side by default. Send Bifrost's disable-store context (`BifrostContextKeyDisableStore`) to set `store: false`.
+</Note>
+
+## Setup & Configuration
+
+Configure Subquadratic with a bearer API key.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Add **Subquadratic** if it is missing.
+2. Click **Add Key** or edit an existing key.
+3. Paste your API key or use an environment variable (for example, `env.SUBQUADRATIC_API_KEY`).
+4. Set **Allowed Models** to **All Models** or the models this key should serve (`subq-savant-1.4`, `subq-snap-1.2`).
+5. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "subquadratic": {
+      "keys": [
+        {
+          "name": "subquadratic-key-1",
+          "value": "env.SUBQUADRATIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Subquadratic:
+    return []schemas.Key{{
+        Name:   "subquadratic-key-1",
+        Value:  *schemas.NewSecretVar("env.SUBQUADRATIC_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+Use `subquadratic/subq-savant-1.4` (or `subq-savant-latest`). Bifrost rewrites requests to match SubQ's Chat Completions contract:
+
+| Client sends | Bifrost sends to SubQ |
+|--------------|------------------------|
+| `temperature` other than `1` | Field omitted |
+| `temperature: 1` | Kept |
+| `max_completion_tokens` | Moved to `max_tokens` |
+| `reasoning_effort: "none"` or `reasoning.enabled: false` | Dropped (SubQ always reasons) |
+| `reasoning_effort` `minimal` / `medium` / `xhigh` | Passed through for SubQ to alias |
+| `reasoning_effort` `low` / `high` / `max` | Passed through |
+| Forced `tool_choice` (specific function) | Downgraded to `"auto"` |
+| `tool_choice` `"auto"` / `"none"` | Kept |
+| `stop` with more than 4 entries | Truncated to 4 |
+
+<Warning>
+Forced `tool_choice` cannot be honored on SubQ. Bifrost downgrades it to `"auto"` rather than failing the request.
+</Warning>
+
+Reasoning content maps onto Bifrost's existing `message.reasoning` / delta reasoning fields.
+
+---
+
+# 2. Responses API
+
+`POST /v1/responses` is native on SubQ. Bifrost applies the same effort rule: `reasoning.effort: "none"` is dropped. Temperature on Responses is accepted and ignored by SubQ, so Bifrost leaves it alone.
+
+When the Responses input includes images, Bifrost converts the request to Chat Completions and sets the Responses-to-chat fallback context key so the rest of the pipeline stays consistent.
+
+---
+
+# 3. Decisions
+
+`POST /v1/decisions` with `subquadratic/subq-snap-1.2` maps to SubQ's System One API (`POST /v1/systemone`). Question types match Bifrost's Typesafe/System One shape (`predicate`/`noul`, `choice`, `score`).
+
+Images must be inline `data:` URIs (up to 4). Bifrost converts them to SubQ's `{mediaType, base64}` objects and rejects `http(s)` URLs and asset references with a 400 before the request leaves the gateway.
+
+---
+
+# 4. Files
+
+Supported: upload, list, retrieve, delete. Bifrost forces `purpose=assistants` and sets the multipart Content-Type from the filename extension (SubQ requires an explicit MIME type). File content download is not supported upstream and returns `UnsupportedOperationError`.
+
+---
+
+# 5. Pricing
+
+| Model | Input / 1M tokens | Cached input / 1M | Output / 1M |
+|-------|-------------------|-------------------|-------------|
+| `subq-savant-1.4` | $0.10 | $0.01 | $0.50 |
+| `subq-snap-1.2` | $0.04 | — | — (input billed) |
+
+Catalog rates follow the datasheet sync once SubQ models are published there; until then, use custom pricing overrides if you need billed costs in Bifrost.

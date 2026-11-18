@@ -1173,6 +1173,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
+			// SubQ always reasons and rejects effort "none" with 400 unsupported_value.
+			// Drop the effort so the request uses SubQ's default (high) rather than failing.
+			if bifrostReq.Provider == schemas.Subquadratic {
+				if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone {
+					req.ResponsesParameters.Reasoning.Effort = nil
+				}
+			}
+
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it

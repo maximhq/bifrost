@@ -8,6 +8,7 @@ import {
 	OPENROUTER_DECISION_MODEL,
 	PERPLEXITY_DECISION_MODEL,
 	SELF_HOSTED_DECISION_MODELS,
+	SUBQUADRATIC_DECISION_MODEL,
 } from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
 
@@ -72,6 +73,7 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" ||
+		provider.name === "subquadratic" ||
 		provider.name === "openrouter" ||
 		provider.name === "cloudflare" ||
 		provider.name === "perplexity" ||
@@ -109,6 +111,7 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
+	if (provider?.name === "subquadratic") return SUBQUADRATIC_DECISION_MODEL;
 	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
 	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
 	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;

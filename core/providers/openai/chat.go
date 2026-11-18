@@ -199,6 +199,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBytePlusCompatibility()
 		return openaiReq
+	case schemas.Subquadratic:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applySubquadraticCompatibility()
+		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
@@ -448,6 +452,50 @@ func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
 	maps.Copy(extraParams, req.ExtraParams)
 	extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
 	req.ExtraParams = extraParams
+}
+
+// applySubquadraticCompatibility rewrites a chat request for SubQ's Chat Completions
+// contract: temperature must be 1 or omitted, max_completion_tokens becomes
+// max_tokens, reasoning cannot be turned off, tool_choice is only auto/none, and
+// stop is capped at 4 sequences. Forced tool choices downgrade to auto.
+func (req *OpenAIChatRequest) applySubquadraticCompatibility() {
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
+	}
+	if req.Temperature != nil && *req.Temperature != 1 {
+		req.Temperature = nil
+	}
+	if req.Reasoning != nil {
+		if req.Reasoning.Enabled != nil && !*req.Reasoning.Enabled {
+			req.Reasoning = nil
+		} else if req.Reasoning.Effort != nil && *req.Reasoning.Effort == schemas.ReasoningEffortNone {
+			req.Reasoning = nil
+		}
+	}
+	if len(req.Stop) > 4 {
+		req.Stop = req.Stop[:4]
+	}
+	if req.ToolChoice == nil {
+		return
+	}
+	if req.ToolChoice.ChatToolChoiceStr != nil {
+		switch schemas.ChatToolChoiceType(*req.ToolChoice.ChatToolChoiceStr) {
+		case schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeAuto))}
+			return
+		}
+	}
+	if req.ToolChoice.ChatToolChoiceStruct != nil {
+		switch req.ToolChoice.ChatToolChoiceStruct.Type {
+		case schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeAuto))}
+		}
+	}
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that

@@ -57,6 +57,7 @@ describe("decision model provider helpers", () => {
 			},
 		} as Partial<ModelProvider>);
 	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
+	const subquadratic = provider({ name: "subquadratic" } as Partial<ModelProvider>);
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
 	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
 	const cloudflare = provider({ name: "cloudflare" } as Partial<ModelProvider>);
@@ -71,7 +72,21 @@ describe("decision model provider helpers", () => {
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, azure, databricks, vllm, sgl, laya, clef])
+		for (const candidate of [
+			typesafe,
+			subquadratic,
+			openrouter,
+			openai,
+			cloudflare,
+			perplexity,
+			ollama,
+			azure,
+			databricks,
+			vllm,
+			sgl,
+			laya,
+			clef,
+		])
 			expect(isDecisionProvider(candidate)).toBe(true);
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
@@ -109,6 +124,7 @@ describe("decision model provider helpers", () => {
 
 	test("starts each provider on its known model", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
+		expect(defaultDecisionModel(subquadratic)).toBe("subq-snap-1.2");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
@@ -138,7 +154,7 @@ describe("decision model provider helpers", () => {
 			),
 		).toBe(true);
 		expect(listsDecisionModels(undefined, "openai")).toBe(true);
-		for (const candidate of [typesafe, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
+		for (const candidate of [typesafe, subquadratic, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
 	});
 
 	test("starts a self-hosted provider whose name says nothing on none", () => {
