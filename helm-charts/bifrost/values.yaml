@@ -546,6 +546,10 @@ bifrost:
   # Use direct values or env.VAR_NAME syntax (required when keys come from providerSecrets).
   # See https://getbifrost.ai/schema for the full provider schema.
   providers: {}
+  # my_custom_openai_provider:
+  #   custom_provider_config:
+  #     base_provider_type: openai
+  #     supports_structured_tool_outputs: true  # Preserve structured media in chat tool results
   # openai:
   #   keys:
   #     - name: "primary-key"         # Key name (required, must be unique)

@@ -81,6 +81,42 @@ func TestToOpenAIChatRequest_CustomProviderCanKeepStructuredToolOutputMedia(t *t
 	}
 }
 
+func TestConvertBifrostMessagesToOpenAIMessages_ReplacesImagesWithoutURLWhenOptedIn(t *testing.T) {
+	imageURL := "https://example.com/image.png"
+	typ := schemas.ResponsesMessageTypeFunctionCallOutput
+	responsesMessage := schemas.ResponsesMessage{
+		Type: &typ,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+					FileID: schemas.Ptr("file_image_1"),
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{},
+				},
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+				},
+			}},
+		},
+	}
+	chatMessages := schemas.ToChatMessages([]schemas.ResponsesMessage{responsesMessage}, nil)
+	converted := convertBifrostMessagesToOpenAIMessages(chatMessages, true)
+
+	if len(converted) != 1 || converted[0].Content == nil || len(converted[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("expected one placeholder and one URL-backed image, got %#v", converted)
+	}
+	placeholder := converted[0].Content.ContentBlocks[0]
+	if placeholder.Type != schemas.ChatContentBlockTypeText || placeholder.Text == nil || !strings.Contains(*placeholder.Text, "image") {
+		t.Fatalf("file-ID-only image should become a text placeholder, got %#v", placeholder)
+	}
+	image := converted[0].Content.ContentBlocks[1]
+	if image.Type != schemas.ChatContentBlockTypeImage || image.ImageURLStruct == nil || image.ImageURLStruct.URL != imageURL {
+		t.Fatalf("URL-backed image should be preserved, got %#v", image)
+	}
+}
+
 func TestToOpenAIChatRequest_CustomProviderDefaultsToFlattenedToolOutputMedia(t *testing.T) {
 	data := schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")
 	request := structuredToolOutputChatRequest(data)

@@ -345,9 +345,15 @@ func convertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage, supp
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
-		// A tool message takes text only on the OpenAI wire.
-		if message.Role == schemas.ChatMessageRoleTool && !supportsStructuredToolOutputs {
-			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+		// Tool results are text-only by default. When a custom provider opts in to
+		// structured output, preserve image blocks only when they have a usable URL;
+		// file-ID-only Responses images have no Chat Completions image source.
+		if message.Role == schemas.ChatMessageRoleTool {
+			keep := func(block schemas.ChatContentBlock) bool {
+				return supportsStructuredToolOutputs && block.Type == schemas.ChatContentBlockTypeImage &&
+					block.ImageURLStruct != nil && block.ImageURLStruct.URL != ""
+			}
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, keep)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it

@@ -8703,6 +8703,10 @@
             "base_provider_type": {
               "type": "string"
             },
+            "supports_structured_tool_outputs": {
+              "type": "boolean",
+              "description": "Allow structured media blocks in chat tool results for custom OpenAI-compatible providers."
+            },
             "allowed_requests": {
               "type": "object",
               "additionalProperties": {
