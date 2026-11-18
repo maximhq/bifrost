@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -120,11 +121,13 @@ func (s *JobSnapshot) Timeout() int {
 }
 
 // Price runs the terminal poll response through the job's usage mapping, the same way a
-// buffered relay prices a reply.
-func (s *JobSnapshot) Price(contentType string, body []byte) *schemas.RelayUsage {
+// buffered relay prices a reply. priced is false when the mapping bills units and the reply
+// carries none, so a job is never settled as free because its reply changed shape.
+func (s *JobSnapshot) Price(contentType string, body []byte) (usage *schemas.RelayUsage, priced bool) {
 	u := resolveUsage(s.Usage, nil)
 	u.ignoreUpstreamCost = s.IgnoreUpstreamCost
-	return u.build(u.parse(contentType, body))
+	fields := u.parse(contentType, body)
+	return u.build(fields), !u.billsUnits() || fields.hasUnits
 }
 
 // mergeUsageConfig overlays override on base field by field, the schema-level twin of
@@ -212,22 +215,73 @@ func jobSnapshotFor(cfg *schemas.RelayConfig, route schemas.RelayRouteConfig, ig
 	return string(data), nil
 }
 
+// maxRelayJobIDLength keeps the job row key (relay-job:{relay}:g{n}:{id}) within its column.
+const maxRelayJobIDLength = 160
+
+// validRelayJobID accepts printable ASCII without spaces, backslashes, ? or #, and no . or ..
+// path segment: the id is substituted into the poll path as is (an ARN keeps its slashes), so an
+// id the upstream returns must not be able to leave the configured path.
+func validRelayJobID(id string) bool {
+	if len(id) > maxRelayJobIDLength {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c <= ' ' || c >= 0x7f || c == '\\' || c == '?' || c == '#' {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(id, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // jobHandle reads the job id a start response names and returns the handle the logging plugin
-// records, or nil when the response names none (the call is then billed as an ordinary one).
-func (route *compiledRoute) jobHandle(contentType string, body []byte) *schemas.RelayJobHandle {
+// records, or nil when the response names none (the call is then billed as an ordinary one). An
+// id that is unsafe to poll with is refused with an error, and the call is billed as an ordinary one.
+func (route *compiledRoute) jobHandle(contentType string, body []byte) (*schemas.RelayJobHandle, error) {
 	if route == nil || route.job == nil || len(body) == 0 {
-		return nil
+		return nil, nil
 	}
 	if !looksJSON(contentType, body) {
-		return nil
+		return nil, nil
 	}
 	v := providerUtils.GetJSONField(body, route.job.IDPath)
 	if !v.Exists() {
-		return nil
+		return nil, nil
 	}
 	id := strings.TrimSpace(v.String())
 	if id == "" {
-		return nil
+		return nil, nil
 	}
-	return &schemas.RelayJobHandle{ID: id, IntervalSeconds: route.jobInterval, Params: route.jobParams}
+	if !validRelayJobID(id) {
+		return nil, fmt.Errorf("the job id at %s is not safe to poll with (%d bytes; printable ASCII, no spaces, \\, ?, # or . segments, at most %d bytes)", route.job.IDPath, len(id), maxRelayJobIDLength)
+	}
+	return &schemas.RelayJobHandle{ID: id, IntervalSeconds: route.jobInterval, Params: route.jobParams}, nil
+}
+
+// checkJobStatusRoutes refuses a job whose status check would be charged when a caller sends it:
+// the job is billed once when it settles, so a billable route (or a billable method default on a
+// relay that relays any path) matching the poll request would charge every check on top.
+func (e *endpoint) checkJobStatusRoutes() error {
+	for i := range e.routes {
+		job := e.routes[i].job
+		if job == nil {
+			continue
+		}
+		poll := (&JobSnapshot{Job: *job}).PollRequest("job-id")
+		p := e.plan(poll.Method, poll.Path, poll.Headers)
+		if !p.allowed || !p.billing {
+			continue
+		}
+		matched := "no route matches it and skip_route_check relays it as a billable " + poll.Method
+		if p.index >= 0 {
+			matched = fmt.Sprintf("it matches routes[%d], which is billable", p.index)
+		}
+		return fmt.Errorf("routes[%d].job: a caller's status check (%s %s) would be charged on every call as well as the job: %s; add a route for it with billable: false ahead of that route", i, poll.Method, job.Poll.Path, matched)
+	}
+	return nil
 }

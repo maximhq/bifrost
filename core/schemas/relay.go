@@ -166,6 +166,9 @@ type RelayJobPoll struct {
 	ContentType string            `json:"content_type,omitempty"` // default application/json when a body is set
 }
 
+// MaxRelayJobTimeoutSeconds bounds how long a job is polled for: 7 days.
+const MaxRelayJobTimeoutSeconds = 7 * 24 * 3600
+
 // JobIDPlaceholder is replaced with the job id in a poll request.
 const JobIDPlaceholder = "{{job.id}}"
 
@@ -197,7 +200,7 @@ type RelayRouteConfig struct {
 	Billable             *bool                      `json:"billable,omitempty"`               // false: the call is relayed but not counted or charged
 	Stream               *bool                      `json:"stream,omitempty"`                 // forces the streaming or buffered handler
 	Usage                *RelayUsageConfig          `json:"usage,omitempty"`                  // field-by-field override of the endpoint usage mapping
-	Job                  *RelayJobConfig            `json:"-"`                                // not configurable yet: async jobs are kept for a later release
+	Job                  *RelayJobConfig            `json:"job,omitempty"`                    // the matched call starts an upstream job, billed once when it finishes
 	BodyOverrides        map[string]json.RawMessage `json:"body_overrides,omitempty"`         // request body fields forced on every call: dotted path to JSON value, over the endpoint's
 	InheritBodyOverrides *bool                      `json:"inherit_body_overrides,omitempty"` // false: the relay's body_overrides are not applied here, only the route's own
 }
@@ -485,6 +488,19 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 	if j.IntervalSeconds < 0 || j.TimeoutSeconds < 0 {
 		return fmt.Errorf("%s: interval_seconds and timeout_seconds must not be negative", field)
 	}
+	if j.TimeoutSeconds > MaxRelayJobTimeoutSeconds {
+		return fmt.Errorf("%s.timeout_seconds must be at most %d (7 days)", field, MaxRelayJobTimeoutSeconds)
+	}
+	if j.IntervalSeconds > 0 && j.TimeoutSeconds > 0 && j.IntervalSeconds > j.TimeoutSeconds {
+		return fmt.Errorf("%s.interval_seconds must not exceed timeout_seconds, or the job is never polled", field)
+	}
+	for _, s := range j.Succeeded {
+		for _, f := range j.Failed {
+			if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(f)) {
+				return fmt.Errorf("%s: status %q is listed as both succeeded and failed", field, s)
+			}
+		}
+	}
 	if !strings.HasPrefix(j.Poll.Path, "/") {
 		return fmt.Errorf("%s.poll.path %q must start with /", field, j.Poll.Path)
 	}
@@ -496,6 +512,10 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 	for name := range j.Poll.Headers {
 		if !httpguts.ValidHeaderFieldName(name) {
 			return fmt.Errorf("%s.poll.headers: %q is not a valid header name", field, name)
+		}
+		// The relay's credential is added to every poll, and poll headers are stored in plain text.
+		if IsSensitiveHeader(name) {
+			return fmt.Errorf("%s.poll.headers: %q carries a credential; the relay adds its own to every poll", field, name)
 		}
 	}
 	// The start call's reply carries the job id, which only the buffered relay reads.

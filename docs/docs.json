@@ -266,6 +266,7 @@
               "relays/configuration",
               "relays/routes",
               "relays/pricing",
+              "relays/async-jobs",
               "relays/troubleshooting"
             ]
           },

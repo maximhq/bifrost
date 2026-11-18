@@ -6019,6 +6019,98 @@
       },
       "additionalProperties": true
     },
+    "relay_job_config": {
+      "type": "object",
+      "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status checks (the poll request) must not match a billable route.",
+      "properties": {
+        "id_path": {
+          "type": "string",
+          "description": "Path of the job id in the start reply, for example JobId"
+        },
+        "poll": {
+          "type": "object",
+          "description": "The request Bifrost sends to check a job. {{job.id}} in the path, a header value or the body is replaced with the job id.",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "HEAD"
+              ],
+              "description": "Default POST"
+            },
+            "path": {
+              "type": "string",
+              "description": "Rooted path below the base URL, may contain {{job.id}} and a query"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Literal headers, values may contain {{job.id}}. Credential headers are refused: the relay adds its own"
+            },
+            "body": {
+              "type": "string",
+              "description": "Literal body, may contain {{job.id}} (JSON-escaped in a JSON body)"
+            },
+            "content_type": {
+              "type": "string",
+              "description": "Content type of the body, default application/json"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "status_path": {
+          "type": "string",
+          "description": "Path of the status in the poll reply, for example JobStatus"
+        },
+        "succeeded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Statuses that end the job and bill it (case-insensitive)"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Statuses that end the job at no charge"
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds between polls, default 30"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800,
+          "description": "Stop polling after this long, default 3600, at most 7 days. A job that has not finished by then is not charged"
+        },
+        "usage": {
+          "description": "Usage mapping for the terminal poll reply, over the route's and the relay's. Only a cost_per_request set here is charged at settlement; the route's fee was charged on the start call",
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "id_path",
+        "poll",
+        "status_path",
+        "succeeded"
+      ],
+      "additionalProperties": false
+    },
     "relay_route_config": {
       "type": "object",
       "description": "Overrides for one upstream operation",
@@ -6067,6 +6159,9 @@
         "inherit_body_overrides": {
           "type": "boolean",
           "description": "false stops the relay's body_overrides being applied on this route; only the route's own body_overrides are sent. Defaults to true"
+        },
+        "job": {
+          "$ref": "#/$defs/relay_job_config"
         }
       },
       "required": [

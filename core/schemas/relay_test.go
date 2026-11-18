@@ -342,14 +342,48 @@ func TestRelayCloneDoesNotShareSecrets(t *testing.T) {
 	assert.Equal(t, "acme", tenant.GetValue())
 }
 
-func TestRelayRouteJobIsNotConfigurable(t *testing.T) {
+func TestRelayRouteJobRoundTrips(t *testing.T) {
 	var cfg RelayConfig
-	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/"},"status_path":"s","succeeded":["x"]}}]}`), &cfg))
+	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/jobs/{{job.id}}","method":"GET"},"status_path":"s","succeeded":["x"],"interval_seconds":10}}]}`), &cfg))
 	require.Len(t, cfg.Routes, 1)
-	assert.Nil(t, cfg.Routes[0].Job, "a job in config.json or an API body is ignored until async jobs are exposed")
-	out, err := Marshal(RelayRouteConfig{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "JobId"}})
+	require.NotNil(t, cfg.Routes[0].Job, "a job in config.json or an API body is read")
+	assert.Equal(t, "/jobs/{{job.id}}", cfg.Routes[0].Job.Poll.Path)
+	assert.Equal(t, 10, cfg.Routes[0].Job.IntervalSeconds)
+	out, err := Marshal(cfg.Routes[0])
 	require.NoError(t, err)
-	assert.NotContains(t, string(out), "job")
+	assert.Contains(t, string(out), `"job":{"id_path":"JobId"`)
+}
+
+func TestRelayJobValidate(t *testing.T) {
+	base := func() *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Failed: []string{"FAILED"},
+			Poll: RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}}}
+	}
+	for name, tc := range map[string]struct {
+		edit    func(j *RelayJobConfig)
+		wantErr string
+	}{
+		"valid":                            {func(j *RelayJobConfig) {}, ""},
+		"timeout of a week":                {func(j *RelayJobConfig) { j.TimeoutSeconds = 7 * 24 * 3600 }, ""},
+		"timeout over a week":              {func(j *RelayJobConfig) { j.TimeoutSeconds = 7*24*3600 + 1 }, "timeout_seconds"},
+		"interval over the timeout":        {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 600, 300 }, "interval_seconds"},
+		"credential header in the poll":    {func(j *RelayJobConfig) { j.Poll.Headers["Authorization"] = "Bearer x" }, "poll.headers"},
+		"api key header in the poll":       {func(j *RelayJobConfig) { j.Poll.Headers["X-Api-Key"] = "k" }, "poll.headers"},
+		"status both succeeded and failed": {func(j *RelayJobConfig) { j.Failed = append(j.Failed, "succeeded") }, "both succeeded and failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := base()
+			tc.edit(job)
+			cfg := &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: job}}}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
 
 func TestRelayMergeRedactedKeepsReferenceChanges(t *testing.T) {
