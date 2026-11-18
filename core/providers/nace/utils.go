@@ -45,6 +45,8 @@ func clientIdentity(version string) string {
 	return clean.String()
 }
 
+// setHeaders applies configured extra headers, then sets the bearer key and the X-Nace-Client and
+// User-Agent identity, which extra headers cannot override.
 func (provider *NaceProvider) setHeaders(ctx *schemas.BifrostContext, req *fasthttp.Request, key schemas.Key) {
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())

@@ -20,6 +20,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// fixture returns a Nace provider whose base URL is a test server that runs handler. The extra
+// headers try to override the client identity headers.
 func fixture(t testing.TB, handler http.HandlerFunc) *nace.NaceProvider {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -32,13 +34,17 @@ func fixture(t testing.TB, handler http.HandlerFunc) *nace.NaceProvider {
 	return provider
 }
 
+// key returns a test key that allows every model.
 func key() schemas.Key {
 	return schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
 }
+
+// ctx returns a Bifrost context without a deadline.
 func ctx() *schemas.BifrostContext {
 	return schemas.NewBifrostContext(context.Background(), time.Time{})
 }
 
+// request builds a drex-v2.0 decision request from a native state and System One questions.
 func request(t testing.TB, state any, questions map[string]typesafe.TypesafeQuestion) *schemas.BifrostDecisionRequest {
 	t.Helper()
 	normalized, err := typesafe.ToBifrostDecisionQuestions(questions)
@@ -46,6 +52,8 @@ func request(t testing.TB, state any, questions map[string]typesafe.TypesafeQues
 	return &schemas.BifrostDecisionRequest{Provider: schemas.Nace, Model: "drex-v2.0", Input: typesafe.ToBifrostDecisionInput(state), Questions: normalized}
 }
 
+// TestDecision checks the wire format and answer conversion for each question type and for a mixed
+// request.
 func TestDecision(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -124,6 +132,8 @@ func TestDecision(t *testing.T) {
 	}
 }
 
+// TestDecisionErrors checks that Drex error statuses, messages, types and Retry-After reach the
+// caller, and that the provider does not retry.
 func TestDecisionErrors(t *testing.T) {
 	for _, score := range []bool{false, true} {
 		for _, status := range []int{401, 402, 422, 429, 500, 529} {
@@ -163,6 +173,8 @@ func TestDecisionErrors(t *testing.T) {
 	}
 }
 
+// BenchmarkDecision measures a predicate decision, which uses the shared handler, and a score
+// decision, which uses the native handler.
 func BenchmarkDecision(b *testing.B) {
 	for _, kind := range []string{"predicate", "score"} {
 		b.Run(kind, func(b *testing.B) {
@@ -188,6 +200,8 @@ func BenchmarkDecision(b *testing.B) {
 	}
 }
 
+// TestNaceImages checks which models accept inline images, that images reach Drex in order as a
+// top-level array, and that a rejected request makes no upstream call.
 func TestNaceImages(t *testing.T) {
 	for _, test := range []struct {
 		model     string
@@ -247,6 +261,8 @@ func TestNaceImages(t *testing.T) {
 	}
 }
 
+// TestNaceListModels checks the GET /v1/models request headers and the conversion of the Drex
+// catalog.
 func TestNaceListModels(t *testing.T) {
 	provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "GET", r.Method)
@@ -293,6 +309,8 @@ func TestNaceListModels(t *testing.T) {
 	require.Nil(t, unknown.Pricing)
 }
 
+// TestToNaceDecisionRequestStructuredText checks that structured instructions and criteria become
+// sorted JSON text and that null descriptions stay null.
 func TestToNaceDecisionRequestStructuredText(t *testing.T) {
 	for _, kind := range []string{"noul", "choice", "score"} {
 		t.Run(kind, func(t *testing.T) {
@@ -335,6 +353,8 @@ func TestToNaceDecisionRequestStructuredText(t *testing.T) {
 	}
 }
 
+// TestDecisionHTMLRawResponseOwnsBuffer checks that the raw body of a non-JSON error stays valid
+// after the pooled response is released.
 func TestDecisionHTMLRawResponseOwnsBuffer(t *testing.T) {
 	html := "<html><body>Drex temporarily unavailable</body></html>"
 	for _, score := range []bool{false, true} {
@@ -382,6 +402,8 @@ func TestDecisionHTMLRawResponseOwnsBuffer(t *testing.T) {
 	}
 }
 
+// BenchmarkToNaceDecisionRequest measures request conversion with plain and structured Complexity
+// Router instructions.
 func BenchmarkToNaceDecisionRequest(b *testing.B) {
 	for _, structured := range []bool{false, true} {
 		b.Run(fmt.Sprintf("structured=%v", structured), func(b *testing.B) {
@@ -402,6 +424,8 @@ func BenchmarkToNaceDecisionRequest(b *testing.B) {
 	}
 }
 
+// TestNaceAliasImageCapability checks that a model accepts image input only when its catalog entry
+// lists image input, aliases included.
 func TestNaceAliasImageCapability(t *testing.T) {
 	for _, model := range []string{"drex-v1.0", "drex-v1.1", "drex-latest", "nacedm-latest", "drex-max", "drex-max-v1.1", "drex-max-finance", "drex-v2.0"} {
 		t.Run(model, func(t *testing.T) {

@@ -576,6 +576,8 @@ func TestValidateComplexityAnalyzerConfig_Decision(t *testing.T) {
 	})
 }
 
+// TestPreRequestHook_NaceFailurePreservesOriginalModel checks that a failed Nace decision skips
+// routing and keeps the requested model.
 func TestPreRequestHook_NaceFailurePreservesOriginalModel(t *testing.T) {
 	analyzerConfig := decisionFallbackAnalyzerTestConfig()
 	analyzerConfig.Decision = &complexity.DecisionConfig{Provider: schemas.Nace, Model: "drex-v2.0"}

@@ -10451,6 +10451,8 @@ func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) 
 	}
 }
 
+// TestNaceUsesBootstrapRuntimeVersion checks that the Nace provider sends the runtime version from
+// the context, or the embedded core version when it is blank, in its identity headers.
 func TestNaceUsesBootstrapRuntimeVersion(t *testing.T) {
 	for _, version := range []string{"2.5.0", "", strings.Repeat("v", 100)} {
 		t.Run(version, func(t *testing.T) {

@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestNace runs the shared live provider scenarios against Drex. It is skipped when NACE_API_KEY is
+// not set.
 func TestNace(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("NACE_API_KEY")) == "" {

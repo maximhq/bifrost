@@ -18,6 +18,8 @@ func (provider *NaceProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
 }
 
+// listModelsByKey lists the Drex models that one key can use. The shared pipeline applies the
+// key's allowed models, blacklisted models and aliases.
 func (provider *NaceProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	pipeline := &providerUtils.ListModelsPipeline{AllowedModels: key.Models, BlacklistedModels: key.BlacklistedModels, Aliases: key.Aliases, Unfiltered: request.Unfiltered, ProviderKey: provider.GetProviderKey(), MatchFns: providerUtils.DefaultMatchFns()}
 	response := &schemas.BifrostListModelsResponse{Data: []schemas.Model{}}

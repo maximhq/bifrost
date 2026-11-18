@@ -63,6 +63,8 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 	return schemas.DecisionInput{Messages: messages}, images, nil
 }
 
+// validateImage accepts raw base64 or a PNG, JPEG or WebP base64 data URL of at most 16 MiB, and
+// rejects URLs, paths and other image references.
 func validateImage(image string) error {
 	data := image
 	if strings.HasPrefix(image, "data:") {
