@@ -593,3 +593,66 @@ func TestSupportsPerMessageOutputConfig_DatasheetFalseDisablesAnthropic(t *testi
 	assert.False(t, providerUtils.JSONFieldExists(out, "messages.1.output_config"), "body=%s", out)
 	assert.Equal(t, "medium", providerUtils.GetJSONField(out, "output_config.effort").String(), "top-level effort must survive")
 }
+
+// The temporary pinned list turns the native form on for exactly the listed versions on the
+// cloud hosts, even against a datasheet false (the state that keeps released gateways safe).
+// Near misses and Anthropic direct keep datasheet-then-default.
+func TestMidConversationSystemSupported_PinnedListBeatsDatasheetFalse(t *testing.T) {
+	no := false
+	providerUtils.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsMidConversationSystem: &no}
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	pinned := []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-5"},
+		{schemas.Bedrock, "global.anthropic.claude-opus-5-5"},
+		{schemas.Bedrock, "anthropic.claude-opus-5-5"},
+		{schemas.Bedrock, "anthropic.claude-opus-5-20261001-v1:0"},
+		{schemas.Bedrock, "us-gov.anthropic.claude-sonnet-5-5"},
+		{schemas.Bedrock, "anthropic.claude-haiku-5-5-v1:0"},
+		{schemas.Vertex, "claude-opus-5-5@20261101"},
+		{schemas.Vertex, "claude-fable-5-1"},
+		{schemas.Vertex, "claude-opus-5"},
+		{schemas.Azure, "claude-opus-5-5"},
+		{schemas.Azure, "claude-opus-5.5"},
+		{schemas.BedrockMantle, "anthropic.claude-fable-5-2"},
+		{schemas.BedrockMantle, "claude-fable-5"},
+	}
+	for _, tc := range pinned {
+		assert.True(t, midConversationSystemSupported(schemas.ResolveModelCaps(tc.provider, tc.model)), "%s/%s", tc.provider, tc.model)
+	}
+
+	notPinned := []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-6"},
+		{schemas.Bedrock, "us.anthropic.claude-opus-6"},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-5"},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-5-6"},
+		{schemas.Vertex, "claude-fable-5-3"},
+		{schemas.Vertex, "claude-mythos-5"},
+		{schemas.Vertex, "claude-opus-4-8"},
+		{schemas.Azure, "claude-haiku-5-6"},
+		{schemas.Anthropic, "claude-opus-5-5"}, // Anthropic direct keeps the datasheet
+		{schemas.OpenRouter, "anthropic/claude-opus-5-5"},
+	}
+	for _, tc := range notPinned {
+		assert.False(t, midConversationSystemSupported(schemas.ResolveModelCaps(tc.provider, tc.model)), "%s/%s", tc.provider, tc.model)
+	}
+}
+
+// Outside the list, the datasheet and then the default still decide.
+func TestMidConversationSystemSupported_UnpinnedFollowsDatasheet(t *testing.T) {
+	model := "claude-opus-5-5"
+	no := false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsMidConversationSystem: &no})
+	assert.False(t, midConversationSystemSupported(schemas.ResolveModelCaps(schemas.Anthropic, model)))
+	providerUtils.SetCapabilityResolver(nil)
+	assert.True(t, midConversationSystemSupported(schemas.ResolveModelCaps(schemas.Anthropic, model)))
+	assert.False(t, midConversationSystemSupported(schemas.ResolveModelCaps(schemas.Bedrock, "anthropic.claude-opus-4-8")))
+}

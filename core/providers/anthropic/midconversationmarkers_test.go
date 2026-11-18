@@ -2,13 +2,16 @@ package anthropic
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // These pin the two claims the doc comment on inlineMidConversationSystem makes about
@@ -331,4 +334,228 @@ func TestDefaultStripsUserTurnTrailingWhitespace(t *testing.T) {
 	} {
 		assert.Equal(t, want, DefaultStripsUserTurnTrailingWhitespace(model), model)
 	}
+}
+
+// setMidConvSystemRow sets supports_mid_conversation_system_messages on every row of the
+// given providers, as the datasheet would.
+func setMidConvSystemRow(t *testing.T, value bool, providers ...schemas.ModelProvider) {
+	t.Helper()
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, _ string) *schemas.ModelCapabilities {
+		if slices.Contains(providers, provider) {
+			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &value}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+}
+
+// holdMidConvSystemFalse pins the row to false, the datasheet state that keeps released
+// gateways inlining.
+func holdMidConvSystemFalse(t *testing.T, providers ...schemas.ModelProvider) {
+	t.Helper()
+	setMidConvSystemRow(t, false, providers...)
+}
+
+// midConvTurnBody renders a Claude Code-shaped /v1/messages body: the given messages JSON,
+// adaptive thinking, and a deferred tool behind tool search (the shape that takes Bedrock
+// InvokeModel).
+func midConvTurnBody(model, messages string) string {
+	return `{"model":"` + model + `","max_tokens":64,"thinking":{"type":"adaptive"},
+		"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"},
+			{"name":"read","description":"read a file","input_schema":{"type":"object"},"defer_loading":true}],
+		"messages":[` + messages + `]}`
+}
+
+// reminderForm returns the role and text the upstream body carries the reminder in: "system"
+// with the raw text when native, "user" with the <system-reminder> envelope when inlined.
+func reminderForm(t *testing.T, body []byte, reminder string) (string, string) {
+	t.Helper()
+	for _, m := range gjson.GetBytes(body, "messages").Array() {
+		for _, b := range m.Get("content").Array() {
+			if text := b.Get("text").String(); strings.Contains(text, reminder) {
+				return m.Get("role").String(), text
+			}
+		}
+		if text := m.Get("content").String(); m.Get("content").Type == gjson.String && strings.Contains(text, reminder) {
+			return m.Get("role").String(), text
+		}
+	}
+	t.Fatalf("reminder %q not found in upstream messages: %s", reminder, gjson.GetBytes(body, "messages").Raw)
+	return "", ""
+}
+
+// The reminder that ends turn N must reach the provider in the same form at turn N+1, after
+// the model's reply is appended behind it. A reply that opens with tool_use is lowered to a
+// role-less function_call item, which the old input-lookahead read as "not an assistant" and
+// so inlined a reminder it had sent natively one turn earlier; the change of form broke the
+// cached prefix at that reminder on every turn (Bedrock InvokeModel, Opus 5.5, 2026-11-16).
+// Both datasheet states are covered: false, as production holds it for released gateways (this
+// build enables the native form for the listed models in code), and true, the 2026-11-16 state.
+func TestMidConvSystemReminder_FormStableAcrossTurns(t *testing.T) {
+	const (
+		r1 = "R1: the date is 2026-11-18."
+		r2 = "R2: a file changed."
+	)
+	head := `{"role":"user","content":"q1"},{"role":"assistant","content":[{"type":"text","text":"a1"}]},
+		{"role":"user","content":"q2"},
+		{"role":"system","content":[{"type":"text","text":"` + r1 + `","cache_control":{"type":"ephemeral"}}]}`
+	toolResultAndNextReminder := `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]},
+		{"role":"system","content":[{"type":"text","text":"` + r2 + `","cache_control":{"type":"ephemeral"}}]}`
+	replies := map[string]string{
+		"tool_use": `,{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]}` + toolResultAndNextReminder,
+		"thinking_then_tool_use": `,{"role":"assistant","content":[{"type":"thinking","thinking":"look","signature":"sig"},
+			{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]}` + toolResultAndNextReminder,
+		"text": `,{"role":"assistant","content":[{"type":"text","text":"a2"}]},{"role":"user","content":"q3"},
+			{"role":"system","content":[{"type":"text","text":"` + r2 + `","cache_control":{"type":"ephemeral"}}]}`,
+	}
+
+	for _, host := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Bedrock, "bedrock/us.anthropic.claude-opus-5-5"},
+		{schemas.Vertex, "vertex/claude-opus-5-5"},
+		{schemas.Azure, "azure/claude-opus-5-5"},
+	} {
+		for name, reply := range replies {
+			for _, row := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/datasheet=%v", host.provider, name, row), func(t *testing.T) {
+					setMidConvSystemRow(t, row, host.provider)
+					turnN := requestRoundTrip(t, midConvTurnBody(host.model, head))
+					turnN1 := requestRoundTrip(t, midConvTurnBody(host.model, head+reply))
+
+					roleN, textN := reminderForm(t, turnN, r1)
+					roleN1, textN1 := reminderForm(t, turnN1, r1)
+					assert.Equal(t, "system", roleN, "turn N must send the tail reminder natively")
+					assert.Equal(t, roleN, roleN1, "reminder changed role between turns: %s", gjson.GetBytes(turnN1, "messages").Raw)
+					assert.Equal(t, textN, textN1, "reminder changed text between turns")
+					role2, _ := reminderForm(t, turnN1, r2)
+					assert.Equal(t, "system", role2, "the new tail reminder must be native")
+				})
+			}
+		}
+	}
+}
+
+// A reminder followed by a real user turn breaks Anthropic's placement rule, so it is still
+// inlined even on a model that takes the native form; the request must not 400.
+func TestMidConvSystemReminder_FollowedByUserIsInlined(t *testing.T) {
+	holdMidConvSystemFalse(t, schemas.Bedrock)
+	const r = "R: be brief."
+	body := requestRoundTrip(t, midConvTurnBody("bedrock/us.anthropic.claude-opus-5-5",
+		`{"role":"user","content":"q1"},{"role":"assistant","content":[{"type":"text","text":"a1"}]},
+		{"role":"user","content":"q2"},{"role":"system","content":"`+r+`"},{"role":"user","content":"q3"}`))
+	role, text := reminderForm(t, body, r)
+	assert.Equal(t, "user", role)
+	assert.Equal(t, inlinedText(r), text)
+}
+
+// The rolling marker stays on the reminder the caller marked, with the caller's TTL, in both
+// turns: the placement pass must not move, drop or mint a breakpoint.
+func TestMidConvSystemReminder_MarkerKeptAcrossTurns(t *testing.T) {
+	holdMidConvSystemFalse(t, schemas.Bedrock)
+	const r1 = "R1: marked."
+	head := `{"role":"user","content":"q1"},{"role":"assistant","content":[{"type":"text","text":"a1"}]},{"role":"user","content":"q2"},
+		{"role":"system","content":[{"type":"text","text":"` + r1 + `","cache_control":{"type":"ephemeral","ttl":"1h"}}]}`
+	next := `,{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}`
+	for _, raw := range []string{head, head + next} {
+		body := requestRoundTrip(t, midConvTurnBody("bedrock/us.anthropic.claude-opus-5-5", raw))
+		var found bool
+		for _, m := range gjson.GetBytes(body, "messages").Array() {
+			for _, b := range m.Get("content").Array() {
+				if b.Get("text").String() == r1 {
+					found = true
+					assert.Equal(t, "system", m.Get("role").String())
+					assert.Equal(t, "1h", b.Get("cache_control.ttl").String(), "marker lost or replaced: %s", b.Raw)
+				}
+			}
+		}
+		require.True(t, found, "native reminder not found: %s", gjson.GetBytes(body, "messages").Raw)
+	}
+}
+
+// sysMsg and roleMsg build emitted messages for driving enforceMidConversationSystemPlacement.
+func sysMsg(text string) AnthropicMessage {
+	return AnthropicMessage{Role: AnthropicMessageRoleSystem, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{plainTextBlock(text)}}}
+}
+
+func roleMsg(role AnthropicMessageRole, blocks ...AnthropicContentBlock) AnthropicMessage {
+	return AnthropicMessage{Role: role, Content: AnthropicContent{ContentBlocks: blocks}}
+}
+
+func effortOnlyMsg(effort string) AnthropicMessage {
+	return AnthropicMessage{
+		Role:         AnthropicMessageRoleSystem,
+		Content:      AnthropicContent{ContentBlocks: []AnthropicContentBlock{}},
+		OutputConfig: &AnthropicMessageOutputConfig{Effort: schemas.Ptr(effort)},
+	}
+}
+
+func TestEnforceMidConversationSystemPlacement(t *testing.T) {
+	user := roleMsg(AnthropicMessageRoleUser, plainTextBlock("q"))
+	asstText := roleMsg(AnthropicMessageRoleAssistant, plainTextBlock("a"))
+	asstToolUse := roleMsg(AnthropicMessageRoleAssistant, AnthropicContentBlock{Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("toolu_1"), Name: schemas.Ptr("read")})
+	asstServerResult := roleMsg(AnthropicMessageRoleAssistant,
+		AnthropicContentBlock{Type: AnthropicContentBlockTypeServerToolUse, ID: schemas.Ptr("srvtoolu_1"), Name: schemas.Ptr("web_search")},
+		AnthropicContentBlock{Type: AnthropicContentBlockTypeWebSearchToolResult, ToolUseID: schemas.Ptr("srvtoolu_1")})
+
+	for _, tc := range []struct {
+		name string
+		in   []AnthropicMessage
+		want string // role sequence after the pass
+	}{
+		{"tail after user stays native", []AnthropicMessage{user, asstText, user, sysMsg("r")}, "user,assistant,user,system"},
+		{"before tool_use reply stays native", []AnthropicMessage{user, sysMsg("r"), asstToolUse}, "user,system,assistant"},
+		{"followed by user is inlined", []AnthropicMessage{user, sysMsg("r"), user}, "user,user,user"},
+		{"after plain assistant is inlined", []AnthropicMessage{user, asstText, sysMsg("r")}, "user,assistant,user"},
+		{"after server tool result stays native", []AnthropicMessage{user, asstServerResult, sysMsg("r")}, "user,assistant,system"},
+		{"run judged as a whole", []AnthropicMessage{user, sysMsg("r1"), sysMsg("r2"), asstText}, "user,system,system,assistant"},
+		{"invalid run keeps effort-only member", []AnthropicMessage{user, asstText, effortOnlyMsg("low"), sysMsg("r"), user}, "user,assistant,system,user,user"},
+		{"effort-only alone is exempt", []AnthropicMessage{effortOnlyMsg("low"), user, asstText}, "system,user,assistant"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := enforceMidConversationSystemPlacement(slices.Clone(tc.in), false)
+			assert.Equal(t, tc.want, roleSeq(got))
+			for _, m := range got {
+				if m.Role == AnthropicMessageRoleUser && len(m.Content.ContentBlocks) > 0 && m.Content.ContentBlocks[0].Text != nil &&
+					strings.HasPrefix(*m.Content.ContentBlocks[0].Text, "<system-reminder>") {
+					assert.Contains(t, []string{inlinedText("r"), inlinedText("r1")}, *m.Content.ContentBlocks[0].Text)
+				}
+			}
+		})
+	}
+}
+
+// A text-bearing system message that carries an override keeps the effort when it is inlined:
+// the override goes out first as an effort-only system message, as the inline branch sends it.
+func TestEnforceMidConversationSystemPlacement_InlinedKeepsEffort(t *testing.T) {
+	r := sysMsg("r")
+	r.OutputConfig = &AnthropicMessageOutputConfig{Effort: schemas.Ptr("high")}
+	got := enforceMidConversationSystemPlacement([]AnthropicMessage{
+		roleMsg(AnthropicMessageRoleUser, plainTextBlock("q")), r, roleMsg(AnthropicMessageRoleUser, plainTextBlock("q2")),
+	}, false)
+	require.Equal(t, "user,system,user,user", roleSeq(got))
+	require.NotNil(t, got[1].OutputConfig)
+	assert.Equal(t, "high", *got[1].OutputConfig.Effort)
+	assert.True(t, isEffortOnlySystemMessage(&got[1]))
+	assert.Equal(t, inlinedText("r"), *got[2].Content.ContentBlocks[0].Text)
+}
+
+// When every run is placed legally the pass returns its input without allocating, so requests
+// with reminders in a valid place, and requests with none, pay only the scan.
+func TestEnforceMidConversationSystemPlacement_NoAllocWhenValid(t *testing.T) {
+	msgs := []AnthropicMessage{
+		roleMsg(AnthropicMessageRoleUser, plainTextBlock("q")),
+		sysMsg("r"),
+		roleMsg(AnthropicMessageRoleAssistant, plainTextBlock("a")),
+		roleMsg(AnthropicMessageRoleUser, plainTextBlock("q2")),
+		sysMsg("r2"),
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = enforceMidConversationSystemPlacement(msgs, true)
+	})
+	assert.Zero(t, allocs)
+	got := enforceMidConversationSystemPlacement(msgs, true)
+	assert.Same(t, &msgs[0], &got[0])
 }
