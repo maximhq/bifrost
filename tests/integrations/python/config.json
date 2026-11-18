@@ -1197,6 +1197,51 @@
         "ttl": "1h"
       }
     },
+    "openai_structured_tool_outputs": {
+      "send_back_raw_request": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "supports_structured_tool_outputs": true,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true
+        }
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "openai_default_tool_outputs": {
+      "send_back_raw_request": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true
+        }
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openai_pc_points": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

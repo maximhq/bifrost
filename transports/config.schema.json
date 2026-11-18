@@ -14008,7 +14008,7 @@
         },
         "supports_structured_tool_outputs": {
           "type": "boolean",
-          "description": "Whether the custom provider accepts structured media blocks in chat tool results"
+          "description": "Whether the custom provider accepts structured media blocks in chat tool results. Without it, Bifrost replaces multimedia tool results with plain text placeholders when converting other formats into chat completions"
         },
         "base_provider_type": {
           "type": "string",

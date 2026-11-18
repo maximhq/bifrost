@@ -999,6 +999,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	provider.setStructuredToolOutputsContext(ctx)
 
 	return HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -1015,6 +1016,20 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		nil,
 		provider.logger,
 	)
+}
+
+// setStructuredToolOutputsContext carries the custom provider's capability into
+// request conversion. The core worker stamps this for routed requests, but these
+// provider methods can also be called directly (including Responses fallbacks).
+func (provider *OpenAIProvider) setStructuredToolOutputsContext(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	if provider.customProviderConfig != nil && provider.customProviderConfig.SupportsStructuredToolOutputs {
+		ctx.SetValue(schemas.BifrostContextKeySupportsStructuredToolOutputs, true)
+		return
+	}
+	ctx.ClearValue(schemas.BifrostContextKeySupportsStructuredToolOutputs)
 }
 
 // timedSetBody copies the serialized request body onto the fasthttp request inside a
@@ -1233,6 +1248,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	provider.setStructuredToolOutputsContext(ctx)
 
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(
