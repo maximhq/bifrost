@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"bytes"
+	"errors"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -323,62 +324,21 @@ func exchangeWorkloadIdentityToken(ctx context.Context, hc *http.Client, tokenUR
 	}, nil
 }
 
-// identityTokenDirsEnv lists, comma separated, the directories identity token files may be read
-// from, replacing defaultIdentityTokenDirs. It is read from the environment only, never from a key,
-// so whoever can edit a key cannot have Bifrost read an arbitrary local file and send it out.
-const identityTokenDirsEnv = "BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS"
-
-// defaultIdentityTokenDirs are the standard container credential mounts, where Kubernetes projects
-// service account tokens.
-var defaultIdentityTokenDirs = []string{"/var/run/secrets", "/run/secrets"}
+// identityTokenDirsEnv lists the directories identity token files may be read from; it is the
+// shared tokencache.CredentialDirsEnv, read from the environment only.
+const identityTokenDirsEnv = tokencache.CredentialDirsEnv
 
 // allowedIdentityTokenPath returns the real path of an identity token file once it is known to sit
-// under an allowed credential directory. The path is checked before it is resolved, so a refusal
-// says nothing about whether a file exists elsewhere, and again after, so a symlink cannot lead out
-// of the directory; the symlinks Kubernetes rotates a projected token through stay inside its mount.
+// under an allowed credential directory (see tokencache.AllowedCredentialPath).
 func allowedIdentityTokenPath(path string) (string, *schemas.BifrostError) {
-	if !filepath.IsAbs(path) {
-		return "", workloadIdentityConfigError("anthropic workload identity token file " + path + " must be an absolute path")
+	resolved, err := tokencache.AllowedCredentialPath(path)
+	if err == nil {
+		return resolved, nil
 	}
-	dirs := defaultIdentityTokenDirs
-	if raw := os.Getenv(identityTokenDirsEnv); strings.TrimSpace(raw) != "" {
-		dirs = strings.Split(raw, ",")
+	if errors.Is(err, tokencache.ErrCredentialPathNotAllowed) || !filepath.IsAbs(path) {
+		return "", workloadIdentityConfigError("anthropic workload identity token file " + err.Error())
 	}
-	// Each directory as written and with its symlinks resolved, so both the configured path and the
-	// real path of a file under it match (/var/run is a link to /run on most distributions).
-	roots := make([]string, 0, 2*len(dirs))
-	for _, dir := range dirs {
-		if dir = strings.TrimSpace(dir); !filepath.IsAbs(dir) {
-			continue
-		}
-		roots = append(roots, filepath.Clean(dir))
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
-			roots = append(roots, real)
-		}
-	}
-	within := func(p string) bool {
-		for _, root := range roots {
-			if rel, err := filepath.Rel(root, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return true
-			}
-		}
-		return false
-	}
-	refuse := func() (string, *schemas.BifrostError) {
-		return "", workloadIdentityConfigError("anthropic workload identity token file " + path + " is outside the allowed credential directories; set " +
-			identityTokenDirsEnv + " to the directories to read from, comma separated (default " + strings.Join(defaultIdentityTokenDirs, ",") + ")")
-	}
-	if !within(filepath.Clean(path)) {
-		return refuse()
-	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", providerUtils.NewConfigurationError("anthropic workload identity token file could not be read: " + err.Error())
-	}
-	if !within(resolved) {
-		return refuse()
-	}
-	return resolved, nil
+	return "", providerUtils.NewConfigurationError("anthropic workload identity token file could not be read: " + err.Error())
 }
 
 // readIdentityToken returns the identity token from src, re-reading a file source on every call so

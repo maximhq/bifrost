@@ -1,6 +1,7 @@
 package tokencache
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -52,8 +53,30 @@ type tokenResponse struct {
 	AccessToken      string `json:"access_token"`
 	TokenType        string `json:"token_type"`
 	ExpiresIn        int64  `json:"expires_in"`
-	Error            string `json:"error"`
+	ExpiresAt        int64  `json:"expires_at"` // absolute Unix expiry, sent by some endpoints (OpenAI) next to expires_in
+	Error            any    `json:"error"`      // RFC 6749 string, or an object such as OpenAI's {"code","message"}
 	ErrorDescription string `json:"error_description"`
+}
+
+// errorDetail renders the error code and description of a failed token response: the RFC 6749
+// error and error_description pair, or the code (or type) and message of a nested error object.
+func (r *tokenResponse) errorDetail() string {
+	parts := []string{}
+	switch e := r.Error.(type) {
+	case string:
+		parts = append(parts, e)
+	case map[string]any:
+		for _, k := range []string{"code", "type", "message"} {
+			if v, ok := e[k].(string); ok && v != "" {
+				if k == "type" && len(parts) > 0 {
+					continue // a code already names the failure
+				}
+				parts = append(parts, v)
+			}
+		}
+	}
+	parts = append(parts, r.ErrorDescription)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 // JWTBearerMinter returns a Minter that signs a fresh assertion and exchanges it on hc.
@@ -179,51 +202,82 @@ func parsePrivateKey(pemData, alg string) (crypto.PrivateKey, error) {
 	}
 }
 
-// postTokenRequest posts a form to the token endpoint and reads the access token. Errors
-// carry the endpoint's status so the cache classifies them, and never echo the body beyond
-// the standard error and error_description fields.
+// postTokenRequest posts a form to the token endpoint and reads the access token. Every
+// submitted value except grant_type and scope is scrubbed from what an error reports back.
 func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, form url.Values) (string, time.Time, *schemas.BifrostError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", time.Time{}, configurationError("oauth token request could not be built: " + err.Error())
+	// The signed assertion and every extra parameter are what this request sent; none of them
+	// may come back to the caller through the error code or description. grant_type and scope are not
+	// credentials, and an error naming the scope it refused is worth keeping readable.
+	var submitted []string
+	for k, vs := range form {
+		if k != "grant_type" && k != "scope" {
+			submitted = append(submitted, vs...)
+		}
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, bErr := postToken(ctx, hc, tokenURL, []byte(form.Encode()), "application/x-www-form-urlencoded", submitted)
+	if bErr != nil {
+		return "", time.Time{}, bErr
+	}
+	return resp.accessToken, resp.expiry, nil
+}
+
+// postedToken is a successful token endpoint answer.
+type postedToken struct {
+	accessToken string
+	tokenType   string
+	expiry      time.Time // zero when the endpoint sent no lifetime
+}
+
+// postToken posts an encoded body to the token endpoint and reads the access token. Errors
+// carry the endpoint's status so the cache classifies them, and never echo the body beyond
+// the error code and description, with every submitted value scrubbed from those.
+func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byte, contentType string, submitted []string) (*postedToken, *schemas.BifrostError) {
+	// The lifetime counts from issuance, which is no earlier than the moment the request leaves.
+	sent := time.Now()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, configurationError("oauth token request could not be built: " + err.Error())
+	}
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", time.Time{}, transportError(tokenURL, err)
+		return nil, transportError(tokenURL, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
-		return "", time.Time{}, providerUtils.NewProviderAPIError(
+		return nil, providerUtils.NewProviderAPIError(
 			fmt.Sprintf("oauth token response from %s could not be read", redactURL(tokenURL)),
 			sanitizeTransportError(tokenURL, err), 0, nil, nil)
 	}
 
 	var parsed tokenResponse
-	_ = sonic.Unmarshal(body, &parsed)
+	_ = sonic.Unmarshal(respBody, &parsed)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// The signed assertion and every extra parameter are what this request sent; none of them
-		// may come back to the caller through the error code or description. grant_type and scope are not
-		// credentials, and an error naming the scope it refused is worth keeping readable.
-		var submitted []string
-		for k, vs := range form {
-			if k != "grant_type" && k != "scope" {
-				submitted = append(submitted, vs...)
-			}
-		}
-		bErr := tokenEndpointError(tokenURL, resp.StatusCode, scrubSubmitted(strings.TrimSpace(parsed.Error+" "+parsed.ErrorDescription), submitted))
+		bErr := tokenEndpointError(tokenURL, resp.StatusCode, scrubSubmitted(parsed.errorDetail(), submitted))
 		providerUtils.ApplyRetryAfterHTTP(bErr, resp.Header)
-		return "", time.Time{}, bErr
+		return nil, bErr
 	}
 	if parsed.AccessToken == "" {
-		return "", time.Time{}, emptyTokenError(tokenURL, resp.StatusCode)
+		return nil, emptyTokenError(tokenURL, resp.StatusCode)
 	}
 	var expiry time.Time
 	if parsed.ExpiresIn > 0 {
-		expiry = time.Now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
+		expiry = sent.Add(time.Duration(parsed.ExpiresIn) * time.Second)
 	}
-	return parsed.AccessToken, expiry, nil
+	// An absolute expiry (OpenAI's expires_at) wins when it is earlier.
+	if parsed.ExpiresAt > 0 {
+		if at := time.Unix(parsed.ExpiresAt, 0); expiry.IsZero() || at.Before(expiry) {
+			expiry = at
+		}
+	}
+	if !expiry.IsZero() && !expiry.After(time.Now()) {
+		bErr := providerUtils.NewProviderAPIError(fmt.Sprintf("oauth token endpoint %s returned a token that has already expired", redactURL(tokenURL)),
+			nil, http.StatusBadGateway, nil, nil)
+		bErr.AllowFallbacks = schemas.Ptr(false)
+		return nil, bErr
+	}
+	return &postedToken{accessToken: parsed.AccessToken, tokenType: parsed.TokenType, expiry: expiry}, nil
 }

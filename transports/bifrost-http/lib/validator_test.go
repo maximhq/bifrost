@@ -4491,6 +4491,7 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 		{"alongside a value", customProvider(`"name": "k", "value": "sk", "models": ["*"], "weight": 1.0, ` + cc)},
 		// OAuthKeyConfig.Validate treats 0 as "use the default lifetime", so the schema must too.
 		{"zero assertion lifetime means the default", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}`)},
+		{"token_exchange", customProvider(`"name": "k", "value": "", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://auth.openai.com/oauth/token", "subject_token_file": "/var/run/secrets/openai/token", "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "request_encoding": "json", "extra_params": {"identity_provider_id": "idp", "service_account_id": "sa"}}`)},
 	}
 	for _, tt := range valid {
 		t.Run("valid "+tt.name, func(t *testing.T) {
@@ -4517,6 +4518,9 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 		{"blank issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "", "audience": "a"}`)},
 		{"blank audience", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": ""}`)},
 		{"negative assertion lifetime", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}`)},
+		{"token_exchange without subject_token_file", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://auth.openai.com/oauth/token", "request_encoding": "json"}`)},
+		{"token_exchange with an unknown encoding", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://auth.openai.com/oauth/token", "subject_token_file": "/var/run/secrets/t", "request_encoding": "xml"}`)},
+		{"subject_token_file on another grant", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "subject_token_file": "/var/run/secrets/t"}`)},
 	}
 	for _, tt := range invalid {
 		t.Run("invalid "+tt.name, func(t *testing.T) {

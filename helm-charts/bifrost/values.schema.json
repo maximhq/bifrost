@@ -9184,9 +9184,10 @@
               "type": "string",
               "enum": [
                 "client_credentials",
-                "jwt_bearer"
+                "jwt_bearer",
+                "token_exchange"
               ],
-              "description": "client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key)."
+              "description": "client_credentials (RFC 6749 §4.4), jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key) or token_exchange (RFC 8693: Bifrost exchanges a workload identity token read from subject_token_file, for example for OpenAI workload identity federation)."
             },
             "token_url": {
               "type": "string",
@@ -9262,7 +9263,30 @@
               "additionalProperties": {
                 "type": "string"
               },
-              "description": "Extra form parameters sent on the token request"
+              "description": "Extra parameters sent on the token request (for token_exchange with OpenAI: identity_provider_id and service_account_id)"
+            },
+            "subject_token_file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "token_exchange: absolute path of the subject token (for example a Kubernetes projected service account token), re-read on every exchange. It must sit under a directory listed in BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS (default /var/run/secrets,/run/secrets)."
+            },
+            "subject_token_type": {
+              "type": "string",
+              "enum": [
+                "urn:ietf:params:oauth:token-type:jwt",
+                "urn:ietf:params:oauth:token-type:id_token"
+              ],
+              "default": "urn:ietf:params:oauth:token-type:jwt",
+              "description": "token_exchange: RFC 8693 type of the subject token"
+            },
+            "request_encoding": {
+              "type": "string",
+              "enum": [
+                "form",
+                "json"
+              ],
+              "default": "form",
+              "description": "token_exchange: request body encoding, form per RFC 8693 or json (OpenAI)"
             },
             "assertion_lifetime_seconds": {
               "type": "integer",
@@ -9310,6 +9334,41 @@
                   "audience": {
                     "minLength": 1
                   }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "grant_type": {
+                    "const": "token_exchange"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "subject_token_file"
+                ]
+              },
+              "else": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "subject_token_file"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "subject_token_type"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "request_encoding"
+                      ]
+                    }
+                  ]
                 }
               }
             }

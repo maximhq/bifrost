@@ -96,7 +96,7 @@ func TestMinterForConfig(t *testing.T) {
 		{"ftp token url", func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("ftp://x/token") }, "must be https"},
 		{"plain http on a public host", func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/oauth2/token") }, "must be https"},
 		{"missing grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "" }, "grant_type is required"},
-		{"unknown grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" }, "must be client_credentials or jwt_bearer"},
+		{"unknown grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" }, "must be client_credentials, jwt_bearer or token_exchange"},
 		{"jwt bearer without key", func(c *schemas.OAuthKeyConfig) {
 			c.GrantType = schemas.OAuthGrantJWTBearer
 			c.Issuer = "i"

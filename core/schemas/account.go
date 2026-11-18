@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -1407,7 +1409,60 @@ const (
 	// OAuthGrantJWTBearer is the JWT bearer assertion grant (RFC 7523): Bifrost signs an
 	// assertion with the configured private key and exchanges it for an access token.
 	OAuthGrantJWTBearer OAuthGrantType = "jwt_bearer"
+	// OAuthGrantTokenExchange is the OAuth 2.0 token exchange grant (RFC 8693): Bifrost reads a
+	// token the platform issued to the workload (for example a Kubernetes projected service
+	// account token) from subject_token_file and exchanges it for an access token. This is how
+	// OpenAI workload identity federation works.
+	OAuthGrantTokenExchange OAuthGrantType = "token_exchange"
 )
+
+// Subject token types accepted by the token_exchange grant (RFC 8693 §3).
+const (
+	OAuthSubjectTokenTypeJWT     = "urn:ietf:params:oauth:token-type:jwt"
+	OAuthSubjectTokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+)
+
+// OAuthSubjectTokenTypes lists the subject_token_type values the token_exchange grant accepts.
+// The subject is a workload identity token read from a file, so only identity token types apply.
+var OAuthSubjectTokenTypes = []string{OAuthSubjectTokenTypeJWT, OAuthSubjectTokenTypeIDToken}
+
+// OAuthRequestEncoding selects how the token_exchange grant encodes its request body.
+type OAuthRequestEncoding string
+
+const (
+	// OAuthRequestEncodingForm sends application/x-www-form-urlencoded, as RFC 8693 specifies.
+	OAuthRequestEncodingForm OAuthRequestEncoding = "form"
+	// OAuthRequestEncodingJSON sends application/json, which OpenAI's token endpoint expects.
+	OAuthRequestEncodingJSON OAuthRequestEncoding = "json"
+)
+
+// TokenExchangeURLsEnv lists, comma separated, the token endpoints the token_exchange grant may
+// send a subject token to, replacing DefaultTokenExchangeURLs. It is read from the environment
+// only, never from a key: the subject token is a host credential the key editor never saw, so
+// whoever can edit a key must not be able to point it at an endpoint of their choosing.
+const TokenExchangeURLsEnv = "BIFROST_TOKEN_EXCHANGE_URLS"
+
+// DefaultTokenExchangeURLs are the token endpoints allowed when TokenExchangeURLsEnv is unset.
+var DefaultTokenExchangeURLs = []string{"https://auth.openai.com/oauth/token"}
+
+// TokenExchangeURLAllowed reports whether the token_exchange grant may post a subject token to
+// tokenURL: an exact match, after trimming, against TokenExchangeURLsEnv or the defaults.
+func TokenExchangeURLAllowed(tokenURL string) bool {
+	tokenURL = strings.TrimSpace(tokenURL)
+	if tokenURL == "" {
+		return false
+	}
+	allowed := DefaultTokenExchangeURLs
+	if raw := os.Getenv(TokenExchangeURLsEnv); strings.TrimSpace(raw) != "" {
+		allowed = strings.Split(raw, ",")
+	}
+	for _, u := range allowed {
+		if strings.TrimSpace(u) == tokenURL {
+			return true
+		}
+	}
+	return false
+}
 
 // OAuthAuthStyle selects where the client_credentials grant sends the client ID and secret.
 type OAuthAuthStyle string
@@ -1428,7 +1483,7 @@ const (
 // Leave Key.Value empty to mint from this config; a non-empty Value always wins and is sent
 // verbatim as the bearer token.
 type OAuthKeyConfig struct {
-	GrantType                OAuthGrantType    `json:"grant_type"`                           // client_credentials or jwt_bearer (required)
+	GrantType                OAuthGrantType    `json:"grant_type"`                           // client_credentials, jwt_bearer or token_exchange (required)
 	TokenURL                 SecretVar         `json:"token_url"`                            // Token endpoint, absolute https URL (required, supports env. prefix)
 	ClientID                 *SecretVar        `json:"client_id,omitempty"`                  // client_credentials: client ID (required for that grant)
 	ClientSecret             *SecretVar        `json:"client_secret,omitempty"`              // client_credentials: client secret (required for that grant)
@@ -1442,6 +1497,11 @@ type OAuthKeyConfig struct {
 	AuthStyle                OAuthAuthStyle    `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
 	ExtraParams              map[string]string `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
 	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+	// token_exchange: absolute path of the subject token, re-read on every exchange. It must sit
+	// under an allowed credential directory (BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS).
+	SubjectTokenFile string               `json:"subject_token_file,omitempty"`
+	SubjectTokenType string               `json:"subject_token_type,omitempty"` // token_exchange: default urn:ietf:params:oauth:token-type:jwt
+	RequestEncoding  OAuthRequestEncoding `json:"request_encoding,omitempty"`   // token_exchange: form (default) or json
 }
 
 // Redacted returns a copy safe to return from a configuration read: the token URL stays
@@ -1538,10 +1598,36 @@ func (c *OAuthKeyConfig) Validate() error {
 		if c.AssertionLifetimeSeconds < 0 || c.AssertionLifetimeSeconds > 3600 {
 			return fmt.Errorf("oauth_key_config.assertion_lifetime_seconds must be between 0 (default) and 3600")
 		}
+	case OAuthGrantTokenExchange:
+		file := strings.TrimSpace(c.SubjectTokenFile)
+		if file == "" {
+			return fmt.Errorf("oauth_key_config.subject_token_file is required for the token_exchange grant")
+		}
+		if !filepath.IsAbs(file) {
+			return fmt.Errorf("oauth_key_config.subject_token_file must be an absolute path")
+		}
+		if t := strings.TrimSpace(c.SubjectTokenType); t != "" && !slices.Contains(OAuthSubjectTokenTypes, t) {
+			return fmt.Errorf("oauth_key_config.subject_token_type must be one of %s", strings.Join(OAuthSubjectTokenTypes, ", "))
+		}
+		switch c.RequestEncoding {
+		case "", OAuthRequestEncodingForm, OAuthRequestEncodingJSON:
+		default:
+			return fmt.Errorf("oauth_key_config.request_encoding must be form or json")
+		}
+		// A reference is checked after it resolves, when the exchange runs.
+		if !c.TokenURL.IsFromSecret() && !TokenExchangeURLAllowed(c.TokenURL.GetValue()) {
+			return fmt.Errorf("oauth_key_config.token_url is not an allowed token exchange endpoint; list it in %s (default %s)",
+				TokenExchangeURLsEnv, strings.Join(DefaultTokenExchangeURLs, ","))
+		}
 	case "":
 		return fmt.Errorf("oauth_key_config.grant_type is required")
 	default:
-		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials, jwt_bearer or token_exchange")
+	}
+	// The token_exchange fields are refused elsewhere rather than ignored, so a key that names a
+	// subject token never silently authenticates some other way.
+	if c.GrantType != OAuthGrantTokenExchange && (c.SubjectTokenFile != "" || c.SubjectTokenType != "" || c.RequestEncoding != "") {
+		return fmt.Errorf("oauth_key_config.subject_token_file, subject_token_type and request_encoding only apply to the token_exchange grant")
 	}
 	return nil
 }

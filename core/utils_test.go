@@ -529,7 +529,7 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 		// still refuses to save one (handlers.validateProviderKey).
 		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}},
 		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
-		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials, jwt_bearer or token_exchange"},
 		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
 		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
 		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
