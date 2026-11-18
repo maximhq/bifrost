@@ -343642,7 +343642,7 @@
                   "    pm.expect([\"greeting\", \"other\"]).to.include(p.value);",
                   "    pm.expect(p.probability).to.be.within(0, 1);",
                   "  });",
-                  "  // Two submitted levels: the score is a level index in [0, 1], and the distribution has one entry per level, in level order.",
+                  "  // Two submitted levels: the score is an expected level in [0, 1] and can be fractional, and the distribution has one entry per level, in level order.",
                   "  pm.expect(severity.score, \"score: \" + pm.response.text()).to.be.within(0, 1);",
                   "  pm.expect(severity.probabilities, \"score distribution: \" + pm.response.text()).to.be.an(\"array\").with.lengthOf(2);",
                   "  pm.expect(severity.probabilities.map(function (p) { return p.value; })).to.deep.equal([0, 1]);",
