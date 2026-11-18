@@ -1792,6 +1792,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if limits := ctx.Grant().Limits(); limits != nil {
 			accountedBudgets, accountedRateLimits = limits.Budgets(), limits.RateLimits()
 		}
+		accountedBudgets, accountedRateLimits = p.limitsForKeyThatRan(ctx, provider, requestedModel, accountedBudgets, accountedRateLimits)
 		if skipHolderUsage {
 			// The holder's usage is not being counted, so nothing it funds is billed or recorded. What
 			// the deployment and the user fund still is: those are owed whatever granted the request,
@@ -2448,6 +2449,53 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		}
 	}
 	return errs
+}
+
+// limitsForKeyThatRan narrows the limits settled for an alias to the target of the key that ran.
+//
+// The check runs before key selection, so it answers to the limits of every model the eligible keys
+// map the alias to. Only one of them ran, so charging the rest would spend limits of models that
+// never ran. When the settled limits carried alias targets for this (provider, model) and core
+// reports the key that ran, the limits are gathered again with that key's targets alone, and the
+// settled list is kept only where the two agree: nothing is charged that was not checked. Without
+// alias targets, or without a reported key, the settled list is returned as is. A request naming no
+// alias pays one context read.
+func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgets, rateLimits []schemas.Limit) ([]schemas.Limit, []schemas.Limit) {
+	settled, _ := ctx.Value(aliasLimitTargetsContext).(settledAliasTargets)
+	if len(settled.targets) == 0 || settled.provider != provider || settled.model != model {
+		return budgets, rateLimits
+	}
+	// The usual case: every eligible key maps the alias to one model, and the key that ran did.
+	if ra := schemas.GetResolvedAlias(ctx); len(settled.targets) == 1 && ra != nil && ra.Config != nil && ra.Config.ModelID == settled.targets[0] {
+		return budgets, rateLimits
+	}
+	keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	g := ctx.Grant()
+	if keyID == "" || g == nil {
+		return budgets, rateLimits
+	}
+	ctx.SetValue(chargedKeyContext, keyID)
+	ranBudgets, ranRateLimits, err := p.store.GatherLimits(ctx, g.Access(), provider, model)
+	ctx.ClearValue(chargedKeyContext)
+	if err != nil {
+		return budgets, rateLimits
+	}
+	return limitsAlsoIn(budgets, ranBudgets), limitsAlsoIn(rateLimits, ranRateLimits)
+}
+
+// limitsAlsoIn is the limits of settled whose IDs ran also names, in settled's order.
+func limitsAlsoIn(settled, ran []schemas.Limit) []schemas.Limit {
+	keep := make(map[string]bool, len(ran))
+	for _, limit := range ran {
+		keep[limit.ID] = true
+	}
+	out := make([]schemas.Limit, 0, len(settled))
+	for _, limit := range settled {
+		if keep[limit.ID] {
+			out = append(out, limit)
+		}
+	}
+	return out
 }
 
 // GenerateVirtualKey is a helper function

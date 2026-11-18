@@ -1706,6 +1706,111 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 	})
 }
 
+// When the keys that can serve an alias map it to different models, the request is checked against
+// every target's limits, since key selection has not happened yet, but charged only against the
+// target of the key that ran: the other model never ran (#6620 review).
+func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}}},
+		}},
+	}}
+	vk := buildVirtualKeyWithProviders("vk-alias-charge", mcpTestVKValue, "alias-charge-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
+	})
+	rlLarge := buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 100, 0)
+	rlMini := buildRateLimitWithUsage("rl-gpt-4o-mini", 1_000_000, 0, 100, 0)
+	newPlugin := func(t *testing.T) (*GovernancePlugin, *LocalGovernanceStore) {
+		logger := NewMockLogger()
+		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			ModelConfigs: []configstoreTables.TableModelConfig{
+				*buildModelConfig("mc-gpt-4o", "gpt-4o", nil, nil, rlLarge),
+				*buildModelConfig("mc-gpt-4o-mini", "gpt-4o-mini", nil, nil, rlMini),
+			},
+			RateLimits: []configstoreTables.TableRateLimit{*rlLarge, *rlMini},
+		}, nil, store)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin, local
+	}
+	run := func(t *testing.T, selectedKey string) map[string]int64 {
+		plugin, local := newPlugin(t)
+		ctx := presentCtx(mcpTestVKValue)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "best-gpt"}}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		if selectedKey != "" {
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, selectedKey) // as core does at key selection
+		}
+		resp := countableResponse()
+		resp.ChatResponse.ExtraFields.OriginalModelRequested = "best-gpt"
+		_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+		usage := map[string]int64{}
+		for _, id := range []string{"rl-gpt-4o", "rl-gpt-4o-mini"} {
+			rl := local.GetGovernanceData(context.Background()).RateLimits[id]
+			require.NotNil(t, rl)
+			usage[id] = rl.RequestCurrentUsage
+		}
+		return usage
+	}
+
+	t.Run("the key that ran decides the charged target", func(t *testing.T) {
+		assert.Equal(t, map[string]int64{"rl-gpt-4o": 1, "rl-gpt-4o-mini": 0}, run(t, "k1"))
+		assert.Equal(t, map[string]int64{"rl-gpt-4o": 0, "rl-gpt-4o-mini": 1}, run(t, "k2"))
+	})
+	t.Run("without a reported key every checked target is charged", func(t *testing.T) {
+		assert.Equal(t, map[string]int64{"rl-gpt-4o": 1, "rl-gpt-4o-mini": 1}, run(t, ""))
+	})
+}
+
+// BenchmarkLimitsForKeyThatRan is the charge-time step PostLLMHook adds: "no_alias" is every request
+// that named no alias (one context read); "keys_agree" is an alias every key maps to one model, which
+// the key that ran did; "keys_disagree" re-gathers the limits for the key that ran.
+func BenchmarkLimitsForKeyThatRan(b *testing.B) {
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}, "top-gpt": {ModelID: "gpt-4o"}}},
+			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}, "top-gpt": {ModelID: "gpt-4o"}}},
+		}},
+	}}
+	vk := buildVirtualKeyWithProviders("vk-alias-bench", mcpTestVKValue, "alias-bench-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, nil, store)
+	require.NoError(b, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	for _, bc := range []struct{ name, model, ran string }{{"no_alias", "gpt-4o", ""}, {"keys_agree", "top-gpt", "gpt-4o"}, {"keys_disagree", "best-gpt", "gpt-4o"}} {
+		ctx := presentCtx(mcpTestVKValue)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: bc.model}}
+		require.NoError(b, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(b, err)
+		require.Nil(b, shortCircuit)
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "k1")
+		if bc.ran != "" {
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: bc.model, Config: &schemas.AliasConfig{ModelID: bc.ran}})
+		}
+		limits := ctx.Grant().Limits()
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _ = plugin.limitsForKeyThatRan(ctx, schemas.OpenAI, bc.model, limits.Budgets(), limits.RateLimits())
+			}
+		})
+	}
+}
+
 // The key-alias rules are judged over the keys key selection can actually pick for the request
 // (#6620 review): the virtual key's own key_ids, and the key a request pins by id, by name, or through
 // a routing rule. A key outside that set neither vetoes an alias nor adds a target to check against a

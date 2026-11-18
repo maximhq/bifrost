@@ -2420,6 +2420,26 @@ type limitsContextKey struct{}
 // no key alias is applied to it and no alias target's limits may be added.
 var literalLimitsContextKey = limitsContextKey{}
 
+type chargedKeyContextKey struct{}
+
+// chargedKeyContext marks a limit walk made at charge time for the key that ran: alias targets are
+// then the ones that key maps the name to, not every eligible key's. See limitsForKeyThatRan.
+var chargedKeyContext = chargedKeyContextKey{}
+
+type aliasLimitTargetsContextKey struct{}
+
+// aliasLimitTargetsContext holds a settledAliasTargets on the request once GatherLimits has added
+// alias targets' limits to it.
+var aliasLimitTargetsContext = aliasLimitTargetsContextKey{}
+
+// settledAliasTargets records that the limits settled for (provider, model) include the limits of
+// targets, the models the eligible keys map the name to. A handful of model names, not stream data.
+type settledAliasTargets struct {
+	provider schemas.ModelProvider
+	model    string
+	targets  []string
+}
+
 // runsAsWritten reports whether the model on ctx reaches the provider exactly as the client named
 // it: the caller marked it literal, or the credential skips key selection, so no key alias is
 // ever applied.
@@ -2454,6 +2474,12 @@ func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *stri
 	keys, ok := pinnedKeys(ctx, cfg.Keys)
 	if !ok {
 		return nil
+	}
+	// At charge time only the key that ran counts: a model another key would have run never ran.
+	if keyID, charging := ctx.Value(chargedKeyContext).(string); charging {
+		if keys, ok = keyByID(keys, keyID); !ok {
+			return nil
+		}
 	}
 	var targets []string
 	collect := func(target string) {
@@ -2498,6 +2524,16 @@ func accessKeysForModel(ctx context.Context, provider, model string) (schemas.Wh
 	}
 	keyIDs, restricted := access.KeysForModel(provider, model)
 	return schemas.WhiteList(keyIDs), restricted
+}
+
+// keyByID is the one-key subslice of keys whose ID is id, and false when no key has it.
+func keyByID(keys []schemas.Key, id string) ([]schemas.Key, bool) {
+	for i := range keys {
+		if keys[i].ID == id {
+			return keys[i : i+1], true
+		}
+	}
+	return nil, false
 }
 
 // pinnedKeys narrows keys to the one a pinned request is served from, in core's order: a routing-rule
@@ -5074,6 +5110,11 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
 	targets := gs.aliasTargets(ctx, providerPtrFor(provider), model)
+	// Recorded for limitsForKeyThatRan, but not by its own charge-time walk: the record is what the
+	// check answered to.
+	if len(targets) > 0 && ctx != nil && ctx.Value(chargedKeyContext) == nil {
+		ctx.SetValue(aliasLimitTargetsContext, settledAliasTargets{provider: provider, model: model, targets: targets})
+	}
 	globalModelBudgets, globalModelRateLimits := gs.globalModelLimits(ctx, provider, model, targets)
 	budgets = append(budgets, globalModelBudgets...)
 	rateLimits = append(rateLimits, globalModelRateLimits...)
