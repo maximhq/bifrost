@@ -38,7 +38,7 @@
 		"asyncJobTtl": "Async Job Result TTL (seconds)",
 		"asyncJobTtlHelp": "Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.",
 		"bifrostUrl": "Bifrost URL",
-		"bifrostUrlHelp": "The URL clients reach this gateway at, including any base path. Required for <code0>/v1/mcp</code0> and Warp's configuration tools: their calls act as if they arrived here, so links in their results point at it. If left blank, both are disabled; the Host header a request sends is never used instead.",
+		"bifrostUrlHelp": "The URL clients reach this gateway at, including any base path. Required for <code0>/v1/mcp</code0>: its tool calls act as if they arrived here, so links in their results point at it. If left blank, it is disabled; the Host header a request sends is never used instead.",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "OpenAPI URL",
 		"openapiUrlHelp": "The OpenAPI spec <code0>/v1/mcp</code0> builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Leave empty to read the published spec for this build.",
