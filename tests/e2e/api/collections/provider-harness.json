@@ -340087,6 +340087,2186 @@
           }
         }
       ]
+    },
+    {
+      "name": "367. Anthropic deferred web search continuation (deferred web search)",
+      "description": "When Claude calls a client tool and web_search in the same turn, Anthropic defers the search: the turn ends with stop_reason tool_use and a server_tool_use that has no web_search_tool_result. The client sends that turn back with the client tool_result, Anthropic runs the search, and returns its web_search_tool_result at the start of the next assistant message, apart from its server_tool_use.\n\nBifrost used to rebuild the deferred turn with a made-up web_search_tool_result (400 '`tool_use` ids were found without `tool_result` blocks immediately after'), dropped the late result in the next message (so every later turn replayed a server_tool_use with no result), and on streams left the deferred server_tool_use open with input {} and skipped the late result block.\n\nThree chains, each turn feeding the next: /anthropic/v1/messages (turns 1-3), /v1/responses (turns 1-3, where the deferred search is an in_progress web_search_call and the late result a finished web_search_call with the same id and no query), and a streamed /anthropic/v1/messages chain (turns 1-2). Turn 2 and 3 assert the exact upstream blocks via raw_request.\n\nTurn 1 depends on the model issuing both calls in one reply; the prompt asks for that explicitly. If the model searches first instead, Anthropic runs the search inline and turn 1 fails on its 'called in one turn' assertion: that is model behaviour, not a gateway regression.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages deferred web search turn 1: search called beside a client tool comes back with no result",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('deferredSearchMessagesContent');",
+                  "pm.collectionVariables.unset('deferredSearchMessagesSearchId');",
+                  "pm.collectionVariables.unset('deferredSearchMessagesToolUseId');",
+                  "pm.collectionVariables.unset('deferredSearchMessagesContent2');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search messages turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var content = body.content || [];",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.name ? ':' + b.name : ''); }));",
+                  "var call = content.filter(function (b) { return b.type === 'tool_use' && b.name === 'get_pod_status'; })[0];",
+                  "var use = content.filter(function (b) { return b.type === 'server_tool_use' && b.name === 'web_search'; })[0];",
+                  "pm.test('deferred web search messages turn 1: get_pod_status and web_search were called in one turn (model-dependent: both calls must be issued together for Anthropic to defer the search)', function () {",
+                  "  pm.expect(call, 'no tool_use named get_pod_status: ' + kinds).to.be.an('object');",
+                  "  pm.expect(use, 'no web_search server_tool_use: ' + kinds).to.be.an('object');",
+                  "  pm.expect(body.stop_reason, kinds).to.eql('tool_use');",
+                  "});",
+                  "pm.test('deferred web search messages turn 1: the deferred search has no web_search_tool_result', function () {",
+                  "  var results = content.filter(function (b) { return b.type === 'web_search_tool_result' && use && b.tool_use_id === use.id; });",
+                  "  pm.expect(results, 'Anthropic has not run this search yet; a result block here (empty content) is one the gateway made up: ' + JSON.stringify(results)).to.have.lengthOf(0);",
+                  "});",
+                  "if (pm.response.code === 200 && call && use) {",
+                  "  pm.collectionVariables.set('deferredSearchMessagesContent', JSON.stringify(content));",
+                  "  pm.collectionVariables.set('deferredSearchMessagesSearchId', use.id);",
+                  "  pm.collectionVariables.set('deferredSearchMessagesToolUseId', call.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages deferred web search turn 2: bare server_tool_use reaches Anthropic and the late result reaches the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search messages turn 2: 200 (Anthropic resumed the deferred search)', function () {",
+                  "  pm.expect(txt, 'Anthropic rejected the replayed history: ' + txt.slice(0, 600)).to.not.include('found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred web search messages turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var searchId = pm.collectionVariables.get('deferredSearchMessagesSearchId');",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('deferred web search messages turn 2: the pending server_tool_use is sent back with its id and query', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; })[0];",
+                  "  pm.expect(use, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('web_search');",
+                  "  pm.expect(use.input && use.input.query, 'search query must be echoed: ' + JSON.stringify(use)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('deferred web search messages turn 2: no web_search_tool_result is added for the pending search', function () {",
+                  "  var results = blocks.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; });",
+                  "  pm.expect(results, 'Anthropic has not run this search, so any result block was made up by the gateway: ' + wire.slice(0, 1500)).to.have.lengthOf(0);",
+                  "});",
+                  "var content = body.content || [];",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.tool_use_id ? ':' + b.tool_use_id : ''); }));",
+                  "pm.test('deferred web search messages turn 2: the response carries the late web_search_tool_result and no second server_tool_use', function () {",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; }), 'the deferred search result was dropped from the response: ' + kinds).to.have.lengthOf(1);",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; }), 'server_tool_use ' + searchId + ' was repeated in the next message: ' + kinds).to.have.lengthOf(0);",
+                  "});",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('deferredSearchMessagesContent2', JSON.stringify(content)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{\"role\":\"assistant\",\"content\":{{deferredSearchMessagesContent}}},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"{{deferredSearchMessagesToolUseId}}\",\"content\":\"CrashLoopBackOff, 14 restarts\"}]}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages deferred web search turn 3: history after the continuation replays each block in its turn",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search messages turn 3: 200', function () {",
+                  "  pm.expect(txt, 'Anthropic rejected the replayed history: ' + txt.slice(0, 600)).to.not.include('found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred web search messages turn 3: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var searchId = pm.collectionVariables.get('deferredSearchMessagesSearchId');",
+                  "var callId = pm.collectionVariables.get('deferredSearchMessagesToolUseId');",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "var turns = [];",
+                  "msgs.forEach(function (m) { var c = Array.isArray(m.content) ? m.content : [{ type: 'text' }]; if (turns.length && turns[turns.length - 1].role === m.role) { turns[turns.length - 1].blocks = turns[turns.length - 1].blocks.concat(c); } else { turns.push({ role: m.role, blocks: c.slice() }); } });",
+                  "var resultTurn = -1;",
+                  "turns.forEach(function (t, i) { if (t.role === 'user' && t.blocks.some(function (b) { return b.type === 'tool_result' && b.tool_use_id === callId; })) { resultTurn = i; } });",
+                  "var shape = JSON.stringify(turns.map(function (t) { return t.role + ':' + t.blocks.map(function (b) { return b.type; }).join(','); }));",
+                  "pm.test('deferred web search messages turn 3: the deferred search keeps its bare server_tool_use in the turn before the client tool_result' , function () {",
+                  "  pm.expect(resultTurn, 'client tool_result turn not found: ' + shape).to.be.above(0);",
+                  "  var before = turns[resultTurn - 1];",
+                  "  var uses = before.blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; });",
+                  "  pm.expect(uses, 'server_tool_use ' + searchId + ' must be in the assistant turn before the tool_result: ' + shape).to.have.lengthOf(1);",
+                  "  pm.expect(before.blocks.filter(function (b) { return b.type === 'web_search_tool_result'; }), 'the result belongs to the next assistant turn, not beside its call: ' + shape).to.have.lengthOf(0);",
+                  "});",
+                  "pm.test('deferred web search messages turn 3: the late web_search_tool_result opens the assistant turn after the client tool_result', function () {",
+                  "  var after = turns[resultTurn + 1];",
+                  "  pm.expect(after && after.role, 'no assistant turn after the tool_result: ' + shape).to.eql('assistant');",
+                  "  var first = after.blocks[0] || {};",
+                  "  pm.expect(first.type + ':' + first.tool_use_id, 'the late result was dropped or moved: ' + shape + ' ' + wire.slice(0, 1500)).to.eql('web_search_tool_result:' + searchId);",
+                  "  pm.expect(after.blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; }), 'server_tool_use ' + searchId + ' must not be sent twice: ' + shape).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{\"role\":\"assistant\",\"content\":{{deferredSearchMessagesContent}}},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"{{deferredSearchMessagesToolUseId}}\",\"content\":\"CrashLoopBackOff, 14 restarts\"}]},{\"role\":\"assistant\",\"content\":{{deferredSearchMessagesContent2}}},{\"role\":\"user\",\"content\":\"Thanks. Summarize the likely cause in one sentence.\"}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses deferred web search turn 1: search called beside a function call is in_progress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('deferredSearchResponsesItems');",
+                  "pm.collectionVariables.unset('deferredSearchResponsesSearchId');",
+                  "pm.collectionVariables.unset('deferredSearchResponsesCallId');",
+                  "pm.collectionVariables.unset('deferredSearchResponsesItems2');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search responses turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_pod_status'; })[0];",
+                  "var search = output.filter(function (o) { return o.type === 'web_search_call'; })[0];",
+                  "pm.test('deferred web search responses turn 1: get_pod_status and web_search were called in one turn (model-dependent: both calls must be issued together for Anthropic to defer the search)', function () {",
+                  "  pm.expect(call, 'no function_call named get_pod_status: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search, 'no web_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(String(search.id || ''), 'server search id: ' + JSON.stringify(search)).to.match(/^srvtoolu_/);",
+                  "});",
+                  "pm.test('deferred web search responses turn 1: the deferred search is in_progress, not completed', function () {",
+                  "  pm.expect(search && search.status, 'Anthropic has not run this search yet; completed reports a search that never ran as finished: ' + JSON.stringify(search)).to.eql('in_progress');",
+                  "});",
+                  "if (pm.response.code === 200 && call && search) {",
+                  "  pm.collectionVariables.set('deferredSearchResponsesItems', output.map(function (o) { return JSON.stringify(o); }).join(','));",
+                  "  pm.collectionVariables.set('deferredSearchResponsesSearchId', search.id);",
+                  "  pm.collectionVariables.set('deferredSearchResponsesCallId', call.call_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"}],\"tools\":[{\"type\":\"web_search\",\"web_search_version\":\"web_search_20250305\"},{\"type\":\"function\",\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"parameters\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses deferred web search turn 2: in_progress web_search_call reaches Anthropic bare and the late result is a result-only item",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search responses turn 2: 200 (Anthropic resumed the deferred search)', function () {",
+                  "  pm.expect(txt, 'Anthropic rejected the replayed history: ' + txt.slice(0, 600)).to.not.include('found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred web search responses turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var searchId = pm.collectionVariables.get('deferredSearchResponsesSearchId');",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('deferred web search responses turn 2: the pending server_tool_use is sent back with its id and query', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; })[0];",
+                  "  pm.expect(use, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('web_search');",
+                  "  pm.expect(use.input && use.input.query, 'search query must be echoed: ' + JSON.stringify(use)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('deferred web search responses turn 2: no web_search_tool_result is added for the pending search', function () {",
+                  "  var results = blocks.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; });",
+                  "  pm.expect(results, 'Anthropic has not run this search, so any result block was made up by the gateway: ' + wire.slice(0, 1500)).to.have.lengthOf(0);",
+                  "});",
+                  "var output = body.output || [];",
+                  "var mine = output.filter(function (o) { return o.type === 'web_search_call' && o.id === searchId; });",
+                  "pm.test('deferred web search responses turn 2: the late result is one finished web_search_call with the same id and no query', function () {",
+                  "  pm.expect(mine, 'the deferred search result is missing from output or repeated: ' + JSON.stringify(output).slice(0, 1500)).to.have.lengthOf(1);",
+                  "  var action = mine[0].action || {};",
+                  "  pm.expect(mine[0].status, JSON.stringify(mine[0])).to.eql('completed');",
+                  "  pm.expect(action.query, 'a result-only item carries no query (its call was in the previous turn): ' + JSON.stringify(mine[0])).to.not.be.ok;",
+                  "  pm.expect((action.queries || []).length, JSON.stringify(mine[0])).to.eql(0);",
+                  "});",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('deferredSearchResponsesItems2', output.map(function (o) { return JSON.stringify(o); }).join(',')); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{{deferredSearchResponsesItems}},{\"type\":\"function_call_output\",\"call_id\":\"{{deferredSearchResponsesCallId}}\",\"output\":\"CrashLoopBackOff, 14 restarts\"}],\"tools\":[{\"type\":\"web_search\",\"web_search_version\":\"web_search_20250305\"},{\"type\":\"function\",\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"parameters\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses deferred web search turn 3: replayed output items keep the late result in the next assistant turn",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search responses turn 3: 200', function () {",
+                  "  pm.expect(txt, 'Anthropic rejected the replayed history: ' + txt.slice(0, 600)).to.not.include('found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred web search responses turn 3: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var searchId = pm.collectionVariables.get('deferredSearchResponsesSearchId');",
+                  "var callId = pm.collectionVariables.get('deferredSearchResponsesCallId');",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "var turns = [];",
+                  "msgs.forEach(function (m) { var c = Array.isArray(m.content) ? m.content : [{ type: 'text' }]; if (turns.length && turns[turns.length - 1].role === m.role) { turns[turns.length - 1].blocks = turns[turns.length - 1].blocks.concat(c); } else { turns.push({ role: m.role, blocks: c.slice() }); } });",
+                  "var resultTurn = -1;",
+                  "turns.forEach(function (t, i) { if (t.role === 'user' && t.blocks.some(function (b) { return b.type === 'tool_result' && b.tool_use_id === callId; })) { resultTurn = i; } });",
+                  "var shape = JSON.stringify(turns.map(function (t) { return t.role + ':' + t.blocks.map(function (b) { return b.type; }).join(','); }));",
+                  "pm.test('deferred web search responses turn 3: the deferred search keeps its bare server_tool_use in the turn before the client tool_result' , function () {",
+                  "  pm.expect(resultTurn, 'client tool_result turn not found: ' + shape).to.be.above(0);",
+                  "  var before = turns[resultTurn - 1];",
+                  "  var uses = before.blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; });",
+                  "  pm.expect(uses, 'server_tool_use ' + searchId + ' must be in the assistant turn before the tool_result: ' + shape).to.have.lengthOf(1);",
+                  "  pm.expect(before.blocks.filter(function (b) { return b.type === 'web_search_tool_result'; }), 'the result belongs to the next assistant turn, not beside its call: ' + shape).to.have.lengthOf(0);",
+                  "});",
+                  "pm.test('deferred web search responses turn 3: the late web_search_tool_result opens the assistant turn after the client tool_result', function () {",
+                  "  var after = turns[resultTurn + 1];",
+                  "  pm.expect(after && after.role, 'no assistant turn after the tool_result: ' + shape).to.eql('assistant');",
+                  "  var first = after.blocks[0] || {};",
+                  "  pm.expect(first.type + ':' + first.tool_use_id, 'the late result was dropped or moved: ' + shape + ' ' + wire.slice(0, 1500)).to.eql('web_search_tool_result:' + searchId);",
+                  "  pm.expect(after.blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; }), 'server_tool_use ' + searchId + ' must not be sent twice: ' + shape).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{{deferredSearchResponsesItems}},{\"type\":\"function_call_output\",\"call_id\":\"{{deferredSearchResponsesCallId}}\",\"output\":\"CrashLoopBackOff, 14 restarts\"},{{deferredSearchResponsesItems2}},{\"type\":\"message\",\"role\":\"user\",\"content\":\"Thanks. Summarize the likely cause in one sentence.\"}],\"tools\":[{\"type\":\"web_search\",\"web_search_version\":\"web_search_20250305\"},{\"type\":\"function\",\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"parameters\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages stream deferred web search turn 1: the deferred server_tool_use is closed with its query",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('deferredSearchStreamContent');",
+                  "pm.collectionVariables.unset('deferredSearchStreamSearchId');",
+                  "pm.collectionVariables.unset('deferredSearchStreamToolUseId');",
+                  "var txt = pm.response.text() || '';",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5)); } catch (e) { return null; } }).filter(Boolean);",
+                  "var blocks = {}, order = [], unbalanced = [], stopReason = null, streamErrors = [], sawMessageStop = false;",
+                  "events.forEach(function (e) {",
+                  "  if (e.type === 'content_block_start') { if (blocks[e.index]) { unbalanced.push('restart ' + e.index); } var b = JSON.parse(JSON.stringify(e.content_block || {})); b._json = ''; b._open = true; blocks[e.index] = b; order.push(e.index); }",
+                  "  else if (e.type === 'content_block_delta') { var d = e.delta || {}, t = blocks[e.index]; if (!t || !t._open) { unbalanced.push('delta ' + e.index); return; } if (d.type === 'input_json_delta') { t._json += d.partial_json || ''; } else if (d.type === 'text_delta') { t.text = (t.text || '') + (d.text || ''); } else if (d.type === 'citations_delta' && d.citation) { t.citations = (t.citations || []).concat([d.citation]); } }",
+                  "  else if (e.type === 'content_block_stop') { var s = blocks[e.index]; if (!s || !s._open) { unbalanced.push('stop ' + e.index); return; } s._open = false; if (s._json) { try { s.input = JSON.parse(s._json); } catch (x) { unbalanced.push('bad input json ' + e.index); } } }",
+                  "  else if (e.type === 'message_delta' && e.delta) { stopReason = e.delta.stop_reason || stopReason; }",
+                  "  else if (e.type === 'error') { streamErrors.push(JSON.stringify(e.error || e).slice(0, 300)); }",
+                  "  else if (e.type === 'message_stop') { sawMessageStop = true; }",
+                  "});",
+                  "Object.keys(blocks).forEach(function (k) { if (blocks[k]._open) { unbalanced.push('never stopped ' + k); } });",
+                  "var content = order.map(function (i) { var b = blocks[i]; var c = {}; Object.keys(b).forEach(function (k) { if (k !== '_json' && k !== '_open') { c[k] = b[k]; } }); return c; });",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.name ? ':' + b.name : '') + (b.tool_use_id ? ':' + b.tool_use_id : ''); }));",
+                  "pm.test('deferred web search stream turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred web search stream turn 1: every content block is started and stopped once', function () {",
+                  "  pm.expect(unbalanced, 'a deferred server_tool_use used to be left open: ' + kinds).to.have.lengthOf(0);",
+                  "});",
+                  "pm.test('deferred web search stream turn 1: no error event and the stream ends with message_stop', function () {",
+                  "  pm.expect(streamErrors, 'the stream carried an error event: ' + streamErrors.join(' | ')).to.have.lengthOf(0);",
+                  "  pm.expect(sawMessageStop, 'the stream ended without message_stop: ' + kinds).to.eql(true);",
+                  "});",
+                  "var call = content.filter(function (b) { return b.type === 'tool_use' && b.name === 'get_pod_status'; })[0];",
+                  "var use = content.filter(function (b) { return b.type === 'server_tool_use' && b.name === 'web_search'; })[0];",
+                  "pm.test('deferred web search stream turn 1: get_pod_status and web_search were called in one turn (model-dependent: both calls must be issued together for Anthropic to defer the search)', function () {",
+                  "  pm.expect(call, 'no tool_use named get_pod_status: ' + kinds).to.be.an('object');",
+                  "  pm.expect(use, 'no web_search server_tool_use: ' + kinds).to.be.an('object');",
+                  "  pm.expect(stopReason, kinds).to.eql('tool_use');",
+                  "});",
+                  "pm.test('deferred web search stream turn 1: the server_tool_use carries its query and no result follows', function () {",
+                  "  pm.expect(use && use.input && use.input.query, 'the client must be able to send this block back unchanged: ' + JSON.stringify(use)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'web_search_tool_result'; }), kinds).to.have.lengthOf(0);",
+                  "});",
+                  "if (pm.response.code === 200 && call && use) {",
+                  "  pm.collectionVariables.set('deferredSearchStreamContent', JSON.stringify(content));",
+                  "  pm.collectionVariables.set('deferredSearchStreamSearchId', use.id);",
+                  "  pm.collectionVariables.set('deferredSearchStreamToolUseId', call.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}],\"stream\":true}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages stream deferred web search turn 2: the late web_search_tool_result is streamed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5)); } catch (e) { return null; } }).filter(Boolean);",
+                  "var blocks = {}, order = [], unbalanced = [], stopReason = null, streamErrors = [], sawMessageStop = false;",
+                  "events.forEach(function (e) {",
+                  "  if (e.type === 'content_block_start') { if (blocks[e.index]) { unbalanced.push('restart ' + e.index); } var b = JSON.parse(JSON.stringify(e.content_block || {})); b._json = ''; b._open = true; blocks[e.index] = b; order.push(e.index); }",
+                  "  else if (e.type === 'content_block_delta') { var d = e.delta || {}, t = blocks[e.index]; if (!t || !t._open) { unbalanced.push('delta ' + e.index); return; } if (d.type === 'input_json_delta') { t._json += d.partial_json || ''; } else if (d.type === 'text_delta') { t.text = (t.text || '') + (d.text || ''); } else if (d.type === 'citations_delta' && d.citation) { t.citations = (t.citations || []).concat([d.citation]); } }",
+                  "  else if (e.type === 'content_block_stop') { var s = blocks[e.index]; if (!s || !s._open) { unbalanced.push('stop ' + e.index); return; } s._open = false; if (s._json) { try { s.input = JSON.parse(s._json); } catch (x) { unbalanced.push('bad input json ' + e.index); } } }",
+                  "  else if (e.type === 'message_delta' && e.delta) { stopReason = e.delta.stop_reason || stopReason; }",
+                  "  else if (e.type === 'error') { streamErrors.push(JSON.stringify(e.error || e).slice(0, 300)); }",
+                  "  else if (e.type === 'message_stop') { sawMessageStop = true; }",
+                  "});",
+                  "Object.keys(blocks).forEach(function (k) { if (blocks[k]._open) { unbalanced.push('never stopped ' + k); } });",
+                  "var content = order.map(function (i) { var b = blocks[i]; var c = {}; Object.keys(b).forEach(function (k) { if (k !== '_json' && k !== '_open') { c[k] = b[k]; } }); return c; });",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.name ? ':' + b.name : '') + (b.tool_use_id ? ':' + b.tool_use_id : ''); }));",
+                  "var searchId = pm.collectionVariables.get('deferredSearchStreamSearchId');",
+                  "pm.test('deferred web search stream turn 2: 200 (Anthropic resumed the deferred search)', function () {",
+                  "  pm.expect(txt, 'Anthropic rejected the replayed turn: ' + txt.slice(0, 600)).to.not.include('found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred web search stream turn 2: every content block is started and stopped once', function () {",
+                  "  pm.expect(unbalanced, kinds).to.have.lengthOf(0);",
+                  "});",
+                  "pm.test('deferred web search stream turn 2: no error event and the stream ends with message_stop', function () {",
+                  "  pm.expect(streamErrors, 'the stream carried an error event: ' + streamErrors.join(' | ')).to.have.lengthOf(0);",
+                  "  pm.expect(sawMessageStop, 'the stream ended without message_stop: ' + kinds).to.eql(true);",
+                  "});",
+                  "pm.test('deferred web search stream turn 2: the late web_search_tool_result is streamed, without a second server_tool_use', function () {",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; }), 'the deferred search result was dropped from the stream: ' + kinds).to.have.lengthOf(1);",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; }), 'server_tool_use ' + searchId + ' was repeated: ' + kinds).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{\"role\":\"assistant\",\"content\":{{deferredSearchStreamContent}}},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"{{deferredSearchStreamToolUseId}}\",\"content\":\"CrashLoopBackOff, 14 restarts\"}]}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}],\"stream\":true}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "368. Files API uploads streamed from the request (multipart upload stream)",
+      "description": "A Files API upload used to be copied in memory at every layer: the transport plugins rebuilt the parsed multipart form with Body() and copied it per phase, the /openai/files parser read the file into a []byte, the OpenAI provider rebuilt the multipart body in a buffer and copied it again, and passthrough rebuilt the form and copied it into the upstream request. A 55 MB upload grew the gateway by ~500 MiB, and parallel batch-input uploads OOM-killed pods.\n\nThe file now stays in the request's temp file and is streamed upstream with an exact Content-Length. These cases pin that a streamed upload still reaches OpenAI whole: the bytes OpenAI reports storing must equal the fixture size exactly (2215244 bytes), on the passthrough route and on the /openai integration route. Each upload is deleted afterwards.",
+      "item": [
+        {
+          "name": "368.1 openai /openai_passthrough/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamPassthroughFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.2 openai /openai/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamIntegrationFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.3 openai /openai_passthrough/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files/{{mpStreamPassthroughFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files",
+                "{{mpStreamPassthroughFileId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "368.4 openai /openai/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{mpStreamIntegrationFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{mpStreamIntegrationFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "369. Request bodies streamed or buffered by shape (request body stream)",
+      "description": "Regression suite for how the gateway reads request bodies. Multipart uploads are streamed: transport plugins see them as a BodySource instead of a copy, the /openai/files parser passes the file as a handle, OpenAI and Azure stream it upstream, passthrough streams the parsed form, and the server parses multipart from the connection instead of buffering 16 MB per file. Providers that need the bytes read them once. Every other body (JSON, larger than the 8 KB stream prefetch, gzip-compressed) is buffered as before.\n\nThe upload cases assert the provider stored exactly the fixture size (arxiv-1706.03762.pdf = 2215244 bytes, openai-batch-input.jsonl = 362 bytes) on every route and provider, that OpenAI parses a streamed JSONL as batch input, and that multipart passthrough streaming (stream=true transcription) still works. The connection cases send an upload that is refused before its body is read, then a normal request: a streaming server does not drain an unread body, so without the gateway draining it the next request on the connection would be parsed from leftover upload bytes. Every uploaded file is deleted at the end.",
+      "item": [
+        {
+          "name": "369.01 openai /openai/v1/files batch input jsonl upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch input upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai batch input upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(362); });",
+                  "pm.test('openai batch input upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiBatchInputId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.02 openai /openai/v1/batches accepts the streamed upload as batch input (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch from streamed upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai batch from streamed upload: references the uploaded file', function () { pm.expect(body.input_file_id, pm.response.text()).to.eql(pm.collectionVariables.get('rbsOpenaiBatchInputId')); });",
+                  "// A new batch reports 'validating' before OpenAI has parsed the input file, so wait (bounded) until",
+                  "// it leaves 'validating' and only then assert the streamed JSONL validated.",
+                  "function checkValidated(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/batches/' + body.id, method: 'GET' }, function (err, res) {",
+                  "    // Every poll must answer 200: an error status fails the case here instead of being retried.",
+                  "    if (err || res.code !== 200) {",
+                  "      pm.test('openai batch from streamed upload: validation poll ' + attempt + ' answered 200', function () { pm.expect.fail(err ? String(err) : (res.code + ' ' + res.text())); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.json();",
+                  "    if (j.status !== 'validating') {",
+                  "      pm.test('openai batch from streamed upload: OpenAI validated the JSONL (not failed)', function () { pm.expect(j.status, JSON.stringify(j)).to.not.eql('failed'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt >= 20) {",
+                  "      pm.test('openai batch from streamed upload: validation finished within 60s', function () { pm.expect.fail('batch ' + body.id + ' still validating: ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkValidated(attempt + 1); }, 3000);",
+                  "  });",
+                  "}",
+                  "checkValidated(1);",
+                  "pm.collectionVariables.set('rbsOpenaiBatchId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{rbsOpenaiBatchInputId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.03 openai /openai/v1/batches/{id}/cancel cancels the batch built from the streamed upload (request body stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI refuses to cancel a batch that already finished, and the collection-level check requires a 200",
+                  "// here. So look first: a batch that completed (or otherwise ended) between 369.02 and now has nothing to",
+                  "// cancel, and the cancel is skipped with that recorded. A retrieve error fails the case.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/batches/' + pm.collectionVariables.get('rbsOpenaiBatchId'), method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) {",
+                  "    pm.test('openai batch cancel: the batch can be retrieved before cancelling', function () { pm.expect.fail(err ? String(err) : (res.code + ' ' + res.text())); });",
+                  "    return;",
+                  "  }",
+                  "  var status = res.json().status;",
+                  "  if (['completed', 'failed', 'expired', 'cancelled'].indexOf(status) !== -1) {",
+                  "    pm.test('openai batch cancel: skipped, the batch already ended as ' + status, function () { pm.expect(status).to.be.a('string'); });",
+                  "    pm.execution.skipRequest();",
+                  "  }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch cancel: 200', function () { pm.expect(pm.response.json().id, pm.response.text()).to.eql(pm.collectionVariables.get('rbsOpenaiBatchId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{rbsOpenaiBatchId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{rbsOpenaiBatchId}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.04 openai /v1/files pdf upload with expires_after fields arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai pdf upload with expiry: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai pdf upload with expiry: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('openai pdf upload with expiry: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiPdfId', body.id);",
+                  "pm.test('openai pdf upload with expiry: the expires_after fields reached OpenAI', function () { pm.expect(body.expires_at, pm.response.text()).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[anchor]",
+                  "value": "created_at",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[seconds]",
+                  "value": "3600",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.05 azure /openai/v1/files pdf upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('azure pdf upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('azure pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAzurePdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "azure",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.06 gemini /openai/v1/files pdf upload read once for a provider that needs the bytes (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('gemini pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.test('gemini pdf upload: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.collectionVariables.set('rbsGeminiPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "gemini",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.07 anthropic /anthropic/v1/files pdf upload arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('anthropic pdf upload: the provider stored the whole file', function () { pm.expect(body.size_bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('anthropic pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAnthropicPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.08 anthropic /anthropic_passthrough/v1/files pdf upload read once arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic passthrough pdf upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('anthropic passthrough pdf upload: the provider stored the whole file', function () { pm.expect(body.size_bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('anthropic passthrough pdf upload: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsAnthropicPassthroughPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.09 openai/gpt-4o-mini-transcribe /openai_passthrough/v1/audio/transcriptions stream=true streams a multipart upload (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai streamed transcription passthrough: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai streamed transcription passthrough: answered as an SSE stream', function () { pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text().slice(0, 300)).to.include('text/event-stream'); });",
+                  "pm.test('openai streamed transcription passthrough: the transcript completed', function () { pm.expect(pm.response.text(), pm.response.text().slice(0, 300)).to.include('transcript.text.done'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gpt-4o-mini-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.10 openai/whisper-1 /openai/v1/audio/transcriptions multipart upload is transcribed (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai transcription via drop-in: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai transcription via drop-in: has text', function () { pm.expect(pm.response.json().text, pm.response.text()).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.11 openai/whisper-1 /v1/audio/transcriptions multipart upload is transcribed (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai transcription via /v1: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('openai transcription via /v1: has text', function () { pm.expect(pm.response.json().text, pm.response.text()).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.12 openai/gpt-4o-mini /v1/chat/completions JSON body larger than the 8 KB stream prefetch (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai 12 KB JSON body: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai 12 KB JSON body: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request-12kb.json"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.13 openai/gpt-4o-mini /v1/chat/completions gzip-compressed JSON body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gzip JSON body: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai gzip JSON body: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request.json.gz"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.14 openai/gpt-4o-mini /openai/v1/chat/completions gzip-compressed JSON body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gzip JSON body via drop-in: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai gzip JSON body via drop-in: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/chat-request.json.gz"
+              }
+            }
+          }
+        },
+        {
+          "name": "369.15 [EXPECT-405] openai upload to an unknown files route is refused without reading the body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 405, not 404: the dashboard's GET /{filepath:*} catch-all matches every path, so the router answers",
+                  "// a POST to a path no API route registers with Method Not Allowed.",
+                  "pm.collectionVariables.set('rbsUnknownRouteStatus', String(pm.response.code));",
+                  "pm.test('openai upload to unknown route: refused with 405 before the body was read', function () { pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(405); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/rbs-unknown/route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "rbs-unknown",
+                "route"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.16 openai/gpt-4o-mini /v1/chat/completions right after an unread upload is parsed intact (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.15, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.15', function () { pm.expect(pm.collectionVariables.get('rbsUnknownRouteStatus'), 'refusal status from 369.15').to.be.ok; });",
+                  "pm.test('openai chat after unread upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai chat after unread upload: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly the word: pong\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.17 [EXPECT-405] openai upload with the wrong method is refused without reading the body (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rbsWrongMethodStatus', String(pm.response.code));",
+                  "pm.test('openai upload with wrong method: refused with 405 before the body was read', function () { pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(405); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.18 openai/gpt-4o-mini /openai/v1/chat/completions right after a refused upload is parsed intact (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.17, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.17', function () { pm.expect(pm.collectionVariables.get('rbsWrongMethodStatus'), 'refusal status from 369.17').to.be.ok; });",
+                  "pm.test('openai drop-in chat after refused upload: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai drop-in chat after refused upload: the model answered', function () {",
+                  "  var content = ((body.choices || [])[0] || {}).message && body.choices[0].message.content;",
+                  "  pm.expect(content, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(content.toLowerCase(), pm.response.text()).to.include('pong');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly the word: pong\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "369.19 [EXPECT-400] openai /openai/v1/files upload without purpose is refused by the parser (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rbsParserRefusalStatus', String(pm.response.code));",
+                  "pm.test('openai upload without purpose: 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400); });",
+                  "pm.test('openai upload without purpose: names the missing field', function () { pm.expect(pm.response.text()).to.include('purpose'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.20 openai /openai/v1/files upload right after a parser refusal arrives whole (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reading this variable chains the case to 369.19, so a filtered or sharded run keeps the two in one newman process.",
+                  "pm.test('ran after 369.19', function () { pm.expect(pm.collectionVariables.get('rbsParserRefusalStatus'), 'refusal status from 369.19').to.be.ok; });",
+                  "pm.test('openai upload after parser refusal: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('openai upload after parser refusal: the provider stored the whole file', function () { pm.expect(body.bytes, 'bytes the provider received: ' + pm.response.text()).to.eql(2215244); });",
+                  "pm.test('openai upload after parser refusal: has an id', function () { pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rbsOpenaiRetryPdfId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.21 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiBatchInputId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiBatchInputId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.22 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiPdfId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.23 openai deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsOpenaiRetryPdfId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsOpenaiRetryPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.24 azure deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsAzurePdfId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsAzurePdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.25 gemini deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{rbsGeminiPdfId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{rbsGeminiPdfId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.26 anthropic deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{rbsAnthropicPdfId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{rbsAnthropicPdfId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.27 anthropic deletes a file uploaded by this folder (request body stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic delete: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{rbsAnthropicPassthroughPdfId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{rbsAnthropicPassthroughPdfId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.28 openai/whisper-1 /openai_passthrough/v1/audio/transcriptions part without a filename keeps its Content-Type in the log summary (request body stream)",
+          "description": "A streamed passthrough upload is parsed by Go's ReadForm, which files every part without a filename under Value and drops its Content-Type, so the log summary could only guess from the bytes. A file sent without a filename (here the prompt part, sent as application/octet-stream with printable bytes) was logged as a text field. passthroughparse.ReadMultipartForm now records each value part's Content-Type while the form is parsed, the summary records a non-text part like a file (field, content_type, bytes), as the buffered summary does, and the part is forwarded with its Content-Type. Red before the change: fields.prompt holds RBS-OCTET-PROMPT-7f3a.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('octet value part: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('octet value part: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "      pm.test('octet value part: log read answered 200, or 404 until the log is written', function () { pm.expect.fail('log ' + reqId + ' read failed: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.passthrough_request_body) {",
+                  "      var s = JSON.parse(j.passthrough_request_body);",
+                  "      pm.test('octet value part: body logged as a form summary', function () { pm.expect(j.params && j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); pm.expect(s.fields && s.fields.model, j.passthrough_request_body).to.eql('whisper-1'); });",
+                  "      pm.test('octet value part: the part sent without a filename is recorded like a file, with its Content-Type', function () { var f = (s.files || []).filter(function (x) { return x.field === 'prompt'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].content_type, j.passthrough_request_body).to.eql('application/octet-stream'); pm.expect(f[0].bytes, j.passthrough_request_body).to.be.above(0); });",
+                  "      pm.test('octet value part: its bytes are not logged as a text field', function () { pm.expect(s.fields || {}, j.passthrough_request_body).to.not.have.property('prompt'); pm.expect(j.passthrough_request_body, 'summary').to.not.include('RBS-OCTET-PROMPT-7f3a'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('octet value part: log row carries the request body summary', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_request_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "RBS-OCTET-PROMPT-7f3a octet part without a filename",
+                  "type": "text",
+                  "contentType": "application/octet-stream"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "369.29 [EXPECT-400] openai /openai_passthrough/v1/files multipart body that does not parse is refused by the gateway (request body stream)",
+          "description": "A streamed multipart passthrough upload whose form does not parse (here the closing boundary is missing) used to fall back to Body(), which on a streamed request returns only what the failed parse left unread, so a truncated or empty body went upstream and the client got the provider's error. The gateway now refuses it with 400 and its own message before anything is forwarded. Red before the change: the error text is OpenAI's, not 'invalid multipart/form-data body'.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unparseable multipart: refused by the gateway with its own message', function () { pm.expect(pm.response.text(), 'status ' + pm.response.code).to.include('invalid multipart/form-data body'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data; boundary=rbsTruncatedBoundary"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nbatch\r\n--rbsTruncatedBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.jsonl\"\r\nContent-Type: application/jsonl\r\n\r\n{\"custom_id\":\"r\"}\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
