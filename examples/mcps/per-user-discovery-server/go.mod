@@ -1,6 +1,6 @@
 module per-user-discovery-server
 
-go 1.27.3
+go 1.27.4
 
 require github.com/mark3labs/mcp-go v1.3.0
 

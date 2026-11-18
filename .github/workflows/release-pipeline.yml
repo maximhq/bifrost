@@ -93,11 +93,12 @@ jobs:
             echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
-  # Phone gate. Parks the run on the release-run-approval environment, whose only
-  # protection rule is the bifrost-release-gate GitHub App. The service behind that
-  # App pushes an Approve/Reject prompt to the admin's phone and calls back GitHub
-  # with the answer. Nothing below runs - no provider quota, no runner minutes -
-  # until the tap arrives. Version-bump pushes carry --skip-ci and never reach this
+  # Phone gate. Parks the run on the release-run-approval environment, which needs
+  # two approvals: the bifrost-release-gate GitHub App rule and a required reviewer.
+  # The service behind that App (approve.getbifrost.dev) pushes an Approve/Reject
+  # prompt to the admin's phone and calls back GitHub with the answer; the reviewer
+  # approves separately on the run page. Nothing below runs - no provider quota, no
+  # runner minutes - until both arrive. Version-bump pushes carry --skip-ci and never reach this
   # job. The job holds no secrets, checks out nothing and allows no egress: it is a
   # named point in the graph for the environment rule to hold, nothing more.
   approve-run:
@@ -176,7 +177,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Detect what needs release
         id: detect
@@ -264,7 +265,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -427,7 +428,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -712,7 +713,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -907,7 +908,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1021,7 +1022,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1137,7 +1138,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Run memory regression tests
         run: |
@@ -1383,7 +1384,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1543,7 +1544,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Create vLLM pods on RunPod
         env:
@@ -1624,7 +1625,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Docker Compose
         run: |
@@ -1768,7 +1769,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Docker Compose
         run: |
@@ -1895,7 +1896,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Run bifrost-http unit tests
         env:
@@ -1945,7 +1946,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # The suite's OpenAI Python SDK leg runs through uv; without it those cases skip.
       - name: Install uv
@@ -2049,7 +2050,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2133,7 +2134,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Download prebuilt bifrost-http binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -2250,7 +2251,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2414,7 +2415,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2537,7 +2538,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # This job still builds the mocker/hitter binaries from
       # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
@@ -2639,7 +2640,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
       # is present, so this download is all that is needed here.
@@ -2762,7 +2763,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2936,7 +2937,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3070,7 +3071,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3194,7 +3195,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Configure Git
         run: |
@@ -3339,7 +3340,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3483,7 +3484,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3547,7 +3548,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3623,7 +3624,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

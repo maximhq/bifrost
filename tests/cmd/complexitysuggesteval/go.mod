@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tests/cmd/complexitysuggesteval
 
-go 1.27.3
+go 1.27.4
 
 replace (
 	github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1
