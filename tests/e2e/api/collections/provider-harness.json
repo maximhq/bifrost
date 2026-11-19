@@ -132792,6 +132792,114 @@
           ]
         },
         {
+          "name": "52.C3 /genai fileData https:// audio + prompt -> gemini/gemini-2.5-flash (answered, not routed to transcription)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"fileData\": {\n            \"fileUri\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"mimeType\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"text\": \"Which product is discussed in this audio? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An audio fileData part used to classify the call as transcription, which carries bytes only,",
+                  "// so Bifrost rejected it with 400 'transcription input not provided' before reaching Gemini.",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var parts = ((((j.candidates || [])[0] || {}).content || {}).parts || []);",
+                  "var txt = parts.filter(function (p) { return p && !p.thought && typeof p.text === 'string'; }).map(function (p) { return p.text; }).join('');",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply: ' + pm.response.text().slice(0, 500)).to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "  // A model that got only the prompt cannot name the product, so a silently dropped file fails here.",
+                  "  pm.expect(String(txt), 'reply does not name the product from the audio: ' + String(txt).slice(0, 300)).to.match(/pixel/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.C4 /genai fileData https:// audio + prompt -> vertex/gemini-2.5-flash (answered, not routed to transcription)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"fileData\": {\n            \"fileUri\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"mimeType\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"text\": \"Which product is discussed in this audio? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An audio fileData part used to classify the call as transcription, which carries bytes only,",
+                  "// so Bifrost rejected it with 400 'transcription input not provided' before reaching Gemini.",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var parts = ((((j.candidates || [])[0] || {}).content || {}).parts || []);",
+                  "var txt = parts.filter(function (p) { return p && !p.thought && typeof p.text === 'string'; }).map(function (p) { return p.text; }).join('');",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply: ' + pm.response.text().slice(0, 500)).to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "  // A model that got only the prompt cannot name the product, so a silently dropped file fails here.",
+                  "  pm.expect(String(txt), 'reply does not name the product from the audio: ' + String(txt).slice(0, 300)).to.match(/pixel/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "[EXPECT-4XX] 52.D1 s3:// document -> vertex/gemini-2.5-flash (forwarded, provider rejects)",
           "request": {
             "method": "POST",
@@ -346296,7 +346404,111 @@
       ]
     },
     {
-      "name": "371. OpenAI passthrough-encoding (#9764 / PR #9804)",
+      "name": "371. Seedance video settlement row carries its output tokens (seedance video tokens)",
+      "description": "A completed Seedance video logged no tokens. Ark reports what it bills as usage.completion_tokens, and Bifrost priced the job from it, but the settlement row that carries the job's cost left its token columns empty, so the log showed '-' for input, output and total tokens and a virtual key's token limit never counted the job. The settlement now records the output tokens as completion and total tokens.\n\n371.1 submits one 5 second 480p clip, polls GET /v1/videos/{id} until it completes, then reads the settlement row by its deterministic id (UUIDv5 of the video namespace and 'byteplus:<video id>', as jobaccounting.AccountingLogID derives it) and asserts its token_usage matches the output tokens the retrieve reported. This is a paid generation that takes a few minutes, so scope runs with FEATURE.",
+      "item": [
+        {
+          "name": "/v1/videos - Seedance settlement row records the completion tokens Ark billed - byteplus/dreamina-seedance-2-5-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '371.1';",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var VIDEO_LOG_NAMESPACE = 'b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7';",
+                  "// jobaccounting.AccountingLogID: UUIDv5(videoLogNamespace, provider + ':' + video id).",
+                  "function uuidv5(ns, value) {",
+                  "  var h = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(ns.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(value))).toString(CryptoJS.enc.Hex).slice(0, 32);",
+                  "  h = h.slice(0, 12) + '5' + h.slice(13, 16) + ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16) + h.slice(17);",
+                  "  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);",
+                  "}",
+                  "pm.test(name + ' the Seedance job is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'no video id: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "var videoId = pm.response.code === 200 ? pm.response.json().id : null;",
+                  "if (videoId) {",
+                  "  var settlementLogId = uuidv5(VIDEO_LOG_NAMESPACE, 'byteplus:' + videoId);",
+                  "  function checkSettlement(attempt, outputTokens) {",
+                  "    pm.sendRequest({ url: base + '/api/logs/' + settlementLogId, method: 'GET' }, function (err, res) {",
+                  "      if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "        pm.test(name + ' the settlement log lookup answers 200 or 404', function () { pm.expect.fail('log lookup failed: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "        return;",
+                  "      }",
+                  "      if (res.code === 200) {",
+                  "        var row = res.json();",
+                  "        pm.test(name + ' the settlement row carries the tokens Seedance billed', function () {",
+                  "          var usage = row.token_usage || {};",
+                  "          var seen = JSON.stringify({ id: row.id, token_usage: row.token_usage, cost: row.cost, video_debug: row.video_debug });",
+                  "          pm.expect(usage.completion_tokens, 'completion_tokens: ' + seen).to.equal(outputTokens);",
+                  "          pm.expect(usage.total_tokens, 'total_tokens: ' + seen).to.equal(outputTokens);",
+                  "          pm.expect(row.video_debug && row.video_debug.accounting && row.video_debug.accounting.output_tokens, 'video_debug.accounting.output_tokens: ' + seen).to.equal(outputTokens);",
+                  "        });",
+                  "        return;",
+                  "      }",
+                  "      if (attempt < 30) { setTimeout(function () { checkSettlement(attempt + 1, outputTokens); }, 2000); return; }",
+                  "      pm.test(name + ' the settlement row is written', function () { pm.expect.fail('settlement log ' + settlementLogId + ' for ' + videoId + ' never appeared'); });",
+                  "    });",
+                  "  }",
+                  "  function pollVideo(attempt) {",
+                  "    pm.sendRequest({ url: base + '/v1/videos/' + encodeURIComponent(videoId), method: 'GET' }, function (err, res) {",
+                  "      if (err || res.code !== 200) {",
+                  "        pm.test(name + ' the retrieve answers 200', function () { pm.expect.fail('retrieve failed: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "        return;",
+                  "      }",
+                  "      var j = res.json();",
+                  "      if (j.status === 'completed') {",
+                  "        var outputTokens = j.usage && j.usage.output_tokens;",
+                  "        pm.test(name + ' the completed retrieve reports Seedance output tokens', function () {",
+                  "          pm.expect(outputTokens, 'usage: ' + JSON.stringify(j.usage)).to.be.a('number').and.above(0);",
+                  "        });",
+                  "        if (outputTokens > 0) { checkSettlement(0, outputTokens); }",
+                  "        return;",
+                  "      }",
+                  "      if (j.status === 'failed') {",
+                  "        pm.test(name + ' the Seedance job completes', function () { pm.expect.fail('job failed: ' + res.text().slice(0, 300)); });",
+                  "        return;",
+                  "      }",
+                  "      if (attempt < 60) { setTimeout(function () { pollVideo(attempt + 1); }, 10000); return; }",
+                  "      pm.test(name + ' the Seedance job completes', function () { pm.expect.fail('job ' + videoId + ' still ' + j.status + ' after 10 minutes'); });",
+                  "    });",
+                  "  }",
+                  "  pollVideo(0);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"A paper boat drifting down a rainy street\",\n  \"seconds\": \"5\",\n  \"size\": \"864x480\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "372. OpenAI passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {
