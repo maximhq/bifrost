@@ -115,7 +115,7 @@ func TestWarpBackfillIndexesWindowAndCheckpointsCounts(t *testing.T) {
 		{ID: "visible", Timestamp: start.Add(time.Hour), Object: string(schemas.ChatCompletionRequest), Status: "success", ContentSummary: "payment failed"},
 		{ID: "hidden", Timestamp: start.Add(2 * time.Hour), Object: string(schemas.ResponsesRequest), Status: "success", ContentHidden: true, ContentSummary: "secret"},
 	}}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
 	)
@@ -143,7 +143,7 @@ func TestWarpBackfillIndexesWindowAndCheckpointsCounts(t *testing.T) {
 }
 
 func TestWarpBackfillCancellationReturnsLastProgress(t *testing.T) {
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
 	)
@@ -167,7 +167,7 @@ func TestWarpBackfillCancellationReturnsLastProgress(t *testing.T) {
 func TestWarpBackfillFetchErrorDoesNotAdvanceOrCount(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	reader := &erroringOnceLogsByIDsReader{backfillLogReader: backfillLogReader{logs: backfillLogsForAbort(start, 5)}}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
 	)
@@ -211,7 +211,7 @@ func TestWarpBackfillCancellationDuringIndexingNotCounted(t *testing.T) {
 		}
 		return backfillEmbeddingExecutor(bctx, request)
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(cancelDuringIndex),
 	)
@@ -239,7 +239,7 @@ func (s activeBackfillStore) GetLatestSidekiqJobByKind(context.Context, string) 
 
 func TestWarpEmbeddingSpaceChangeBlockedDuringBackfill(t *testing.T) {
 	store := &recordingStore{row: validWarpConfigRow()}
-	service := NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithBackfillJobStore(activeBackfillStore{active: &tables.TableSidekiqJob{ID: "job"}}))
+	service := serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithBackfillJobStore(activeBackfillStore{active: &tables.TableSidekiqJob{ID: "job"}}))
 	input := validWarpConfigInput()
 	input.EmbeddingModel = "new-model"
 	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
@@ -389,7 +389,7 @@ func TestWarpBackfillCursorStaysBehindACancelledIndex(t *testing.T) {
 		return backfillEmbeddingExecutor(bctx, req)
 	}
 
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(cancelling),
 	)
@@ -442,7 +442,7 @@ func runBackfillToEnd(t *testing.T, service *Service, start time.Time) (Backfill
 func TestWarpBackfillTotalsEmbeddingSpend(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	reader := &backfillLogReader{logs: backfillLogsForAbort(start, 3)}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
 		WithModelCatalog(embeddingPricedCatalog(t)),
@@ -462,7 +462,7 @@ func TestWarpBackfillTotalsEmbeddingSpend(t *testing.T) {
 func TestWarpBackfillLeavesCostUnsetWithoutCatalog(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	reader := &backfillLogReader{logs: backfillLogsForAbort(start, 2)}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
 	)
@@ -483,7 +483,7 @@ func TestWarpBackfillLeavesCostUnsetWhenModelUnpriced(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(`{"some-other-embedding":{"input_cost_per_token":2e-08,"provider":"openai","mode":"embedding"}}`), 0o600))
 	store := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
 	require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
 		WithModelCatalog(catalogWithDatasheetForTest(t, store)),
@@ -541,7 +541,7 @@ func TestWarpBackfillKeepsSpendOfRolledBackPage(t *testing.T) {
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5},
 		}, nil
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(wrongDimension),
 		WithModelCatalog(embeddingPricedCatalog(t)),
@@ -568,7 +568,7 @@ func TestWarpBackfillKeepsSpendOfCancelledIndex(t *testing.T) {
 		cancel()
 		return usageBackfillEmbeddingExecutor(bctx, req)
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(cancelling),
 		WithModelCatalog(embeddingPricedCatalog(t)),
@@ -619,7 +619,7 @@ func backfillLogsForAbort(start time.Time, count int) []logstore.Log {
 func TestWarpBackfillStopsAfterConsecutiveFailures(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	reader := &backfillLogReader{logs: backfillLogsForAbort(start, backfillMaxConsecutiveFailures+50)}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(failingBackfillEmbeddingExecutor),
 	)
@@ -664,7 +664,7 @@ func TestWarpBackfillSuccessResetsConsecutiveFailures(t *testing.T) {
 		}
 		return failingBackfillEmbeddingExecutor(ctx, request)
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(flaky),
 	)
@@ -708,7 +708,7 @@ func TestWarpBackfillDoesNotCountVanishedLogsAsFailures(t *testing.T) {
 		}
 	}
 	reader := &backfillLogReader{logs: logs, missing: missing}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithEmbeddingExecutor(func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -750,7 +750,7 @@ func TestWarpBackfillStopsWhenEveryReadFails(t *testing.T) {
 		})
 	}
 	reader := &backfillLogReader{logs: logs, getErr: fmt.Errorf("database is unreachable")}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithEmbeddingExecutor(backfillEmbeddingExecutor),
@@ -795,7 +795,7 @@ func TestWarpBackfillStreakSurvivesVanishedLogsBetweenFailures(t *testing.T) {
 		}
 	}
 	reader := &backfillLogReader{logs: logs, missing: missing}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithEmbeddingExecutor(func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -850,7 +850,7 @@ func TestWarpBackfillResumesFromFailedRunCheckpoint(t *testing.T) {
 		}
 		return failingBackfillEmbeddingExecutor(ctx, request)
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(firstThenFailing),
 	)
@@ -929,7 +929,7 @@ func (enqueueOnlySidekiqStore) ClaimSidekiqJob(context.Context, string, string, 
 // (BuildTopicsJobMeta does). Registering it behind the backfill's guard left
 // that run with no handler.
 func TestRegisterBackfillRegistersTopicsWithoutAnIndexer(t *testing.T) {
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
 		WithVectorStore(newFakeWarpVectorStore()))
 	defer service.Shutdown()

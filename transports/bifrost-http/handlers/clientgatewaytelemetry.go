@@ -410,8 +410,8 @@ type telemetryForwarder struct {
 
 // newTelemetryForwarder creates the forwarder; its workers start with the first
 // queued export. httpClient, when non-nil, supplies the outbound client (the
-// proxy-aware factory in a running server).
-func newTelemetryForwarder(httpClient func() *http.Client) *telemetryForwarder {
+// proxy-aware factory in a running server). identityLimiter paces exports per identity.
+func newTelemetryForwarder(httpClient func() *http.Client, identityLimiter *ipRateLimiter) *telemetryForwarder {
 	if httpClient == nil {
 		fallback := &http.Client{Timeout: clientGatewayTelemetryExportTimeout}
 		httpClient = func() *http.Client { return fallback }
@@ -420,7 +420,7 @@ func newTelemetryForwarder(httpClient func() *http.Client) *telemetryForwarder {
 		queue:           make(chan telemetryItem, clientGatewayTelemetryQueueItems),
 		maxBytes:        clientGatewayTelemetryQueueBytes,
 		client:          httpClient,
-		identityLimiter: newIPRateLimiter(clientGatewayTelemetryIdentityLimit, time.Minute),
+		identityLimiter: identityLimiter,
 		metrics:         newTelemetryMetrics(),
 		done:            make(chan struct{}),
 	}

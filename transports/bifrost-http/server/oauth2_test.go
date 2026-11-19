@@ -157,7 +157,8 @@ func TestDropStaleMCPOAuthState(t *testing.T) {
 // TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker pins that shutdown drains the
 // client gateways even without a config store, where no OAuth2 sweep worker is started.
 func TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker(t *testing.T) {
-	gateways := handlers.NewClientGatewayHandler(&lib.Config{}, nil, nil)
+	gateways, err := handlers.NewClientGatewayHandler(&lib.Config{LiveStore: liveStoreForTest(t)}, nil, nil)
+	require.NoError(t, err)
 	s := &BifrostHTTPServer{ClientGateways: gateways}
 	s.stopOAuth2Background()
 	assert.True(t, gateways.Closed(), "client gateway telemetry must be stopped when no sweep worker runs")
