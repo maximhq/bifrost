@@ -164,7 +164,18 @@ When the `#t=<temp-token>` URL fragment is present, it authorizes anonymous brow
 
 ### Multi-server auth
 
-If a single LLM turn triggers tool calls against multiple unauthenticated per-user MCP servers, the LLM only ever sees one `mcp_auth_required` at a time (the first un-authed service Bifrost hits). The user authenticates that one, retries, and the LLM is then prompted for the next un-authed service — until everything required for the turn is authenticated. There is no upfront "connect all your services" screen.
+If a single LLM turn triggers tool calls against multiple unauthenticated per-user MCP servers, the LLM only ever sees one `mcp_auth_required` at a time (the first un-authed service Bifrost hits). The user authenticates that one, retries, and the LLM is then prompted for the next un-authed service — until everything required for the turn is authenticated. A user signed in to the dashboard can avoid this by connecting their servers up front: see [Connect before your first call](#connect-before-your-first-call).
+
+---
+
+## Connect before your first call
+
+A user signed in to the dashboard doesn't have to wait for a tool call to hand them a link. They can start their own sign-in up front, from the dashboard or the API:
+
+- **Dashboard**: on Enterprise with SSO, **Home → My access → MCP servers** lists every MCP server the user can call, with how each one connects. **Connect** opens the provider's sign-in in the same tab and brings the user back to Home, where the row reads **Connected**. The same row offers **Reconnect** once a sign-in expires, **Continue sign-in** for one they started and did not finish, and **Load tools** or **Refresh tools** on a server with Per-Caller Discovery.
+- **API**: `POST /api/mcp/sessions/connect` with the server's client ID returns the provider's `authorize_url` to open. See [Start a sign-in](../sessions#start-a-sign-in).
+
+The token is bound to the user, the same as one stored from an `mcp_auth_required` link, so it serves their calls through their own keys and sign-in. Only an enabled server that has passed admin verification can be connected this way.
 
 ---
 
