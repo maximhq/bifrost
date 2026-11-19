@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { virtualKeysApi } from '../../core/actions/api'
 import type { VirtualKeysManagementPage } from './pages/virtualKeysManagement.page'
@@ -359,5 +360,132 @@ test.describe('Virtual Key Management', () => {
       expect(rotatedByID.get(first.virtual_key.id)).not.toBe(first.virtual_key.value)
       expect(rotatedByID.get(second.virtual_key.id)).not.toBe(second.virtual_key.value)
     })
+  })
+})
+
+const VK_SHEET_WIDTH_KEY = 'bifrost.sheet.width.vk-sheet-content'
+
+test.describe('Virtual Key Sheet Resizing', () => {
+  test.beforeEach(async ({ virtualKeysManagementPage }) => {
+    await virtualKeysManagementPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysManagementPage)
+    await virtualKeysManagementPage.page.evaluate((key) => localStorage.removeItem(key), VK_SHEET_WIDTH_KEY)
+  })
+
+  test.afterEach(async ({ virtualKeysManagementPage }) => {
+    await virtualKeysManagementPage.closeSheet()
+    await virtualKeysManagementPage.page.evaluate((key) => localStorage.removeItem(key), VK_SHEET_WIDTH_KEY)
+  })
+
+  async function openSheet(virtualKeysManagementPage: VirtualKeysManagementPage) {
+    await virtualKeysManagementPage.createBtn.click()
+    await expect(virtualKeysManagementPage.sheet).toBeVisible()
+    // The sheet slides in with a transform, and the fixed handle moves with it until the
+    // animation ends. Wait for it so handle positions read below are final.
+    await virtualKeysManagementPage.sheet.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)))
+    const handle = virtualKeysManagementPage.sheet.getByTestId('sheet-resize-handle')
+    await expect(handle).toBeVisible()
+    return handle
+  }
+
+  async function expectHandleInViewport(handle: Locator, viewportWidth: number) {
+    const box = await handle.boundingBox()
+    expect(box, 'resize handle has no bounding box').not.toBeNull()
+    expect(box!.x).toBeGreaterThanOrEqual(0)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
+  }
+
+  async function sheetWidth(virtualKeysManagementPage: VirtualKeysManagementPage): Promise<number> {
+    const box = await virtualKeysManagementPage.sheet.boundingBox()
+    expect(box, 'sheet has no bounding box').not.toBeNull()
+    return Math.round(box!.width)
+  }
+
+  test('dragging the left edge widens the sheet and the width is restored after a reload', async ({
+    virtualKeysManagementPage,
+  }) => {
+    const page = virtualKeysManagementPage.page
+    const handle = await openSheet(virtualKeysManagementPage)
+    // The sheet slides in; wait for the width to settle before measuring the default.
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBeGreaterThan(300)
+    const defaultWidth = await sheetWidth(virtualKeysManagementPage)
+
+    const handleBox = await handle.boundingBox()
+    expect(handleBox, 'resize handle has no bounding box').not.toBeNull()
+    const y = handleBox!.y + handleBox!.height / 2
+    await page.mouse.move(handleBox!.x + handleBox!.width / 2, y)
+    await page.mouse.down()
+    // Release over the overlay: a drag must not dismiss the sheet.
+    await page.mouse.move(handleBox!.x + handleBox!.width / 2 - 200, y, { steps: 8 })
+    await page.mouse.up()
+
+    await expect(virtualKeysManagementPage.sheet).toBeVisible()
+    const widened = await sheetWidth(virtualKeysManagementPage)
+    expect(Math.abs(widened - (defaultWidth + 200))).toBeLessThanOrEqual(2)
+    const stored = await page.evaluate((key) => localStorage.getItem(key), VK_SHEET_WIDTH_KEY)
+    expect(Number(stored)).toBe(widened)
+
+    await virtualKeysManagementPage.closeSheet()
+    await page.reload()
+    await openSheet(virtualKeysManagementPage)
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(widened)
+
+    // Double-click resets to the default width and forgets the saved one.
+    await virtualKeysManagementPage.sheet.getByTestId('sheet-resize-handle').dblclick()
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(defaultWidth)
+    expect(await page.evaluate((key) => localStorage.getItem(key), VK_SHEET_WIDTH_KEY)).toBeNull()
+  })
+
+  test('the resize handle works from the keyboard', async ({ virtualKeysManagementPage }) => {
+    const handle = await openSheet(virtualKeysManagementPage)
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBeGreaterThan(300)
+    const defaultWidth = await sheetWidth(virtualKeysManagementPage)
+
+    await expect(handle).toHaveAttribute('role', 'separator')
+    await expect(handle).toHaveAttribute('aria-orientation', 'vertical')
+    await handle.focus()
+
+    await handle.press('ArrowLeft')
+    await expect(handle).toHaveAttribute('aria-valuenow', String(defaultWidth + 16))
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(defaultWidth + 16)
+
+    await handle.press('ArrowRight')
+    await handle.press('ArrowRight')
+    await expect(handle).toHaveAttribute('aria-valuenow', String(defaultWidth - 16))
+
+    await handle.press('Home')
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(defaultWidth)
+    expect(
+      await virtualKeysManagementPage.page.evaluate((key) => localStorage.getItem(key), VK_SHEET_WIDTH_KEY),
+    ).toBeNull()
+  })
+
+  test('a saved width wider than the viewport keeps the handle on screen', async ({ virtualKeysManagementPage }) => {
+    const page = virtualKeysManagementPage.page
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.evaluate((key) => localStorage.setItem(key, '1800'), VK_SHEET_WIDTH_KEY)
+
+    const handle = await openSheet(virtualKeysManagementPage)
+    // CSS caps the sheet at the viewport less the 16px gutter, and the handle follows it.
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(1264)
+    await expect(handle).toHaveAttribute('aria-valuenow', '1264')
+    await expectHandleInViewport(handle, 1280)
+    // The saved preference is kept for when the window is wide again.
+    expect(await page.evaluate((key) => localStorage.getItem(key), VK_SHEET_WIDTH_KEY)).toBe('1800')
+  })
+
+  test('the handle follows the sheet when the viewport shrinks while it is open', async ({ virtualKeysManagementPage }) => {
+    const page = virtualKeysManagementPage.page
+    await page.setViewportSize({ width: 1920, height: 1000 })
+    await page.evaluate((key) => localStorage.setItem(key, '1700'), VK_SHEET_WIDTH_KEY)
+
+    const handle = await openSheet(virtualKeysManagementPage)
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(1700)
+    await expect(handle).toHaveAttribute('aria-valuenow', '1700')
+
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await expect.poll(() => sheetWidth(virtualKeysManagementPage)).toBe(1264)
+    await expect(handle).toHaveAttribute('aria-valuenow', '1264')
+    await expectHandleInViewport(handle, 1280)
   })
 })
