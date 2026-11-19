@@ -123,6 +123,10 @@ export interface RelayRouteConfig {
 	stream?: boolean;
 	usage?: RelayUsageConfig;
 	job?: RelayJobConfig;
+	/** Request body fields forced on every call: dotted path to JSON value, over the relay's. */
+	body_overrides?: Record<string, unknown>;
+	/** false: the relay's enforced fields are not written on this route; unset applies them. */
+	inherit_body_overrides?: boolean;
 }
 
 export interface RelayNetworkConfig {
@@ -155,6 +159,8 @@ export interface Relay {
 	routes?: RelayRouteConfig[];
 	skip_route_check?: boolean;
 	ignore_upstream_cost?: boolean;
+	/** Request body fields forced on every call through the relay: dotted path to JSON value. */
+	body_overrides?: Record<string, unknown>;
 	/** Read-only: the path callers use, /relay/{name}. */
 	url?: string;
 }
