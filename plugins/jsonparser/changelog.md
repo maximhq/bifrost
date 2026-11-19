@@ -1,1 +1,0 @@
-- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
