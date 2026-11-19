@@ -169,13 +169,13 @@ func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 	if vk.RateLimit == nil {
 		t.Fatal("expected background reset to refresh virtual-key rate-limit reference")
 	}
-	if vk.RateLimit != resetRateLimits[0] {
+	if vk.RateLimit != resetRateLimits[0].TableRateLimit {
 		t.Fatal("expected background reset to point virtual-key reference at canonical reset object")
 	}
 	if vk.RateLimitID == nil || *vk.RateLimitID != rateLimitID {
 		t.Fatal("expected background reset to preserve owner-to-rate-limit ID mapping")
 	}
-	if resetRateLimits[0] == staleRateLimit {
+	if resetRateLimits[0].TableRateLimit == staleRateLimit {
 		t.Fatal("expected canonical reset to replace stale rate-limit snapshot")
 	}
 }

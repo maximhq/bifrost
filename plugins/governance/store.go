@@ -253,7 +253,7 @@ type GovernanceStore interface {
 	// In-memory usage updates for scoped model configs (mirror the global model updates).
 	// scope/scopeID identify the owning entity; an empty scope or scopeID is a no-op.
 	// In-memory reset checks (return items that need DB sync)
-	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
+	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*RateLimitReset
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
 	// ResetBudgetUsageInMemory clears one budget's usage on operator request,
 	// leaving its reset boundary untouched.
@@ -266,7 +266,7 @@ type GovernanceStore interface {
 	// applying the rule to the token and request counters independently.
 	AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool
 	// DB sync for expired items
-	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
+	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*RateLimitReset) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
 	// Provider and model-level usage updates (combined)
 	// Dump operations capture counters and return a writer to invoke after releasing accounting locks.
@@ -1007,16 +1007,23 @@ func (gs *LocalGovernanceStore) ResetBudgetAt(ctx context.Context, budgetID stri
 	}
 }
 
+// RateLimitReset carries the snapshot and the dimensions reset by the same swap.
+type RateLimitReset struct {
+	*configstoreTables.TableRateLimit
+	tokenReset   bool
+	requestReset bool
+}
+
 // ResetRateLimitAt atomically resets one or both rate-limit counters on the
 // rate limit identified by rateLimitID. A non-nil tokenNewLastReset resets the
 // token counter and advances TokenLastReset; similarly for
 // requestNewLastReset. Each reset is conditional on the corresponding
 // LastReset currently being strictly older than the supplied target, so
-// concurrent resetters collapse into a single successful write. Returns the
-// updated snapshot and true when at least one counter was reset; (nil, false)
-// otherwise. Accepted counters clear their DB baselines while holding the
-// baseline locks, so a remote rebase cannot observe a half-applied reset.
-func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitID string, tokenNewLastReset, requestNewLastReset *time.Time) (*configstoreTables.TableRateLimit, bool) {
+// concurrent resetters targeting the same boundary collapse into a single
+// successful write. Returns the snapshot and accepted dimensions with true
+// after a reset, or (nil, false) otherwise. Accepted counters clear their DB
+// baselines under lock so a remote rebase cannot observe a half-applied reset.
+func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitID string, tokenNewLastReset, requestNewLastReset *time.Time) (*RateLimitReset, bool) {
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil, false
 	}
@@ -1034,30 +1041,29 @@ func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitI
 			return nil, false
 		}
 		clone := *old
-		didReset := false
-		if tokenNewLastReset != nil && old.TokenLastReset.Before(*tokenNewLastReset) {
+		tokenReset := tokenNewLastReset != nil && old.TokenLastReset.Before(*tokenNewLastReset)
+		requestReset := requestNewLastReset != nil && old.RequestLastReset.Before(*requestNewLastReset)
+		if tokenReset {
 			clone.TokenCurrentUsage = 0
 			clone.TokenLastReset = *tokenNewLastReset
 			clone.TokenUsageResetEpoch = max(old.TokenUsageResetEpoch, tokenNewLastReset.UnixNano())
-			didReset = true
 		}
-		if requestNewLastReset != nil && old.RequestLastReset.Before(*requestNewLastReset) {
+		if requestReset {
 			clone.RequestCurrentUsage = 0
 			clone.RequestLastReset = *requestNewLastReset
 			clone.RequestUsageResetEpoch = max(old.RequestUsageResetEpoch, requestNewLastReset.UnixNano())
-			didReset = true
 		}
-		if !didReset {
+		if !tokenReset && !requestReset {
 			return nil, false
 		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
-			if clone.TokenLastReset.After(old.TokenLastReset) {
+			if tokenReset {
 				gs.LastDBUsagesTokensRateLimits[rateLimitID] = 0
 			}
-			if clone.RequestLastReset.After(old.RequestLastReset) {
+			if requestReset {
 				gs.LastDBUsagesRequestsRateLimits[rateLimitID] = 0
 			}
-			return &clone, true
+			return &RateLimitReset{TableRateLimit: &clone, tokenReset: tokenReset, requestReset: requestReset}, true
 		}
 	}
 }
@@ -3197,7 +3203,7 @@ func (gs *LocalGovernanceStore) rateLimitResetTargets(rateLimit *configstoreTabl
 // resetExpiredRateLimitFromSnapshot applies the local side effects for an expired rate-limit snapshot.
 // Owner reference refresh is NOT done here; ResetExpiredRateLimitsInMemory batches it
 // once per sweep so a sweep costs O(owners + resets) instead of O(owners x resets).
-func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *configstoreTables.TableRateLimit {
+func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *RateLimitReset {
 	tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(rateLimit, now)
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil
@@ -3214,9 +3220,9 @@ func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Co
 // refreshReferences controls whether embedded owner references (VK, team, customer) are updated
 // after reset. Background/ticker callers pass true; request-time callers pass false to avoid
 // an O(N) scan of all owners on the hot path.
-func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit {
+func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*RateLimitReset {
 	now := time.Now()
-	var resetRateLimits []*configstoreTables.TableRateLimit
+	var resetRateLimits []*RateLimitReset
 	resetOne := func(value any) {
 		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
 		if !ok || rateLimit == nil {
@@ -3238,12 +3244,17 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 			}
 		}
 	}
-	if refreshReferences {
-		gs.updateRateLimitReferences(ctx, resetRateLimits)
-	}
-	if len(resetRateLimits) > 0 {
-		if onRateLimitsReset := gs.getRateLimitsResetHook(); onRateLimitsReset != nil {
-			onRateLimitsReset(resetRateLimits)
+	onRateLimitsReset := gs.getRateLimitsResetHook()
+	if len(resetRateLimits) > 0 && (refreshReferences || onRateLimitsReset != nil) {
+		snapshots := make([]*configstoreTables.TableRateLimit, 0, len(resetRateLimits))
+		for _, reset := range resetRateLimits {
+			snapshots = append(snapshots, reset.TableRateLimit)
+		}
+		if refreshReferences {
+			gs.updateRateLimitReferences(ctx, snapshots)
+		}
+		if onRateLimitsReset != nil {
+			onRateLimitsReset(snapshots)
 		}
 	}
 	return resetRateLimits
@@ -3296,22 +3307,21 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBu
 }
 
 // ResetExpiredRateLimits performs background reset of expired rate limits for both provider-level and VK-level in database
-func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error {
+func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*RateLimitReset) error {
 	if gs.configStore == nil {
 		return nil
 	}
-	// Token and request counters expire independently, so the batches are built
-	// per dimension. A rate limit with no duration configured for a dimension
-	// contributes nothing to that dimension's batch.
+	// Calendar adoption can advance a boundary without clearing usage.
+	// Only persist dimensions the in-memory reset actually cleared.
 	var tokenRows, requestRows []rateLimitBoundaryRow
 	for _, rateLimit := range resetRateLimits {
 		if rateLimit == nil {
 			continue
 		}
-		if rateLimit.TokenResetDuration != nil {
+		if rateLimit.tokenReset {
 			tokenRows = append(tokenRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.TokenLastReset, UsageResetEpoch: rateLimit.TokenUsageResetEpoch})
 		}
-		if rateLimit.RequestResetDuration != nil {
+		if rateLimit.requestReset {
 			requestRows = append(requestRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.RequestLastReset, UsageResetEpoch: rateLimit.RequestUsageResetEpoch})
 		}
 	}
@@ -3562,12 +3572,9 @@ type rateLimitBoundaryRow struct {
 // resetRateLimitDimensionBatch zeroes one counter dimension for a batch of rate
 // limits and advances its boundary column.
 //
-// The guard is the boundary column rather than a test of whether the in-memory
-// counter is still zero: under sustained traffic a request bumps the counter
-// back above zero between the in-memory reset and this write, which used to drop
-// the whole field pair including the boundary. A dimension that was not reset in
-// this sweep is a no-op because its in-memory boundary already equals the
-// persisted one.
+// A strict boundary guard protects usage already dumped for this window or a
+// newer window. The epoch guard protects newer reset evidence. Current usage
+// cannot identify a reset because traffic may already have bumped the counter.
 func (gs *LocalGovernanceStore) resetRateLimitDimensionBatch(ctx context.Context, tx *gorm.DB, usageColumn, boundaryColumn string, batch []rateLimitBoundaryRow) error {
 	epochColumn := strings.TrimSuffix(usageColumn, "current_usage") + "usage_reset_epoch"
 	if len(batch) == 0 {

@@ -355,9 +355,11 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 	// A request lands between the in-memory reset and the database write, which
 	// is the normal case for any rate limit that is actually carrying traffic.
 	raced := *reset
+	snapshot := *reset.TableRateLimit
+	raced.TableRateLimit = &snapshot
 	raced.TokenCurrentUsage = 5
 	raced.RequestCurrentUsage = 1
-	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*configstoreTables.TableRateLimit{&raced}))
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{&raced}))
 
 	persisted, err := configStore.GetRateLimit(ctx, rateLimit.ID)
 	require.NoError(t, err)
