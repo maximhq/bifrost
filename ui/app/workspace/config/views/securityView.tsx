@@ -685,6 +685,7 @@ export default function SecurityView() {
 						id="bifrost-mcp-allow-writes"
 						data-testid="security-bifrost-mcp-allow-writes-switch"
 						checked={localConfig.bifrost_mcp_allow_writes ?? true}
+						disabled={isConfigLoading || !config || !hasSettingsUpdateAccess}
 						onCheckedChange={(checked) => handleConfigChange("bifrost_mcp_allow_writes", checked)}
 					/>
 				</div>

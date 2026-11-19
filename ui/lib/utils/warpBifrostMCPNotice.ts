@@ -72,7 +72,8 @@ export const WARP_BIFROST_MCP_NOTICE_MAX_REMINDERS = 5;
 export type WarpBifrostMCPNoticeMode = "hidden" | "dialog" | "banner";
 
 /**
- * Only admins of a deployment that has Warp turned on see the notice. It opens by
+ * Only admins of a deployment that has Warp turned on, and whose Warp uses the
+ * Bifrost MCP (bifrost_mcp_enabled; off while the two are decoupled), see the notice. It opens by
  * itself until it has been put off WARP_BIFROST_MCP_NOTICE_MAX_REMINDERS times,
  * then stays on the page as a banner. With the Bifrost MCP loaded it is
  * informational and acknowledging it hides it for good. Without it Warp does not
@@ -80,13 +81,14 @@ export type WarpBifrostMCPNoticeMode = "hidden" | "dialog" | "banner";
  * hide it, and only the reminder cap turns it into a banner.
  */
 export function warpBifrostMCPNoticeMode(input: {
+	bifrostMCPEnabled: boolean;
 	warpEnabled: boolean;
 	canUpdateWarp: boolean;
 	bifrostMCPAvailable: boolean;
 	acknowledged: boolean;
 	laterCount: number;
 }): WarpBifrostMCPNoticeMode {
-	if (!input.warpEnabled || !input.canUpdateWarp) return "hidden";
+	if (!input.bifrostMCPEnabled || !input.warpEnabled || !input.canUpdateWarp) return "hidden";
 	if (input.bifrostMCPAvailable && input.acknowledged) return "hidden";
 	return input.laterCount >= WARP_BIFROST_MCP_NOTICE_MAX_REMINDERS ? "banner" : "dialog";
 }

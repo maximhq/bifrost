@@ -947,6 +947,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_max_protocol_version?: string; // "" or "auto" = newest; omitted on save keeps the stored value
+	mcp_server_max_protocol_version?: string; // cap on what Bifrost's /mcp serves; "" or "auto" = newest
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
@@ -994,10 +995,14 @@ export interface CoreConfig {
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
-		claude_code_gateway?: {
-			enabled?: boolean;
-			// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
-			managed_settings?: Record<string, unknown>;
+		// Client gateways, one block per coding client, served under /gateway/<client>.
+		gateways?: {
+			claude_code?: {
+				enabled?: boolean;
+				// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
+				managed_settings?: Record<string, unknown> | null; // null: no managed policy
+				telemetry?: ClientGatewayTelemetry;
+			};
 		};
 	};
 }
@@ -1074,3 +1079,14 @@ export interface ProviderFormData {
 
 // Status types
 export type ProviderStatus = "active" | "error" | "deleted";
+
+// Client gateway telemetry forwarding. Endpoints and header values come back from
+// the API as SecretVar objects and are sent as plain strings ("env.X" for a reference).
+export interface ClientGatewayTelemetry {
+	enabled?: boolean;
+	destinations?: {
+		endpoint?: SecretVar | string;
+		headers?: Record<string, SecretVar | string>;
+	}[];
+	drop_attributes?: string[];
+}

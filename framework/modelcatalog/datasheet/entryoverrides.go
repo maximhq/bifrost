@@ -897,7 +897,8 @@ func (s *Store) ListDatasheetEntries(q DatasheetEntryQuery) ([]DatasheetEntry, i
 	var entries []DatasheetEntry
 	s.mu.RLock()
 	for key, effective := range s.pricingData {
-		if !matchesFilter(effective.Provider, effective.Model) {
+		// No lookup prices a provider-less row and no override can target one.
+		if effective.Provider == "" || !matchesFilter(effective.Provider, effective.Model) {
 			continue
 		}
 		entry := DatasheetEntry{Provider: effective.Provider, Model: effective.Model, Mode: effective.Mode}

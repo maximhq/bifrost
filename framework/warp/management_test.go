@@ -86,6 +86,7 @@ func managementServiceAllowing(model *scriptedModel, store *memoryConversations,
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(model.respond),
+		WithBifrostMCP(true),
 	}
 	if store != nil {
 		opts = append(opts, WithConversationStore(store))
@@ -312,14 +313,26 @@ func TestWarpManagementToolsAndPrompt(t *testing.T) {
 	require.Contains(t, model.lastInstructions, managementCoverage)
 	require.NotContains(t, model.lastInstructions, managementCapability)
 
-	// Warp always has the management tools, so the base prompt reads configuration
-	// through them and never tells the model only traffic is reachable.
+	// With the management tools, the prompt reads configuration through them and
+	// never tells the model only traffic is reachable.
 	require.Contains(t, SystemPrompt, managementCapability)
 	require.Contains(t, SystemPrompt, managementCoverage)
 	require.NotContains(t, SystemPrompt, "no tool says what is set up")
 	require.NotContains(t, SystemPrompt, "They do not cover any other configuration")
-	require.Equal(t, SystemPrompt, systemInstructionsFor(nil, toolAvailability{}, timeContext{now: time.Unix(0, 0)})[:len(SystemPrompt)])
+	withManagement := systemInstructionsFor(nil, toolAvailability{management: true}, timeContext{now: time.Unix(0, 0)})
+	require.Equal(t, SystemPrompt, withManagement[:len(SystemPrompt)])
 	require.NotEqual(t, SystemPrompt, managementWriteSystemPromptFor([]string{schemas.WarpManagementCreate}))
+
+	// Without them (Warp decoupled from the Bifrost MCP), the prompt is the
+	// read-only traffic one, with no mention of tools the model was not given.
+	trafficOnly := systemInstructionsFor(nil, toolAvailability{}, timeContext{now: time.Unix(0, 0)})
+	require.Equal(t, trafficSystemPrompt, trafficOnly[:len(trafficSystemPrompt)])
+	for _, management := range []string{managementCapability, managementCoverage, managementConfiguredRule, "management tools"} {
+		require.NotContains(t, trafficOnly, management)
+	}
+	require.Contains(t, trafficOnly, readOnlyCapability)
+	require.Contains(t, trafficOnly, trafficCoverage)
+	require.Contains(t, trafficOnly, trafficConfiguredRule)
 }
 
 // Without the Bifrost MCP Warp does not answer at all: the turn is refused
@@ -344,6 +357,48 @@ func TestWarpTurnRefusedWithoutBifrostMCP(t *testing.T) {
 	view, err := managementService(&scriptedModel{}, nil, newFakeManagement()).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.True(t, view.BifrostMCPAvailable)
+}
+
+// Decoupled (BifrostMCPEnabled off, the default), a service ignores the Bifrost
+// MCP the gateway still binds: the turn runs on Warp's own tools with the
+// read-only traffic prompt, and the config read says Warp does not use it, so
+// the dashboard shows no setup step.
+func TestWarpDecoupledFromBifrostMCPByDefault(t *testing.T) {
+	require.False(t, BifrostMCPEnabled, "Warp is decoupled from the Bifrost MCP for now")
+	for name, management := range map[string]ManagementTools{
+		"never bound": nil,
+		"bound":       newFakeManagement(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Hello.")}}
+			service := NewService(nil,
+				WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+				WithVectorStore(newFakeWarpVectorStore()),
+				WithLogReader(&fakeLogReader{}),
+				WithChatFunc(model.respond),
+			)
+			service.SetManagementTools(management)
+			runManagementTurn(t, service, "u1", "", "which providers are configured?")
+			require.NotZero(t, model.calls, "the turn runs without the Bifrost MCP")
+
+			declared := map[string]bool{}
+			for _, tool := range model.lastTools {
+				declared[*tool.Name] = true
+			}
+			require.True(t, declared["query_metrics"])
+			require.False(t, declared["listVirtualKeys"], "no management tool is offered")
+			require.False(t, declared["createVirtualKey"], "no management tool is offered")
+			require.Contains(t, model.lastInstructions, readOnlyCapability)
+			require.NotContains(t, model.lastInstructions, "management tools")
+
+			view, err := service.ConfigView(context.Background())
+			require.NoError(t, err)
+			require.False(t, view.BifrostMCPEnabled)
+			require.False(t, view.BifrostMCPAvailable)
+			require.Empty(t, view.ManagementToolSizes)
+			require.False(t, view.ManagementWritesAvailable)
+		})
+	}
 }
 
 // A management tool named like one of Warp's own is dropped, so the model never
@@ -519,6 +574,10 @@ func TestWarpManagementCatalogSizesNarrowingAndCards(t *testing.T) {
 	question, err := confirmationQuestion(remove, `{"vk_id":"vk-1"}`)
 	require.NoError(t, err)
 	require.Equal(t, `Run deleteVirtualKey with {"vk_id":"vk-1"}? This cannot be undone.`, question.Question)
+	require.Equal(t, &schemas.WarpConfirmAction{Tool: "deleteVirtualKey", Arguments: `{"vk_id":"vk-1"}`, Destructive: true}, question.Action)
+	stored, err := sonic.MarshalString(storedQuestionFrom(question))
+	require.NoError(t, err)
+	require.Contains(t, stored, `"action":{"tool":"deleteVirtualKey"`)
 	declarations, err := narrowed.declarations()
 	require.NoError(t, err)
 	for _, declaration := range declarations {
@@ -530,6 +589,7 @@ func TestWarpManagementCatalogSizesNarrowingAndCards(t *testing.T) {
 	question, err = confirmationQuestion(create, `{"name":"a"}`)
 	require.NoError(t, err)
 	require.Equal(t, `Run createVirtualKey with {"name":"a"}?`, question.Question)
+	require.False(t, question.Action.Destructive)
 }
 
 // leasingManagement counts the leases its turns hold and whether it was closed,

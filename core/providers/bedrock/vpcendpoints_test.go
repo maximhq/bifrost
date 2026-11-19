@@ -2,10 +2,16 @@ package bedrock
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,4 +131,221 @@ func TestSignAWSRequestWithVPCEndpointHost(t *testing.T) {
 	// Signing the same request against the public host must produce a different signature,
 	// proving the endpoint host is actually covered by the canonical request.
 	assert.NotEqual(t, auth, sign("bedrock-runtime.eu-west-2.amazonaws.com"))
+}
+
+// newBaseURLTestProvider builds a Bedrock provider whose network_config.base_url points at a
+// local TLS server, and returns the paths that server received.
+func newBaseURLTestProvider(t *testing.T) (*BedrockProvider, string, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.EscapedPath())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider, err := NewBedrockProvider(&schemas.ProviderConfig{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: srv.URL + "/", DefaultRequestTimeoutInSeconds: 10, InsecureSkipVerify: true},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+	}, noopLogger{})
+	require.NoError(t, err)
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	return provider, u.Host, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+// network_config.base_url is the provider-wide bedrock-runtime host (issue #5272): a Converse
+// call must dial it instead of the public bedrock-runtime.<region>.amazonaws.com host.
+func TestNetworkConfigBaseURLRoutesConverse(t *testing.T) {
+	provider, _, received := newBaseURLTestProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-bearer-token"), BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: secret("eu-west-2")}}
+	msg := "hi"
+	_, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-haiku-20240307-v1:0",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &msg}}},
+	})
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		t.Logf("chat error: %s", bifrostErr.Error.Message)
+	}
+
+	paths := received()
+	require.Len(t, paths, 1, "the Converse request must reach network_config.base_url, not the public AWS host")
+	assert.True(t, strings.HasPrefix(paths[0], "/model/") && strings.HasSuffix(paths[0], "/converse"), "unexpected path %q", paths[0])
+}
+
+// Every bedrock-runtime URL builder honours network_config.base_url, and the per-key
+// endpoints.runtime override still wins over it.
+func TestNetworkConfigBaseURLRuntimeURLBuilders(t *testing.T) {
+	provider, host, _ := newBaseURLTestProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-bearer-token"), BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: secret("eu-west-2")}}
+
+	invokeURL, _ := provider.invokeURL(ctx, key, "anthropic.claude-3-haiku-20240307-v1:0", "invoke")
+	assert.True(t, strings.HasPrefix(invokeURL, "https://"+host+"/model/"), "InvokeModel URL %q", invokeURL)
+
+	assert.Equal(t, "https://"+host+"/openai/v1/responses", provider.runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), "eu-west-2", "responses"))
+
+	req, _, bifrostErr := provider.buildPassthroughRequest(ctx, key, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost,
+		Path:   "/guardrail/abc123/version/1/apply",
+		Body:   []byte(`{}`),
+	})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, host, req.URL.Host, "ApplyGuardrail passthrough targets bedrock-runtime")
+
+	// Non-runtime services keep their public hosts: a single base URL cannot serve them.
+	req, _, bifrostErr = provider.buildPassthroughRequest(ctx, schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		Region: secret("eu-west-2"), AccessKey: schemas.SecretVar{Val: "AKIAIOSFODNN7EXAMPLE"}, SecretKey: schemas.SecretVar{Val: "secret"},
+	}}, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/knowledgebases/KB123/retrieve", Body: []byte(`{}`)})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "bedrock-agent-runtime.eu-west-2.amazonaws.com", req.URL.Host)
+
+	const vpce = "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"
+	key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: secret(vpce)}
+	invokeURL, _ = provider.invokeURL(ctx, key, "anthropic.claude-3-haiku-20240307-v1:0", "invoke")
+	assert.True(t, strings.HasPrefix(invokeURL, "https://"+vpce+"/model/"), "per-key endpoints.runtime must win over base_url, got %q", invokeURL)
+}
+
+func TestResolveBedrockHostRuntimeDefaultPrecedence(t *testing.T) {
+	const base = "bedrock.internal.example:8443"
+	const vpce = "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"
+	cases := []struct {
+		name      string
+		endpoints *schemas.BedrockEndpoints
+		service   bedrockService
+		want      string
+	}{
+		{"base_url used for runtime", nil, bedrockServiceRuntime, base},
+		{"empty per-key runtime does not shadow base_url", &schemas.BedrockEndpoints{Runtime: secret("")}, bedrockServiceRuntime, base},
+		{"per-key runtime wins over base_url", &schemas.BedrockEndpoints{Runtime: secret(vpce)}, bedrockServiceRuntime, vpce},
+		{"control plane ignores base_url", nil, bedrockServiceControlPlane, "bedrock.eu-west-2.amazonaws.com"},
+		{"agent runtime ignores base_url", nil, bedrockServiceAgentRuntime, "bedrock-agent-runtime.eu-west-2.amazonaws.com"},
+		{"s3 ignores base_url", nil, bedrockServiceS3, "s3.eu-west-2.amazonaws.com"},
+		{"mantle ignores base_url", nil, bedrockServiceMantle, "bedrock-mantle.eu-west-2.api.aws"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveBedrockHostWithRuntimeDefault(tc.endpoints, tc.service, "eu-west-2", base))
+		})
+	}
+}
+
+func TestNewBedrockProviderNormalizesBaseURL(t *testing.T) {
+	cases := map[string]string{
+		"":                                       "",
+		"https://bedrock.internal.example":       "bedrock.internal.example",
+		"https://bedrock.internal.example:8443/": "bedrock.internal.example:8443",
+		"bedrock.internal.example/some/path":     "bedrock.internal.example",
+	}
+	for baseURL, want := range cases {
+		provider, err := NewBedrockProvider(&schemas.ProviderConfig{
+			NetworkConfig:            schemas.NetworkConfig{BaseURL: baseURL},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+		}, noopLogger{})
+		require.NoError(t, err)
+		assert.Equal(t, want, provider.runtimeHost, "base_url %q", baseURL)
+	}
+}
+
+func BenchmarkBedrockRuntimeHost(b *testing.B) {
+	endpoints := &schemas.BedrockEndpoints{}
+	b.Run("no_base_url", func(b *testing.B) {
+		provider := &BedrockProvider{}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = provider.serviceHost(endpoints, bedrockServiceRuntime, "eu-west-2")
+		}
+	})
+	b.Run("base_url", func(b *testing.B) {
+		provider := &BedrockProvider{runtimeHost: "bedrock.internal.example"}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = provider.serviceHost(endpoints, bedrockServiceRuntime, "eu-west-2")
+		}
+	})
+}
+
+// The net/http transport behind Converse, streaming, passthrough and realtime applies the same
+// dial-time address policy as the fasthttp Mantle clients: link-local and unspecified addresses
+// are always refused, private ones unless allow_private_network is set.
+func TestBedrockHTTPTransportDialPolicy(t *testing.T) {
+	newTransport := func(allowPrivate bool) *http.Transport {
+		cfg := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: allowPrivate}}
+		cfg.CheckAndSetDefaults()
+		transport, err := newBedrockHTTPTransport(cfg, nil, false, nil, nil, 10*time.Second, false)
+		require.NoError(t, err)
+		require.NotNil(t, transport.DialContext, "the Bedrock transport must dial through the address policy")
+		return transport
+	}
+	dial := func(transport *http.Transport, addr string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		conn, err := transport.DialContext(ctx, "tcp", addr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return err
+	}
+
+	cases := []struct {
+		name         string
+		addr         string
+		allowPrivate bool
+		hint         string
+	}{
+		{"cloud metadata", "169.254.169.254:443", false, "always blocked"},
+		{"link-local even when private allowed", "169.254.0.1:443", true, "always blocked"},
+		{"unspecified", "0.0.0.0:443", true, "not allowed"},
+		{"private without allow_private_network", "10.255.255.1:443", false, "allow_private_network"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dial(newTransport(tc.allowPrivate), tc.addr)
+			var blocked *providerUtils.DialBlockedError
+			require.True(t, errors.As(err, &blocked), "dial to %s must be refused by the policy, got %v", tc.addr, err)
+			assert.Contains(t, err.Error(), tc.hint)
+		})
+	}
+
+	// Loopback is always reachable (local mocks, sidecars).
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	require.NoError(t, dial(newTransport(false), strings.TrimPrefix(srv.URL, "http://")))
+}
+
+// A private Bedrock endpoint without allow_private_network fails fast with an error that names
+// the setting, instead of a generic network error or a hang.
+func TestNetworkConfigBaseURLPrivateEndpointNeedsAllowPrivateNetwork(t *testing.T) {
+	provider, err := NewBedrockProvider(&schemas.ProviderConfig{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: "https://10.255.255.1", DefaultRequestTimeoutInSeconds: 2},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+	}, noopLogger{})
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-bearer-token"), BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: secret("eu-west-2")}}
+	msg := "hi"
+	_, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-haiku-20240307-v1:0",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &msg}}},
+	})
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "allow_private_network", "the client-facing message must say how to reach a private endpoint")
 }

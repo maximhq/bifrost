@@ -26,6 +26,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.datasheetOverrides` for pricing and model-parameter overrides that survive datasheet syncs. With config.json as the source of truth, `[]` removes stored overrides.
 - Baseten keys now accept a per-alias `deployment_url`.
 - The semantic cache now accepts `byteplus` and `baseten` as providers.
+- Added `bifrost.client.mcpOpenapiMaxSpecMb` (`client.mcp_openapi_max_spec_mb`) to raise or lower the size limit on an openapi MCP client's spec. 0 keeps the 32 MiB default.
+- Added `bifrost.client.bifrostUrl` (`client.bifrost_url`), the gateway's public base URL including `server.basePath`. `/v1/mcp` needs it; it accepts env and vault references.
+- Added `bifrost.client.bifrostMcpAllowWrites` (`client.bifrost_mcp_allow_writes`) to stop `/v1/mcp` serving configuration changes as tools. On by default.
+- Added `bifrost.framework.pricing.openapiUrl` (`framework.pricing.openapi_url`) to point `/v1/mcp` at a local OpenAPI spec on air-gapped installs.
 
 ### 2.1.48
 
