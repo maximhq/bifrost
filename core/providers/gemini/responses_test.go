@@ -2624,90 +2624,81 @@ func TestToGeminiResponsesRequestRejectsUnresolvedAudioURL(t *testing.T) {
 	require.ErrorIs(t, err, errUnresolvedAudioURL)
 }
 
-func TestResolveResponsesAudioURLsResolvesToolOutputBlocks(t *testing.T) {
-	stubAudioFetchBytes(t, []byte("audio-bytes"))
-
-	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
-	block := responsesAudioBlock("https://audio.example/tool.wav")
-	request := &schemas.BifrostResponsesRequest{
-		Model: "gemini-3-pro",
-		Input: []schemas.ResponsesMessage{
-			{
-				Type: &outputType,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					Output: &schemas.ResponsesToolMessageOutputStruct{
-						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{block},
-					},
-				},
-			},
-		},
-	}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resolved, err := ResolveResponsesAudioURLs(ctx, request)
-	require.NoError(t, err)
-
-	got := resolved.Input[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0]
-	require.NotEmpty(t, got.Audio.Data)
-	original := request.Input[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0]
-	require.Empty(t, original.Audio.Data, "the original request must survive for a retry")
-}
-
-func TestResolveResponsesAudioURLsSkipsToolOutputForModelsWithoutToolMedia(t *testing.T) {
+// Gemini takes only images, PDF and plain text in functionResponse.parts, so audio a
+// tool returns is never fetched or sent, on any model: it becomes a text placeholder.
+func TestResponsesToolOutputAudioBecomesPlaceholder(t *testing.T) {
 	var downloads atomic.Int32
 	stubAudioFetch(t, func(context.Context, string) (string, string, error) {
 		downloads.Add(1)
 		return "", "", errors.New("gone")
 	})
 	const deadURL = "https://audio.example/gone.wav"
-
-	callID := "call_1"
-	functionName := "fetch_audio"
-	callType := schemas.ResponsesMessageTypeFunctionCall
-	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
-	role := schemas.ResponsesInputMessageRoleUser
-	prompt := "transcribe it"
-	block := responsesAudioBlock(deadURL)
-	request := &schemas.BifrostResponsesRequest{
-		Provider: schemas.Gemini,
-		Model:    "gemini-2.5-flash",
-		Input: []schemas.ResponsesMessage{
-			{
-				Role:    &role,
-				Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
-			},
-			{
-				Type: &callType,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID: &callID,
-					Name:   &functionName,
-				},
-			},
-			{
-				Type: &outputType,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID: &callID,
-					Output: &schemas.ResponsesToolMessageOutputStruct{
-						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{block},
-					},
-				},
-			},
-		},
+	inline := schemas.ResponsesMessageContentBlock{
+		Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+		Audio: &schemas.ResponsesInputMessageContentBlockAudio{Data: base64.StdEncoding.EncodeToString([]byte("audio-bytes")), Format: "wav"},
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resolved, err := ResolveResponsesAudioURLs(ctx, request)
-	require.NoError(t, err, "an unreachable tool output URL must not fail a model that never uses it")
-	require.Zero(t, downloads.Load())
+	for _, tc := range []struct {
+		name  string
+		model string
+		block schemas.ResponsesMessageContentBlock
+	}{
+		{"url without tool media", "gemini-2.5-flash", responsesAudioBlock(deadURL)},
+		{"url with tool media", "gemini-3-pro-preview", responsesAudioBlock(deadURL)},
+		{"inline with tool media", "gemini-3-pro-preview", inline},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			downloads.Store(0)
+			callID := "call_1"
+			functionName := "fetch_audio"
+			callType := schemas.ResponsesMessageTypeFunctionCall
+			outputType := schemas.ResponsesMessageTypeFunctionCallOutput
+			role := schemas.ResponsesInputMessageRoleUser
+			prompt := "transcribe it"
+			request := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{
+					{
+						Role:    &role,
+						Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
+					},
+					{
+						Type: &callType,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: &callID,
+							Name:   &functionName,
+						},
+					},
+					{
+						Type: &outputType,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: &callID,
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{tc.block},
+							},
+						},
+					},
+				},
+			}
 
-	result, err := ToGeminiResponsesRequest(ctx, resolved)
-	require.NoError(t, err)
-	payload, err := sonic.Marshal(result)
-	require.NoError(t, err)
-	require.Contains(t, string(payload), "audio")
-	require.NotContains(t, string(payload), deadURL)
-	require.NotContains(t, string(payload), `"inlineData"`)
-	require.NotContains(t, string(payload), `"inline_data"`)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resolved, err := ResolveResponsesAudioURLs(ctx, request)
+			require.NoError(t, err, "an unreachable tool output URL must not fail the request")
+			require.Zero(t, downloads.Load())
+
+			result, err := ToGeminiResponsesRequest(ctx, resolved)
+			require.NoError(t, err)
+			payload, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			require.Contains(t, string(payload), "[audio/wav")
+			require.Contains(t, string(payload), "returned by the tool, not shown]")
+			require.NotContains(t, string(payload), deadURL)
+			require.NotContains(t, string(payload), `"inlineData"`)
+			require.NotContains(t, string(payload), `"inline_data"`)
+			require.NotContains(t, string(payload), `"fileData"`)
+		})
+	}
 }
 
 func TestResolveResponsesAudioURLsStillFailsOnMessageAudioWithoutToolMedia(t *testing.T) {

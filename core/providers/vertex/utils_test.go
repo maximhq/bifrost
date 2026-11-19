@@ -1232,9 +1232,9 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 		}
 	})
 
-	// Function tool output carries audio in its own blocks, not in Content. A model that
-	// takes media in tool output gets the gs:// audio as a fileData part; any other model
-	// keeps the audio block, which the converter turns into a text placeholder.
+	// Function tool output carries audio in its own blocks, not in Content. Gemini takes
+	// no audio in functionResponse.parts, so the gs:// block is left for the converter,
+	// which sends a text placeholder on every model, with no fileData part.
 	t.Run("responses tool output", func(t *testing.T) {
 		toolOutputRequest := func(model string) *schemas.BifrostResponsesRequest {
 			callID := "call_1"
@@ -1268,48 +1268,36 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 				},
 			}
 		}
-		outputBlock := func(request *schemas.BifrostResponsesRequest) schemas.ResponsesMessageContentBlock {
-			return request.Input[2].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0]
-		}
 
-		original := toolOutputRequest("gemini-3-pro-preview")
-		request := forwardGCSAudioResponses(ctx, original)
-		if request == original {
-			t.Fatal("got the same request, want a copy with the tool output audio forwarded")
-		}
-		if block := outputBlock(original); block.Type != schemas.ResponsesInputMessageContentBlockTypeAudio || block.Audio == nil || block.ResponsesInputMessageContentBlockFile != nil {
-			t.Fatalf("original tool output block changed: %#v", block)
-		}
-		// No download may happen: the resolver must see nothing to fetch.
-		resolved, err := gemini.ResolveResponsesAudioURLs(ctx, request)
-		if err != nil {
-			t.Fatalf("ResolveResponsesAudioURLs: %v", err)
-		}
-		result, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolved, geminiImageURLSchemes...)
-		if err != nil {
-			t.Fatalf("convert: %v", err)
-		}
-		var response *gemini.FunctionResponse
-		for _, content := range result.Contents {
-			for _, part := range content.Parts {
-				if part.FunctionResponse != nil {
-					response = part.FunctionResponse
+		for _, model := range []string{"gemini-3-pro-preview", "gemini-2.5-flash"} {
+			original := toolOutputRequest(model)
+			request := forwardGCSAudioResponses(ctx, original)
+			if request != original {
+				t.Fatalf("%s: got a copy, want the same request with tool output audio left alone", model)
+			}
+			// No download may happen: the resolver must leave tool output audio alone.
+			resolved, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+			if err != nil {
+				t.Fatalf("%s: ResolveResponsesAudioURLs: %v", model, err)
+			}
+			result, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolved, geminiImageURLSchemes...)
+			if err != nil {
+				t.Fatalf("%s: convert: %v", model, err)
+			}
+			var response *gemini.FunctionResponse
+			for _, content := range result.Contents {
+				for _, part := range content.Parts {
+					if part.FunctionResponse != nil {
+						response = part.FunctionResponse
+					}
 				}
 			}
-		}
-		if response == nil || len(response.Parts) != 1 {
-			t.Fatalf("function response = %#v, want one media part", response)
-		}
-		if fileData := response.Parts[0].FileData; fileData == nil || fileData.FileURI != gcsURI || fileData.MIMEType != "audio/wav" {
-			t.Fatalf("tool output part = %#v, want fileData %q audio/wav", fileData, gcsURI)
-		}
-
-		textOnly := toolOutputRequest("gemini-2.5-flash")
-		if got := forwardGCSAudioResponses(ctx, textOnly); got != textOnly {
-			t.Fatal("text-only tool output: got a copy, want the same request")
-		}
-		if block := outputBlock(textOnly); block.Type != schemas.ResponsesInputMessageContentBlockTypeAudio || block.Audio == nil || block.ResponsesInputMessageContentBlockFile != nil {
-			t.Fatalf("text-only tool output block rewritten: %#v", block)
+			if response == nil || len(response.Parts) != 0 {
+				t.Fatalf("%s: function response = %#v, want no media parts", model, response)
+			}
+			if got := string(response.Response); !strings.Contains(got, "audio/wav returned by the tool, not shown") {
+				t.Fatalf("%s: function response = %s, want the audio placeholder", model, got)
+			}
 		}
 	})
 

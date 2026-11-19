@@ -735,9 +735,8 @@ func chatBlocksForwardGCSAudio(blocks []schemas.ChatContentBlock, isAnthropicFam
 }
 
 // forwardGCSAudioResponses is the Responses-API analogue of forwardGCSAudioChat.
-// It also rewrites gs:// audio in function tool output blocks, but only for a model
-// that takes media in tool output; for any other model the converter sends a text
-// placeholder, so the block is left as it is.
+// Function tool output is left as it is: Gemini does not take audio in
+// functionResponse.parts, so the converter sends a text placeholder for it.
 func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if request == nil || request.Input == nil {
 		return request
@@ -746,8 +745,7 @@ func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.Bifr
 		return request
 	}
 	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
-	toolOutputMedia := !isAnthropicFamily && gemini.ResponsesToolOutputMediaSupported(ctx, request.Provider, request.Model)
-	if !responsesInputForwardsGCSAudio(request.Input, isAnthropicFamily, toolOutputMedia) {
+	if !responsesInputForwardsGCSAudio(request.Input, isAnthropicFamily) {
 		return request
 	}
 	copied := *request
@@ -758,13 +756,6 @@ func forwardGCSAudioResponses(ctx *schemas.BifrostContext, request *schemas.Bifr
 			content := *msg.Content
 			content.ContentBlocks = forwardGCSAudioResponsesBlocks(content.ContentBlocks, isAnthropicFamily)
 			msg.Content = &content
-		}
-		if toolOutputMedia && responsesBlocksForwardGCSAudio(responsesToolOutputBlocks(msg), isAnthropicFamily) {
-			toolMessage := *msg.ResponsesToolMessage
-			output := *toolMessage.Output
-			output.ResponsesFunctionToolCallOutputBlocks = forwardGCSAudioResponsesBlocks(output.ResponsesFunctionToolCallOutputBlocks, isAnthropicFamily)
-			toolMessage.Output = &output
-			msg.ResponsesToolMessage = &toolMessage
 		}
 	}
 	return &copied
@@ -788,20 +779,9 @@ func forwardGCSAudioResponsesBlocks(blocks []schemas.ResponsesMessageContentBloc
 	return copied
 }
 
-// responsesToolOutputBlocks returns msg's function tool output blocks, or nil.
-func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
-	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
-		return nil
-	}
-	return msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
-}
-
-func responsesInputForwardsGCSAudio(input []schemas.ResponsesMessage, isAnthropicFamily, toolOutputMedia bool) bool {
+func responsesInputForwardsGCSAudio(input []schemas.ResponsesMessage, isAnthropicFamily bool) bool {
 	for i := range input {
 		if input[i].Content != nil && responsesBlocksForwardGCSAudio(input[i].Content.ContentBlocks, isAnthropicFamily) {
-			return true
-		}
-		if toolOutputMedia && responsesBlocksForwardGCSAudio(responsesToolOutputBlocks(&input[i]), isAnthropicFamily) {
 			return true
 		}
 	}

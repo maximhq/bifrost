@@ -4962,12 +4962,12 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	return config
 }
 
-// ResolveResponsesAudioURLs returns request with URL-only audio replaced by inline
-// data, in message content and in function tool output. It does network I/O, so
-// provider methods call it before ToGeminiResponsesRequest and the converter stays
-// pure. A request with no URL-only audio comes back unchanged, with no allocation.
-// Tool output audio is left alone for a model that cannot take media there: the
-// converter sends a text placeholder, so a dead URL must not fail the request.
+// ResolveResponsesAudioURLs returns request with URL-only audio in message content
+// replaced by inline data. It does network I/O, so provider methods call it before
+// ToGeminiResponsesRequest and the converter stays pure. A request with no URL-only
+// audio comes back unchanged, with no allocation. Function tool output audio is left
+// alone: Gemini does not take audio in functionResponse.parts, so the converter sends
+// a text placeholder and a dead URL must not fail the request.
 func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, error) {
 	if request == nil || !slices.ContainsFunc(request.Input, responsesMessageHasAudioURL) {
 		return request, nil
@@ -4975,22 +4975,13 @@ func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.Bif
 	// The converter normalizes Model in place and callers read it back for the
 	// upstream URL, so it has to change on their request and not only on the copy.
 	request.Model = NormalizeModelName(request.Model)
-	toolOutputMedia := ResponsesToolOutputMediaSupported(ctx, request.Provider, request.Model)
-	input, err := resolveResponsesAudioURLs(ctx, request.Input, toolOutputMedia, NewAudioURLBudget())
+	input, err := resolveResponsesAudioURLs(ctx, request.Input, NewAudioURLBudget())
 	if err != nil {
 		return nil, err
 	}
 	resolved := *request
 	resolved.Input = input
 	return &resolved, nil
-}
-
-// ResponsesToolOutputMediaSupported reports whether the Responses converter sends
-// media in function tool output for model, resolved the way the converter resolves
-// it. When it is false the converter sends a text placeholder instead.
-func ResponsesToolOutputMediaSupported(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
-	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, NormalizeModelName(model)))
-	return schemas.ResolveModelCaps(provider, capModel).SupportsMultimodalToolOutput(isGemini3Plus(capModel))
 }
 
 func responsesBlocksHaveAudioURL(blocks []schemas.ResponsesMessageContentBlock) bool {
@@ -5002,26 +4993,15 @@ func responsesBlocksHaveAudioURL(blocks []schemas.ResponsesMessageContentBlock) 
 	return false
 }
 
-func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
-	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
-		return nil
-	}
-	return msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
-}
-
 func responsesMessageHasAudioURL(msg schemas.ResponsesMessage) bool {
-	if msg.Content != nil && responsesBlocksHaveAudioURL(msg.Content.ContentBlocks) {
-		return true
-	}
-	return responsesBlocksHaveAudioURL(responsesToolOutputBlocks(&msg))
+	return msg.Content != nil && responsesBlocksHaveAudioURL(msg.Content.ContentBlocks)
 }
 
 // resolveResponsesAudioURLs returns a copy of messages with URL-only audio
 // downloaded into Data, charging every download to budget. Only the messages that
 // change are copied, and nested content is copied before it changes, so a retry
-// still sees the original request. Tool output blocks are only resolved when
-// toolOutputMedia is true.
-func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, toolOutputMedia bool, budget *AudioURLBudget) ([]schemas.ResponsesMessage, error) {
+// still sees the original request. Function tool output blocks are never resolved.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, budget *AudioURLBudget) ([]schemas.ResponsesMessage, error) {
 	resolved := slices.Clone(messages)
 	for msgIndex := range resolved {
 		msg := &resolved[msgIndex]
@@ -5033,17 +5013,6 @@ func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.Responses
 			content := *msg.Content
 			content.ContentBlocks = blocks
 			msg.Content = &content
-		}
-		if outputBlocks := responsesToolOutputBlocks(msg); toolOutputMedia && responsesBlocksHaveAudioURL(outputBlocks) {
-			blocks, err := resolveResponsesAudioBlocks(ctx, outputBlocks, budget, fmt.Sprintf("input[%d].output", msgIndex))
-			if err != nil {
-				return nil, err
-			}
-			toolMessage := *msg.ResponsesToolMessage
-			output := *toolMessage.Output
-			output.ResponsesFunctionToolCallOutputBlocks = blocks
-			toolMessage.Output = &output
-			msg.ResponsesToolMessage = &toolMessage
 		}
 	}
 	return resolved, nil
@@ -5522,8 +5491,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 								textParts = append(textParts, *block.Text)
 								continue
 							}
-							if !supportsMultimodalToolOutput {
-								// Older models reject media here; name it instead.
+							// Older models reject media here, and no model takes audio in
+							// functionResponse.parts (images, PDF and plain text only); name it instead.
+							if !supportsMultimodalToolOutput || block.Audio != nil {
 								if placeholder, isMedia := schemas.ResponsesToolResultMediaPlaceholder(block); isMedia {
 									textParts = append(textParts, placeholder)
 								}
