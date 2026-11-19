@@ -608,6 +608,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_client_config_exclude_cached_tokens_from_rate_limits_column"}, run: migrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17004,6 +17005,30 @@ func migrationAddClientConfigMCPServerMaxProtocolVersionColumn(ctx context.Conte
 		Rollback: func(tx *gorm.DB) error {
 			// Reversible: without the column /mcp serves every version, as before.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+	})
+}
+
+// migrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn adds
+// exclude_cached_tokens_from_rate_limits to config_client. It defaults to false, the count
+// before the setting existed, and false is not part of the config hash, so no row needs a
+// backfill or a hash rewrite.
+func migrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_exclude_cached_tokens_from_rate_limits_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "exclude_cached_tokens_from_rate_limits")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column rate limits count cached reads, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "exclude_cached_tokens_from_rate_limits")
 		},
 	})
 }

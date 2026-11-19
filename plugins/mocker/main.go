@@ -141,6 +141,7 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	CachedReadTokens int `json:"cached_read_tokens,omitempty"` // Prompt tokens reported as read from the provider's prefix cache
 }
 
 // MockStats tracks plugin statistics and rule execution counts
@@ -450,7 +451,7 @@ func validateSuccessResponse(content SuccessResponse) error {
 
 	// If usage is provided, validate it
 	if content.Usage != nil {
-		if content.Usage.PromptTokens < 0 || content.Usage.CompletionTokens < 0 || content.Usage.TotalTokens < 0 {
+		if content.Usage.PromptTokens < 0 || content.Usage.CompletionTokens < 0 || content.Usage.TotalTokens < 0 || content.Usage.CachedReadTokens < 0 {
 			return fmt.Errorf("token counts cannot be negative")
 		}
 	}
@@ -826,6 +827,9 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 			CompletionTokens: p.getOrDefault(content.Usage.CompletionTokens, 20),
 			TotalTokens:      p.getOrDefault(content.Usage.TotalTokens, content.Usage.PromptTokens+content.Usage.CompletionTokens),
 		}
+		if content.Usage.CachedReadTokens > 0 {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{CachedReadTokens: content.Usage.CachedReadTokens}
+		}
 	} else {
 		// Default usage when none specified
 		usage = schemas.BifrostLLMUsage{
@@ -888,9 +892,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			Usage: &schemas.ResponsesResponseUsage{
-				InputTokens:  usage.PromptTokens,
-				OutputTokens: usage.CompletionTokens,
-				TotalTokens:  usage.TotalTokens,
+				InputTokens:        usage.PromptTokens,
+				InputTokensDetails: responsesInputTokensDetails(usage),
+				OutputTokens:       usage.CompletionTokens,
+				TotalTokens:        usage.TotalTokens,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ResponsesRequest,
@@ -915,9 +920,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 					},
 				},
 				Usage: &schemas.ResponsesResponseUsage{
-					InputTokens:  usage.PromptTokens,
-					OutputTokens: usage.CompletionTokens,
-					TotalTokens:  usage.TotalTokens,
+					InputTokens:        usage.PromptTokens,
+					InputTokensDetails: responsesInputTokensDetails(usage),
+					OutputTokens:       usage.CompletionTokens,
+					TotalTokens:        usage.TotalTokens,
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
@@ -1275,4 +1281,13 @@ func (p *MockerPlugin) GetStats() MockStats {
 	p.ruleHitsMu.RUnlock()
 
 	return statsCopy
+}
+
+// responsesInputTokensDetails carries a mocked cache read onto the Responses usage shape; nil when
+// the rule reports none, as before.
+func responsesInputTokensDetails(usage schemas.BifrostLLMUsage) *schemas.ResponsesResponseInputTokens {
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedReadTokens == 0 {
+		return nil
+	}
+	return &schemas.ResponsesResponseInputTokens{CachedReadTokens: usage.PromptTokensDetails.CachedReadTokens}
 }

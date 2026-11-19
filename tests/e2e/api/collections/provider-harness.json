@@ -346506,6 +346506,639 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Cached prompt tokens and token rate limits against a local upstream (rate limit cached tokens) [SERIAL]",
+      "description": "Pins client.exclude_cached_tokens_from_rate_limits. A custom openai provider points at the local relay upstream fixture (tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783, which make run-provider-harness-test starts), whose /v1/chat/completions reports 1000 prompt tokens, 400 of them prompt_tokens_details.cached_tokens, and 100 completion tokens. No third party is called, so the folder costs nothing. With the setting on, a virtual key's token rate limit is charged 1100 - 400 = 700; with it off, the full 1100 as before. [SERIAL]: the setting is gateway-wide, so the folder reads the stored client config, sends it back whole with the setting changed (a partial PUT would reset unrelated fields), and restores the stored value at the end. Red before the change: the setting does not exist and the on-key is charged 1100. To run the fixture elsewhere, pass --env-var relayUpstreamUrl=... . Run with FEATURE=\"rate limit cached tokens\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: read the stored client config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+                  "pm.collectionVariables.set('rlctRun', run);",
+                  "pm.collectionVariables.set('rlctProvider', 'openai-cached-tokens-' + run);",
+                  "pm.collectionVariables.set('rlctUpstream', pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rate limit cached tokens: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('rlctClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('rlctOriginal', cc.exclude_cached_tokens_from_rate_limits === true ? 'true' : 'false');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: register the local fixture as a custom openai provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture provider registered', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{rlctProvider}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\"\n  },\n  \"network_config\": {\n    \"base_url\": \"{{rlctUpstream}}\",\n    \"allow_private_network\": true,\n    \"max_retries\": 0\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 2,\n    \"buffer_size\": 10\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: give the fixture provider its dummy key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture key added', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{rlctProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{rlctProvider}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{rlctProvider}}-key\",\n  \"value\": \"fixture-only\",\n  \"models\": [\n    \"cached-fixture\"\n  ],\n  \"weight\": 1\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: turn exclude_cached_tokens_from_rate_limits on",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('rlctClientConfig') || '{}');",
+                  "cc.exclude_cached_tokens_from_rate_limits = true;",
+                  "pm.variables.set('rlctBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setting turned on', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config?from_db=true', method: 'GET' }, function (err, res) {",
+                  "  pm.test('the stored setting reads back as ' + true, function () {",
+                  "    pm.expect(err, String(err)).to.not.be.ok;",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect(res.json().client_config.exclude_cached_tokens_from_rate_limits === true, res.text()).to.equal(true);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{rlctBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: create a virtual key with a token limit on the fixture provider (setting on)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key created: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "pm.test('the key has an id and a value', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rlctVkOnId', vk.id);",
+                  "pm.collectionVariables.set('rlctVkOnValue', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-rlct-on-{{rlctRun}}\",\n  \"is_active\": true,\n  \"provider_configs\": [\n    {\n      \"provider\": \"{{rlctProvider}}\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"key_ids\": [\n        \"*\"\n      ]\n    }\n  ],\n  \"rate_limit\": {\n    \"token_max_limit\": 1000000,\n    \"token_reset_duration\": \"1h\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai rate limit cached tokens: setting on, a chat call charges 700 tokens to the key - {{rlctProvider}}/cached-fixture",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// Governance charges usage after the reply is written and persists counters on a 10s cycle, so poll",
+                  "// the key for up to 20s (two cycles).",
+                  "function waitForTokens(id, cb, attempt) {",
+                  "  attempt = attempt || 0;",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var vk = (!err && res.code === 200) ? (res.json().virtual_key || {}) : null;",
+                  "    var rl = (vk && vk.rate_limit) || {};",
+                  "    if (vk && rl.token_current_usage > 0) { return cb(rl, true); }",
+                  "    if (attempt < 40) { setTimeout(function () { waitForTokens(id, cb, attempt + 1); }, 500); return; }",
+                  "    cb(rl, false, err ? String(err) : res.code + ' ' + res.text());",
+                  "  });",
+                  "}",
+                  "function expectWireUsage() {",
+                  "  pm.test('the reply is a 200 from the local fixture', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "  });",
+                  "  var usage = (pm.response.json() || {}).usage || {};",
+                  "  pm.test('the reply reports 1000 prompt tokens, 400 of them cached, 1100 in total', function () {",
+                  "    pm.expect(usage.prompt_tokens, pm.response.text()).to.eql(1000);",
+                  "    pm.expect(usage.total_tokens, pm.response.text()).to.eql(1100);",
+                  "    pm.expect((usage.prompt_tokens_details || {}).cached_tokens, pm.response.text()).to.eql(400);",
+                  "  });",
+                  "}",
+                  "",
+                  "expectWireUsage();",
+                  "waitForTokens(pm.collectionVariables.get('rlctVkOnId'), function (rl, ok, why) {",
+                  "  pm.test('the key is charged 600 uncached prompt + 100 output tokens, not the 400 cached ones', function () {",
+                  "    pm.expect(ok, 'token counter never moved: ' + JSON.stringify(rl) + (why ? ' ' + why : '')).to.be.true;",
+                  "    pm.expect(rl.token_current_usage, JSON.stringify(rl)).to.eql(700);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{rlctVkOnValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{rlctProvider}}/cached-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: turn exclude_cached_tokens_from_rate_limits off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('rlctClientConfig') || '{}');",
+                  "cc.exclude_cached_tokens_from_rate_limits = false;",
+                  "pm.variables.set('rlctBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setting turned off', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config?from_db=true', method: 'GET' }, function (err, res) {",
+                  "  pm.test('the stored setting reads back as ' + false, function () {",
+                  "    pm.expect(err, String(err)).to.not.be.ok;",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect(res.json().client_config.exclude_cached_tokens_from_rate_limits === true, res.text()).to.equal(false);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{rlctBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: create a virtual key with a token limit on the fixture provider (setting off)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key created: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "pm.test('the key has an id and a value', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('rlctVkOffId', vk.id);",
+                  "pm.collectionVariables.set('rlctVkOffValue', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-rlct-off-{{rlctRun}}\",\n  \"is_active\": true,\n  \"provider_configs\": [\n    {\n      \"provider\": \"{{rlctProvider}}\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"key_ids\": [\n        \"*\"\n      ]\n    }\n  ],\n  \"rate_limit\": {\n    \"token_max_limit\": 1000000,\n    \"token_reset_duration\": \"1h\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai rate limit cached tokens: setting off, a chat call charges 1100 tokens to the key - {{rlctProvider}}/cached-fixture",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// Governance charges usage after the reply is written and persists counters on a 10s cycle, so poll",
+                  "// the key for up to 20s (two cycles).",
+                  "function waitForTokens(id, cb, attempt) {",
+                  "  attempt = attempt || 0;",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var vk = (!err && res.code === 200) ? (res.json().virtual_key || {}) : null;",
+                  "    var rl = (vk && vk.rate_limit) || {};",
+                  "    if (vk && rl.token_current_usage > 0) { return cb(rl, true); }",
+                  "    if (attempt < 40) { setTimeout(function () { waitForTokens(id, cb, attempt + 1); }, 500); return; }",
+                  "    cb(rl, false, err ? String(err) : res.code + ' ' + res.text());",
+                  "  });",
+                  "}",
+                  "function expectWireUsage() {",
+                  "  pm.test('the reply is a 200 from the local fixture', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "  });",
+                  "  var usage = (pm.response.json() || {}).usage || {};",
+                  "  pm.test('the reply reports 1000 prompt tokens, 400 of them cached, 1100 in total', function () {",
+                  "    pm.expect(usage.prompt_tokens, pm.response.text()).to.eql(1000);",
+                  "    pm.expect(usage.total_tokens, pm.response.text()).to.eql(1100);",
+                  "    pm.expect((usage.prompt_tokens_details || {}).cached_tokens, pm.response.text()).to.eql(400);",
+                  "  });",
+                  "}",
+                  "",
+                  "expectWireUsage();",
+                  "waitForTokens(pm.collectionVariables.get('rlctVkOffId'), function (rl, ok, why) {",
+                  "  pm.test('the key is charged all 1100 tokens, cached reads included, as before the setting existed', function () {",
+                  "    pm.expect(ok, 'token counter never moved: ' + JSON.stringify(rl) + (why ? ' ' + why : '')).to.be.true;",
+                  "    pm.expect(rl.token_current_usage, JSON.stringify(rl)).to.eql(1100);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{rlctVkOffValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{rlctProvider}}/cached-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: cleanup: restore the stored setting",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('rlctClientConfig') || '{}');",
+                  "cc.exclude_cached_tokens_from_rate_limits = pm.collectionVariables.get('rlctOriginal') === 'true';",
+                  "pm.variables.set('rlctBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup: stored setting restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{rlctBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: cleanup: delete the setting-on key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup: delete the setting-on key', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{rlctVkOnId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{rlctVkOnId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: cleanup: delete the setting-off key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup: delete the setting-off key', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{rlctVkOffId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{rlctVkOffId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai rate limit cached tokens: cleanup: delete the fixture provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup: delete the fixture provider', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{rlctProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{rlctProvider}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

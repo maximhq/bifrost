@@ -167,13 +167,19 @@ type UsageReport struct {
 	// SkipRequestCount reports tokens and cost without a request: the job's create already
 	// counted as one (an interaction run), so its settlement must not count a second.
 	SkipRequestCount bool
+	// PromptTokens and CachedReadTokens break TokensUsed down so a reporter can apply a cache-read
+	// policy to rate limits (governance's exclude_cached_tokens_from_rate_limits).
+	PromptTokens     int64
+	CachedReadTokens int64
 }
 
 // ModelUsage is one model's share of a settled job.
 type ModelUsage struct {
-	Model      string
-	Cost       float64
-	TokensUsed int64
+	Model            string
+	Cost             float64
+	TokensUsed       int64
+	PromptTokens     int64 // breakdown of TokensUsed, as on UsageReport
+	CachedReadTokens int64
 }
 
 type PricingManager interface {

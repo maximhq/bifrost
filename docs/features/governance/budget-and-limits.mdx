@@ -128,6 +128,25 @@ Bifrost supports two types of rate limits that work in parallel:
 - **Request Limits**: Control the maximum number of API calls that can be made within a set duration (e.g., 100 requests per minute).
 - **Token Limits**: Control the maximum number of tokens (prompt + completion) that can be processed within a set duration (e.g., 50,000 tokens per hour).
 
+### Cached Prompt Tokens
+
+By default a token limit charges the provider's `total_tokens`, which includes prompt tokens the provider served from its own prefix cache (`prompt_tokens_details.cached_tokens`). Turn on `client.exclude_cached_tokens_from_rate_limits` (**Settings → Security → Exclude Cached Tokens from Rate Limits** in the dashboard) to stop counting those cache reads:
+
+| Setting | Tokens charged to a token limit |
+|---------|---------------------------------|
+| `false` (default) | `total_tokens` |
+| `true` | `total_tokens` minus cached prompt tokens |
+
+For a response with 1,000 prompt tokens, 400 of them cached, and 100 completion tokens, a token limit is charged 1,100 tokens with the setting off and 700 with it on.
+
+- **Cost is unchanged.** Budgets already price cached tokens at the provider's cache rate; the setting only moves token rate limits.
+- **Cache writes and output tokens still count.** Only tokens read from the cache are left out.
+- **It applies everywhere tokens are charged**: virtual key, team, customer, provider config and model limits, for synchronous and streamed requests, passthrough, cancelled streams the provider still billed, and batch and interaction jobs when they settle.
+- **It is a Bifrost accounting rule, not a copy of the provider's own limit.** Anthropic does not count cache reads toward its input-token rate limits, but OpenAI and Azure OpenAI do count them toward tokens per minute. A Bifrost limit sized to mirror an OpenAI TPM quota lets more traffic through with the setting on, and the extra load comes back as upstream `429`s.
+- **It needs a provider that reports cache reads.** A provider or OpenAI-compatible backend that sends no `cached_tokens` is charged as before. A self-hosted SGLang server reports them only when started with `--enable-cache-report`.
+- **"Cached" means the provider's prefix cache**, not Bifrost's [semantic cache](/features/semantic-caching).
+- **Changes apply from the next charge on.** Counters already accumulated are not recalculated. In a cluster, keep the setting the same on every node.
+
 ### Rate Limit Hierarchy
 
 Rate limits are checked in hierarchical order:
@@ -549,7 +568,7 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `calendar_aligned` | boolean | Virtual-key-level setting. When true, all supported budget and rate-limit windows owned by the virtual key reset at calendar boundaries in UTC |
 | `budgets[].max_limit` | float | Maximum spend in USD |
 | `budgets[].reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
-| `rate_limit.token_max_limit` | integer | Maximum tokens per period |
+| `rate_limit.token_max_limit` | integer | Maximum tokens (input + output) per period. Cached prompt tokens count unless `client.exclude_cached_tokens_from_rate_limits` is on, see [Cached Prompt Tokens](#cached-prompt-tokens) |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
 
 Virtual Key and provider-config budgets use the `budgets` array in both requests and responses. The pre-v1.5.0 singular `budget` and `budget_id` fields are not part of these request schemas. See [Create virtual key](/api-reference/governance/create-virtual-key) and [Update virtual key](/api-reference/governance/update-virtual-key) for the complete schema.

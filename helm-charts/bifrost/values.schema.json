@@ -1021,6 +1021,11 @@
               "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
+            "excludeCachedTokensFromRateLimits": {
+              "type": "boolean",
+              "description": "When true, prompt tokens the provider served from its prefix cache do not count against token rate limits. Cache writes and output tokens still count, and cost is unchanged. OpenAI counts cached reads toward its own TPM limit. Maps to client.exclude_cached_tokens_from_rate_limits.",
+              "default": false
+            },
             "entityAccessProfileMode": {
               "type": "string",
               "enum": ["union", "intersect"],

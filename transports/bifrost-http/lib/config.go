@@ -8530,6 +8530,15 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
+// ShouldExcludeCachedTokensFromRateLimits reports client.exclude_cached_tokens_from_rate_limits.
+// It reads under Mu, the lock config saves and reloads hold while they copy the client config in;
+// unset means off.
+func (c *Config) ShouldExcludeCachedTokensFromRateLimits() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.ExcludeCachedTokensFromRateLimits
+}
+
 // ShouldIntersectEntityAccessProfiles reports client.entity_access_profile_mode == "intersect".
 // It reads under Mu, the lock config saves and reloads hold while they copy the client config in;
 // unset, or any other value, means union.

@@ -46,6 +46,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
 	enforce_vk_object_ownership: true,
+	exclude_cached_tokens_from_rate_limits: false,
 	skip_access_profile_user_virtual_key_creation: false,
 	skip_access_profile_user_virtual_key_deletion: false,
 	entity_access_profile_mode: "union",

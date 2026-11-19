@@ -748,6 +748,63 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	assert.Equal(t, int64(27), reporter.reports[0].TokensUsed)
 }
 
+// The settlement report carries the prompt and cached-read breakdown of TokensUsed, so governance can
+// apply exclude_cached_tokens_from_rate_limits to batches as it does to synchronous requests. Both
+// wire conventions land on the same numbers: OpenAI's cached_tokens is a share of prompt_tokens,
+// Anthropic's cache_read_input_tokens is added on top of input_tokens.
+func TestAccountBatchResults_ReportsCachedReadBreakdown(t *testing.T) {
+	openAICached := schemas.BatchResultItem{
+		CustomID: "custom-id",
+		Response: &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body: map[string]interface{}{
+				"model": "gpt-4o-mini",
+				"usage": map[string]interface{}{
+					"prompt_tokens":         1000,
+					"completion_tokens":     50,
+					"total_tokens":          1050,
+					"prompt_tokens_details": map[string]interface{}{"cached_tokens": 900},
+				},
+			},
+		},
+	}
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		item     schemas.BatchResultItem
+	}{
+		{"openai inclusive cached_tokens", schemas.OpenAI, "gpt-4o-mini", openAICached},
+		{"anthropic exclusive cache_read_input_tokens", schemas.Anthropic, "claude-3-5-haiku", anthropicResult("claude-3-5-haiku", 100, 900, 0, 50)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			reporter := &fakeUsageReporter{}
+			_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
+				ClaimedBy:     "test-node",
+				Provider:      tc.provider,
+				ProviderJobID: "batch_cached_" + string(tc.provider),
+				FallbackModel: tc.model,
+				Emitter:       &fakeAggregateLogWriter{},
+				UsageReporter: reporter,
+				Payload:       BatchPayload{Results: []schemas.BatchResultItem{tc.item}},
+			})
+			require.NoError(t, err)
+			require.Len(t, reporter.reports, 1)
+			report := reporter.reports[0]
+			assert.Equal(t, int64(1050), report.TokensUsed)
+			assert.Equal(t, int64(1000), report.PromptTokens)
+			assert.Equal(t, int64(900), report.CachedReadTokens)
+			require.NotEmpty(t, report.ModelUsage, "the per-model split is reported too")
+			for _, modelUsage := range report.ModelUsage {
+				assert.Equal(t, int64(1050), modelUsage.TokensUsed, modelUsage.Model)
+				assert.Equal(t, int64(1000), modelUsage.PromptTokens, modelUsage.Model)
+				assert.Equal(t, int64(900), modelUsage.CachedReadTokens, modelUsage.Model)
+			}
+		})
+	}
+}
+
 func TestAccountBatchResults_RetryAfterCompleteFailureDoesNotReportGovernanceTwice(t *testing.T) {
 	store := newFakeAccountingStore()
 	store.failCompleteOnce = true

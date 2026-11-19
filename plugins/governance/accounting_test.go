@@ -41,7 +41,7 @@ func TestReportUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 	assert.Equal(t, int64(1), f.requests())
 }
 
-func newAccountingFixture(t *testing.T) *accountingFixture {
+func newAccountingFixture(t testing.TB) *accountingFixture {
 	t.Helper()
 	logger := NewMockLogger()
 
@@ -928,4 +928,227 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 		assert.InDelta(c, want, fixture.cost(), 1e-12)
 		assert.Equal(c, int64(160), fixture.tokens())
 	}, time.Second, 10*time.Millisecond)
+}
+
+// cachedUsageExtraFields marks a response as an OpenAI gpt-4o call, the model the offline
+// pricing catalog prices.
+func cachedUsageExtraFields(requestType schemas.RequestType) schemas.BifrostResponseExtraFields {
+	return schemas.BifrostResponseExtraFields{
+		RequestType:            requestType,
+		Provider:               schemas.OpenAI,
+		OriginalModelRequested: "gpt-4o",
+		ResolvedModelUsed:      "gpt-4o",
+	}
+}
+
+// cachedChatUsage is 1000 prompt tokens, 900 of them read from the provider's prefix cache.
+func cachedChatUsage() *schemas.BifrostLLMUsage {
+	return &schemas.BifrostLLMUsage{
+		PromptTokens:        1000,
+		CompletionTokens:    50,
+		TotalTokens:         1050,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 900},
+	}
+}
+
+func cachedResponsesUsage() *schemas.ResponsesResponseUsage {
+	return &schemas.ResponsesResponseUsage{
+		InputTokens:        1000,
+		OutputTokens:       50,
+		TotalTokens:        1050,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedReadTokens: 900},
+	}
+}
+
+// runCachedTokensPostHook settles one response through postHookWorker against a fresh fixture and
+// returns the tokens and cost it charged. exclude is the plugin's getter; nil is a build that never
+// wired one.
+func runCachedTokensPostHook(t *testing.T, exclude func() bool, requestType schemas.RequestType, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (int64, float64) {
+	t.Helper()
+	fixture := newAccountingFixture(t)
+	plugin := &GovernancePlugin{
+		ctx:                                 context.Background(),
+		tracker:                             fixture.tracker,
+		modelCatalog:                        newOfflinePricingCatalog(t),
+		excludeCachedTokensFromRateLimitsFn: exclude,
+	}
+	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
+	plugin.postHookWorker(result, bifrostErr, schemas.OpenAI, "gpt-4o", requestType, "cached-tokens", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.NotZero(c, fixture.tokens(), "the usage was charged")
+	}, time.Second, 10*time.Millisecond)
+	return fixture.tokens(), fixture.cost()
+}
+
+// With client.exclude_cached_tokens_from_rate_limits on, token rate limits skip the prompt tokens
+// the provider served from its prefix cache, on every response shape that carries them. Off, and
+// in a build that never wired the getter, the count is TotalTokens as before.
+func TestPostHookWorker_ExcludeCachedTokensFromRateLimits(t *testing.T) {
+	on := func() bool { return true }
+	off := func() bool { return false }
+
+	shapes := []struct {
+		name        string
+		requestType schemas.RequestType
+		result      func() *schemas.BifrostResponse
+		bifrostErr  func() *schemas.BifrostError
+		unpriced    bool // the offline catalog has no text-completion rate for gpt-4o
+	}{
+		{"chat", schemas.ChatCompletionRequest, func() *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Model: "gpt-4o", Usage: cachedChatUsage(), ExtraFields: cachedUsageExtraFields(schemas.ChatCompletionRequest),
+			}}
+		}, nil, false},
+		{"text completion", schemas.TextCompletionRequest, func() *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{
+				Model: "gpt-4o", Usage: cachedChatUsage(), ExtraFields: cachedUsageExtraFields(schemas.TextCompletionRequest),
+			}}
+		}, nil, true},
+		{"responses", schemas.ResponsesRequest, func() *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+				Model: "gpt-4o", Usage: cachedResponsesUsage(), ExtraFields: cachedUsageExtraFields(schemas.ResponsesRequest),
+			}}
+		}, nil, false},
+		{"responses stream", schemas.ResponsesStreamRequest, func() *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Response:    &schemas.BifrostResponsesResponse{Model: "gpt-4o", Usage: cachedResponsesUsage()},
+				ExtraFields: cachedUsageExtraFields(schemas.ResponsesStreamRequest),
+			}}
+		}, nil, false},
+		{"passthrough", schemas.PassthroughRequest, func() *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:       200,
+				ExtraFields:      cachedUsageExtraFields(schemas.PassthroughRequest),
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: cachedChatUsage()},
+			}}
+		}, nil, false},
+		{"billed usage on a cancelled stream", schemas.ChatCompletionStreamRequest, nil, func() *schemas.BifrostError {
+			return &schemas.BifrostError{
+				Error:       &schemas.ErrorField{Type: new(schemas.RequestCancelled), Message: "request cancelled"},
+				ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: cachedChatUsage()},
+			}
+		}, false},
+	}
+
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			run := func(exclude func() bool) (int64, float64) {
+				var result *schemas.BifrostResponse
+				var bifrostErr *schemas.BifrostError
+				if shape.result != nil {
+					result = shape.result()
+				}
+				if shape.bifrostErr != nil {
+					bifrostErr = shape.bifrostErr()
+				}
+				return runCachedTokensPostHook(t, exclude, shape.requestType, result, bifrostErr)
+			}
+
+			offTokens, offCost := run(off)
+			onTokens, onCost := run(on)
+			unwiredTokens, _ := run(nil)
+
+			assert.Equal(t, int64(1050), offTokens, "off charges TotalTokens, cache reads included")
+			assert.Equal(t, int64(150), onTokens, "on charges TotalTokens minus the 900 cached reads")
+			assert.Equal(t, int64(1050), unwiredTokens, "a plugin without the getter keeps the historical count")
+			if !shape.unpriced {
+				assert.Positive(t, offCost, "the response is priced, so the cost comparison below is meaningful")
+			}
+			assert.Equal(t, offCost, onCost, "the setting moves rate-limit tokens only, never cost")
+		})
+	}
+}
+
+// BenchmarkPostHookWorkerRateLimitTokens measures the accounting worker settling one priced chat
+// response whose usage reports cached reads, charged to a virtual key's budget and rate limit. The
+// worker runs after the reply is written, so this is off the request path. An empty request ID is
+// never deduplicated, so every iteration charges.
+func BenchmarkPostHookWorkerRateLimitTokens(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		exclude func() bool
+	}{
+		{"unwired", nil},
+		{"off", func() bool { return false }},
+		{"on", func() bool { return true }},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			fixture := newAccountingFixture(b)
+			plugin := &GovernancePlugin{
+				ctx:                                 context.Background(),
+				tracker:                             fixture.tracker,
+				modelCatalog:                        newOfflinePricingCatalog(b),
+				excludeCachedTokensFromRateLimitsFn: tc.exclude,
+			}
+			settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
+			result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Model: "gpt-4o", Usage: cachedChatUsage(), ExtraFields: cachedUsageExtraFields(schemas.ChatCompletionRequest),
+			}}
+			b.ReportAllocs()
+			for b.Loop() {
+				plugin.postHookWorker(result, nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+			}
+		})
+	}
+}
+
+// A malformed payload claiming more cached reads than prompt tokens deducts at most the prompt, so
+// it can neither book a negative charge nor credit tokens back to the limit.
+func TestPostHookWorker_ExcludeCachedTokensClampsMalformedUsage(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:        1000,
+		CompletionTokens:    50,
+		TotalTokens:         1050,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 5000},
+	}
+	result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "gpt-4o", Usage: usage, ExtraFields: cachedUsageExtraFields(schemas.ChatCompletionRequest),
+	}}
+	tokens, _ := runCachedTokensPostHook(t, func() bool { return true }, schemas.ChatCompletionRequest, result, nil)
+	assert.Equal(t, int64(50), tokens, "the deduction is clamped to the 1000 prompt tokens")
+}
+
+// A settled batch or interaction run applies the same cache-read rule as a synchronous request,
+// both to the grant's own limits and to the per-model limits charged at settlement.
+func TestReportUsage_ExcludeCachedTokensFromRateLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		exclude func() bool
+		want    int64
+	}{
+		{"off", func() bool { return false }, 1050},
+		{"on", func() bool { return true }, 150},
+		{"unwired", nil, 1050},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAccountingFixture(t)
+			plugin := &GovernancePlugin{store: f.store, tracker: f.tracker, excludeCachedTokensFromRateLimitsFn: tc.exclude}
+			require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+				RequestID:        "batch-cost:openai:cached-" + tc.name,
+				Provider:         schemas.OpenAI,
+				Model:            "gpt-4o-mini",
+				Cost:             1.0,
+				TokensUsed:       1050,
+				PromptTokens:     1000,
+				CachedReadTokens: 900,
+				BudgetIDs:        []string{"budget1"},
+				RateLimitIDs:     []string{"rl1"},
+			}))
+			assert.Equal(t, tc.want, f.tokens())
+			assert.Equal(t, 1.0, f.cost(), "cost is unchanged by the setting")
+
+			m := newModelScopedFixture(t)
+			modelPlugin := &GovernancePlugin{store: m.store, tracker: m.tracker, excludeCachedTokensFromRateLimitsFn: tc.exclude}
+			require.NoError(t, modelPlugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+				RequestID:    "batch-cost:openai:cached-models-" + tc.name,
+				Provider:     schemas.OpenAI,
+				VirtualKeyID: "vk-alice",
+				UserID:       "user-alice",
+				ModelUsage: []jobaccounting.ModelUsage{
+					{Model: "gpt-5", Cost: 1.0, TokensUsed: 1050, PromptTokens: 1000, CachedReadTokens: 900},
+				},
+			}))
+			assert.Equal(t, tc.want, m.store.GetGovernanceData(context.Background()).RateLimits["model-rl"].TokenCurrentUsage)
+		})
+	}
 }

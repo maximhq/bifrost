@@ -88,6 +88,8 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
+	// Reports the live client.exclude_cached_tokens_from_rate_limits; nil means off
+	ExcludeCachedTokensFromRateLimits func() bool `json:"-"`
 }
 
 // InMemoryStore is the deployment's live configuration as governance reads it.
@@ -198,7 +200,8 @@ type GovernancePlugin struct {
 	isEnterprise          bool
 	disableAutoToolInject *bool
 
-	objectOwnershipEnforcedFn func() bool
+	objectOwnershipEnforcedFn           func() bool
+	excludeCachedTokensFromRateLimitsFn func() bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -265,11 +268,13 @@ func Init(
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
 	var objectOwnershipEnforcedFn func() bool
+	var excludeCachedTokensFromRateLimitsFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
+		excludeCachedTokensFromRateLimitsFn = config.ExcludeCachedTokensFromRateLimits
 	}
 
 	newStoreStart := time.Now()
@@ -304,7 +309,8 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 
-		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
+		objectOwnershipEnforcedFn:           objectOwnershipEnforcedFn,
+		excludeCachedTokensFromRateLimitsFn: excludeCachedTokensFromRateLimitsFn,
 	}
 	return plugin, nil
 }
@@ -348,11 +354,13 @@ func InitFromStore(
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
 	var objectOwnershipEnforcedFn func() bool
+	var excludeCachedTokensFromRateLimitsFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
+		excludeCachedTokensFromRateLimitsFn = config.ExcludeCachedTokensFromRateLimits
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -374,7 +382,8 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 
-		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
+		objectOwnershipEnforcedFn:           objectOwnershipEnforcedFn,
+		excludeCachedTokensFromRateLimitsFn: excludeCachedTokensFromRateLimitsFn,
 	}
 	return plugin, nil
 }
@@ -436,6 +445,14 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 // transport's getter reads under the same lock config saves hold, so a save never races a request.
 func (p *GovernancePlugin) objectOwnershipEnforced() bool {
 	return p.objectOwnershipEnforcedFn == nil || p.objectOwnershipEnforcedFn()
+}
+
+// excludeCachedTokens reports whether token rate limits skip the prompt tokens the provider served
+// from its prefix cache (client.exclude_cached_tokens_from_rate_limits). Unlike
+// objectOwnershipEnforced it is off unless configured on: a build that constructs Config without
+// the getter keeps the historical count.
+func (p *GovernancePlugin) excludeCachedTokens() bool {
+	return p.excludeCachedTokensFromRateLimitsFn != nil && p.excludeCachedTokensFromRateLimitsFn()
 }
 
 // HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
@@ -2268,13 +2285,16 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		if p.modelCatalog != nil && result != nil {
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
-		tokensUsed := 0
+		var tokensUsed int64
+		// Read once: the transport's getter takes the config read lock. Cost below is never
+		// affected; only the tokens charged to rate limits are.
+		excludeCachedReads := p.excludeCachedTokens()
 		// The request failed/was cancelled but the provider still
 		// processed tokens (carried on BifrostError.ExtraFields.BilledUsage).
 		// Bill those tokens — Anthropic charges us for them regardless.
 		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
 			billedUsage := bifrostErr.ExtraFields.BilledUsage
-			tokensUsed = billedUsage.TotalTokens
+			tokensUsed = billedUsage.RateLimitTokens(excludeCachedReads)
 			billedReason = "partial_usage_on_error"
 			if p.modelCatalog != nil {
 				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
@@ -2283,26 +2303,27 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		if result != nil {
 			switch {
 			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-				tokensUsed = result.TextCompletionResponse.Usage.TotalTokens
+				tokensUsed = result.TextCompletionResponse.Usage.RateLimitTokens(excludeCachedReads)
 			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-				tokensUsed = result.ChatResponse.Usage.TotalTokens
+				tokensUsed = result.ChatResponse.Usage.RateLimitTokens(excludeCachedReads)
 			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				tokensUsed = result.ResponsesResponse.Usage.TotalTokens
+				tokensUsed = result.ResponsesResponse.Usage.RateLimitTokens(excludeCachedReads)
 			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-				tokensUsed = result.ResponsesStreamResponse.Response.Usage.TotalTokens
+				tokensUsed = result.ResponsesStreamResponse.Response.Usage.RateLimitTokens(excludeCachedReads)
 			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-				tokensUsed = result.EmbeddingResponse.Usage.TotalTokens
+				tokensUsed = result.EmbeddingResponse.Usage.RateLimitTokens(excludeCachedReads)
+			// Speech and transcription usage carry no prompt-cache breakdown.
 			case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
-				tokensUsed = result.SpeechResponse.Usage.TotalTokens
+				tokensUsed = int64(result.SpeechResponse.Usage.TotalTokens)
 			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
-				tokensUsed = result.SpeechStreamResponse.Usage.TotalTokens
+				tokensUsed = int64(result.SpeechStreamResponse.Usage.TotalTokens)
 			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
+				tokensUsed = int64(*result.TranscriptionResponse.Usage.TotalTokens)
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+				tokensUsed = int64(*result.TranscriptionStreamResponse.Usage.TotalTokens)
 			case result.PassthroughResponse != nil:
 				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
-					tokensUsed = su.LLMUsage.TotalTokens
+					tokensUsed = su.LLMUsage.RateLimitTokens(excludeCachedReads)
 				}
 			}
 		}
@@ -2325,7 +2346,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			Success:          success,
-			TokensUsed:       int64(tokensUsed),
+			TokensUsed:       tokensUsed,
 			Cost:             cost,
 			RequestID:        requestID,
 			BillingNonce:     billingNonce,
@@ -2353,6 +2374,9 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 
 func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
+	// A settled job follows the same cache-read rule as a synchronous request.
+	excludeCachedReads := p.excludeCachedTokens()
+	rateLimitTokens := schemas.RateLimitTokens(usage.TokensUsed, usage.PromptTokens, usage.CachedReadTokens, excludeCachedReads)
 
 	if usage.Cost > 0 {
 		for _, budgetID := range usage.BudgetIDs {
@@ -2379,7 +2403,7 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 		// then wiped by the reset worker. It adds tokensUsed and one request,
 		// which is exactly what a settled batch contributes. A job whose create
 		// already counted as a request (an interaction run) adds tokens only.
-		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, usage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
+		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, rateLimitTokens, true, !usage.SkipRequestCount); err != nil {
 			p.tracker.releaseBatchBilling(billingKey)
 			errs = append(errs, err)
 		}
@@ -2389,7 +2413,7 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 	// the request's grant when the batch was created, alongside every other co-payer, so its ids are
 	// already in BudgetIDs and RateLimitIDs and were bumped above. A second pass keyed by user would
 	// bill the same limits twice.
-	errs = append(errs, p.reportBatchModelUsage(ctx, usage)...)
+	errs = append(errs, p.reportBatchModelUsage(ctx, usage, excludeCachedReads)...)
 
 	return errors.Join(errs...)
 }
@@ -2408,7 +2432,7 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
-func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage jobaccounting.UsageReport) []error {
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage jobaccounting.UsageReport, excludeCachedReads bool) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}
@@ -2425,6 +2449,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	ctx = context.WithValue(ctx, literalLimitsContextKey, true)
 	for _, modelUsage := range usage.ModelUsage {
 		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+		modelRateLimitTokens := schemas.RateLimitTokens(modelUsage.TokensUsed, modelUsage.PromptTokens, modelUsage.CachedReadTokens, excludeCachedReads)
 		if modelUsage.Cost > 0 {
 			for _, budgetID := range budgetIDs {
 				if alreadyCharged["budget:"+budgetID] {
@@ -2449,7 +2474,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
 				continue
 			}
-			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
+			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelRateLimitTokens, true, !usage.SkipRequestCount); err != nil {
 				p.tracker.releaseBatchBilling(billingKey)
 				errs = append(errs, err)
 			}

@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.49
+**Latest Version:** 2.1.50
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.client.excludeCachedTokensFromRateLimits` (`client.exclude_cached_tokens_from_rate_limits`) to stop counting prompt tokens read from the provider's prefix cache against token rate limits. Off by default; cost is unchanged.
 
 ### 2.1.49
 

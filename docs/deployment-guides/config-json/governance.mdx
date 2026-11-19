@@ -165,10 +165,20 @@ Rate limits cap requests or tokens over a rolling window:
 | `id` | Yes | Unique rate limit ID |
 | `request_max_limit` | No | Maximum requests in window |
 | `request_reset_duration` | No | Window for request counter |
-| `token_max_limit` | No | Maximum tokens (input + output) in window |
+| `token_max_limit` | No | Maximum tokens (input + output) in window. Cached prompt tokens count unless `client.exclude_cached_tokens_from_rate_limits` is on |
 | `token_reset_duration` | No | Window for token counter |
 
 Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a provider config via `virtual_keys[].provider_configs[].rate_limit_id`.
+
+To stop counting prompt tokens the provider read from its prefix cache against every token limit, set the client option. Cost is unchanged; see [Cached Prompt Tokens](../../features/governance/budget-and-limits#cached-prompt-tokens) for what is and is not deducted, and why a limit that mirrors an OpenAI TPM quota should keep it off:
+
+```json
+{
+  "client": {
+    "exclude_cached_tokens_from_rate_limits": true
+  }
+}
+```
 
 ---
 

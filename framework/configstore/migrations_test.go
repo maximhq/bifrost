@@ -4978,6 +4978,29 @@ func TestMigrationAddClientConfigEntityAccessProfileModeColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn pins that the migration adds the
+// column, that an existing row reads back as off so an upgrade keeps counting cached reads, and that a
+// re-run is harmless.
+func TestMigrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "exclude_cached_tokens_from_rate_limits"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "exclude_cached_tokens_from_rate_limits"))
+
+	require.NoError(t, migrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "exclude_cached_tokens_from_rate_limits"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.ExcludeCachedTokensFromRateLimits)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_exclude_cached_tokens_from_rate_limits_column").Error)
+	require.NoError(t, migrationAddClientConfigExcludeCachedTokensFromRateLimitsColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

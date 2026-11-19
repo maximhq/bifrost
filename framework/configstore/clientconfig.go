@@ -145,6 +145,7 @@ type ClientConfig struct {
 	EnforceVKObjectOwnership                bool                                  `json:"enforce_vk_object_ownership"`                   // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
+	ExcludeCachedTokensFromRateLimits       bool                                  `json:"exclude_cached_tokens_from_rate_limits"`        // Token rate limits skip prompt tokens read from the provider's prefix cache; cost is unchanged
 	EntityAccessProfileMode                 tables.EntityAccessProfileMode        `json:"entity_access_profile_mode,omitempty"`          // Enterprise: "union" (default) or "intersect" combination of team, business unit and customer access profiles with a caller's own access
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
@@ -280,6 +281,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.SkipAccessProfileUserVirtualKeyDeletion {
 		hash.Write([]byte("skipAccessProfileUserVirtualKeyDeletion:true"))
+	}
+	if c.ExcludeCachedTokensFromRateLimits {
+		hash.Write([]byte("excludeCachedTokensFromRateLimits:true"))
 	}
 	if c.EntityAccessProfileMode != "" && c.EntityAccessProfileMode != tables.EntityAccessProfileModeUnion {
 		hash.Write([]byte("entityAccessProfileMode:" + string(c.EntityAccessProfileMode)))

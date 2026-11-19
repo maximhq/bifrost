@@ -500,6 +500,9 @@ false
 {{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
 {{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "excludeCachedTokensFromRateLimits" }}
+{{- $_ := set $client "exclude_cached_tokens_from_rate_limits" .Values.bifrost.client.excludeCachedTokensFromRateLimits }}
+{{- end }}
 {{- if .Values.bifrost.client.entityAccessProfileMode }}
 {{- $_ := set $client "entity_access_profile_mode" .Values.bifrost.client.entityAccessProfileMode }}
 {{- end }}

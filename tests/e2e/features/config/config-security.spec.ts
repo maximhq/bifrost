@@ -356,6 +356,51 @@ test.describe("Security Settings", () => {
     }
   });
 
+  test("should persist the exclude cached tokens from rate limits switch", async ({
+    configSettingsPage,
+    request,
+  }) => {
+    const original =
+      (await coreConfigApi.get(request)).client_config.exclude_cached_tokens_from_rate_limits ?? false;
+    try {
+      await configSettingsPage.dismissOnboardingWidget();
+      const exclude = configSettingsPage.page.getByTestId(
+        "security-exclude-cached-tokens-from-rate-limits-switch",
+      );
+      await expect(exclude).toBeVisible();
+      const initial = await configSettingsPage.getSwitchState(exclude);
+      expect(initial).toBe(original);
+
+      await exclude.click();
+      await configSettingsPage.saveSettings();
+      await expect
+        .poll(
+          async () =>
+            (await coreConfigApi.get(request)).client_config
+              .exclude_cached_tokens_from_rate_limits ?? false,
+        )
+        .toBe(!initial);
+      await configSettingsPage.goto("security");
+      expect(await configSettingsPage.getSwitchState(exclude)).toBe(!initial);
+
+      // Saving a different setting on the same page carries this one along unchanged.
+      const ownership = configSettingsPage.enforceVKObjectOwnershipSwitch;
+      await ownership.click();
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      expect(await configSettingsPage.getSwitchState(exclude)).toBe(!initial);
+      expect(
+        (await coreConfigApi.get(request)).client_config
+          .exclude_cached_tokens_from_rate_limits ?? false,
+      ).toBe(!initial);
+    } finally {
+      // null is refused by the API, so restore the explicit stored value.
+      await coreConfigApi.updateClientConfig(request, {
+        exclude_cached_tokens_from_rate_limits: original,
+      });
+    }
+  });
+
   for (const { name, switchOf, field } of [
     {
       name: "creation",
