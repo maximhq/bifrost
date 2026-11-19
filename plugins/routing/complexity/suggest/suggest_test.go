@@ -516,8 +516,11 @@ func TestInstructionsLimitMatchesConfig(t *testing.T) {
 	if MaxTierPromptChars != configstore.MaxComplexitySuggestionsTierPromptChars {
 		t.Fatalf("suggest.MaxTierPromptChars = %d, configstore allows %d", MaxTierPromptChars, configstore.MaxComplexitySuggestionsTierPromptChars)
 	}
-	if MaxTierExamples > configstore.MaxComplexityDecisionExamples {
-		t.Fatalf("suggest.MaxTierExamples = %d, a decision tier allows only %d examples", MaxTierExamples, configstore.MaxComplexityDecisionExamples)
+	// A decision judge's criteria are generated with at most MaxTierExamples
+	// per tier, and once edited are stored where released gateways read them,
+	// which accept no more than their own bound.
+	if MaxTierExamples > configstore.MaxComplexityDecisionReleasedItems {
+		t.Fatalf("suggest.MaxTierExamples = %d, a suggestion judge's criteria allow only %d examples", MaxTierExamples, configstore.MaxComplexityDecisionReleasedItems)
 	}
 }
 

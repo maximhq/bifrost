@@ -592,6 +592,8 @@ interface DecisionGuidanceSectionProps {
 	// Primary sits directly under the step header, which already titles it;
 	// the fallback shares the page with other sections, so it keeps a heading.
 	variant: "primary" | "fallback";
+	// Hold each tier to what earlier gateways accept, for config they read whole.
+	released?: boolean;
 }
 
 // DecisionGuidanceSection edits the half of Decision's request an operator may tune:
@@ -606,6 +608,7 @@ export function DecisionGuidanceSection({
 	defaults,
 	defaultsLoading,
 	variant,
+	released = false,
 }: DecisionGuidanceSectionProps) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const criteria = useWatch({ control, name: "decision.criteria" });
@@ -660,6 +663,7 @@ export function DecisionGuidanceSection({
 							errors={errors?.criteria?.[tier]}
 							canUpdate={canUpdate}
 							defaults={defaults.criteria[tier]}
+							released={released}
 						/>
 					))}
 				</div>
@@ -752,6 +756,8 @@ interface DecisionTierCardProps {
 	// Lists that may be emptied; the router's decision guidance needs at least
 	// one signal and one example, the suggestions tier step does not.
 	allowEmptyLists?: boolean;
+	// Hold both lists to what earlier gateways accept, for config they read whole.
+	released?: boolean;
 }
 
 // DecisionTierCard edits one tier's decision criteria: its definition, signals
@@ -767,6 +773,7 @@ export function DecisionTierCard({
 	canUpdate,
 	defaults,
 	allowEmptyLists = false,
+	released = false,
 }: DecisionTierCardProps) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const criteria = useWatch({ control, name: `${basePath}.${tier}` as const });
@@ -797,7 +804,7 @@ export function DecisionTierCard({
 					const fieldError = errors?.[listField];
 					const errorId = `${testIdPrefix}-${tier.toLowerCase()}-${listField}-error`;
 					const count = criteria?.[listField]?.length ?? 0;
-					const maxItems = maxDecisionListItems(listField);
+					const maxItems = maxDecisionListItems(listField, released);
 					const atLimit = count >= maxItems;
 					const edited = !isDefaultList(listField);
 					return (

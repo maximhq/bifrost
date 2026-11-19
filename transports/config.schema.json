@@ -6490,15 +6490,15 @@
         },
         "signals": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 30,
           "items": { "type": "string", "maxLength": 300 },
-          "description": "Replaces this tier's shipped signals. Omit to use the default."
+          "description": "Replaces this tier's shipped signals. Omit to use the default. Up to 30 on a model router; the complexity analyzer config, which earlier gateways read whole, holds at most 12."
         },
         "examples": {
           "type": "array",
           "maxItems": 60,
           "items": { "type": "string", "maxLength": 300 },
-          "description": "Replaces this tier's shipped examples. Omit to use the default."
+          "description": "Replaces this tier's shipped examples. Omit to use the default. Up to 60 on a model router; the complexity analyzer config, which earlier gateways read whole, holds at most 12."
         }
       },
       "additionalProperties": false
@@ -7277,7 +7277,17 @@
           "$ref": "#/$defs/complexity_semantic_config"
         },
         "decision": {
-          "$ref": "#/$defs/complexity_decision_config"
+          "$ref": "#/$defs/complexity_decision_config",
+          "$comment": "Gateways before decision tiers took 30 signals and 60 examples read this config whole and accept 12 of each per tier, so it keeps that bound; a model router stores its extra ones apart.",
+          "properties": {
+            "criteria": {
+              "properties": {
+                "SIMPLE": { "properties": { "signals": { "maxItems": 12 }, "examples": { "maxItems": 12 } } },
+                "MEDIUM": { "properties": { "signals": { "maxItems": 12 }, "examples": { "maxItems": 12 } } },
+                "COMPLEX": { "properties": { "signals": { "maxItems": 12 }, "examples": { "maxItems": 12 } } }
+              }
+            }
+          }
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -7968,7 +7978,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 60,
+                  "maxItems": 12,
                   "items": {
                     "type": "string",
                     "maxLength": 300
@@ -7998,7 +8008,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 60,
+                  "maxItems": 12,
                   "items": {
                     "type": "string",
                     "maxLength": 300
@@ -8028,7 +8038,7 @@
                 },
                 "examples": {
                   "type": "array",
-                  "maxItems": 60,
+                  "maxItems": 12,
                   "items": {
                     "type": "string",
                     "maxLength": 300

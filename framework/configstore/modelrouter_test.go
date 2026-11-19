@@ -2,9 +2,11 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -699,4 +701,159 @@ func TestModelRouterReadsHonorQueryScope(t *testing.T) {
 	all, err := store.GetModelRouters(ctx)
 	require.NoError(t, err)
 	assert.Len(t, all, 2, "a ctx without a scope reads every router")
+}
+
+// decisionExamples is n distinct examples for a tier.
+func decisionExamples(tier string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("%s example %d", tier, i+1)
+	}
+	return out
+}
+
+// testDecisionRouter is a decision-model router with suggestions on and more
+// SIMPLE examples than released gateways accept.
+func testDecisionRouter() *ModelRouter {
+	r := testModelRouter("triage", "Triage")
+	r.Classifier = ComplexityClassifierDecision
+	r.Semantic = nil
+	r.Decision = &ComplexityDecisionConfig{Provider: "typesafe", Model: "jev-latest", Criteria: map[string]ComplexityDecisionTierCriteria{
+		complexityDecisionTierSimple: {Definition: "One short answer.", Signals: decisionExamples("simple signal", 25), Examples: decisionExamples("simple", 20)},
+		complexityDecisionTierMedium: {Examples: decisionExamples("medium", 5)},
+	}}
+	r.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.5, LookbackDays: 7, Provider: "openai", Model: "gpt-5",
+		Embedding: &ComplexitySuggestionsEmbedding{Provider: "openai", Model: "text-embedding-3-small"}}
+	return r
+}
+
+// readAsReleased reads a row as a gateway released before 60 examples does:
+// it knows neither the extra-examples column nor the decision suggestions
+// switch. It then applies the rules those gateways validate a router with on
+// read: at most 12 examples per tier, and suggestions on only for a semantic
+// router. A row that breaks either would stop being served after a rollback.
+func readAsReleased(t *testing.T, row *tables.TableModelRouter) *ModelRouter {
+	t.Helper()
+	released := *row
+	released.DecisionExtraCriteriaJSON = nil
+	released.SuggestionsExamplesEnabled = nil
+	router, err := modelRouterFromTable(&released)
+	require.NoError(t, err)
+	if d := router.Decision; d != nil {
+		for tier, c := range d.Criteria {
+			assert.LessOrEqual(t, len(c.Signals), MaxComplexityDecisionReleasedItems, "%s signals a released gateway reads", tier)
+			assert.LessOrEqual(t, len(c.Examples), MaxComplexityDecisionReleasedItems, "%s examples a released gateway reads", tier)
+		}
+	}
+	if s := router.Suggestions; s != nil && s.Enabled {
+		assert.Contains(t, []string{"", ComplexityClassifierSemantic}, router.Classifier, "released gateways refuse suggestions on any other classifier")
+	}
+	return router
+}
+
+// A decision-model router stores what a released gateway can still read: its
+// first 12 examples per tier where those gateways read criteria, the rest in a
+// column they do not know, and its suggestions switch apart from the one they
+// read, which stays off. This gateway reads it back whole; a rolled-back one
+// routes it with its first 12 examples and suggestions off.
+func TestModelRouterStaysReadableByReleasedGateways(t *testing.T) {
+	router := testDecisionRouter()
+	row, err := modelRouterToTable(router)
+	require.NoError(t, err)
+
+	released := readAsReleased(t, row)
+	assert.Equal(t, decisionExamples("simple", 12), released.Decision.Criteria[complexityDecisionTierSimple].Examples)
+	assert.Equal(t, decisionExamples("simple signal", 12), released.Decision.Criteria[complexityDecisionTierSimple].Signals)
+	assert.Equal(t, "One short answer.", released.Decision.Criteria[complexityDecisionTierSimple].Definition)
+	assert.Equal(t, decisionExamples("medium", 5), released.Decision.Criteria[complexityDecisionTierMedium].Examples)
+	assert.False(t, released.Suggestions.Enabled)
+
+	back, err := modelRouterFromTable(row)
+	require.NoError(t, err)
+	assert.Equal(t, router.Decision.Criteria, back.Decision.Criteria, "this gateway reads every example back, in order")
+	assert.True(t, back.Suggestions.Enabled)
+
+	// A semantic router's suggestions switch is the one released gateways
+	// read, and nothing is split off a router within the bound.
+	semantic := testModelRouter("support", "Support")
+	semantic.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.5, LookbackDays: 7}
+	row, err = modelRouterToTable(semantic)
+	require.NoError(t, err)
+	assert.True(t, *row.SuggestionsEnabled)
+	assert.Nil(t, row.SuggestionsExamplesEnabled)
+	assert.Nil(t, row.DecisionExtraCriteriaJSON)
+	readAsReleased(t, row)
+
+	// Turned off on a decision router, it reads back off.
+	off := testDecisionRouter()
+	off.Suggestions.Enabled = false
+	row, err = modelRouterToTable(off)
+	require.NoError(t, err)
+	back, err = modelRouterFromTable(row)
+	require.NoError(t, err)
+	assert.False(t, back.Suggestions.Enabled)
+}
+
+// A rolled-back gateway may edit a router before the upgrade back: the extra
+// examples are added to its examples again, but not to a tier it reset to the
+// shipped examples, and not where it already lists them.
+func TestModelRouterExtraExamplesAfterARollbackEdit(t *testing.T) {
+	row, err := modelRouterToTable(testDecisionRouter())
+	require.NoError(t, err)
+	// As a rolled-back gateway saves it: its own criteria, the extras column
+	// left as it was. SIMPLE edited to two examples, one of them an extra,
+	// and its signals reset; MEDIUM reset.
+	edited, err := json.Marshal(map[string]ComplexityDecisionTierCriteria{
+		complexityDecisionTierSimple: {Examples: []string{"simple example 1", "simple example 15"}},
+	})
+	require.NoError(t, err)
+	row.DecisionCriteriaJSON = bifrost.Ptr(string(edited))
+
+	back, err := modelRouterFromTable(row)
+	require.NoError(t, err)
+	simple := back.Decision.Criteria[complexityDecisionTierSimple].Examples
+	assert.Equal(t, append([]string{"simple example 1", "simple example 15"}, slices.DeleteFunc(decisionExamples("simple", 20)[12:], func(e string) bool { return e == "simple example 15" })...), simple)
+	assert.NotContains(t, back.Decision.Criteria, complexityDecisionTierMedium, "a reset tier keeps the shipped examples")
+	assert.Empty(t, back.Decision.Criteria[complexityDecisionTierSimple].Signals, "reset signals keep the shipped ones rather than taking the extras alone")
+}
+
+// The columns released gateways do not know are added by migrations that
+// leave every router saved before as it was.
+func TestMigrationAddModelRouterReleasedCompatColumns(t *testing.T) {
+	ctx := context.Background()
+	db := setupModelRouterMigrationDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableModelRouter{}))
+	saved := testModelRouter("support", "Support")
+	saved.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}
+	row, err := modelRouterToTable(saved)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(row).Error)
+	for _, column := range []string{"DecisionExtraCriteriaJSON", "SuggestionsExamplesEnabled"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableModelRouter{}, column))
+	}
+
+	for range 2 {
+		require.NoError(t, migrationAddModelRouterDecisionExtraCriteriaColumn(ctx, db, testMigrationLogger))
+		require.NoError(t, migrationAddModelRouterSuggestionsExamplesEnabledColumn(ctx, db, testMigrationLogger))
+	}
+	for _, column := range []string{"DecisionExtraCriteriaJSON", "SuggestionsExamplesEnabled"} {
+		assert.True(t, db.Migrator().HasColumn(&tables.TableModelRouter{}, column), column)
+	}
+	var stored tables.TableModelRouter
+	require.NoError(t, db.First(&stored, "id = ?", "support").Error)
+	back, err := modelRouterFromTable(&stored)
+	require.NoError(t, err)
+	assert.True(t, back.Suggestions.Enabled, "a semantic router saved before keeps its switch")
+
+	decision := testDecisionRouter()
+	decision.ID, decision.Name = "triage-2", "Triage 2"
+	row, err = modelRouterToTable(decision)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(row).Error)
+	var storedDecision tables.TableModelRouter
+	require.NoError(t, db.First(&storedDecision, "id = ?", "triage-2").Error)
+	back, err = modelRouterFromTable(&storedDecision)
+	require.NoError(t, err)
+	assert.Equal(t, decision.Decision.Criteria, back.Decision.Criteria)
+	assert.True(t, back.Suggestions.Enabled)
 }

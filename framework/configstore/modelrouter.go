@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -186,11 +187,19 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		row.DecisionTimeoutNS = bifrost.Ptr(int64(d.Timeout))
 		row.DecisionMinConfidence = bifrost.Ptr(d.MinConfidence)
 		if len(d.Criteria) > 0 {
-			criteria, err := json.Marshal(d.Criteria)
+			kept, extra := splitReleasedDecisionCriteria(d.Criteria)
+			criteria, err := json.Marshal(kept)
 			if err != nil {
 				return nil, fmt.Errorf("encode decision criteria: %w", err)
 			}
 			row.DecisionCriteriaJSON = bifrost.Ptr(string(criteria))
+			if len(extra) > 0 {
+				encoded, err := json.Marshal(extra)
+				if err != nil {
+					return nil, fmt.Errorf("encode decision criteria past the released bound: %w", err)
+				}
+				row.DecisionExtraCriteriaJSON = bifrost.Ptr(string(encoded))
+			}
 		}
 	}
 	if l := cfg.LLM; l != nil {
@@ -206,6 +215,13 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 	}
 	if g := cfg.Suggestions; g != nil {
 		row.SuggestionsEnabled = bifrost.Ptr(g.Enabled)
+		// Released gateways refuse suggestions on anything but a semantic
+		// router, so a decision-model router's switch is kept in a column they
+		// do not read, and the one they do read stays off.
+		if cfg.Classifier == ComplexityClassifierDecision {
+			row.SuggestionsEnabled = bifrost.Ptr(false)
+			row.SuggestionsExamplesEnabled = bifrost.Ptr(g.Enabled)
+		}
 		row.SuggestionsSampleRate = bifrost.Ptr(g.SampleRate)
 		row.SuggestionsLookbackDays = bifrost.Ptr(g.LookbackDays)
 		row.SuggestionsMaxClusteredRequests = bifrost.Ptr(g.MaxClusteredRequests)
@@ -293,6 +309,13 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 				return nil, fmt.Errorf("%w: model router %q decision criteria: %w", ErrConfigUnreadable, row.ID, err)
 			}
 		}
+		if raw := valueOrZero(row.DecisionExtraCriteriaJSON); strings.TrimSpace(raw) != "" {
+			var extra map[string]ComplexityDecisionTierCriteria
+			if err := json.Unmarshal([]byte(raw), &extra); err != nil {
+				return nil, fmt.Errorf("%w: model router %q decision criteria past the released bound: %w", ErrConfigUnreadable, row.ID, err)
+			}
+			decision.Criteria = mergeReleasedDecisionCriteria(decision.Criteria, extra)
+		}
 		cfg.Decision = decision
 	}
 	if row.LLMProvider != nil {
@@ -310,7 +333,7 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 	}
 	if row.SuggestionsEnabled != nil {
 		suggestions := &ComplexitySuggestionsConfig{
-			Enabled:              *row.SuggestionsEnabled,
+			Enabled:              *row.SuggestionsEnabled || valueOrZero(row.SuggestionsExamplesEnabled),
 			SampleRate:           valueOrZero(row.SuggestionsSampleRate),
 			LookbackDays:         valueOrZero(row.SuggestionsLookbackDays),
 			MaxClusteredRequests: valueOrZero(row.SuggestionsMaxClusteredRequests),
@@ -350,6 +373,79 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 		cfg.Suggestions = suggestions
 	}
 	return r, nil
+}
+
+// A gateway released before decision tiers took 30 signals and 60 examples
+// (framework v1.13 and earlier) validates each router as it reads it, and
+// stops serving one with more than 12 of either in a tier. So that a rollback
+// keeps every router served, a tier's first MaxComplexityDecisionReleasedItems
+// signals and examples are stored in the criteria those gateways read and the
+// rest in a column they do not know. Rolled back, a router routes with its
+// first 12 of each.
+
+// splitReleasedDecisionCriteria returns criteria with each tier's signals and
+// examples cut to the released bound, and what was cut, by tier.
+func splitReleasedDecisionCriteria(criteria map[string]ComplexityDecisionTierCriteria) (map[string]ComplexityDecisionTierCriteria, map[string]ComplexityDecisionTierCriteria) {
+	kept := make(map[string]ComplexityDecisionTierCriteria, len(criteria))
+	var extra map[string]ComplexityDecisionTierCriteria
+	for tier, c := range criteria {
+		var cut ComplexityDecisionTierCriteria
+		c.Signals, cut.Signals = splitReleasedList(c.Signals)
+		c.Examples, cut.Examples = splitReleasedList(c.Examples)
+		if len(cut.Signals) > 0 || len(cut.Examples) > 0 {
+			if extra == nil {
+				extra = map[string]ComplexityDecisionTierCriteria{}
+			}
+			extra[tier] = cut
+		}
+		kept[tier] = c
+	}
+	return kept, extra
+}
+
+// splitReleasedList cuts a list to the released bound, returning the rest.
+func splitReleasedList(items []string) ([]string, []string) {
+	if len(items) <= MaxComplexityDecisionReleasedItems {
+		return items, nil
+	}
+	return slices.Clone(items[:MaxComplexityDecisionReleasedItems]), slices.Clone(items[MaxComplexityDecisionReleasedItems:])
+}
+
+// mergeReleasedDecisionCriteria appends each tier's stored extra signals and
+// examples to its own. A rolled-back gateway may have edited the router since:
+// a list it reset (none of its own) keeps the shipped one rather than taking
+// the extras alone, and an extra it already lists is not repeated.
+func mergeReleasedDecisionCriteria(criteria map[string]ComplexityDecisionTierCriteria, extra map[string]ComplexityDecisionTierCriteria) map[string]ComplexityDecisionTierCriteria {
+	for tier, more := range extra {
+		c, ok := criteria[tier]
+		if !ok {
+			continue
+		}
+		c.Signals = mergeReleasedList(c.Signals, more.Signals)
+		c.Examples = mergeReleasedList(c.Examples, more.Examples)
+		criteria[tier] = c
+	}
+	return criteria
+}
+
+// mergeReleasedList appends the extras a list does not already hold; a list
+// with none of its own is left as it is.
+func mergeReleasedList(items, extra []string) []string {
+	if len(items) == 0 || len(extra) == 0 {
+		return items
+	}
+	listed := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		listed[item] = struct{}{}
+	}
+	merged := slices.Clone(items)
+	for _, item := range extra {
+		if _, dup := listed[item]; !dup {
+			listed[item] = struct{}{}
+			merged = append(merged, item)
+		}
+	}
+	return merged
 }
 
 // decodeModelRouterHashes reads the stored section hashes. They are

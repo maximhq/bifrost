@@ -1497,6 +1497,32 @@ func TestSuggestionTierDefaults(t *testing.T) {
 	assert.NotEmpty(t, criteria["MEDIUM"].Signals, "signals stay the router's")
 }
 
+// A decision-model router's judge is told the router's definitions and
+// signals, and as examples only those its administrator wrote, at most
+// MaxTierExamples per tier: a judge's criteria, once edited, are stored where
+// released gateways read them, and every tier call sends them.
+func TestSuggestionTierDefaultsForADecisionRouter(t *testing.T) {
+	shipped := configstore.DefaultComplexityDecisionGuidance().Criteria
+	written := make([]string, 20)
+	for i := range written {
+		written[i] = fmt.Sprintf("Handle routine case %d", i)
+	}
+	cfg := captureTestConfig(nil)
+	cfg.Classifier, cfg.Semantic = complexity.ClassifierDecision, nil
+	cfg.Decision = &complexity.DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		"SIMPLE": {Examples: append([]string{shipped["SIMPLE"].Examples[0]}, written...)},
+	}}
+	prompt, criteria := SuggestionTierDefaults(cfg)
+	assert.Equal(t, written[:suggest.MaxTierExamples], criteria["SIMPLE"].Examples, "the administrator's examples, shipped ones left out, bounded")
+	assert.Empty(t, criteria["MEDIUM"].Examples, "a tier with only shipped examples gets none")
+	assert.Equal(t, shipped["MEDIUM"].Signals, criteria["MEDIUM"].Signals)
+	assert.Contains(t, prompt, "- Handle routine case 0")
+	assert.NotContains(t, prompt, written[suggest.MaxTierExamples])
+	for tier, c := range criteria {
+		assert.LessOrEqual(t, len(c.Examples), configstore.MaxComplexityDecisionReleasedItems, tier)
+	}
+}
+
 func TestDecisionConfidenceLabel(t *testing.T) {
 	for value, want := range map[float64]string{0.95: "high", 0.75: "high", 0.5: "medium", 0.1: "low", 1.5: "", -0.2: ""} {
 		assert.Equal(t, want, decisionConfidenceLabel(value), "%v", value)

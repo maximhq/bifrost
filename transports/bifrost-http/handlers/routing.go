@@ -419,6 +419,10 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if err := normalized.ValidateAsComplexityConfig(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	if err := h.routingManager.ValidateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		// An unreachable routing plugin says nothing about the submitted config, so it

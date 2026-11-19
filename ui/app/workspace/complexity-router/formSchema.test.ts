@@ -21,6 +21,7 @@ import {
 	tierCriteriaToReseed,
 	toAnalyzerPayload,
 	toComplexityConfigPayload,
+	complexityConfigSchema,
 	toComplexityFormValues,
 	toFormValues,
 	toSuggestionsPayload,
@@ -30,6 +31,7 @@ import {
 	DEFAULT_DECISION_CONFIG,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_EXAMPLES,
+	MAX_DECISION_RELEASED_ITEMS,
 	MAX_DECISION_SIGNALS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	MAX_LLM_MESSAGE_HISTORY,
@@ -914,7 +916,64 @@ describe("Decision classification guidance", () => {
 		expect(withSuggestions({ ...own, tier_model: "another-decision-model" }).success).toBe(true);
 	});
 
-	test("bounds examples at 60 and signals at 12 per tier", () => {
+	test("holds the Complexity Router page's config to 12 signals and examples per tier, which earlier gateways read", () => {
+		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
+		const withMedium = (n: number) =>
+			decisionValues({
+				...seeded,
+				criteria: {
+					...seeded.criteria,
+					MEDIUM: { ...seeded.criteria.MEDIUM, examples: Array.from({ length: n }, (_, i) => `example ${i}`) },
+				},
+			});
+		expect(complexityConfigSchema.safeParse(withMedium(MAX_DECISION_RELEASED_ITEMS)).success).toBe(true);
+		const over = complexityConfigSchema.safeParse(withMedium(MAX_DECISION_RELEASED_ITEMS + 1));
+		expect(over.success).toBe(false);
+		if (!over.success) expect(over.error.issues.map((issue) => issue.path.join("."))).toContain("decision.criteria.MEDIUM.examples");
+		// A model router's form takes them.
+		expect(analyzerConfigSchema.safeParse(withMedium(MAX_DECISION_RELEASED_ITEMS + 1)).success).toBe(true);
+		const signals = (n: number) =>
+			decisionValues({
+				...seeded,
+				criteria: {
+					...seeded.criteria,
+					COMPLEX: { ...seeded.criteria.COMPLEX, signals: Array.from({ length: n }, (_, i) => `signal ${i}`) },
+				},
+			});
+		expect(complexityConfigSchema.safeParse(signals(MAX_DECISION_RELEASED_ITEMS)).success).toBe(true);
+		const overSignals = complexityConfigSchema.safeParse(signals(MAX_DECISION_RELEASED_ITEMS + 1));
+		expect(overSignals.success).toBe(false);
+		if (!overSignals.success)
+			expect(overSignals.error.issues.map((issue) => issue.path.join("."))).toContain("decision.criteria.COMPLEX.signals");
+		expect(analyzerConfigSchema.safeParse(signals(MAX_DECISION_RELEASED_ITEMS + 1)).success).toBe(true);
+	});
+
+	test("holds a suggestion judge's criteria to 12 signals and examples per tier", () => {
+		const base = decisionValues(decisionGuidanceFormValues(undefined, DECISION_DEFAULTS));
+		const judge = (n: number) =>
+			analyzerConfigSchema.safeParse({
+				...base,
+				suggestions: {
+					...base.suggestions,
+					tier_classifier: "decision" as const,
+					tier_criteria: {
+						...base.suggestions.tier_criteria,
+						SIMPLE: { definition: "x", signals: [], examples: Array.from({ length: n }, (_, i) => `example ${i}`) },
+						MEDIUM: { definition: "x", signals: Array.from({ length: n }, (_, i) => `signal ${i}`), examples: [] },
+					},
+				},
+			});
+		expect(judge(MAX_DECISION_RELEASED_ITEMS).success).toBe(true);
+		const over = judge(MAX_DECISION_RELEASED_ITEMS + 1);
+		expect(over.success).toBe(false);
+		if (!over.success) {
+			const paths = over.error.issues.map((issue) => issue.path.join("."));
+			expect(paths).toContain("suggestions.tier_criteria.SIMPLE.examples");
+			expect(paths).toContain("suggestions.tier_criteria.MEDIUM.signals");
+		}
+	});
+
+	test("bounds examples at 60 and signals at 30 per tier", () => {
 		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
 		const items = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `${prefix} ${i}`);
 		const withMedium = (signals: string[], examples: string[]) =>
@@ -922,7 +981,7 @@ describe("Decision classification guidance", () => {
 				decisionValues({ ...seeded, criteria: { ...seeded.criteria, MEDIUM: { ...seeded.criteria.MEDIUM, signals, examples } } }),
 			);
 		expect(MAX_DECISION_EXAMPLES).toBe(60);
-		expect(MAX_DECISION_SIGNALS).toBe(12);
+		expect(MAX_DECISION_SIGNALS).toBe(30);
 		expect(withMedium(items(MAX_DECISION_SIGNALS, "signal"), items(MAX_DECISION_EXAMPLES, "example")).success).toBe(true);
 		for (const [signals, examples, path] of [
 			[items(MAX_DECISION_SIGNALS, "signal"), items(MAX_DECISION_EXAMPLES + 1, "example"), "decision.criteria.MEDIUM.examples"],
@@ -965,7 +1024,7 @@ describe("Decision classification guidance", () => {
 
 	test("rejects guidance past the gateway's size bounds", () => {
 		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
-		const tooMany = Array.from({ length: 13 }, (_, i) => `signal ${i}`);
+		const tooMany = Array.from({ length: MAX_DECISION_SIGNALS + 1 }, (_, i) => `signal ${i}`);
 		expect(
 			analyzerConfigSchema.safeParse(
 				decisionValues({

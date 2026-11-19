@@ -346,12 +346,18 @@ export const DEFAULT_DECISION_MIN_CONFIDENCE = 0;
 
 // Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
 export const MAX_DECISION_DEFINITION_CHARACTERS = 500;
-export const MAX_DECISION_SIGNALS = 12;
+export const MAX_DECISION_SIGNALS = 30;
 export const MAX_DECISION_EXAMPLES = 60;
 export const MAX_DECISION_CRITERIA_ITEM_CHARACTERS = 300;
+// MaxComplexityDecisionReleasedItems: the signals and the examples per tier that
+// gateways before 30 and 60 accept. Config they read whole is held to it: the
+// Complexity Router page's config, and a suggestion judge's criteria. A model
+// router takes 30 and 60.
+export const MAX_DECISION_RELEASED_ITEMS = 12;
 
-/** The most items a tier's signals or examples list may hold. */
-export function maxDecisionListItems(field: "signals" | "examples"): number {
+/** The most items a tier's signals or examples list may hold; `released` holds both to what earlier gateways accept. */
+export function maxDecisionListItems(field: "signals" | "examples", released = false): number {
+	if (released) return MAX_DECISION_RELEASED_ITEMS;
 	return field === "signals" ? MAX_DECISION_SIGNALS : MAX_DECISION_EXAMPLES;
 }
 

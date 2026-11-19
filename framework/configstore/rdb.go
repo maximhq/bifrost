@@ -7577,6 +7577,9 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 	if err := normalized.Validate(); err != nil {
 		return err
 	}
+	if err := normalized.ValidateAsComplexityConfig(); err != nil {
+		return err
+	}
 
 	if len(tx) > 0 && tx[0] != nil {
 		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, tx[0], true)

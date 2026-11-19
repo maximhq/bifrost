@@ -4760,6 +4760,13 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 	if !ok {
 		return nil
 	}
+	// The store holds this config to the example bound released gateways
+	// read; refused here, a file past it is reported as an invalid section,
+	// like any other, rather than failing the load's transaction.
+	if err := fileConfig.ValidateAsComplexityConfig(); err != nil {
+		logger.Error("invalid complexity analyzer config in config file: %v", err)
+		return nil
+	}
 	current := config.GovernanceConfig.ComplexityAnalyzerConfig
 	if configData.isConfigJSONSourceOfTruth() {
 		if current != nil && reflect.DeepEqual(current, fileConfig) {

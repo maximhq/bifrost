@@ -69,7 +69,7 @@ func TestComplexityDecisionGuidanceValidation(t *testing.T) {
 	}}}
 	assert.NoError(t, full.normalized().Validate(), "each list may be filled to its own bound")
 	assert.Equal(t, 60, MaxComplexityDecisionExamples, "a decision tier allows 60 examples, 180 across the three tiers")
-	assert.Equal(t, 12, MaxComplexityDecisionSignals, "a decision tier allows 12 signals")
+	assert.Equal(t, 30, MaxComplexityDecisionSignals, "a decision tier allows 30 signals")
 
 	tooManyExamples := distinct(MaxComplexityDecisionExamples + 1)
 	tooManySignals := distinct(MaxComplexityDecisionSignals + 1)

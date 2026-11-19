@@ -2903,6 +2903,58 @@ func TestSchemaComplexityAnalyzerConfigRefusesSuggestions(t *testing.T) {
 	}
 }
 
+// Decision examples a tier holds: up to 60 on a model router, which stores
+// those past 12 where released gateways do not read them, and 12 on the
+// complexity analyzer config and in a suggestion judge's criteria, which those
+// gateways read whole.
+func TestSchemaDecisionExampleBounds(t *testing.T) {
+	compiled := compileSchema(t)
+	examples := func(n int) string {
+		quoted := make([]string, n)
+		for i := range quoted {
+			quoted[i] = fmt.Sprintf("%q", fmt.Sprintf("example %d", i))
+		}
+		return "[" + strings.Join(quoted, ",") + "]"
+	}
+	decision := func(n int) string {
+		return complexityAnalyzerSchemaConfig(`,"classifier":"decision","decision":{"criteria":{"SIMPLE":{"examples":` + examples(n) + `}}}`)
+	}
+	signals := func(n int) string {
+		return complexityAnalyzerSchemaConfig(`,"classifier":"decision","decision":{"criteria":{"MEDIUM":{"signals":` + examples(n) + `}}}`)
+	}
+	analyzer := func(n int) string {
+		return fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, decision(n))
+	}
+	router := func(n int) string { return fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(decision(n))) }
+	judge := func(n int) string {
+		return fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs,
+			`,"suggestions":{"enabled":false,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"definition":"x","examples":`+examples(n)+`}}}}`)))
+	}
+	for name, tc := range map[string]struct {
+		config string
+		valid  bool
+	}{
+		"complexity config at 12":           {analyzer(12), true},
+		"complexity config past 12":         {analyzer(13), false},
+		"model router past 12":              {router(13), true},
+		"model router at 60":                {router(60), true},
+		"model router past 60":              {router(61), false},
+		"judge criteria at 12":              {judge(12), true},
+		"judge criteria past 12":            {judge(13), false},
+		"complexity config signals past 12": {fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, signals(13)), false},
+		"model router signals at 30":        {fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(signals(30))), true},
+		"model router signals past 30":      {fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(signals(31))), false},
+	} {
+		err := validateConfig(t, compiled, tc.config)
+		if tc.valid && err != nil {
+			t.Errorf("%s: want valid, got %v", name, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("%s: want refused", name)
+		}
+	}
+}
+
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
 func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	compiled := compileSchema(t)

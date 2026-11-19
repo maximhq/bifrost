@@ -1324,9 +1324,11 @@ func SuggestionTierDefaults(cfg *complexity.AnalyzerConfig) (string, map[string]
 	criteria := cfg.Decision.ResolvedCriteria()
 	if cfg.Classifier == complexity.ClassifierDecision {
 		// A decision-model router's tiers are described by its decision
-		// guidance, examples included, so the judge is told the same. The llm
-		// prompt shows the examples its administrator wrote, as a semantic
-		// router's shows its phrases.
+		// guidance, so the judge is told its definitions and signals. As
+		// examples it gets those the administrator wrote, at most
+		// MaxTierExamples per tier, as a semantic router's judge gets its
+		// phrases: every tier call sends them, and a judge's criteria, once
+		// edited, are stored where released gateways read them.
 		var live []suggest.Phrase
 		for _, tier := range complexity.OrderedTiers() {
 			for _, text := range criteria[tier].Examples {
@@ -1337,7 +1339,12 @@ func SuggestionTierDefaults(cfg *complexity.AnalyzerConfig) (string, map[string]
 		for tier, c := range configstore.DefaultComplexityDecisionGuidance().Criteria {
 			shipped[tier] = c.Examples
 		}
-		return suggest.TierPrompt(guidance, suggest.TierExamples(live, shipped)), criteria
+		examples := suggest.TierExamples(live, shipped)
+		for tier, c := range criteria {
+			c.Examples = append([]string{}, examples[tier]...)
+			criteria[tier] = c
+		}
+		return suggest.TierPrompt(guidance, examples), criteria
 	}
 	examples := suggest.BankTierExamples(cfg.Keywords)
 	for tier, c := range criteria {
