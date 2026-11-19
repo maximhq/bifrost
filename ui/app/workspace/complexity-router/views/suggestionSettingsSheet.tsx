@@ -33,10 +33,16 @@ import { getLocale } from "@/lib/i18n";
 import { AnalyzerFormValues, fromLocalDateTime, nextSuggestionRun, suggestionEvery } from "../formSchema";
 import { FieldLabel } from "./formPrimitives";
 import { DecisionTierCard } from "./sections";
+import { SuggestionKind } from "./suggestions.utils";
 
 interface Props {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	// Phrases for a semantic router; tier examples for a decision-model
+	// router, whose runs need an embedding model of their own.
+	kind: SuggestionKind;
+	// Embedding-capable providers with a serving key, for that model.
+	embeddingProviders: ModelProvider[];
 	control: Control<AnalyzerFormValues>;
 	register: UseFormRegister<AnalyzerFormValues>;
 	setValue: UseFormSetValue<AnalyzerFormValues>;
@@ -90,6 +96,8 @@ function localTimeZone(): string {
 export default function SuggestionSettingsSheet({
 	open,
 	onOpenChange,
+	kind,
+	embeddingProviders,
 	control,
 	register,
 	setValue,
@@ -141,8 +149,12 @@ export default function SuggestionSettingsSheet({
 		(next: string) => setValue("suggestions.tier_model", next, { shouldDirty: true, shouldValidate: true }),
 		[setValue],
 	);
+	const examples = kind === "examples";
 	const defaultTierModel = (classifier: SuggestionTierClassifier): ModelChoice => {
 		if (classifier === "decision") {
+			// A decision-model router's tiers cannot be judged by its own
+			// decision model, so nothing is filled in for it to start from.
+			if (examples) return { provider: "", model: "" };
 			return decisionModel?.model ? decisionModel : { provider: DEFAULT_DECISION_PROVIDER, model: DEFAULT_DECISION_MODEL };
 		}
 		return { provider: phraseProvider, model: phraseModel };
@@ -181,14 +193,16 @@ export default function SuggestionSettingsSheet({
 			<SheetContent className="flex flex-col p-0" data-testid="complexity-suggestions-settings-sheet">
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
 					<SheetTitle>{t("settingsTitle")}</SheetTitle>
-					<SheetDescription>{t("settingsDescription")}</SheetDescription>
+					<SheetDescription>{examples ? t("settingsDescriptionExamples") : t("settingsDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<div className="custom-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
 					<div className="flex items-start justify-between gap-4">
 						<div className="space-y-1">
-							<FieldLabel htmlFor="suggestions-enabled">{t("enabledLabel")}</FieldLabel>
-							<p className="text-muted-foreground text-xs leading-relaxed">{t("enabledDescription")}</p>
+							<FieldLabel htmlFor="suggestions-enabled">{examples ? t("enabledLabelExamples") : t("enabledLabel")}</FieldLabel>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								{examples ? t("enabledDescriptionExamples") : t("enabledDescription")}
+							</p>
 						</div>
 						<Controller
 							control={control}
@@ -244,6 +258,26 @@ export default function SuggestionSettingsSheet({
 								{fieldError("lookback", errors?.lookback_days?.message)}
 							</div>
 						</div>
+						{examples && (
+							<div className="space-y-2" data-testid="complexity-suggestions-embedding-section">
+								<p className="text-muted-foreground text-xs leading-relaxed">{t("embeddingDescription")}</p>
+								<ChatModelFields
+									idPrefix="suggestions-embedding"
+									testIdPrefix="complexity-suggestions-embedding"
+									providerName="suggestions.embedding_provider"
+									modelName="suggestions.embedding_model"
+									control={control}
+									setValue={setValue}
+									providerPool={embeddingProviders}
+									keys={keys}
+									providerLabel={t("embeddingProviderLabel")}
+									modelLabel={t("embeddingModelLabel")}
+									providerError={errors?.embedding_provider?.message}
+									modelError={errors?.embedding_model?.message}
+									disabled={disabled}
+								/>
+							</div>
+						)}
 					</fieldset>
 
 					<fieldset className="space-y-4" disabled={disabled}>
@@ -314,8 +348,10 @@ export default function SuggestionSettingsSheet({
 					</fieldset>
 
 					<fieldset className="space-y-4" disabled={disabled} data-testid="complexity-suggestions-phrase-section">
-						<legend className="text-sm font-semibold">{t("phraseHeading")}</legend>
-						<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">{t("phraseDescription")}</p>
+						<legend className="text-sm font-semibold">{examples ? t("exampleHeading") : t("phraseHeading")}</legend>
+						<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">
+							{examples ? t("exampleDescription") : t("phraseDescription")}
+						</p>
 						<ChatModelFields
 							idPrefix="suggestions"
 							testIdPrefix="complexity-suggestions"
@@ -323,7 +359,7 @@ export default function SuggestionSettingsSheet({
 							modelName="suggestions.model"
 							control={control}
 							setValue={setValue}
-							chatProviders={chatProviders}
+							providerPool={chatProviders}
 							keys={keys}
 							providerError={errors?.provider?.message}
 							modelError={errors?.model?.message}
@@ -332,8 +368,8 @@ export default function SuggestionSettingsSheet({
 						<PromptField
 							name="suggestions.instructions"
 							testIdPrefix="complexity-suggestions-instructions"
-							heading={t("instructionsHeading")}
-							description={t("instructionsDescription")}
+							heading={examples ? t("exampleInstructionsHeading") : t("instructionsHeading")}
+							description={examples ? t("exampleInstructionsDescription") : t("instructionsDescription")}
 							generatedText={defaultInstructions}
 							maxLength={MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS}
 							control={control}
@@ -345,7 +381,9 @@ export default function SuggestionSettingsSheet({
 
 					<fieldset className="space-y-4 border-t pt-5" disabled={disabled} data-testid="complexity-suggestions-tier-section">
 						<legend className="text-sm font-semibold">{t("tierHeading")}</legend>
-						<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">{t("tierDescription")}</p>
+						<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">
+							{examples ? t("tierDescriptionExamples") : t("tierDescription")}
+						</p>
 						<div className="space-y-1.5">
 							<FieldLabel
 								htmlFor="suggestions-tier-classifier"
@@ -452,7 +490,7 @@ export default function SuggestionSettingsSheet({
 								modelName="suggestions.tier_model"
 								control={control}
 								setValue={setValue}
-								chatProviders={chatProviders}
+								providerPool={chatProviders}
 								keys={keys}
 								providerError={errors?.tier_provider?.message}
 								modelError={errors?.tier_model?.message}
@@ -577,19 +615,24 @@ export default function SuggestionSettingsSheet({
 interface ChatModelFieldsProps {
 	idPrefix: string;
 	testIdPrefix: string;
-	providerName: "suggestions.provider" | "suggestions.tier_provider";
-	modelName: "suggestions.model" | "suggestions.tier_model";
+	providerName: "suggestions.provider" | "suggestions.tier_provider" | "suggestions.embedding_provider";
+	modelName: "suggestions.model" | "suggestions.tier_model" | "suggestions.embedding_model";
 	control: Control<AnalyzerFormValues>;
 	setValue: UseFormSetValue<AnalyzerFormValues>;
-	chatProviders: ModelProvider[];
+	// The providers to pick from: chat-capable ones, or embedding-capable ones
+	// for a decision-model router's embedding model.
+	providerPool: ModelProvider[];
 	keys: DBKey[];
+	// Labels other than "Provider" and "Model", where the pair needs naming.
+	providerLabel?: string;
+	modelLabel?: string;
 	providerError?: string;
 	modelError?: string;
 	disabled: boolean;
 }
 
-// ChatModelFields picks a chat model: the provider from those with a serving
-// key, then a model its enabled keys may serve.
+// ChatModelFields picks a model: the provider from the pool given (those with
+// a serving key), then a model its enabled keys may serve.
 function ChatModelFields({
 	idPrefix,
 	testIdPrefix,
@@ -597,8 +640,10 @@ function ChatModelFields({
 	modelName,
 	control,
 	setValue,
-	chatProviders,
+	providerPool,
 	keys,
+	providerLabel,
+	modelLabel,
 	providerError,
 	modelError,
 	disabled,
@@ -610,11 +655,11 @@ function ChatModelFields({
 		() => keys.filter((key) => key.provider === provider && key.enabled !== false).map((key) => key.key_id),
 		[keys, provider],
 	);
-	const isChatProvider = useCallback((candidate: ModelProvider) => chatProviders.some((p) => p.name === candidate.name), [chatProviders]);
+	const isChatProvider = useCallback((candidate: ModelProvider) => providerPool.some((p) => p.name === candidate.name), [providerPool]);
 	return (
 		<div className="grid gap-4 sm:grid-cols-2">
 			<div className="space-y-1.5">
-				<FieldLabel htmlFor={`${idPrefix}-provider`}>{t("providerLabel")}</FieldLabel>
+				<FieldLabel htmlFor={`${idPrefix}-provider`}>{providerLabel ?? t("providerLabel")}</FieldLabel>
 				<Controller
 					control={control}
 					name={providerName}
@@ -642,7 +687,7 @@ function ChatModelFields({
 				)}
 			</div>
 			<div className="space-y-1.5">
-				<FieldLabel htmlFor={`${idPrefix}-model`}>{t("modelLabel")}</FieldLabel>
+				<FieldLabel htmlFor={`${idPrefix}-model`}>{modelLabel ?? t("modelLabel")}</FieldLabel>
 				<Controller
 					control={control}
 					name={modelName}

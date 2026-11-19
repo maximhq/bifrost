@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, History, LoaderCircle, X } from "lucide-react";
 import { DragEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { proposedTier, routingSplit, StagedSuggestion } from "./suggestions.utils";
+import { proposedTier, routingSplit, StagedSuggestion, SuggestionKind } from "./suggestions.utils";
 
 export type GroupList = "pending" | "dismissed";
 
@@ -30,6 +30,8 @@ interface Props {
 	hasMore: boolean;
 	loadingMore: boolean;
 	onLoadMore: () => void;
+	// Phrases for a semantic router, examples for a decision-model router.
+	kind: SuggestionKind;
 	staged: StagedSuggestion[];
 	// Phrases each tier's draft list holds now, staged ones included.
 	tierCounts: Record<DecisionTier, number>;
@@ -65,6 +67,7 @@ export default function SuggestionGroupsTable({
 	hasMore,
 	loadingMore,
 	onLoadMore,
+	kind,
 	staged,
 	tierCounts,
 	minSimilarity,
@@ -154,7 +157,9 @@ export default function SuggestionGroupsTable({
 						>
 							<span className="font-medium">{tierLabel(tier)}</span>
 							<span className="text-muted-foreground font-mono text-xs tabular-nums">
-								{t("tierPhraseCount", { count: tierCounts[tier] })}
+								{kind === "examples"
+									? t("tierExampleCount", { count: tierCounts[tier] })
+									: t("tierPhraseCount", { count: tierCounts[tier] })}
 							</span>
 							{added > 0 && (
 								<Badge
@@ -296,6 +301,7 @@ export default function SuggestionGroupsTable({
 									expanded={open.has(group.id)}
 									dragging={dragIds?.includes(group.id) ?? false}
 									minSimilarity={minSimilarity}
+									kind={kind}
 									tierLabel={tierLabel}
 									onToggleSelected={() => setSelected((current) => toggle(current, group.id))}
 									onToggleExpanded={() => setOpen((current) => toggle(current, group.id))}
@@ -352,6 +358,7 @@ interface RowProps {
 	expanded: boolean;
 	dragging: boolean;
 	minSimilarity?: number;
+	kind: SuggestionKind;
 	tierLabel: (tier: string) => string;
 	onToggleSelected: () => void;
 	onToggleExpanded: () => void;
@@ -375,6 +382,7 @@ function GroupRow({
 	expanded,
 	dragging,
 	minSimilarity,
+	kind,
 	tierLabel,
 	onToggleSelected,
 	onToggleExpanded,
@@ -397,6 +405,7 @@ function GroupRow({
 	const confidenceLabel =
 		confidence === "medium" ? t("confidence.medium") : confidence === "high" ? t("confidence.high") : (group.confidence ?? "");
 	const accepted = staged !== undefined;
+	const examples = kind === "examples";
 	const draggable = canUpdate && !stagingLocked && !dismissed && !accepted;
 	const split = routingSplit(group.current_routing);
 	const splitLine = split
@@ -459,11 +468,11 @@ function GroupRow({
 						{group.stale && (
 							<span
 								className="text-muted-foreground inline-flex items-center gap-1 text-xs"
-								title={t("staleTip")}
+								title={examples ? t("staleTipExamples") : t("staleTip")}
 								data-testid={`complexity-suggestion-stale-${id}`}
 							>
 								<History className="size-3" aria-hidden />
-								{t("stale")}
+								{examples ? t("staleExamples") : t("stale")}
 							</span>
 						)}
 					</div>
@@ -578,7 +587,7 @@ function GroupRow({
 			</div>
 
 			{accepted && staged && (
-				<AcceptedDetails group={group} staged={staged} canUpdate={canUpdate && !stagingLocked} onEdit={onEditStaged} />
+				<AcceptedDetails group={group} staged={staged} kind={kind} canUpdate={canUpdate && !stagingLocked} onEdit={onEditStaged} />
 			)}
 
 			{expanded && (
@@ -586,11 +595,15 @@ function GroupRow({
 					<div className="space-y-3">
 						<div className="space-y-1">
 							<h4 className="font-medium">{t("whyHeading")}</h4>
-							<p className="text-muted-foreground leading-relaxed">{t(`categoryDescription.${group.category}`)}</p>
+							<p className="text-muted-foreground leading-relaxed">
+								{examples ? t(`categoryDescriptionExamples.${group.category}`) : t(`categoryDescription.${group.category}`)}
+							</p>
 							{splitLine && <p className="text-muted-foreground">{t("splitToday", { split: splitLine })}</p>}
 							{group.nearest_phrase && (
 								<p className="text-muted-foreground">
-									{t("nearestShort", { phrase: group.nearest_phrase, tier: tierLabel(group.nearest_tier ?? "") })}{" "}
+									{examples
+										? t("nearestExample", { phrase: group.nearest_phrase, tier: tierLabel(group.nearest_tier ?? "") })
+										: t("nearestShort", { phrase: group.nearest_phrase, tier: tierLabel(group.nearest_tier ?? "") })}{" "}
 									{minSimilarity && minSimilarity > 0
 										? group.nearest_similarity >= minSimilarity
 											? t("similarityAbove", { similarity: fraction(group.nearest_similarity), cutoff: fraction(minSimilarity) })
@@ -602,7 +615,11 @@ function GroupRow({
 						<div className="space-y-1">
 							<h4 className="font-medium">{t("proposalHeading")}</h4>
 							<p className="text-muted-foreground leading-relaxed">
-								{proposal ? t("proposalFrom", { tier: tierLabel(proposal) }) : t("proposalNone", { tier: tierLabel(group.tier) })}
+								{proposal
+									? examples
+										? t("proposalFromExamples", { tier: tierLabel(proposal) })
+										: t("proposalFrom", { tier: tierLabel(proposal) })
+									: t("proposalNone", { tier: tierLabel(group.tier) })}
 							</p>
 							{group.reason && <p className="text-muted-foreground leading-relaxed italic">“{group.reason}”</p>}
 						</div>
@@ -617,16 +634,18 @@ function GroupRow({
 	);
 }
 
-// AcceptedDetails shows what an accepted group adds: its phrases, editable
-// until Save.
+// AcceptedDetails shows what an accepted group adds: its phrases (or
+// examples), editable until Save.
 function AcceptedDetails({
 	group,
 	staged,
+	kind,
 	canUpdate,
 	onEdit,
 }: {
 	group: Suggestion;
 	staged: StagedSuggestion;
+	kind: SuggestionKind;
 	canUpdate: boolean;
 	onEdit: (from: string, to: string) => boolean;
 }) {
@@ -636,6 +655,7 @@ function AcceptedDetails({
 				<StagedPhraseInput
 					key={phrase}
 					phrase={phrase}
+					kind={kind}
 					disabled={!canUpdate}
 					onCommit={(next) => onEdit(phrase, next)}
 					testId={`complexity-suggestion-phrase-input-${group.id}`}
@@ -649,11 +669,13 @@ function AcceptedDetails({
 // putting the text back on Escape.
 function StagedPhraseInput({
 	phrase,
+	kind,
 	disabled,
 	onCommit,
 	testId,
 }: {
 	phrase: string;
+	kind: SuggestionKind;
 	disabled: boolean;
 	// Reports whether the edit was taken; a refused one puts the phrase back.
 	onCommit: (next: string) => boolean;
@@ -675,7 +697,7 @@ function StagedPhraseInput({
 			<span className="shrink-0 rounded-[3px] bg-emerald-500/15 px-1 font-mono text-[9px] font-semibold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
 				{t("newTag")}
 			</span>
-			<span className="text-muted-foreground shrink-0">{t("phraseAdded")}</span>
+			<span className="text-muted-foreground shrink-0">{kind === "examples" ? t("exampleAdded") : t("phraseAdded")}</span>
 			<Input
 				value={draft}
 				disabled={disabled}
@@ -691,7 +713,7 @@ function StagedPhraseInput({
 						setDraft(phrase);
 					}
 				}}
-				aria-label={t("stagedInputAria")}
+				aria-label={kind === "examples" ? t("stagedExampleInputAria") : t("stagedInputAria")}
 				className="h-7 max-w-md text-xs"
 				data-testid={testId}
 			/>

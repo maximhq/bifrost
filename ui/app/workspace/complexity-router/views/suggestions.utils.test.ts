@@ -18,6 +18,10 @@ import {
 	runWindowDays,
 	stagedPhraseCount,
 	stillStaged,
+	exampleLists,
+	withExampleLists,
+	stagingRoom,
+	examplesTestSummary,
 } from "./suggestions.utils";
 
 const bank: EditableKeywordConfig = {
@@ -212,5 +216,51 @@ describe("staged additions", () => {
 				{ id: "s3", tier: "SIMPLE", phrases: ["b"] },
 			]),
 		).toEqual({ SIMPLE: ["a", "b"], COMPLEX: ["c"] });
+	});
+});
+describe("decision-router examples staging", () => {
+	const criteria = {
+		SIMPLE: { definition: "simple", signals: ["one lookup"], examples: ["Answer a direct question"] },
+		MEDIUM: { definition: "medium", signals: [], examples: [] },
+		COMPLEX: { definition: "complex", signals: [], examples: ["Design a system"] },
+	};
+
+	test("reads each tier's examples as its list and writes them back, leaving the rest", () => {
+		const lists = exampleLists(criteria);
+		expect(lists).toEqual({ simple_keywords: ["Answer a direct question"], medium_keywords: [], complex_keywords: ["Design a system"] });
+		const staged = addPhrases(lists, "MEDIUM", ["Solve a routine word problem"]);
+		const written = withExampleLists(criteria, staged);
+		expect(written.MEDIUM).toEqual({ definition: "medium", signals: [], examples: ["Solve a routine word problem"] });
+		expect(written.SIMPLE.signals).toEqual(["one lookup"]);
+		expect(criteria.MEDIUM.examples, "the criteria given are not modified").toEqual([]);
+	});
+
+	test("an example already in any tier is not staged again, whatever its case", () => {
+		expect(newPhrases(exampleLists(criteria), ["answer a DIRECT question", "Plan a migration"])).toEqual(["Plan a migration"]);
+	});
+
+	test("examples are bounded per tier; phrases share one bank-wide cap", () => {
+		const lists = { simple_keywords: ["a", "b"], medium_keywords: ["c"], complex_keywords: [] };
+		expect(stagingRoom("examples", lists, "SIMPLE", 750, 3)).toBe(1);
+		expect(stagingRoom("examples", lists, "COMPLEX", 750, 3)).toBe(3);
+		expect(stagingRoom("examples", { ...lists, simple_keywords: ["a", "b", "c", "d"] }, "SIMPLE", 750, 3)).toBe(0);
+		expect(stagingRoom("phrases", lists, "COMPLEX", 5, 3)).toBe(2);
+	});
+
+	test("an examples test reports what changed, and what moved to the examples' tier", () => {
+		const request = (tier: string, changed: boolean, to: string) => ({
+			log_id: tier + to,
+			text: "x",
+			current: { tier },
+			with_examples: { tier: to },
+			changed,
+		});
+		expect(
+			examplesTestSummary(
+				{ requests: [request("MEDIUM", true, "SIMPLE"), request("COMPLEX", true, "MEDIUM"), request("MEDIUM", false, "MEDIUM")] },
+				"SIMPLE",
+			),
+		).toEqual({ asked: 3, changed: 2, toTier: 1 });
+		expect(examplesTestSummary({ requests: [] }, "SIMPLE")).toEqual({ asked: 0, changed: 0, toTier: 0 });
 	});
 });

@@ -6,6 +6,9 @@ import { useTranslation } from "react-i18next";
 interface Props {
 	// Groups accepted from Suggestions and staged in the draft.
 	groups: number;
+	// A decision-model router's staged examples are tested on their groups'
+	// requests rather than replayed against the window.
+	testsExamples?: boolean;
 	// Whether the impact of the draft is what is on screen.
 	onImpact: boolean;
 	canSave: boolean;
@@ -25,6 +28,7 @@ interface Props {
 // impact reviewed, and, from the review, applied with the rest of the draft.
 export default function SuggestionsDraftBar({
 	groups,
+	testsExamples = false,
 	onImpact,
 	canSave,
 	isSaving,
@@ -69,7 +73,7 @@ export default function SuggestionsDraftBar({
 					</Button>
 				) : (
 					<Button type="button" size="sm" onClick={onReviewImpact} data-testid="complexity-suggestions-draft-review">
-						{t("reviewImpact")}
+						{testsExamples ? t("testExamples") : t("reviewImpact")}
 					</Button>
 				)}
 			</div>

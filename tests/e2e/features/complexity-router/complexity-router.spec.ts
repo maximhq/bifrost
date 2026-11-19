@@ -912,16 +912,18 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-suggestions-run-now-button')).toHaveCount(0)
     })
 
-    test('should say that leaving the semantic classifier turns suggestions off', async ({ page }) => {
+    test('should say that moving to the llm classifier turns suggestions off', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=configuration')
       const note = page.getByTestId('complexity-router-footer-note')
       // The classifier cards are folded away until the operator asks to change it.
       await page.getByTestId('model-router-classifier-change-button').click()
       await page.getByTestId('complexity-router-classifier-option-llm').click()
-      await expect(note).toContainText('Saving turns phrase suggestions off: they only work with the semantic classifier.')
-      // Back on semantic, nothing about suggestions changes.
+      await expect(note).toContainText('Saving turns suggestions off: they need the semantic or decision classifier.')
+      // A decision-model router keeps them: it suggests tier examples.
+      await page.getByTestId('complexity-router-classifier-option-decision').click()
+      await expect(note).not.toContainText('turns suggestions off')
       await page.getByTestId('complexity-router-classifier-option-semantic').click()
-      await expect(note).not.toContainText('phrase suggestions')
+      await expect(note).not.toContainText('turns suggestions off')
     })
 
     test('should say which groups accept-all could not add', async ({ page }) => {
@@ -1190,6 +1192,225 @@ test.describe('Complexity Router', () => {
       await expect(sample).not.toHaveAttribute('aria-describedby')
       await expect(page.locator('#suggestions-sample-error')).toHaveCount(0)
       await expect(every).not.toHaveAttribute('aria-invalid')
+    })
+  })
+
+  test.describe('Decision Router Suggestions', () => {
+    // A decision-model router's suggestions are tier examples for its decision
+    // model. Everything the page reads about the router is mocked, as for the
+    // phrase suggestions above, under the same router id.
+    const SHIPPED = {
+      SIMPLE: { definition: 'One short answer.', signals: ['a lookup'], examples: ['Answer a direct everyday question'] },
+      MEDIUM: { definition: 'Routine multi-step work.', signals: ['a draft'], examples: ['Solve a routine word problem'] },
+      COMPLEX: { definition: 'Design with trade-offs.', signals: ['trade-offs'], examples: ['Design an efficient solution'] },
+    }
+    const SUGGESTION = {
+      id: 'sug-code-errors',
+      router_id: 'default',
+      router_version: 'examples-v1',
+      stale: false,
+      status: 'open',
+      tier: 'SIMPLE',
+      phrases: ['Diagnose and fix a basic syntax error from its message'],
+      category: 'misrouted',
+      reason: 'short, well-known answers',
+      confidence: 'high',
+      request_count: 6,
+      coverage: 0,
+      nearest_phrase: 'Answer a direct everyday question',
+      nearest_tier: 'SIMPLE',
+      nearest_similarity: 0.42,
+      example_log_ids: ['log-err-1'],
+      current_routing: { MEDIUM: 6 },
+      embedding_signature: 'ns',
+      run_id: 'run-d1',
+      last_seen_at: '2026-11-19T03:00:00Z',
+      created_at: '2026-11-19T03:00:00Z',
+      updated_at: '2026-11-19T03:00:00Z',
+    }
+    const RUN = {
+      id: 'run-d1',
+      router_id: 'default',
+      router_version: 'examples-v1',
+      window_start: '2026-11-12T03:00:00Z',
+      triggered_by: 'manual',
+      status: 'succeeded',
+      requests_read: 602,
+      requests_clustered: 602,
+      requests_assigned: 0,
+      requests_skipped: 0,
+      requests_grouped: 436,
+      clusters: 74,
+      clusters_decided: 0,
+      clusters_over_limit: 0,
+      clusters_asked: 74,
+      clusters_done: 74,
+      clusters_failed: 0,
+      clusters_covered: 38,
+      clusters_incoherent: 15,
+      clusters_unreadable: 0,
+      created: 21,
+      refreshed: 0,
+      superseded: 0,
+      cost: 0.04,
+      started_at: '2026-11-19T03:00:00Z',
+      finished_at: '2026-11-19T03:02:00Z',
+    }
+    const CONFIG = {
+      id: 'default',
+      name: 'Decision router',
+      classifier: 'decision',
+      keywords: { simple_keywords: ['hello'], medium_keywords: ['summarize this'], complex_keywords: ['design a system'] },
+      decision: { provider: 'typesafe', model: 'jev-latest', previous_message_count: 1, timeout: '1.5s' },
+      suggestions: {
+        enabled: true,
+        sample_rate: 1,
+        lookback_days: 7,
+        schedule: { every: '1d', start_at: '2026-11-20T03:00:00Z' },
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        tier: { classifier: 'llm', provider: 'openai', model: 'gpt-4.1-mini' },
+        embedding: { provider: 'openai', model: 'text-embedding-3-small' },
+      },
+      routing: { enabled: true, scope: 'global', priority: 0 },
+    }
+    let saved: Record<string, unknown>[] = []
+    let statusCalls: { id: string; status: string }[] = []
+    let tested: Record<string, unknown>[] = []
+
+    test.beforeEach(async ({ page }) => {
+      saved = []
+      statusCalls = []
+      tested = []
+      await setPhraseSuggestionsFlag(page, true)
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default',
+        async (route) => {
+          if (route.request().method() === 'PUT') {
+            const body = route.request().postDataJSON()
+            saved.push(body)
+            return route.fulfill({ json: { ...body, id: 'default', routing: CONFIG.routing } })
+          }
+          return route.fulfill({ json: CONFIG })
+        },
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/status',
+        (route) =>
+          route.fulfill({
+            json: {
+              state: 'disabled',
+              decision_defaults: { criteria: SHIPPED },
+              suggestion_default_instructions: 'Write short reference phrases.',
+              suggestion_default_example_instructions: 'Write abstract task examples.',
+              suggestion_default_tier_instructions: 'Pick the tier by the work asked.',
+              suggestion_default_tier_prompt: 'Pick the tier by the work asked.',
+              suggestion_default_tier_criteria: SHIPPED,
+            },
+          }),
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
+        (route) =>
+          route.fulfill({
+            json: {
+              router_id: 'default',
+              router_version: 'examples-v1',
+              suggestions: [SUGGESTION],
+              counts: { open: 1 },
+              enabled: true,
+              last_run: RUN,
+              next_run_at: '2026-11-20T03:00:00Z',
+            },
+          }),
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/sug-code-errors',
+        (route) =>
+          route.fulfill({ json: { suggestion: SUGGESTION, examples: [{ log_id: 'log-err-1', text: 'Uncaught SyntaxError: Invalid or unexpected token' }] } }),
+      )
+      await page.route(
+        (url) => /^\/api\/routing\/model-routers\/default\/suggestions\/[^/]+\/status$/.test(url.pathname),
+        (route) => {
+          const id = new URL(route.request().url()).pathname.split('/')[6]
+          const { status } = route.request().postDataJSON()
+          statusCalls.push({ id, status })
+          return route.fulfill({ json: { ...SUGGESTION, id, status } })
+        },
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test-examples',
+        (route) => {
+          tested.push(route.request().postDataJSON())
+          return route.fulfill({
+            json: {
+              requests: [
+                { log_id: 'log-err-1', text: 'Uncaught SyntaxError: Invalid or unexpected token', current: { tier: 'MEDIUM' }, with_examples: { tier: 'SIMPLE' }, changed: true },
+                { log_id: 'log-err-2', text: 'memory barrier ordering question', current: { tier: 'MEDIUM' }, with_examples: { tier: 'MEDIUM' }, changed: false },
+              ],
+              changed: 1,
+              cost: 0.0004,
+            },
+          })
+        },
+      )
+    })
+
+    test.afterEach(async ({ page }) => {
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+    })
+
+    test('should list example suggestions with what the decision model does today', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await expect(page.getByTestId('complexity-suggestion-row-sug-code-errors')).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestion-split-sug-code-errors')).toHaveText('6 Medium')
+      await expect(page.getByTestId('complexity-suggestion-proposal-sug-code-errors')).toContainText('Simple')
+      // Each tier counts its examples, shipped ones included.
+      await expect(page.getByTestId('complexity-suggestions-zone-simple')).toContainText('1 example')
+      // No similarity cutoff or capture status: the decision model has neither.
+      await expect(page.getByTestId('complexity-suggestions-capture-unavailable')).toHaveCount(0)
+    })
+
+    test('should stage examples, test them on their group, and save them into the tier examples', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-accept-sug-code-errors').click({ timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestion-added-sug-code-errors')).toHaveText('Added · Simple')
+      await expect(page.getByTestId('complexity-suggestions-zone-new-simple')).toHaveText('+1 new')
+
+      // The decision router's counterpart of the impact review.
+      await expect(page.getByTestId('complexity-suggestions-draft-review')).toHaveText('Test examples')
+      await page.getByTestId('complexity-suggestions-draft-review').click()
+      await expect(page.getByTestId('complexity-suggestions-examples-test')).toBeVisible()
+      // Nothing is asked of the decision model until the test is run.
+      expect(tested).toHaveLength(0)
+      await page.getByTestId('complexity-suggestions-examples-test-run-sug-code-errors').click()
+      await expect(page.getByTestId('complexity-suggestions-examples-test-summary-sug-code-errors')).toContainText(
+        '1 of 2 requests change tier, 1 of them to Simple.',
+      )
+      await expect(page.getByTestId('complexity-suggestions-examples-test-summary-sug-code-errors')).toContainText('$0.0004')
+      expect(tested).toEqual([
+        { examples: [{ tier: 'SIMPLE', text: 'Diagnose and fix a basic syntax error from its message' }], suggestion_id: 'sug-code-errors' },
+      ])
+
+      await page.getByTestId('complexity-suggestions-draft-apply').click()
+      await expect.poll(() => saved.length).toBe(1)
+      const criteria = (saved[0].decision as { criteria: Record<string, { examples: string[] }> }).criteria
+      // Added after the tier's shipped examples, which stay.
+      expect(criteria.SIMPLE.examples).toEqual(['Answer a direct everyday question', 'Diagnose and fix a basic syntax error from its message'])
+      // The phrase bank is not where examples go.
+      expect((saved[0].keywords as Record<string, string[]>).simple_keywords).toEqual(['hello'])
+      // Suggestions stay on, with their embedding model.
+      expect(saved[0].suggestions).toMatchObject({ enabled: true, embedding: { provider: 'openai', model: 'text-embedding-3-small' } })
+      await expect.poll(() => statusCalls).toEqual([{ id: 'sug-code-errors', status: 'accepted' }])
+    })
+
+    test('should ask for the embedding model in the suggestion settings', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-settings-button').click({ timeout: 10000 })
+      const sheet = page.getByTestId('complexity-suggestions-settings-sheet')
+      await expect(sheet.getByTestId('complexity-suggestions-embedding-section')).toBeVisible()
+      await expect(sheet.getByText('Example suggestions')).toBeVisible()
+      await expect(sheet.getByText('Embedding model', { exact: true })).toBeVisible()
     })
   })
 })

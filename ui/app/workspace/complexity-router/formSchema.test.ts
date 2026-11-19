@@ -15,11 +15,13 @@ import {
 	nextSuggestionRun,
 	shouldSeedLLMPrompt,
 	suggestionsFormValues,
+	type SuggestionsFormValues,
 	tierCriteriaFormValues,
 	tierCriteriaReseedValues,
 	tierCriteriaToReseed,
 	toAnalyzerPayload,
 	toComplexityConfigPayload,
+	toComplexityFormValues,
 	toFormValues,
 	toSuggestionsPayload,
 	withGeneratedTierCriteriaCleared,
@@ -230,11 +232,21 @@ describe("Decision complexity configuration", () => {
 				embedding: { provider: "openai", model: "text-embedding-3-small" },
 			},
 		};
-		const payload = toSuggestionsPayload(toFormValues(saved).suggestions, saved.suggestions);
-		expect(payload.embedding).toEqual({ provider: "openai", model: "text-embedding-3-small" });
-		expect(toSuggestionsPayload(toFormValues(saved).suggestions, { ...saved.suggestions!, embedding: undefined })).not.toHaveProperty(
-			"embedding",
-		);
+		const values = toFormValues(saved);
+		expect(values.suggestions.embedding_provider).toBe("openai");
+		expect(values.suggestions.embedding_model).toBe("text-embedding-3-small");
+		expect(toAnalyzerPayload(values, saved).suggestions?.embedding).toEqual({ provider: "openai", model: "text-embedding-3-small" });
+		// Cleared in the form, it is no longer sent.
+		const cleared = { ...values, suggestions: { ...values.suggestions, embedding_provider: "", embedding_model: "" } };
+		expect(toAnalyzerPayload(cleared, saved).suggestions).not.toHaveProperty("embedding");
+		// The gateway refuses it on any other classifier, so a router switched
+		// away from the decision model does not send it.
+		const semantic = {
+			...values,
+			classifier: "semantic" as const,
+			semantic: { ...values.semantic, provider: "openai", embedding_model: "x" },
+		};
+		expect(toAnalyzerPayload(semantic, saved).suggestions).not.toHaveProperty("embedding");
 	});
 
 	test("keeps a small sample rate through the form instead of rounding it to zero", () => {
@@ -261,9 +273,10 @@ describe("Decision complexity configuration", () => {
 		}
 	});
 
-	test("turns suggestions off, keeping their settings, when the classifier is not semantic", () => {
-		// The gateway refuses suggestions on any other classifier: they cluster
-		// in the semantic classifier's embedding space.
+	test("turns suggestions off, keeping their settings, on the llm classifier only", () => {
+		// The gateway refuses suggestions on the llm classifier, which has no
+		// space to cluster in; a decision-model router clusters in its
+		// suggestions embedding model, so its suggestions stay on.
 		const saved: AnalyzerConfig = {
 			classifier: "semantic",
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
@@ -278,17 +291,16 @@ describe("Decision complexity configuration", () => {
 			},
 		};
 		const values = toFormValues(saved);
-		for (const classifier of ["llm", "decision"] as const) {
-			const switched = {
-				...values,
-				classifier,
-				llm: { ...values.llm, ...DEFAULT_MODEL },
-				decision: { ...values.decision, ...DEFAULT_MODEL },
-			};
-			const payload = toAnalyzerPayload(switched, saved);
-			expect(payload.suggestions?.enabled, classifier).toBe(false);
-			expect(payload.suggestions?.model, classifier).toBe("gpt-4.1-mini");
-		}
+		const switched = (classifier: "llm" | "decision") => ({
+			...values,
+			classifier,
+			llm: { ...values.llm, ...DEFAULT_MODEL },
+			decision: { ...values.decision, ...DEFAULT_MODEL },
+		});
+		const llm = toAnalyzerPayload(switched("llm"), saved);
+		expect(llm.suggestions?.enabled).toBe(false);
+		expect(llm.suggestions?.model).toBe("gpt-4.1-mini");
+		expect(toAnalyzerPayload(switched("decision"), saved).suggestions?.enabled).toBe(true);
 		expect(toAnalyzerPayload(values, saved).suggestions?.enabled).toBe(true);
 	});
 
@@ -864,6 +876,44 @@ describe("Decision classification guidance", () => {
 		});
 	});
 
+	test("a decision router's suggestions need their own embedding model and another judge", () => {
+		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
+		const withSuggestions = (patch: Partial<SuggestionsFormValues>) => {
+			const base = decisionValues(seeded);
+			return analyzerConfigSchema.safeParse({
+				...base,
+				suggestions: {
+					...base.suggestions,
+					enabled: true,
+					provider: "openai",
+					model: "gpt-5",
+					tier_classifier: "llm" as const,
+					tier_provider: "openai",
+					tier_model: "gpt-5",
+					...patch,
+				},
+			});
+		};
+		const paths = (parsed: ReturnType<typeof withSuggestions>) =>
+			parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+		expect(paths(withSuggestions({}))).toContain("suggestions.embedding_model");
+		expect(withSuggestions({ embedding_provider: "openai", embedding_model: "text-embedding-3-small" }).success).toBe(true);
+		expect(paths(withSuggestions({ embedding_provider: "openai" }))).toContain("suggestions.embedding_model");
+		expect(paths(withSuggestions({ embedding_model: "text-embedding-3-small" }))).toContain("suggestions.embedding_provider");
+		// Off, they keep their settings without one.
+		expect(withSuggestions({ enabled: false }).success).toBe(true);
+		// The router's own decision model cannot judge its tiers; another can.
+		const embedding = { embedding_provider: "openai", embedding_model: "text-embedding-3-small" };
+		const own = {
+			...embedding,
+			tier_classifier: "decision" as const,
+			tier_provider: DEFAULT_MODEL.provider,
+			tier_model: DEFAULT_MODEL.model,
+		};
+		expect(paths(withSuggestions(own))).toContain("suggestions.tier_model");
+		expect(withSuggestions({ ...own, tier_model: "another-decision-model" }).success).toBe(true);
+	});
+
 	test("bounds examples at 60 and signals at 12 per tier", () => {
 		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
 		const items = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `${prefix} ${i}`);
@@ -1145,6 +1195,21 @@ describe("complexity config payload", () => {
 		expect(toComplexityConfigPayload(values, saved)).not.toHaveProperty("suggestions");
 		expect(toComplexityConfigPayload(values, saved).keywords).toEqual(toAnalyzerPayload(values, saved).keywords);
 		expect(toAnalyzerPayload(values, saved).suggestions?.enabled).toBe(true);
+	});
+
+	test("reads the config without a suggestions block an older gateway stored, so its settings never block a save", () => {
+		// A decision config with suggestions on and no embedding model would
+		// fail a model router's checks; the page has no suggestions to fix.
+		const saved: AnalyzerConfig = {
+			classifier: "decision",
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			decision: { provider: "openai", model: "gpt-6-luna", previous_message_count: 2, timeout: "3000ms" },
+			suggestions: { enabled: true, sample_rate: 0.1, lookback_days: 7, provider: "openai", model: "gpt-5" },
+		};
+		const values = toComplexityFormValues(saved);
+		expect(values.suggestions.enabled).toBe(false);
+		expect(analyzerConfigSchema.safeParse(values).success).toBe(true);
+		expect(analyzerConfigSchema.safeParse(toFormValues(saved)).success, "a model router's form would refuse it").toBe(false);
 	});
 });
 

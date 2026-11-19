@@ -7,7 +7,7 @@ import {
 	useGetComplexitySuggestionPagesInfiniteQuery,
 	useUpdateComplexitySuggestionStatusMutation,
 } from "@/lib/store/apis/governanceApi";
-import { DecisionTier, EditableKeywordConfig, Suggestion } from "@/lib/types/complexityRouter";
+import { DecisionTier, Suggestion } from "@/lib/types/complexityRouter";
 import { mergeSuggestionPages } from "@/lib/utils/suggestionPages";
 import { LoaderCircle, Sparkles, TriangleAlert } from "lucide-react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
@@ -16,9 +16,10 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import RunNowDialog from "./runNowDialog";
 import SuggestionGroupsTable, { GroupList } from "./suggestionGroupsTable";
+import SuggestionExamplesTestView from "./suggestionExamplesTestView";
 import SuggestionImpactView from "./suggestionImpactView";
 import SuggestionRunCard from "./suggestionRunCard";
-import { runInProgress, StagedSuggestion } from "./suggestions.utils";
+import { runInProgress, StagedSuggestion, SuggestionKind } from "./suggestions.utils";
 
 interface Props {
 	// The router these suggestions belong to.
@@ -28,16 +29,18 @@ interface Props {
 	// it is saved.
 	enabled: boolean;
 	lookbackDays: number;
+	// Phrases for a semantic router's phrase lists, or examples for a
+	// decision-model router's tier guidance.
+	kind: SuggestionKind;
 	staged: StagedSuggestion[];
-	// The draft phrase lists, staged suggestions included.
-	keywords: EditableKeywordConfig;
-	// Phrases each tier's draft list holds now, staged ones included.
+	// Phrases (or examples) each tier's draft list holds now, staged ones included.
 	tierCounts: Record<DecisionTier, number>;
 	// The similarity floor a nearest phrase must clear; 0 or absent means none.
 	minSimilarity?: number;
 	// The floor the draft would save, for replaying the draft's impact.
 	draftMinSimilarity?: number;
-	// Phrases the bank can still take before the cap.
+	// Phrases the bank can still take before the cap; for examples, what the
+	// tiers can still take between them.
 	remainingPhrases: number;
 	onStage: (suggestion: Suggestion, tier: DecisionTier, phrases: string[]) => number;
 	onUnstage: (id: string) => void;
@@ -68,8 +71,8 @@ export default function SuggestionsTab({
 	canUpdate,
 	enabled,
 	lookbackDays,
+	kind,
 	staged,
-	keywords,
 	tierCounts,
 	minSimilarity,
 	draftMinSimilarity,
@@ -177,12 +180,18 @@ export default function SuggestionsTab({
 			else skipped++;
 		}
 		if (added.length === 0) {
-			toast.info(remainingPhrases === 0 ? t("atCap") : t("alreadyInBank"), TOAST_POSITION);
+			const examples = kind === "examples";
+			toast.info(
+				remainingPhrases === 0 ? (examples ? t("atCapExamples") : t("atCap")) : examples ? t("alreadyInExamples") : t("alreadyInBank"),
+				TOAST_POSITION,
+			);
 			return;
 		}
 		toast.success(t("acceptedGroups", { count: added.length }), {
 			...TOAST_POSITION,
-			...(skipped > 0 ? { description: t("acceptedSkipped", { count: skipped }) } : {}),
+			...(skipped > 0
+				? { description: kind === "examples" ? t("acceptedSkippedExamples", { count: skipped }) : t("acceptedSkipped", { count: skipped }) }
+				: {}),
 			action: { label: t("undo"), onClick: () => added.forEach((id) => unstageRef.current(id)) },
 		});
 	};
@@ -220,6 +229,11 @@ export default function SuggestionsTab({
 
 	// The impact view replays what is staged, so with nothing staged the list
 	// shows instead; the view stays in the URL and opens once a group is staged.
+	// A decision-model router routes by asking its decision model, so it has
+	// no replay: its staged examples are tried on their groups' requests.
+	if (view === "impact" && staged.length > 0 && kind === "examples") {
+		return <SuggestionExamplesTestView routerId={routerId} staged={staged} tierLabel={tierLabel} onBack={() => void setView(null)} />;
+	}
 	if (view === "impact" && staged.length > 0) {
 		const groupOfPhrase = (phrase: string) => staged.find((entry) => entry.phrases.includes(phrase))?.id;
 		return (
@@ -245,7 +259,7 @@ export default function SuggestionsTab({
 				<Alert variant="info" data-testid="complexity-suggestions-off-callout">
 					<Sparkles className="h-4 w-4" />
 					<AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-						<span>{t("offCallout")}</span>
+						<span>{kind === "examples" ? t("offCalloutExamples") : t("offCallout")}</span>
 						{canUpdate && (
 							<Button
 								type="button"
@@ -305,6 +319,7 @@ export default function SuggestionsTab({
 						awaiting={awaiting}
 						onRun={() => setRunDialogOpen(true)}
 						onOpenSettings={onOpenSettings}
+						kind={kind}
 					/>
 					{(storedCount > 0 || staged.length > 0) && (
 						<SuggestionGroupsTable
@@ -319,6 +334,7 @@ export default function SuggestionsTab({
 							hasMore={!listLoading && hasNextPage}
 							loadingMore={isFetchingNextPage}
 							onLoadMore={() => void fetchNextPage()}
+							kind={kind}
 							staged={staged}
 							tierCounts={tierCounts}
 							minSimilarity={minSimilarity}

@@ -7,7 +7,8 @@ import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteModelRouterMutation, useGetModelRouterQuery, useUpdateModelRouterMutation } from "@/lib/store/apis/governanceApi";
-import { MAX_SEMANTIC_PHRASES } from "@/lib/types/complexityRouter";
+import { COMPLEXITY_TIER_VALUES, MAX_DECISION_EXAMPLES, MAX_SEMANTIC_PHRASES } from "@/lib/types/complexityRouter";
+import { stagingRoom, TIER_LIST_KEYS } from "@/app/workspace/complexity-router/views/suggestions.utils";
 import SuggestionsDraftBar from "@/app/workspace/complexity-router/views/suggestionsDraftBar";
 import SuggestionsTab, { suggestionsViewParser } from "@/app/workspace/complexity-router/views/suggestionsTab";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -114,10 +115,29 @@ export default function RouterDetailView({ routerId, traffic, trafficFilter, onB
 		);
 	}
 
-	const showSuggestions = suggestionsFlagOn && config.live.classifier === "semantic";
-	// Suggestions only serve the semantic classifier, and only show with their
-	// flag on, so a link to them otherwise lands on the router's overview.
+	// Suggestions serve the semantic classifier (phrases) and the decision
+	// model (tier examples), and only show with their flag on, so a link to
+	// them otherwise lands on the router's overview.
+	const showSuggestions = suggestionsFlagOn && (config.live.classifier === "semantic" || config.live.classifier === "decision");
 	const currentTab: RouterTab = tab === "suggestions" && !showSuggestions ? "overview" : tab;
+	const suggestionKind = config.staging.kind;
+	const stagingLists = config.staging.lists;
+	const tierCounts = {
+		SIMPLE: stagingLists?.[TIER_LIST_KEYS.SIMPLE].length ?? 0,
+		MEDIUM: stagingLists?.[TIER_LIST_KEYS.MEDIUM].length ?? 0,
+		COMPLEX: stagingLists?.[TIER_LIST_KEYS.COMPLEX].length ?? 0,
+	};
+	// What staging can still add: the phrase bank's room, or for examples
+	// what the tiers can still take between them.
+	const remaining =
+		suggestionKind === "examples"
+			? stagingLists
+				? COMPLEXITY_TIER_VALUES.reduce(
+						(sum, tier) => sum + stagingRoom("examples", stagingLists, tier, MAX_SEMANTIC_PHRASES, MAX_DECISION_EXAMPLES),
+						0,
+					)
+				: 0
+			: Math.max(0, MAX_SEMANTIC_PHRASES - config.derived.totalPhrases);
 
 	const confirmDelete = () => {
 		deleteRouter(routerId)
@@ -247,22 +267,22 @@ export default function RouterDetailView({ routerId, traffic, trafficFilter, onB
 							canUpdate={canUpdate}
 							enabled={Boolean(data.suggestions?.enabled)}
 							lookbackDays={data.suggestions?.lookback_days ?? config.live.suggestions.lookback_days}
+							kind={suggestionKind}
 							staged={config.staging.active}
-							keywords={config.live.keywords ?? config.form.getValues("keywords")}
-							tierCounts={{
-								SIMPLE: config.live.keywords?.simple_keywords.length ?? 0,
-								MEDIUM: config.live.keywords?.medium_keywords.length ?? 0,
-								COMPLEX: config.live.keywords?.complex_keywords.length ?? 0,
-							}}
-							minSimilarity={data.semantic?.min_similarity}
+							tierCounts={tierCounts}
+							// The similarity cutoff and the capture status are the semantic
+							// classifier's: a decision-model router has neither.
+							minSimilarity={suggestionKind === "phrases" ? data.semantic?.min_similarity : undefined}
 							draftMinSimilarity={config.live.semantic?.min_similarity}
-							remainingPhrases={Math.max(0, MAX_SEMANTIC_PHRASES - config.derived.totalPhrases)}
+							remainingPhrases={remaining}
 							onStage={config.staging.stage}
 							onUnstage={config.staging.unstage}
 							onEditStaged={config.staging.edit}
-							stagingLocked={config.isSaving}
+							// A decision router's guidance is staged into only once its
+							// shipped examples have filled it.
+							stagingLocked={config.isSaving || !config.staging.ready}
 							onOpenSettings={() => config.sheets.setOpen("suggestions")}
-							captureUnavailableReason={config.status.semantic?.capture_unavailable_reason}
+							captureUnavailableReason={suggestionKind === "phrases" ? config.status.semantic?.capture_unavailable_reason : undefined}
 						/>
 					</TabsContent>
 				)}
@@ -271,6 +291,7 @@ export default function RouterDetailView({ routerId, traffic, trafficFilter, onB
 			{showSuggestions && config.staging.active.length > 0 && (
 				<SuggestionsDraftBar
 					groups={config.staging.active.length}
+					testsExamples={suggestionKind === "examples"}
 					onImpact={currentTab === "suggestions" && suggestionsView === "impact"}
 					canSave={config.canSave}
 					isSaving={config.isSaving}

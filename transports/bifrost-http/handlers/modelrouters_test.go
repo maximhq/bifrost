@@ -185,6 +185,7 @@ func TestModelRouterEndpoints(t *testing.T) {
 	status, body = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "support"})
 	assert.Equal(t, fasthttp.StatusOK, status)
 	assert.Equal(t, suggest.DefaultInstructions(), body["suggestion_default_instructions"])
+	assert.Equal(t, suggest.DefaultExampleInstructions(), body["suggestion_default_example_instructions"], "a decision-model router's example step seeds its editor from this")
 	assert.Equal(t, suggest.DefaultTierInstructions(), body["suggestion_default_tier_instructions"],
 		"the decision tier step's question editor is seeded from the shipped instructions")
 	// A router back on the shipped phrases has no examples to send.
