@@ -44620,6 +44620,46 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "client_credentials"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "client_credentials"
+                              ],
+                              "description": "When `auth_type` is `client_credentials`, `client_credentials` must\ncarry a `client_id` and a `client_secret` or `private_key`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "client_credentials"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "client_credentials"
+                                ]
+                              },
+                              "description": "A `client_credentials` block only applies to auth_type\n\"client_credentials\"; reject it for every other auth_type.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -44734,7 +44774,8 @@
                               "oauth",
                               "per_user_oauth",
                               "per_user_headers",
-                              "token_exchange"
+                              "token_exchange",
+                              "client_credentials"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -44886,6 +44927,77 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "client_credentials": {
+                            "type": "object",
+                            "required": [
+                              "client_id"
+                            ],
+                            "properties": {
+                              "token_url": {
+                                "type": "string",
+                                "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+                              },
+                              "auth_method": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "client_secret_basic",
+                                  "client_secret_post"
+                                ],
+                                "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+                              },
+                              "private_key": {
+                                "type": "string",
+                                "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "key_id": {
+                                "type": "string",
+                                "description": "kid header of the client assertion. Requires private_key."
+                              },
+                              "signing_algorithm": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "RS256",
+                                  "RS384",
+                                  "RS512",
+                                  "PS256",
+                                  "PS384",
+                                  "PS512",
+                                  "ES256",
+                                  "ES384",
+                                  "ES512"
+                                ],
+                                "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+                              },
+                              "assertion_audience": {
+                                "type": "string",
+                                "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Scopes to request, sent space-joined."
+                              },
+                              "resource": {
+                                "type": "string",
+                                "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
                           },
                           "per_user_discovery": {
                             "type": "boolean",
@@ -45001,6 +45113,46 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "client_credentials"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "client_credentials"
+                              ],
+                              "description": "When `auth_type` is `client_credentials`, `client_credentials` must\ncarry a `client_id` and a `client_secret` or `private_key`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "client_credentials"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "client_credentials"
+                                ]
+                              },
+                              "description": "A `client_credentials` block only applies to auth_type\n\"client_credentials\"; reject it for every other auth_type.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -45115,7 +45267,8 @@
                               "oauth",
                               "per_user_oauth",
                               "per_user_headers",
-                              "token_exchange"
+                              "token_exchange",
+                              "client_credentials"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -45268,6 +45421,77 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
                           },
+                          "client_credentials": {
+                            "type": "object",
+                            "required": [
+                              "client_id"
+                            ],
+                            "properties": {
+                              "token_url": {
+                                "type": "string",
+                                "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+                              },
+                              "auth_method": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "client_secret_basic",
+                                  "client_secret_post"
+                                ],
+                                "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+                              },
+                              "private_key": {
+                                "type": "string",
+                                "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "key_id": {
+                                "type": "string",
+                                "description": "kid header of the client assertion. Requires private_key."
+                              },
+                              "signing_algorithm": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "RS256",
+                                  "RS384",
+                                  "RS512",
+                                  "PS256",
+                                  "PS384",
+                                  "PS512",
+                                  "ES256",
+                                  "ES384",
+                                  "ES512"
+                                ],
+                                "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+                              },
+                              "assertion_audience": {
+                                "type": "string",
+                                "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Scopes to request, sent space-joined."
+                              },
+                              "resource": {
+                                "type": "string",
+                                "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
+                          },
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
@@ -45303,7 +45527,8 @@
                             "enum": [
                               "none",
                               "headers",
-                              "oauth"
+                              "oauth",
+                              "client_credentials"
                             ],
                             "description": "The per-user auth types open a new connection for each call, which an\nSSE stream does not allow, so SSE takes the shared auth types only.\n"
                           }
@@ -45391,6 +45616,46 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "client_credentials"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "client_credentials"
+                              ],
+                              "description": "When `auth_type` is `client_credentials`, `client_credentials` must\ncarry a `client_id` and a `client_secret` or `private_key`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "client_credentials"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "client_credentials"
+                                ]
+                              },
+                              "description": "A `client_credentials` block only applies to auth_type\n\"client_credentials\"; reject it for every other auth_type.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -45505,7 +45770,8 @@
                               "oauth",
                               "per_user_oauth",
                               "per_user_headers",
-                              "token_exchange"
+                              "token_exchange",
+                              "client_credentials"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -45657,6 +45923,77 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "client_credentials": {
+                            "type": "object",
+                            "required": [
+                              "client_id"
+                            ],
+                            "properties": {
+                              "token_url": {
+                                "type": "string",
+                                "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+                              },
+                              "auth_method": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "client_secret_basic",
+                                  "client_secret_post"
+                                ],
+                                "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+                              },
+                              "private_key": {
+                                "type": "string",
+                                "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "key_id": {
+                                "type": "string",
+                                "description": "kid header of the client assertion. Requires private_key."
+                              },
+                              "signing_algorithm": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "RS256",
+                                  "RS384",
+                                  "RS512",
+                                  "PS256",
+                                  "PS384",
+                                  "PS512",
+                                  "ES256",
+                                  "ES384",
+                                  "ES512"
+                                ],
+                                "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+                              },
+                              "assertion_audience": {
+                                "type": "string",
+                                "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Scopes to request, sent space-joined."
+                              },
+                              "resource": {
+                                "type": "string",
+                                "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
                           },
                           "per_user_discovery": {
                             "type": "boolean",
@@ -45801,6 +46138,46 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "client_credentials"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "client_credentials"
+                              ],
+                              "description": "When `auth_type` is `client_credentials`, `client_credentials` must\ncarry a `client_id` and a `client_secret` or `private_key`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "client_credentials"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "client_credentials"
+                                ]
+                              },
+                              "description": "A `client_credentials` block only applies to auth_type\n\"client_credentials\"; reject it for every other auth_type.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -45915,7 +46292,8 @@
                               "oauth",
                               "per_user_oauth",
                               "per_user_headers",
-                              "token_exchange"
+                              "token_exchange",
+                              "client_credentials"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -46067,6 +46445,77 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "client_credentials": {
+                            "type": "object",
+                            "required": [
+                              "client_id"
+                            ],
+                            "properties": {
+                              "token_url": {
+                                "type": "string",
+                                "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+                              },
+                              "auth_method": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "client_secret_basic",
+                                  "client_secret_post"
+                                ],
+                                "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+                              },
+                              "private_key": {
+                                "type": "string",
+                                "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "key_id": {
+                                "type": "string",
+                                "description": "kid header of the client assertion. Requires private_key."
+                              },
+                              "signing_algorithm": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "RS256",
+                                  "RS384",
+                                  "RS512",
+                                  "PS256",
+                                  "PS384",
+                                  "PS512",
+                                  "ES256",
+                                  "ES384",
+                                  "ES512"
+                                ],
+                                "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+                              },
+                              "assertion_audience": {
+                                "type": "string",
+                                "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Scopes to request, sent space-joined."
+                              },
+                              "resource": {
+                                "type": "string",
+                                "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
                           },
                           "per_user_discovery": {
                             "type": "boolean",
@@ -46425,6 +46874,77 @@
                     ],
                     "additionalProperties": false,
                     "description": "For `token_exchange` clients only. Omitted preserves the stored\nconfiguration. A redacted `client_id` / `client_secret` round-tripped\nfrom a prior GET is resolved back to the stored value rather than\noverwriting it; any other change re-scopes future exchanges and\ninvalidates cached exchanged tokens for this client.\n"
+                  },
+                  "client_credentials": {
+                    "type": "object",
+                    "required": [
+                      "client_id"
+                    ],
+                    "properties": {
+                      "token_url": {
+                        "type": "string",
+                        "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+                      },
+                      "auth_method": {
+                        "type": "string",
+                        "enum": [
+                          "",
+                          "client_secret_basic",
+                          "client_secret_post"
+                        ],
+                        "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+                      },
+                      "private_key": {
+                        "type": "string",
+                        "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                      },
+                      "key_id": {
+                        "type": "string",
+                        "description": "kid header of the client assertion. Requires private_key."
+                      },
+                      "signing_algorithm": {
+                        "type": "string",
+                        "enum": [
+                          "",
+                          "RS256",
+                          "RS384",
+                          "RS512",
+                          "PS256",
+                          "PS384",
+                          "PS512",
+                          "ES256",
+                          "ES384",
+                          "ES512"
+                        ],
+                        "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+                      },
+                      "assertion_audience": {
+                        "type": "string",
+                        "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Scopes to request, sent space-joined."
+                      },
+                      "resource": {
+                        "type": "string",
+                        "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "For `client_credentials` clients only. Omitted preserves the stored\nconfiguration; when sent, it replaces the stored block, and when it\ndiffers from it, Bifrost discovers what was left empty and requests one\ntoken. A redacted `client_id`,\n`client_secret` or `private_key` round-tripped from a prior GET keeps\nthe stored value, except when `token_url` or `assertion_audience`\nchanges, which requires the secret or key to be resent (400 otherwise).\n"
                   },
                   "disabled": {
                     "type": "boolean",
@@ -48029,9 +48549,10 @@
                                   "oauth",
                                   "per_user_oauth",
                                   "per_user_headers",
-                                  "token_exchange"
+                                  "token_exchange",
+                                  "client_credentials"
                                 ],
-                                "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
+                                "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n"
                               },
                               "required_header_keys": {
                                 "type": "array",
@@ -48208,7 +48729,8 @@
                       "oauth",
                       "per_user_oauth",
                       "per_user_headers",
-                      "token_exchange"
+                      "token_exchange",
+                      "client_credentials"
                     ],
                     "description": "Defaults to none"
                   },
@@ -48329,9 +48851,10 @@
                             "oauth",
                             "per_user_oauth",
                             "per_user_headers",
-                            "token_exchange"
+                            "token_exchange",
+                            "client_credentials"
                           ],
-                          "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
+                          "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n"
                         },
                         "required_header_keys": {
                           "type": "array",
@@ -114457,7 +114980,8 @@
               "oauth",
               "per_user_oauth",
               "per_user_headers",
-              "token_exchange"
+              "token_exchange",
+              "client_credentials"
             ],
             "description": "Authentication type for the MCP connection"
           },
@@ -114587,6 +115111,77 @@
             ],
             "additionalProperties": false,
             "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
+          },
+          "client_credentials": {
+            "type": "object",
+            "required": [
+              "client_id"
+            ],
+            "properties": {
+              "token_url": {
+                "type": "string",
+                "description": "Token endpoint (https; http only on a loopback host). When empty on\ncreate or update, it is discovered from the MCP server's OAuth metadata\nand stored, and the authorization server must advertise the\nclient_credentials grant. Changing it, or clearing it to discover again,\nrequires client_secret or private_key to be resent rather than its\nredacted value.\n"
+              },
+              "client_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Bifrost's client ID at the authorization server. Supports env.VAR_NAME\nand vault.path references. Redacted in API responses.\n"
+              },
+              "client_secret": {
+                "type": "string",
+                "description": "Client secret. Exactly one of client_secret and private_key is\nrequired. Supports env.VAR_NAME and vault.path references. Redacted in\nAPI responses.\n"
+              },
+              "auth_method": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "client_secret_basic",
+                  "client_secret_post"
+                ],
+                "description": "How client_secret is sent. Empty: HTTP Basic unless the discovered\nmetadata lists only client_secret_post; the stored value is the one\nchosen. Requires client_secret.\n"
+              },
+              "private_key": {
+                "type": "string",
+                "description": "PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,\na client assertion signed with this key, instead of a secret. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+              },
+              "key_id": {
+                "type": "string",
+                "description": "kid header of the client assertion. Requires private_key."
+              },
+              "signing_algorithm": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "RS256",
+                  "RS384",
+                  "RS512",
+                  "PS256",
+                  "PS384",
+                  "PS512",
+                  "ES256",
+                  "ES384",
+                  "ES512"
+                ],
+                "description": "Client assertion signing algorithm. Empty: chosen from the key on save,\nthe ES algorithm for an EC key's curve, or for an RSA key the first RSA\nalgorithm the authorization server advertises, else RS256; the stored\nvalue is the one chosen. Requires private_key.\n"
+              },
+              "assertion_audience": {
+                "type": "string",
+                "description": "aud of the client assertion (https). Empty: the token endpoint.\nChanging it requires private_key to be resent. Requires private_key.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Scopes to request, sent space-joined."
+              },
+              "resource": {
+                "type": "string",
+                "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the\nMCP server URL. Empty string: not sent.\n"
+              }
+            },
+            "additionalProperties": false,
+            "description": "For `client_credentials` clients only, including the token_url,\nauth_method and signing_algorithm chosen on save. `client_id`,\n`client_secret` and `private_key` are redacted in this response.\n"
           },
           "per_user_discovery": {
             "type": "boolean",
@@ -115057,9 +115652,10 @@
           "oauth",
           "per_user_oauth",
           "per_user_headers",
-          "token_exchange"
+          "token_exchange",
+          "client_credentials"
         ],
-        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
+        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n"
       },
       "OAuthConfigRequest": {
         "type": "object",
