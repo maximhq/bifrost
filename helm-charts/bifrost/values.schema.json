@@ -1092,6 +1092,52 @@
               ],
               "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Publish the document Bifrost serves at /api/oauth/client-metadata.json there unchanged. Unset, the document is served under mcpExternalClientUrl. Supports env var and vault references. Maps to client.mcp_client_metadata_url."
             },
+            "bifrostUrl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ]
+                    },
+                    "env_var": {
+                      "type": "string"
+                    },
+                    "from_env": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "The gateway's public base URL (scheme, host and any base path) as clients reach it through your proxy. Required for /v1/mcp: tool calls take their host and scheme from it, never from the client's Host header. Unset, /v1/mcp answers 503. Must include server.basePath when set. Supports env var and vault references. Maps to client.bifrost_url."
+            },
+            "bifrostMcpAllowWrites": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way, and every call is authorized by the caller's own credential. Maps to client.bifrost_mcp_allow_writes."
+            },
+            "mcpOpenapiMaxSpecMb": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256,
+              "default": 0,
+              "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, specFile or fetched from specUrl). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory. Maps to client.mcp_openapi_max_spec_mb."
+            },
             "skillsExternalClientUrl": {
               "anyOf": [
                 {
@@ -1376,6 +1422,11 @@
                   "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
                   "default": 3600,
                   "anyOf": [{ "const": 0 }, { "minimum": 60 }]
+                },
+                "openapiUrl": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Supports env var syntax (env.MY_VAR). Empty reads the published spec. Maps to framework.pricing.openapi_url."
                 }
               },
               "additionalProperties": false
@@ -4685,12 +4736,24 @@
                     "default": "enforce",
                     "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
+                  "input_timing": {
+                    "type": "string",
+                    "enum": ["pre_call", "parallel"],
+                    "default": "pre_call",
+                    "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+                  },
+                  "profile_execution_mode": {
+                    "type": "string",
+                    "enum": ["independent", "chained"],
+                    "default": "independent",
+                    "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
                       "type": "integer"
                     },
-                    "description": "IDs of provider configurations to use with this rule"
+                    "description": "IDs of provider configurations to use with this rule, in execution order"
                   }
                 },
                 "required": ["id", "name", "enabled", "cel_expression", "apply_to"],

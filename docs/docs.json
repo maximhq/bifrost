@@ -231,6 +231,8 @@
               "mcp/sessions",
               "mcp/tool-execution",
               "mcp/resources-and-prompts",
+              "mcp/apps",
+              "mcp/multi-round-trip-requests",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
@@ -294,6 +296,7 @@
               "features/routers",
               "features/complexity-router",
               "features/warp",
+              "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -385,16 +388,8 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              {
-                "group": "Workload Identity",
-                "icon": "fingerprint",
-                "pages": [
-                  "enterprise/workload-identity/overview",
-                  "enterprise/workload-identity/entra",
-                  "enterprise/workload-identity/aws",
-                  "enterprise/workload-identity/oidc"
-                ]
-              },
+              "enterprise/view-as-user",
+              "enterprise/workload-identity/overview",
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -594,6 +589,13 @@
                 "icon": "c",
                 "pages": [
                   "integrations/cohere-sdk/overview"
+                ]
+              },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
                 ]
               },
               "integrations/litellm-sdk",
@@ -1569,6 +1571,8 @@
                   "GET /ws",
                   "GET /mcp",
                   "POST /mcp",
+                  "GET /v1/mcp",
+                  "POST /v1/mcp",
                   "GET /metrics",
                   "POST /inspect"
                 ]
@@ -2093,6 +2097,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.5.1",
               "changelogs/v2.5.0",
               {
                 "group": "October 2026",
@@ -2334,6 +2339,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.5.2",
+              "changelogs/ent-v2.5.1",
               "changelogs/ent-v2.5.0",
               {
                 "group": "October 2026",
@@ -2449,6 +2456,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v1.0.2",
               "changelogs/edge-v1.0.1",
               {
                 "group": "October 2026",
@@ -2782,6 +2790,26 @@
     {
       "source": "/enterprise/setting-up-entra",
       "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/workload-identity/entra",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/azure",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/aws",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/oidc",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/trusted-issuers",
+      "destination": "/enterprise/workload-identity/overview"
     },
     {
       "source": "/enterprise/setting-up-zitadel",
