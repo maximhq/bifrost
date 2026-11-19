@@ -6448,6 +6448,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 			Object:        file.Object,
 			Bytes:         file.Bytes,
 			CreatedAt:     file.CreatedAt,
+			ExpiresAt:     file.ExpiresAt,
 			Filename:      file.Filename,
 			Purpose:       schemas.FilePurpose(file.Purpose),
 			Status:        ToBifrostFileStatus(file.Status),
