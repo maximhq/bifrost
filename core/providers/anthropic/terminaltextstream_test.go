@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -364,6 +365,32 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 			t.Fatalf("passthrough emitted terminal tool arguments: %#v", events)
 		}
 	})
+}
+
+func TestTerminalToolArgumentsStreamWebSearchOutputIndexKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	added := terminalToolItem("", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	added.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+	delta := terminalToolArgsEvent("", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, `{"query":"test"`)
+	delta.ItemID = nil
+	done := terminalToolArgsEvent("", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"query":"test"}`)
+	stop := terminalToolItem("", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+	stop.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+	stop.Item.ResponsesToolMessage.Arguments = schemas.Ptr(`{"query":"test"}`)
+
+	events := convertTerminalTextEvents(ctx, added, delta, done, stop)
+
+	input := terminalToolInputJSON(events)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+		t.Fatalf("tool input is not a single JSON object: %v (input %q)", err, input)
+	}
+	if parsed["query"] != "test" {
+		t.Fatalf("query = %v, want %q", parsed["query"], "test")
+	}
+	if left := getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs; len(left) != 0 {
+		t.Fatalf("WebSearch tracking leaked after output_item.done: %#v", left)
+	}
 }
 
 // BenchmarkTerminalToolArgumentsStream measures per-call reverse stream conversion with and without deltas.
