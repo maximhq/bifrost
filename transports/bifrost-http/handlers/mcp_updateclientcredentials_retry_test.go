@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // fakeUpdateCredsMCPManager is a minimal MCPManager test double: only
@@ -48,6 +49,14 @@ func (m *fakeUpdateCredsMCPManager) VerifyHeadersConnection(_ context.Context, _
 func (m *fakeUpdateCredsMCPManager) SetClientDiscovery(_ string, _ *schemas.MCPDiscovery) {
 }
 func (m *fakeUpdateCredsMCPManager) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
+	return false
+}
+
+func (*fakeUpdateCredsMCPManager) IsMCPAllowedForUser(context.Context, string, string) bool {
+	return false
+}
+
+func (*fakeUpdateCredsMCPManager) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
 	return false
 }
 
