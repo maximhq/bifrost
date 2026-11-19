@@ -1730,22 +1730,33 @@ func normalizeAggregateTimestamp(value any) string {
 //
 // Realtime turn rows are kept intact because the logs table renders them as a
 // combined Tool/User/Assistant summary and needs the full turn context.
+//
+// Columns only the log detail sheet reads are left out: alias_model_family,
+// server_side_fallback_model, served_model, routing_engines_used,
+// complexity_mechanism, model_router_id, model_router_name,
+// video_generation_input and cache_debug. The sheet waits for
+// GET /api/logs/{id}, which selects every column, before it renders, so
+// carrying them on every list row only grows the response. Each backs an
+// omitempty field, so a list row leaves the key out rather than reporting a
+// zero value. TestListProjectionLeavesOutDetailOnlyColumns pins the set.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
+		// alias and complexity_tier stay: Warp's log search tool reports them.
 		"id", "parent_request_id", "timestamp", "object_type", "is_passthrough", "provider", "model", "alias",
-		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
+		"canonical_model_name",
 		"number_of_retries", "fallback_index",
+		// selected_key_name stays: the handler attaches selected_key to a row
+		// only when both the id and the name are present.
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
-		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
-		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"model_router_id", "model_router_name",
+		"tool_call_names", "routing_rule_id", "routing_rule_name",
+		"complexity_tier", "session_id", "agent_correlation_id",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
 		"user_agent", "app", "client_ip",
-		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
+		"speech_input", "transcription_input", "image_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
@@ -1753,7 +1764,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
-		"metadata", "cache_debug",
+		"metadata",
 		"batch_debug",
 		// video_debug tells a settled video's aggregate cost row apart from the
 		// submission it settles; without it the list shows the same video twice.
@@ -1763,8 +1774,12 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
+		// content_hidden also gates Warp: its backfill and log search skip a
+		// hidden row before fetching it in full.
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
+		// created_at is not omitempty, so a missing column would serialize as
+		// the zero time instead of being left out.
 		"created_at",
 		// guardrail_debug holds only sanitized rule metadata (never matched
 		// text), so it stays small; the Guardrail Incidents view reads the
