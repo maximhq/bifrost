@@ -2625,27 +2625,55 @@ export const relayBodyOverridesSchema = z
 		});
 	});
 
-// A route's async job block is set through config.json or the API; the form carries it untouched.
-export const relayJobSchema = z.object({
-	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
-	poll: z.object({
-		method: z.string().optional(),
-		path: z
-			.string()
-			.trim()
-			.min(1, msg("validation.relays.pollPathRequired"))
-			.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
-		headers: z.record(z.string(), z.string()).optional(),
-		body: z.string().optional(),
-		content_type: z.string().optional(),
-	}),
-	status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
-	succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
-	failed: z.array(z.string()).optional(),
-	interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
-	timeout_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
-	usage: relayUsageBaseSchema.optional(),
-});
+// The longest a job may run before it is written off, as the gateway caps it (7 days), and its default.
+const RELAY_JOB_MAX_TIMEOUT_SECONDS = 604800;
+const RELAY_JOB_DEFAULT_TIMEOUT_SECONDS = 3600;
+
+// A route's async job, edited in the async job sheet. The checks mirror the gateway's, so a refused
+// save shows on the field instead of in a toast.
+export const relayJobSchema = z
+	.object({
+		id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
+		poll: z.object({
+			method: z.string().optional(),
+			path: z
+				.string()
+				.trim()
+				.min(1, msg("validation.relays.pollPathRequired"))
+				.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
+			headers: z.record(z.string(), z.string()).optional(),
+			body: z.string().optional(),
+			content_type: z.string().optional(),
+		}),
+		status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
+		succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
+		failed: z.array(z.string()).optional(),
+		interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
+		timeout_seconds: z
+			.number()
+			.int()
+			.min(1, msg("validation.relays.atLeastOneSecond"))
+			.max(RELAY_JOB_MAX_TIMEOUT_SECONDS, msg("validation.relays.jobTimeoutMax"))
+			.optional(),
+		usage: relayUsageBaseSchema.optional(),
+		reused_id_is_new_job: z.boolean().optional(),
+	})
+	.superRefine((job, ctx) => {
+		const token = "{{job.id}}";
+		const mentioned = (job.poll.path + (job.poll.body ?? "") + Object.values(job.poll.headers ?? {}).join("")).includes(token);
+		if (!mentioned)
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.pollNeedsJobId", { token }), path: ["poll", "path"] });
+		const timeout = job.timeout_seconds ?? RELAY_JOB_DEFAULT_TIMEOUT_SECONDS;
+		if (job.interval_seconds !== undefined && job.interval_seconds > timeout)
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.jobIntervalOverTimeout", { timeout }),
+				path: ["interval_seconds"],
+			});
+		const failed = new Set((job.failed ?? []).map((s) => s.toLowerCase()));
+		const both = job.succeeded.find((s) => failed.has(s.toLowerCase()));
+		if (both) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.jobStatusBoth", { status: both }), path: ["failed"] });
+	});
 
 export const relayRouteFormSchema = z.object({
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
@@ -2667,6 +2695,10 @@ export const relayRouteFormSchema = z.object({
 	body_overrides: relayBodyOverridesSchema.optional(),
 	inherit_body_overrides: z.boolean().optional(),
 });
+
+// The async job sheet: the start route with its job, which is required there.
+export const relayAsyncJobFormSchema = relayRouteFormSchema.extend({ job: relayJobSchema });
+export type RelayAsyncJobForm = z.infer<typeof relayAsyncJobFormSchema>;
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
 // and vault references round-trip, and a redacted value sent back keeps the stored secret.

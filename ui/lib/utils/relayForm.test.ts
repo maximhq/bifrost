@@ -281,6 +281,12 @@ describe("relay form", () => {
 		});
 	});
 
+	it("keeps a job's reused id switch, which only the API used to set", () => {
+		const job = { id_path: "id", poll: { path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		expect(cleanJob({ ...job, reused_id_is_new_job: true }).reused_id_is_new_job).toBe(true);
+		expect(cleanJob({ ...job, reused_id_is_new_job: false })).not.toHaveProperty("reused_id_is_new_job");
+	});
+
 	it("leaves the reported cost out of the price when the relay ignores it", () => {
 		expect(describePricing({ cost_per_request: 0.001, cost_path: "usage.cost" })).toContain("reported cost");
 		expect(describePricing({ cost_per_request: 0.001, cost_path: "usage.cost" }, true)).not.toContain("reported cost");
