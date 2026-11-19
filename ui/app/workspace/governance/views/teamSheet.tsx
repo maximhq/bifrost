@@ -401,6 +401,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	return (
 		<Sheet open onOpenChange={(open) => !open && onCancel()}>
 			<SheetContent
+				resizeKey="team"
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
 				data-testid="team-sheet-content"
 				onInteractOutside={(e) => e.preventDefault()}
