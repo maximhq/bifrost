@@ -1839,6 +1839,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 			Object:        file.Object,
 			Bytes:         file.Bytes,
 			CreatedAt:     file.CreatedAt,
+			ExpiresAt:     file.ExpiresAt,
 			Filename:      file.Filename,
 			Purpose:       schemas.FilePurpose(file.Purpose),
 			Status:        openai.ToBifrostFileStatus(file.Status),
@@ -3743,6 +3744,10 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 	return nil, lastErr
 }
 
+// SendsPassthroughBodySource marks AzureProvider as streaming BifrostPassthroughRequest.BodySource
+// (schemas.PassthroughBodySourceSender), so Bifrost does not read a multipart upload into memory first.
+func (provider *AzureProvider) SendsPassthroughBodySource() {}
+
 // Passthrough forwards a raw request to Azure's API without any transformation.
 func (provider *AzureProvider) Passthrough(
 	ctx *schemas.BifrostContext,
@@ -3776,7 +3781,9 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
@@ -3794,7 +3801,7 @@ func (provider *AzureProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
+		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req), body, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3850,7 +3857,9 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
@@ -3890,6 +3899,7 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError("provider returned an empty stream body", fmt.Errorf("provider returned an empty stream body"))
 	}
 
+	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
 		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
@@ -3914,7 +3924,7 @@ func (provider *AzureProvider) PassthroughStream(
 				if anthropicUsage != nil {
 					return anthropicUsage.ObserveEvent(event)
 				}
-				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
 			},
 		},
 	), nil

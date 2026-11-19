@@ -582,8 +582,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 // Listing models is a metadata read and should not wait inference-scale
 // timeouts. The bound is per page, not per provider: every page re-fetches the
 // upstream catalog, so one deadline across the whole walk cut a large catalog
-// off after its first page. A var rather than a const so package tests can shrink it.
-var listAllModelsProviderTimeout = 5 * time.Second
+// off after its first page. 10s fits a slow healthy page (a HuggingFace page takes
+// 3.5-4.8s alone). A var rather than a const so package tests can shrink it.
+var listAllModelsProviderTimeout = 10 * time.Second
 
 // providerModelLister is the optional model-catalog capability ListAllModels
 // falls back on when a provider's live poll fails. The framework's
@@ -9409,6 +9410,28 @@ func prepareFileUploadContent(provider schemas.Provider, request *schemas.Bifros
 	return nil
 }
 
+// preparePassthroughBody reads a passthrough request's BodySource into Body for a provider that
+// does not stream it (does not implement schemas.PassthroughBodySourceSender). The bytes are kept
+// on the request, so a retry or a fallback reads the body once. A streaming provider gets the
+// request untouched and the body is never held in memory.
+func preparePassthroughBody(provider schemas.Provider, request *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if request == nil || request.BodySource == nil || len(request.Body) > 0 {
+		return nil
+	}
+	if _, streams := provider.(schemas.PassthroughBodySourceSender); streams {
+		return nil
+	}
+	body, err := schemas.ReadBodySource(request.BodySource)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          &schemas.ErrorField{Message: "failed to read passthrough request body", Error: err},
+		}
+	}
+	request.Body = body
+	return nil
+}
+
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -9834,6 +9857,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.ContainerFileDeleteResponse = containerFileDeleteResponse
 	case schemas.PassthroughRequest:
+		if bifrostError := preparePassthroughBody(provider, req.BifrostRequest.PassthroughRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -9890,6 +9916,9 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 	case schemas.ImageEditStreamRequest:
 		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
 	case schemas.PassthroughStreamRequest:
+		if bifrostError := preparePassthroughBody(provider, req.BifrostRequest.PassthroughRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
