@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   weaviate:
-    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+    image: cr.weaviate.io/semitechnologies/weaviate:1.39.13
     container_name: weaviate
     ports:
       - "9000:8080"

@@ -28,7 +28,7 @@ services:
         ipv4_address: 172.38.0.11
 
   weaviate:
-    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4@sha256:920463cf9a9b2b8d38e5b925d63f6928fa703277c93df11d5a75fc75e1fff758
+    image: cr.weaviate.io/semitechnologies/weaviate:1.39.13@sha256:ad2b986bbe4666fbd5302a5ee0cc6c74a048c4c769198d46147ea232d46a2dd8
     command:
         - --host
         - 0.0.0.0
