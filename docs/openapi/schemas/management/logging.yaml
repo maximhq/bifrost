@@ -1343,6 +1343,10 @@ DimensionTokenStats:
     prompt_tokens:
       type: integer
       format: int64
+    cached_read_tokens:
+      type: integer
+      format: int64
+      description: Subset of prompt_tokens served from a prompt cache. Never additive into total_tokens.
     completion_tokens:
       type: integer
       format: int64

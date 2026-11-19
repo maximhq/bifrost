@@ -346506,6 +346506,315 @@
           }
         }
       ]
+    },
+    {
+      "name": "373. Dimension token histogram reports cached read tokens (cached-tokens)",
+      "description": "GET /api/logs/histogram/tokens/by-dimension returned prompt, completion and total tokens per dimension value but not cached_read_tokens, so a caller could not tell cached from uncached prompt tokens per customer, team or provider, even though the column already exists on logs (logs.cached_read_tokens), is carried by mv_logs_hourly (total_cached_read_tokens), and is already reported by the non-dimension reader GET /api/logs/histogram/tokens. framework/logstore now selects it on both the raw reader and the mv_logs_hourly reader. It is the cached subset of prompt_tokens and never additive into total_tokens, so every entry must satisfy cached_read_tokens <= prompt_tokens. Two seeds run in one fresh session (a prompt long enough for OpenAI prompt caching, and a short one); the provider read exercises the matview route and the customer_id read the raw route. Red before the change: the field is absent from every dimension entry.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini cached-tokens seed: a long prompt that OpenAI may serve from its prompt cache",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Always start a fresh session: collection variables outlive a run in Postman,",
+                  "// and a read that picked up an earlier run's rows could not assert exact token counts.",
+                  "pm.collectionVariables.set('cachedTokSession', 'harness-cached-tokens-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('cachedTokIds', '[]');",
+                  "pm.collectionVariables.unset('cachedTokRetryProvider');",
+                  "pm.collectionVariables.unset('cachedTokRetryCustomer');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The log row id is the request id; recorded so the cleanup step can delete this seed.",
+                  "function addCachedIds(id) { if (!id) { return; } var cur = JSON.parse(pm.collectionVariables.get('cachedTokIds') || '[]'); if (cur.indexOf(id) === -1) { cur.push(id); } pm.collectionVariables.set('cachedTokIds', JSON.stringify(cur)); }",
+                  "addCachedIds(pm.response.headers.get('x-bifrost-request-id'));",
+                  "pm.test('cached-tokens seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{cachedTokSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Line 1: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 2: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 3: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 4: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 5: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 6: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 7: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 8: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 9: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 10: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 11: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 12: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 13: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 14: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 15: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 16: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 17: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 18: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 19: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 20: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 21: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 22: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 23: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 24: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 25: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 26: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 27: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 28: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 29: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 30: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 31: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 32: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 33: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 34: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 35: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 36: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 37: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 38: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 39: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 40: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 41: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 42: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 43: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 44: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 45: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 46: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 47: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 48: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 49: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 50: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 51: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 52: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 53: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 54: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 55: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 56: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 57: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 58: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 59: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 60: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 61: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 62: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 63: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 64: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 65: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 66: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 67: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 68: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 69: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 70: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 71: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 72: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 73: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 74: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 75: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 76: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 77: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 78: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 79: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 80: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 81: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 82: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 83: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 84: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 85: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 86: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 87: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 88: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 89: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 90: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 91: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 92: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 93: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 94: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 95: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 96: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 97: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 98: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 99: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 100: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 101: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 102: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 103: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 104: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 105: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 106: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 107: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 108: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 109: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 110: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 111: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 112: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 113: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 114: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 115: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 116: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 117: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 118: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 119: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 120: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 121: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 122: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 123: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 124: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 125: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 126: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 127: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 128: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 129: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 130: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 131: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 132: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 133: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 134: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 135: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 136: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 137: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 138: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 139: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 140: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 141: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 142: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 143: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 144: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 145: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 146: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 147: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 148: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 149: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 150: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 151: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 152: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 153: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 154: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 155: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 156: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 157: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 158: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 159: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 160: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 161: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 162: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 163: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 164: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 165: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 166: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 167: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 168: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 169: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 170: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 171: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 172: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 173: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 174: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 175: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 176: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 177: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 178: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 179: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 180: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 181: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 182: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 183: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 184: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 185: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 186: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 187: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 188: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 189: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 190: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 191: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 192: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 193: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 194: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 195: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 196: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 197: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 198: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 199: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 200: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 201: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 202: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 203: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 204: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 205: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 206: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 207: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 208: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 209: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 210: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 211: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 212: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 213: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 214: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 215: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 216: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 217: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 218: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 219: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 220: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 221: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 222: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 223: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 224: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 225: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 226: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 227: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 228: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 229: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 230: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 231: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 232: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 233: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 234: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 235: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 236: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 237: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 238: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 239: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 240: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 241: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 242: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 243: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 244: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 245: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 246: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 247: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 248: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 249: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 250: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 251: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 252: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 253: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 254: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 255: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 256: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 257: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 258: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 259: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 260: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 261: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 262: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 263: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 264: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 265: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 266: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 267: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 268: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 269: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 270: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 271: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 272: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 273: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 274: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 275: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 276: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 277: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 278: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 279: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 280: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 281: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 282: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 283: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 284: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 285: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 286: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 287: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 288: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 289: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 290: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 291: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 292: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 293: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 294: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 295: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 296: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 297: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 298: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 299: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 300: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 301: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 302: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 303: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 304: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 305: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 306: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 307: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 308: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 309: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 310: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 311: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 312: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 313: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 314: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 315: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 316: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 317: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 318: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 319: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 320: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 321: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 322: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 323: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 324: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 325: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 326: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 327: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 328: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 329: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 330: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 331: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 332: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 333: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 334: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 335: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 336: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 337: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 338: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 339: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 340: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 341: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 342: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 343: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 344: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 345: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 346: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 347: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 348: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 349: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 350: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 351: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 352: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 353: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 354: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 355: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 356: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 357: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 358: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 359: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 360: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 361: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 362: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 363: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 364: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 365: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 366: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 367: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 368: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 369: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 370: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 371: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 372: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 373: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 374: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 375: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 376: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 377: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 378: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 379: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 380: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 381: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 382: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 383: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 384: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 385: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 386: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 387: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 388: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 389: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 390: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 391: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 392: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 393: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 394: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 395: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 396: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 397: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 398: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 399: the quick brown fox jumps over the lazy dog and keeps running.\\nLine 400: the quick brown fox jumps over the lazy dog and keeps running.\\n\\nReply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini cached-tokens seed: a short uncached prompt",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('cachedTokSession')) {",
+                  "  pm.collectionVariables.set('cachedTokSession', 'harness-cached-tokens-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The log row id is the request id; recorded so the cleanup step can delete this seed.",
+                  "function addCachedIds(id) { if (!id) { return; } var cur = JSON.parse(pm.collectionVariables.get('cachedTokIds') || '[]'); if (cur.indexOf(id) === -1) { cur.push(id); } pm.collectionVariables.set('cachedTokIds', JSON.stringify(cur)); }",
+                  "addCachedIds(pm.response.headers.get('x-bifrost-request-id'));",
+                  "pm.test('cached-tokens seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{cachedTokSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai cached-tokens: provider reader reports cached_read_tokens per bucket",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('cachedTokRetryProvider') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches; newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cached_read_tokens must be an integer on every dimension entry and must never",
+                  "// exceed prompt_tokens: it is the cached subset of the prompt, not an addition.",
+                  "// Before the fix the field was absent from this payload entirely, so a caller could",
+                  "// not tell cached from uncached prompt tokens per provider.",
+                  "pm.test('cached-tokens provider reader responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "// The seeded rows are written by the async log writer (1s batches). No dimension",
+                  "// entries means they have not landed yet, not that the field is broken.",
+                  "var __retry = Number(pm.collectionVariables.get('cachedTokRetryProvider') || 0);",
+                  "var __buckets = pm.response.json().buckets || [];",
+                  "var __any = __buckets.some(function (b) { return Object.keys(b.by_dimension || {}).length > 0; });",
+                  "if (!__any && __retry < 10) {",
+                  "  pm.collectionVariables.set('cachedTokRetryProvider', __retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('cachedTokRetryProvider');",
+                  "var seen = 0;",
+                  "var totalPrompt = 0;",
+                  "var totalCached = 0;",
+                  "__buckets.forEach(function (b) {",
+                  "  var byDim = b.by_dimension || {};",
+                  "  Object.keys(byDim).forEach(function (k) {",
+                  "    var s = byDim[k];",
+                  "    seen++;",
+                  "    totalPrompt += s.prompt_tokens || 0;",
+                  "    totalCached += s.cached_read_tokens || 0;",
+                  "    pm.test('cached-tokens provider reader: cached_read_tokens is an integer on ' + k, function () {",
+                  "      pm.expect(typeof s, 'entry ' + k + ': ' + JSON.stringify(s)).to.equal('object');",
+                  "      pm.expect(s.cached_read_tokens, 'missing cached_read_tokens on ' + k + ': ' + JSON.stringify(s)).to.be.a('number');",
+                  "      pm.expect(Number.isInteger(s.cached_read_tokens), 'cached_read_tokens must be an integer on ' + k + ': ' + JSON.stringify(s)).to.equal(true);",
+                  "      pm.expect(s.cached_read_tokens, 'cached read must not exceed prompt on ' + k + ': ' + JSON.stringify(s)).to.be.at.most(s.prompt_tokens);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('cached-tokens provider reader: the seeded session produced at least one dimension entry', function () {",
+                  "  pm.expect(seen, 'no dimension entries in ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('cached-tokens provider reader: cached read is a subset of the prompt total', function () {",
+                  "  pm.expect(totalCached, 'cached ' + totalCached + ' > prompt ' + totalPrompt).to.be.at.most(totalPrompt);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/histogram/tokens/by-dimension?dimension=provider&session_id={{cachedTokSession}}&start_time=1970-01-01T00:00:00Z&end_time=2100-01-01T00:00:00Z&bucket_size=3600"
+          }
+        },
+        {
+          "name": "openai cached-tokens: customer_id reader reports cached_read_tokens per bucket",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('cachedTokRetryCustomer') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches; newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cached_read_tokens must be an integer on every dimension entry and must never",
+                  "// exceed prompt_tokens: it is the cached subset of the prompt, not an addition.",
+                  "// Before the fix the field was absent from this payload entirely, so a caller could",
+                  "// not tell cached from uncached prompt tokens per customer_id.",
+                  "pm.test('cached-tokens customer_id reader responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "// The seeded rows are written by the async log writer (1s batches). No dimension",
+                  "// entries means they have not landed yet, not that the field is broken.",
+                  "var __retry = Number(pm.collectionVariables.get('cachedTokRetryCustomer') || 0);",
+                  "var __buckets = pm.response.json().buckets || [];",
+                  "var __any = __buckets.some(function (b) { return Object.keys(b.by_dimension || {}).length > 0; });",
+                  "if (!__any && __retry < 10) {",
+                  "  pm.collectionVariables.set('cachedTokRetryCustomer', __retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('cachedTokRetryCustomer');",
+                  "var seen = 0;",
+                  "var totalPrompt = 0;",
+                  "var totalCached = 0;",
+                  "__buckets.forEach(function (b) {",
+                  "  var byDim = b.by_dimension || {};",
+                  "  Object.keys(byDim).forEach(function (k) {",
+                  "    var s = byDim[k];",
+                  "    seen++;",
+                  "    totalPrompt += s.prompt_tokens || 0;",
+                  "    totalCached += s.cached_read_tokens || 0;",
+                  "    pm.test('cached-tokens customer_id reader: cached_read_tokens is an integer on ' + k, function () {",
+                  "      pm.expect(typeof s, 'entry ' + k + ': ' + JSON.stringify(s)).to.equal('object');",
+                  "      pm.expect(s.cached_read_tokens, 'missing cached_read_tokens on ' + k + ': ' + JSON.stringify(s)).to.be.a('number');",
+                  "      pm.expect(Number.isInteger(s.cached_read_tokens), 'cached_read_tokens must be an integer on ' + k + ': ' + JSON.stringify(s)).to.equal(true);",
+                  "      pm.expect(s.cached_read_tokens, 'cached read must not exceed prompt on ' + k + ': ' + JSON.stringify(s)).to.be.at.most(s.prompt_tokens);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('cached-tokens customer_id reader: the seeded session produced at least one dimension entry', function () {",
+                  "  pm.expect(seen, 'no dimension entries in ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('cached-tokens customer_id reader: cached read is a subset of the prompt total', function () {",
+                  "  pm.expect(totalCached, 'cached ' + totalCached + ' > prompt ' + totalPrompt).to.be.at.most(totalPrompt);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/histogram/tokens/by-dimension?dimension=customer_id&session_id={{cachedTokSession}}&start_time=1970-01-01T00:00:00Z&end_time=2100-01-01T00:00:00Z&bucket_size=3600"
+          }
+        },
+        {
+          "name": "openai cached-tokens cleanup: delete both seeded logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Persistent log stores and reused gateways would otherwise keep the seeded rows.",
+                  "var ids = JSON.parse(pm.collectionVariables.get('cachedTokIds') || '[]');",
+                  "pm.test('cached-tokens cleanup: exactly the two seeded log ids are targeted', function () {",
+                  "  pm.expect(ids, 'ids: ' + JSON.stringify(ids)).to.have.lengthOf(2);",
+                  "});",
+                  "pm.test('cached-tokens cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('cachedTokIds');",
+                  "pm.collectionVariables.unset('cachedTokSession');",
+                  "pm.collectionVariables.unset('cachedTokRetryProvider');",
+                  "pm.collectionVariables.unset('cachedTokRetryCustomer');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":{{cachedTokIds}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/logs"
+          }
+        }
+      ]
     }
   ]
 }

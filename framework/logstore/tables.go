@@ -2930,6 +2930,7 @@ type DimensionCostHistogramResult struct {
 // DimensionTokenStats represents token statistics for a single dimension value
 type DimensionTokenStats struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
+	CachedReadTokens int64 `json:"cached_read_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
 }

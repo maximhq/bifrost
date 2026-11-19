@@ -4509,13 +4509,15 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 		PromptTokens     int64  `gorm:"column:prompt_tokens"`
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
+		CachedReadTokens int64  `gorm:"column:cached_read_tokens"`
 	}
 	if err := baseQuery.Select(fmt.Sprintf(`
 		%s AS bucket_timestamp,
 		%s AS dim_value,
 		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-		COALESCE(SUM(total_tokens), 0) AS total_tkns
+		COALESCE(SUM(total_tokens), 0) AS total_tkns,
+		COALESCE(SUM(cached_read_tokens), 0) AS cached_read_tokens
 	`, bucketExpr, dimValueExpr)).
 		Group(fmt.Sprintf("bucket_timestamp, %s", groupCol)).
 		Order("bucket_timestamp ASC").
@@ -4524,7 +4526,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	}
 
 	type dimAgg struct {
-		prompt, completion, total int64
+		prompt, completion, total, cached int64
 	}
 	type bucketAgg struct {
 		byDimension map[string]*dimAgg
@@ -4545,6 +4547,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 		da.prompt += r.PromptTokens
 		da.completion += r.CompletionTokens
 		da.total += r.TotalTokens
+		da.cached += r.CachedReadTokens
 		dimSet[r.DimValue] = struct{}{}
 	}
 
@@ -4567,6 +4570,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 					PromptTokens:     da.prompt,
 					CompletionTokens: da.completion,
 					TotalTokens:      da.total,
+					CachedReadTokens: da.cached,
 				}
 			}
 			buckets = append(buckets, b)
@@ -4583,6 +4587,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 					PromptTokens:     da.prompt,
 					CompletionTokens: da.completion,
 					TotalTokens:      da.total,
+					CachedReadTokens: da.cached,
 				}
 			}
 		}

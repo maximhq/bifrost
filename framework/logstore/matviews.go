@@ -2481,6 +2481,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		PromptTokens     int64  `gorm:"column:prompt_tokens"`
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
+		CachedReadTokens int64  `gorm:"column:cached_read_tokens"`
 	}
 	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -2492,7 +2493,8 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		%s AS dim_value,
 		SUM(total_prompt_tokens) AS prompt_tokens,
 		SUM(total_completion_tokens) AS completion_tokens,
-		SUM(total_tokens) AS total_tkns
+		SUM(total_tokens) AS total_tkns,
+		SUM(total_cached_read_tokens) AS cached_read_tokens
 	`, bucketSizeSeconds, bucketSizeSeconds, dimCol)).
 		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
 		Order("bucket_timestamp ASC").
@@ -2501,7 +2503,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 	}
 
 	type dimAgg struct {
-		prompt, completion, total int64
+		prompt, completion, total, cached int64
 	}
 	type bucketAgg struct {
 		byDimension map[string]*dimAgg
@@ -2522,6 +2524,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		da.prompt += r.PromptTokens
 		da.completion += r.CompletionTokens
 		da.total += r.TotalTokens
+		da.cached += r.CachedReadTokens
 		dimSet[r.DimValue] = struct{}{}
 	}
 
@@ -2535,6 +2538,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 					PromptTokens:     da.prompt,
 					CompletionTokens: da.completion,
 					TotalTokens:      da.total,
+					CachedReadTokens: da.cached,
 				}
 			}
 		}

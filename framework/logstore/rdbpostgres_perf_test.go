@@ -837,3 +837,98 @@ func TestRelayLogContentSearchUsesFTSOnPostgres(t *testing.T) {
 		assert.True(t, valid, "%s is built", index)
 	}
 }
+
+// TestDimensionTokenHistogramCachedReadTokens checks the dimension token reader
+// reports cached read tokens on both the raw and the matview path. cached_read_tokens
+// is a subset of prompt_tokens, so it must never be added into total_tokens.
+//
+// The matview reader is only reachable for a non-bucketed dimension (customer and
+// its array-backed siblings are forced raw), so provider covers the matview route
+// and customer covers the raw one.
+func TestDimensionTokenHistogramCachedReadTokens(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	end := start.Add(2 * time.Hour)
+
+	sum := func(res *DimensionTokenHistogramResult) map[string]DimensionTokenStats {
+		out := map[string]DimensionTokenStats{}
+		for _, b := range res.Buckets {
+			for dim, v := range b.ByDimension {
+				acc := out[dim]
+				acc.PromptTokens += v.PromptTokens
+				acc.CachedReadTokens += v.CachedReadTokens
+				acc.CompletionTokens += v.CompletionTokens
+				acc.TotalTokens += v.TotalTokens
+				out[dim] = acc
+			}
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name      string
+		dimension HistogramDimension
+		want      map[string]DimensionTokenStats
+	}{
+		{
+			// customer: raw path (bucketed dimension)
+			name:      "customer_raw_path",
+			dimension: DimensionCustomer,
+			want: map[string]DimensionTokenStats{
+				"c-a": {PromptTokens: 200, CachedReadTokens: 160, CompletionTokens: 40, TotalTokens: 240},
+				"c-b": {PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
+			},
+		},
+		{
+			// provider: matview path
+			name:      "provider_matview_path",
+			dimension: DimensionProvider,
+			want: map[string]DimensionTokenStats{
+				"openai": {PromptTokens: 200, CachedReadTokens: 160, CompletionTokens: 40, TotalTokens: 240},
+				"azure":  {PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, db := setupPerfTestDB(t)
+			store.logger = testLogger{}
+
+			insert := func(id, customer, provider string, ts time.Time, prompt, cached, completion, total int64) {
+				require.NoError(t, db.Exec(`
+					INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+						customer_id, created_at, latency, cost,
+						prompt_tokens, cached_read_tokens, completion_tokens, total_tokens)
+					VALUES (?, ?, 'chat_completion', ?, 'gpt-4', 'success',
+						?, ?, 100, 0.01, ?, ?, ?, ?)`,
+					id, ts, provider, customer, ts, prompt, cached, completion, total).Error)
+			}
+			insert("l1", "c-a", "openai", start.Add(5*time.Minute), 100, 80, 20, 120)
+			insert("l2", "c-a", "openai", start.Add(65*time.Minute), 100, 80, 20, 120)
+			insert("l3", "c-b", "azure", start.Add(10*time.Minute), 50, 0, 10, 60)
+
+			filters := SearchFilters{StartTime: &start, EndTime: &end}
+
+			// Raw path baseline.
+			store.matViewsReady.Store(false)
+			rawRes, err := store.GetDimensionTokenHistogram(context.Background(), filters, 3600, tc.dimension)
+			require.NoError(t, err)
+			raw := sum(rawRes)
+			if !assert.Equal(t, tc.want, raw, "raw path must report cached read tokens per dimension") {
+				t.Logf("raw got: %+v", raw)
+			}
+
+			// Matview path where eligible.
+			store.matViewsReady.Store(true)
+			refreshTestMatViews(t, db)
+			viewRes, err := store.GetDimensionTokenHistogram(context.Background(), filters, 3600, tc.dimension)
+			require.NoError(t, err)
+			view := sum(viewRes)
+			if !assert.Equal(t, tc.want, view, "cached read tokens must match on the served path") {
+				t.Logf("view got: %+v", view)
+			}
+			for dim, v := range view {
+				assert.LessOrEqual(t, v.CachedReadTokens, v.PromptTokens,
+					"%s: cached read is a subset of prompt, never additive", dim)
+			}
+		})
+	}
+}
