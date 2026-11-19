@@ -389,6 +389,7 @@ export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsa
 		...(job.interval_seconds ? { interval_seconds: job.interval_seconds } : {}),
 		...(job.timeout_seconds ? { timeout_seconds: job.timeout_seconds } : {}),
 		...(usage ? { usage } : {}),
+		...(job.reused_id_is_new_job ? { reused_id_is_new_job: true } : {}),
 	};
 }
 

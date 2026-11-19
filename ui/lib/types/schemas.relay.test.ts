@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	relayBodyOverridesSchema,
 	relayFormSchema,
+	relayJobSchema,
 	relayOpenAPISpecUrlSchema,
 	relayRouteFormSchema,
 	relayUsageBaseSchema,
@@ -157,6 +158,19 @@ describe("relay form validation", () => {
 			relayUsageBaseSchema.safeParse({ cost_per_request: null, cost_per_unit: null, units_source: null, units_measure: null }).success,
 		).toBe(true);
 		expect(relayUsageBaseSchema.safeParse({ cost_per_unit: -1 }).success).toBe(false);
+	});
+
+	it("refuses an async job the gateway would refuse", () => {
+		const job = { id_path: "id", poll: { method: "GET", path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		const messages = (patch: object) => (relayJobSchema.safeParse({ ...job, ...patch }).error?.issues ?? []).map((i) => i.message);
+		expect(messages({})).toEqual([]);
+		expect(messages({ poll: { method: "POST", path: "/", body: '{"JobId":"{{job.id}}"}' } })).toEqual([]);
+		expect(messages({ poll: { method: "POST", path: "/", headers: { "X-Job": "{{job.id}}" } } })).toEqual([]);
+		expect(messages({ poll: { method: "GET", path: "/jobs/latest" } })[0]).toContain("{{job.id}}");
+		expect(messages({ timeout_seconds: 604801 })[0]).toContain("7 days");
+		expect(messages({ interval_seconds: 7200 })[0]).toContain("3600");
+		expect(messages({ interval_seconds: 7200, timeout_seconds: 7200 })).toEqual([]);
+		expect(messages({ succeeded: ["DONE"], failed: ["done"] })[0]).toContain("DONE");
 	});
 
 	it("accepts only an absolute http(s) URL as the OpenAPI import's URL source", () => {

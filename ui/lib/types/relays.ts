@@ -112,6 +112,8 @@ export interface RelayJobConfig {
 	interval_seconds?: number;
 	timeout_seconds?: number;
 	usage?: RelayUsageConfig;
+	/** true: an id returned again after its job was charged is new work (APIs where the caller picks the id). */
+	reused_id_is_new_job?: boolean;
 }
 
 export interface RelayRouteConfig {

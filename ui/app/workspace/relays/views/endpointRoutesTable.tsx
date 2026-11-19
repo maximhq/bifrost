@@ -25,12 +25,14 @@ import { cn } from "@/lib/utils";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
 import { cleanUsage, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { EllipsisIcon, FileUpIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
-import { useState } from "react";
+import { pairStatusRoutes } from "@/lib/utils/relayAsyncJob";
+import { CornerDownRightIcon, EllipsisIcon, FileUpIcon, HourglassIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { HeaderActionButton } from "../fragments/headerActionButton";
 import { withRoutes, type RouteForm } from "../routes.utils";
+import { AsyncJobSheet } from "../sheets/asyncJobSheet";
 import { OpenAPIImportSheet } from "../sheets/openapiImportSheet";
 import { RouteSheet } from "../sheets/routeSheet";
 
@@ -77,9 +79,24 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	const [deleting, setDeleting] = useState<number | null>(null);
 	const [importOpen, setImportOpen] = useState(false);
 	const [pendingImport, setPendingImport] = useState<{ routes: RouteForm[]; dropped: string[] } | null>(null);
+	// The start route of the async job being edited, or -1 for a new one.
+	const [jobEditing, setJobEditing] = useState<number | null>(null);
 	// Shown in saved order, which is the order requests are matched in; every save writes compareRoutes order.
 	const routes = toRelayForm(endpoint).routes;
 	const endpointUsage = cleanUsage(endpoint.usage, false);
+	// The free route that takes a job's status checks is listed under the job's start route.
+	const statusOf = useMemo(() => pairStatusRoutes(routes), [endpoint]); // eslint-disable-line react-hooks/exhaustive-deps
+	const displayOrder = routes.flatMap((_, i) => {
+		if (statusOf.has(i)) return [];
+		const status = [...statusOf].filter(([, start]) => start === i).map(([s]) => s);
+		return [i, ...status];
+	});
+	// A job's start route and its status route are edited together in the async job sheet.
+	const editRoute = (index: number) => {
+		const start = routes[index].job ? index : statusOf.get(index);
+		if (start !== undefined) setJobEditing(start);
+		else setEditing({ index, route: structuredClone(routes[index]) });
+	};
 
 	const save = async (next: RouteForm[], success: string) => {
 		try {
@@ -141,6 +158,17 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 					{canUpdate && (
 						<HeaderActionButton
 							variant="outline"
+							icon={<HourglassIcon className="h-4 w-4" />}
+							label={t("relays.asyncJob.addButton")}
+							aria-label={t("relays.asyncJob.addButton")}
+							disabled={saving}
+							onClick={() => setJobEditing(-1)}
+							data-testid="relay-routes-add-job"
+						/>
+					)}
+					{canUpdate && (
+						<HeaderActionButton
+							variant="outline"
 							icon={<FileUpIcon className="h-4 w-4" />}
 							label={t("relays.routes.importOpenapi")}
 							aria-label={t("relays.routes.importOpenapi")}
@@ -191,7 +219,9 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 								</TableCell>
 							</TableRow>
 						)}
-						{routes.map((route, index) => {
+						{displayOrder.map((index) => {
+							const route = routes[index];
+							const isStatus = statusOf.has(index);
 							const billable = route.billable ?? routeBillableByDefault(route.method);
 							const enabled = route.enabled ?? true;
 							const override = cleanUsage(route.usage, true);
@@ -199,7 +229,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 								<TableRow
 									key={`${route.method}-${route.path}-${index}`}
 									data-testid={`relay-route-row-${index}`}
-									className={cn("hover:bg-muted/40 text-sm transition-colors", !enabled && "opacity-60")}
+									className={cn("hover:bg-muted/40 text-sm transition-colors", !enabled && "opacity-60", isStatus && "bg-muted/20")}
 								>
 									<TableCell>
 										<Badge variant="secondary" className="font-mono">
@@ -207,9 +237,19 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 										</Badge>
 									</TableCell>
 									<TableCell className="overflow-hidden">
-										<div className="flex min-w-0 items-center gap-2">
+										<div className={cn("flex min-w-0 items-center gap-2", isStatus && "pl-2")}>
+											{isStatus && <CornerDownRightIcon className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />}
 											<span className="truncate font-mono text-sm">{route.path}</span>
-											{route.job && <Badge variant="outline">{t("relays.routes.jobBadge")}</Badge>}
+											{route.job && (
+												<Badge variant="outline" data-testid={`relay-route-job-badge-${index}`}>
+													{t("relays.routes.jobBadge")}
+												</Badge>
+											)}
+											{isStatus && (
+												<Badge variant="outline" data-testid={`relay-route-status-badge-${index}`}>
+													{t("relays.routes.statusCheckBadge")}
+												</Badge>
+											)}
 											{!!route.body_overrides?.some((o) => o.name) && (
 												<Badge variant="outline" data-testid={`relay-route-body-badge-${index}`}>
 													{t("relays.routes.bodyBadge")}
@@ -260,7 +300,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 										<RouteActionsMenu
 											index={index}
 											hasUpdateAccess={canUpdate && !saving}
-											onEdit={() => setEditing({ index, route: structuredClone(route) })}
+											onEdit={() => editRoute(index)}
 											onDelete={() => setDeleting(index)}
 										/>
 									</TableCell>
@@ -285,6 +325,20 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 					if (!editing) return;
 					const next = editing.index < 0 ? [...routes, route] : routes.map((r, i) => (i === editing.index ? route : r));
 					if (await save(next, editing.index < 0 ? t("relays.routes.toastAdded") : t("relays.routes.toastUpdated"))) setEditing(null);
+				}}
+			/>
+			<AsyncJobSheet
+				show={jobEditing !== null}
+				routes={routes}
+				editIndex={jobEditing ?? -1}
+				endpointUsage={endpointUsage}
+				ignoreUpstreamCost={endpoint.ignore_upstream_cost}
+				saving={saving}
+				disabled={!canUpdate}
+				onCancel={() => setJobEditing(null)}
+				onSave={async (next) => {
+					const added = jobEditing === null || jobEditing < 0;
+					if (await save(next, added ? t("relays.asyncJob.toastAdded") : t("relays.asyncJob.toastUpdated"))) setJobEditing(null);
 				}}
 			/>
 			<AlertDialog open={deleting !== null}>

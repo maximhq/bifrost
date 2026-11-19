@@ -354,6 +354,69 @@ test.describe("Relays", () => {
     expect(relay.routes ?? []).toHaveLength(0);
   });
 
+  test("adds an async job with a free status route listed under its start route", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://textract.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await expect(page.routesEmpty).toBeVisible();
+
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({
+      start: { path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.StartDocumentAnalysis" }] },
+      fee: "0.01",
+      idPath: "JobId",
+      poll: { path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.GetDocumentAnalysis" }] },
+      statusPath: "JobStatus",
+      succeeded: "SUCCEEDED",
+      failed: "FAILED",
+    });
+    // A status check that never names the job is refused on the field, as the gateway would refuse it.
+    await page.page.getByTestId("relay-async-job-save").click();
+    await expect(page.asyncJobSheet).toContainText("{{job.id}}");
+    await page.page.getByTestId("relay-job-poll-body").fill('{"JobId":"{{job.id}}"}');
+    await page.page.getByTestId("relay-job-poll-content-type").fill("application/x-amz-json-1.1");
+    // No route takes the caller's status checks yet, so saving adds a free one.
+    await expect(page.page.getByTestId("relay-async-job-status-route-add")).toContainText(
+      "POST / · X-Amz-Target: Textract.GetDocumentAnalysis",
+    );
+    await page.saveAsyncJob();
+
+    const relay = await getRelay(request, name);
+    expect(relay.routes).toHaveLength(2);
+    const start = relay.routes.find((r: { job?: unknown }) => r.job);
+    const status = relay.routes.find((r: { job?: unknown }) => !r.job);
+    expect(start).toMatchObject({
+      method: "POST",
+      path: "/",
+      headers: { "X-Amz-Target": "Textract.StartDocumentAnalysis" },
+      usage: { cost_per_request: 0.01 },
+      job: { id_path: "JobId", poll: { method: "POST", path: "/" }, status_path: "JobStatus", succeeded: ["SUCCEEDED"], failed: ["FAILED"] },
+    });
+    expect(status).toMatchObject({ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.GetDocumentAnalysis" }, billable: false });
+
+    // The status route is listed right under its start route and is free.
+    const rows = page.routeRows();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator('[data-testid^="relay-route-job-badge-"]')).toBeVisible();
+    await expect(rows.nth(1).locator('[data-testid^="relay-route-status-badge-"]')).toBeVisible();
+    await expect(rows.nth(1)).toContainText("Free");
+
+    // Editing the status row opens the job, not a plain route; reopening it finds the free route in place.
+    const statusIndex = relay.routes.indexOf(status);
+    await page.page.getByTestId(`relay-route-actions-${statusIndex}`).click();
+    await page.page.getByTestId(`relay-route-edit-${statusIndex}`).click();
+    await expect(page.asyncJobSheet).toBeVisible();
+    await expect(page.page.getByTestId("relay-job-id-path")).toHaveValue("JobId");
+    await expect(page.page.getByTestId("relay-async-job-status-route-reuse")).toBeVisible();
+    await page.page.getByTestId("relay-job-reused-id").click();
+    await page.saveAsyncJob();
+    const saved = await getRelay(request, name);
+    expect(saved.routes).toHaveLength(2);
+    expect(saved.routes.find((r: { job?: unknown }) => r.job).job.reused_id_is_new_job).toBe(true);
+  });
+
   test("sets body overrides on a route and on the relay, refusing a value that is not JSON", async ({ relaysPage: page, request }) => {
     const name = `e2e-pte-body-${Date.now()}`;
     created.push(name);
