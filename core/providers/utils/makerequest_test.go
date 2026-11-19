@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
@@ -1158,5 +1159,456 @@ func TestSetExtraHeaders_ResolvesSecretVarValues(t *testing.T) {
 	}
 	if got := httpReq.Header.Get("Authorization"); got != "Bearer keep" {
 		t.Errorf("http Authorization overwritten: %q", got)
+	}
+}
+
+func physicalSendTestContext(t *testing.T, authorize schemas.PhysicalSendAuthorizer, maxRequestBytes int) *schemas.BifrostContext {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(t.Context(), time.Now().Add(10*time.Second))
+	if !ctx.SetPhysicalSendGuard(schemas.PhysicalSendGuard{
+		MaxSerializedRequestBytes: maxRequestBytes,
+		Authorize:                 authorize,
+	}) {
+		t.Fatal("physical-send guard was not installed")
+	}
+	if !ctx.SetPhysicalSendRoute(schemas.PhysicalSendRoute{Provider: schemas.OpenAI, Model: "gpt-test"}) {
+		t.Fatal("physical-send route was not installed")
+	}
+	return ctx
+}
+
+func physicalSendRequest(url, body string) *fasthttp.Request {
+	req := fasthttp.AcquireRequest()
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(body)
+	return req
+}
+
+func TestPhysicalSendDestinationRejectsHostHeaderOverride(t *testing.T) {
+	req := physicalSendRequest("https://api.openai.com/v1/responses", `{"model":"gpt-test"}`)
+	defer fasthttp.ReleaseRequest(req)
+	req.Header.SetHost("other.example")
+	_, err := physicalSendDestination(req)
+	var authorizationError *PhysicalSendAuthorizationError
+	if !errors.As(err, &authorizationError) || authorizationError.ReasonCode != "DESTINATION_HOST_MISMATCH" {
+		t.Fatalf("mismatched HTTP Host header error = %v, want destination binding denial", err)
+	}
+}
+
+func TestContextTransport_PhysicalSendDenialWritesNoRequestBytes(t *testing.T) {
+	body := `{"model":"gpt-test","store":false,"input":"hello"}`
+	var authorizerCalls atomic.Int32
+	received := make(chan []byte, 1)
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		wire, _ := io.ReadAll(br)
+		received <- wire
+	})
+	ctx := physicalSendTestContext(t, func(_ context.Context, attempt schemas.PhysicalSendAttempt) error {
+		authorizerCalls.Add(1)
+		if attempt.AttemptID == "" || attempt.Provider != schemas.OpenAI || attempt.Model != "gpt-test" || attempt.Method != http.MethodPost {
+			return errors.New("attempt facts were incomplete")
+		}
+		if string(attempt.Body) != body || !physicalSendBodyMatches(attempt.Body, attempt.BodySHA256) {
+			return errors.New("attempt body binding was incorrect")
+		}
+		if attempt.Destination != "http://scripted/v1/responses" {
+			return errors.New("attempt destination was not exact")
+		}
+		return NewPhysicalSendAuthorizationError(http.StatusForbidden, "POLICY_DENIED", nil)
+	}, 1<<20)
+	client := srv.client(5 * time.Second)
+	req := physicalSendRequest("http://scripted/v1/responses", body)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("authorization denial error = %#v, want HTTP 403", bifrostErr)
+	}
+	if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
+		t.Fatalf("authorization denial must stop fallback: %#v", bifrostErr.AllowFallbacks)
+	}
+	if got := authorizerCalls.Load(); got != 1 {
+		t.Fatalf("authorizer calls = %d, want 1", got)
+	}
+	if got := srv.accepted.Load(); got != 0 {
+		t.Fatalf("denied request opened %d provider connections before authorization", got)
+	}
+	select {
+	case wire := <-received:
+		t.Fatalf("provider received unexpected bytes before denial: %q", wire)
+	default:
+	}
+}
+
+func TestContextTransport_RequiredGuardDeniesUnguardedInternalChildBeforeDial(t *testing.T) {
+	var authorizerCalls atomic.Int32
+	root := physicalSendTestContext(t, func(context.Context, schemas.PhysicalSendAttempt) error {
+		authorizerCalls.Add(1)
+		return nil
+	}, 1<<20)
+	defer root.Cancel()
+	child := schemas.NewBifrostContext(root, time.Time{})
+	defer child.Cancel()
+	if _, guarded := child.PhysicalSendGuard(); guarded || !child.PhysicalSendGuardRequired() {
+		t.Fatal("internal child must shed the guard but retain the authorization requirement")
+	}
+	srv := newScriptedServer(t, func(_ net.Conn, _ *bufio.Reader) {})
+	client := srv.client(5 * time.Second)
+	req := physicalSendRequest("http://scripted/v1/responses", `{"model":"gpt-test","store":false,"input":"hello"}`)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	_, bifrostErr, wait := MakeRequestWithContext(child, client, req, resp)
+	wait()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("unguarded internal child error = %#v, want HTTP 403", bifrostErr)
+	}
+	if got := srv.accepted.Load(); got != 0 {
+		t.Fatalf("unguarded internal child opened %d provider connections", got)
+	}
+	if got := authorizerCalls.Load(); got != 0 {
+		t.Fatalf("unguarded internal child invoked authorizer %d times", got)
+	}
+}
+
+type countingHTTPRoundTripper struct{ calls *atomic.Int32 }
+
+func (rt countingHTTPRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.calls.Add(1)
+	return nil, errors.New("unexpected standard HTTP transport call")
+}
+
+func TestDoHTTPRequestDeniesUnguardedInternalChild(t *testing.T) {
+	root := physicalSendTestContext(t, func(context.Context, schemas.PhysicalSendAttempt) error { return nil }, 1<<20)
+	defer root.Cancel()
+	child := schemas.NewBifrostContext(root, time.Time{})
+	defer child.Cancel()
+	var calls atomic.Int32
+	client := &http.Client{Transport: countingHTTPRoundTripper{calls: &calls}}
+	req, err := http.NewRequestWithContext(child, http.MethodPost, "https://api.openai.com/v1/responses", strings.NewReader(`{"model":"gpt-test"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = DoHTTPRequest(client, req)
+	var authorizationError *PhysicalSendAuthorizationError
+	if !errors.As(err, &authorizationError) || authorizationError.ReasonCode != "GUARD_REQUIRED" {
+		t.Fatalf("unguarded child request error = %v, want GUARD_REQUIRED", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("standard HTTP transport was called %d times for an unguarded child", calls.Load())
+	}
+}
+
+func TestContextTransport_ExpiredPhysicalSendAuthorizationDeniesBeforeDial(t *testing.T) {
+	var authorizerCalls atomic.Int32
+	ctx := schemas.NewBifrostContext(t.Context(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+	if !ctx.SetPhysicalSendGuard(schemas.PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1 << 20,
+		AuthorizationDeadline:     time.Now().Add(-time.Second),
+		Authorize: func(context.Context, schemas.PhysicalSendAttempt) error {
+			authorizerCalls.Add(1)
+			return nil
+		},
+	}) {
+		t.Fatal("expired physical-send guard was not installed")
+	}
+	if !ctx.SetPhysicalSendRoute(schemas.PhysicalSendRoute{Provider: schemas.OpenAI, Model: "gpt-test"}) {
+		t.Fatal("physical-send route was not installed")
+	}
+	srv := newScriptedServer(t, func(_ net.Conn, _ *bufio.Reader) {})
+	client := srv.client(5 * time.Second)
+	req := physicalSendRequest("http://scripted/v1/responses", `{"model":"gpt-test","store":false,"input":"hello"}`)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expired authorization error = %#v, want HTTP 403", bifrostErr)
+	}
+	if authorizerCalls.Load() != 0 || srv.accepted.Load() != 0 {
+		t.Fatalf("expired authorization reached authorizer/provider: authorizer=%d connections=%d", authorizerCalls.Load(), srv.accepted.Load())
+	}
+}
+
+func TestContextTransport_PhysicalSendAuthorizesEachSerializedRequest(t *testing.T) {
+	body := `{"model":"gpt-test","store":false,"input":"hello"}`
+	var (
+		mu         sync.Mutex
+		attemptIDs []string
+	)
+	received := make(chan string, 2)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for range 2 {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			wire := make([]byte, 8192)
+			n, readErr := conn.Read(wire)
+			if n > 0 {
+				received <- string(wire[:n])
+			} else if readErr != nil {
+				received <- "read-error:" + readErr.Error()
+			}
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+			_ = conn.Close()
+		}
+	}()
+	ctx := physicalSendTestContext(t, func(_ context.Context, attempt schemas.PhysicalSendAttempt) error {
+		if string(attempt.Body) != body || !physicalSendBodyMatches(attempt.Body, attempt.BodySHA256) {
+			return errors.New("attempt body binding was incorrect")
+		}
+		mu.Lock()
+		attemptIDs = append(attemptIDs, attempt.AttemptID)
+		mu.Unlock()
+		return nil
+	}, 1<<20)
+	client := &fasthttp.Client{
+		Dial:        func(string) (net.Conn, error) { return net.Dial("tcp", ln.Addr().String()) },
+		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+		Transport: NewContextTransport(),
+	}
+	t.Cleanup(client.CloseIdleConnections)
+
+	for range 2 {
+		req := physicalSendRequest("http://scripted/v1/responses", body)
+		resp := fasthttp.AcquireResponse()
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		fasthttp.ReleaseRequest(req)
+		if bifrostErr != nil || resp.StatusCode() != http.StatusOK {
+			fasthttp.ReleaseResponse(resp)
+			mu.Lock()
+			attemptCount := len(attemptIDs)
+			mu.Unlock()
+			message, receivedBody := "", ""
+			if bifrostErr != nil && bifrostErr.Error != nil {
+				message = bifrostErr.Error.Message
+			}
+			select {
+			case receivedBody = <-received:
+			default:
+			}
+			t.Fatalf("guarded request failed: %#v message=%s (authorization calls=%d, received requests=%d body=%q)", bifrostErr, message, attemptCount, len(received), receivedBody)
+		}
+		fasthttp.ReleaseResponse(resp)
+	}
+
+	mu.Lock()
+	if len(attemptIDs) != 2 || attemptIDs[0] == attemptIDs[1] {
+		mu.Unlock()
+		t.Fatalf("physical attempts did not receive distinct authorization IDs: %v", attemptIDs)
+	}
+	mu.Unlock()
+	for range 2 {
+		select {
+		case got := <-received:
+			if strings.HasPrefix(got, "read-error:") || !strings.Contains(got, body) {
+				t.Fatalf("upstream request bytes = %q, want serialized body %q", got, body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("upstream did not receive both authorized requests")
+		}
+	}
+}
+
+type failSecondWriteConn struct {
+	net.Conn
+	writes atomic.Int32
+}
+
+func (c *failSecondWriteConn) Write(value []byte) (int, error) {
+	if c.writes.Add(1) == 2 {
+		return 0, errors.New("injected stale pooled socket")
+	}
+	return c.Conn.Write(value)
+}
+
+func TestContextTransport_PhysicalSendReauthorizesStaleConnectionRetry(t *testing.T) {
+	var (
+		dials      atomic.Int32
+		mu         sync.Mutex
+		attemptIDs []string
+		received   []string
+	)
+	dial := func(string) (net.Conn, error) {
+		clientConn, serverConn := net.Pipe()
+		if dials.Add(1) == 1 {
+			clientConn = &failSecondWriteConn{Conn: clientConn}
+		}
+		go func() {
+			defer serverConn.Close()
+			br := bufio.NewReader(serverConn)
+			request := fasthttp.AcquireRequest()
+			if err := request.Read(br); err == nil {
+				mu.Lock()
+				received = append(received, string(request.Body()))
+				mu.Unlock()
+				_, _ = io.WriteString(serverConn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+			}
+			fasthttp.ReleaseRequest(request)
+			_, _ = io.Copy(io.Discard, br)
+		}()
+		return clientConn, nil
+	}
+	client := &fasthttp.Client{
+		Dial: dial, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+		MaxIdemponentCallAttempts: 3,
+		RetryIfErr: func(_ *fasthttp.Request, _ int, err error) (bool, bool) {
+			return false, err != nil
+		},
+		Transport: NewContextTransport(),
+	}
+	ctx := physicalSendTestContext(t, func(_ context.Context, attempt schemas.PhysicalSendAttempt) error {
+		mu.Lock()
+		attemptIDs = append(attemptIDs, attempt.AttemptID)
+		mu.Unlock()
+		return nil
+	}, 1<<20)
+
+	for _, body := range []string{`{"warm":true}`, `{"model":"gpt-test","store":false,"input":"retry"}`} {
+		request := physicalSendRequest("http://scripted/v1/responses", body)
+		response := fasthttp.AcquireResponse()
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, request, response)
+		wait()
+		fasthttp.ReleaseRequest(request)
+		fasthttp.ReleaseResponse(response)
+		if bifrostErr != nil {
+			t.Fatalf("stale-retry request failed: %#v", bifrostErr)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dial count = %d, want one initial connection and one stale retry connection", got)
+	}
+	if len(attemptIDs) != 3 || attemptIDs[1] == attemptIDs[2] {
+		t.Fatalf("stale physical retry did not receive fresh authorization: %v", attemptIDs)
+	}
+	if len(received) != 2 || received[0] != `{"warm":true}` || received[1] != `{"model":"gpt-test","store":false,"input":"retry"}` {
+		t.Fatalf("complete upstream bodies = %q", received)
+	}
+}
+
+func TestContextTransport_PhysicalSendGuardRejectsOneShotBodyBeforeRequestBytes(t *testing.T) {
+	authorizerCalls := atomic.Int32{}
+	received := make(chan []byte, 1)
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		wire, _ := io.ReadAll(br)
+		received <- wire
+	})
+	ctx := physicalSendTestContext(t, func(context.Context, schemas.PhysicalSendAttempt) error {
+		authorizerCalls.Add(1)
+		return nil
+	}, 1<<20)
+	client := srv.client(5 * time.Second)
+	req := fasthttp.AcquireRequest()
+	req.SetRequestURI("http://scripted/v1/responses")
+	req.Header.SetMethod(http.MethodPost)
+	body := `{"model":"gpt-test","store":false,"input":"hello"}`
+	req.SetBodyStream(strings.NewReader(body), len(body))
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("streamed-body guard error = %#v, want HTTP 501", bifrostErr)
+	}
+	if got := authorizerCalls.Load(); got != 0 {
+		t.Fatalf("authorizer calls = %d, want zero for unsupported one-shot body", got)
+	}
+	if got := srv.accepted.Load(); got != 0 {
+		t.Fatalf("unsupported one-shot body opened %d provider connections", got)
+	}
+	select {
+	case wire := <-received:
+		t.Fatalf("provider received unexpected bytes for unsupported body: %q", wire)
+	default:
+	}
+}
+
+func TestContextTransport_PhysicalSendGuardRejectsOversizeBeforeRequestBytes(t *testing.T) {
+	authorizerCalls := atomic.Int32{}
+	received := make(chan []byte, 1)
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		wire, _ := io.ReadAll(br)
+		received <- wire
+	})
+	ctx := physicalSendTestContext(t, func(context.Context, schemas.PhysicalSendAttempt) error {
+		authorizerCalls.Add(1)
+		return nil
+	}, 64)
+	client := srv.client(5 * time.Second)
+	req := physicalSendRequest("http://scripted/v1/responses", `{"model":"gpt-test","store":false,"input":"hello"}`)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized guarded request error = %#v, want HTTP 413", bifrostErr)
+	}
+	if got := authorizerCalls.Load(); got != 0 {
+		t.Fatalf("authorizer calls = %d, want zero for an oversized request", got)
+	}
+	if got := srv.accepted.Load(); got != 0 {
+		t.Fatalf("oversized request opened %d provider connections", got)
+	}
+	select {
+	case wire := <-received:
+		t.Fatalf("provider received unexpected bytes for oversized request: %q", wire)
+	default:
+	}
+}
+
+func BenchmarkTransport_Buffered_PhysicalSendGuard(b *testing.B) {
+	ln := fasthttputil.NewInmemoryListener()
+	server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString("ok") }}
+	go server.Serve(ln) //nolint:errcheck
+	b.Cleanup(func() { _ = ln.Close() })
+	client := &fasthttp.Client{
+		Dial:        func(string) (net.Conn, error) { return ln.Dial() },
+		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+		Transport: NewContextTransport(),
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if !ctx.SetPhysicalSendGuard(schemas.PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1 << 20,
+		Authorize:                 func(context.Context, schemas.PhysicalSendAttempt) error { return nil },
+	}) {
+		b.Fatal("physical-send guard was not installed")
+	}
+	if !ctx.SetPhysicalSendRoute(schemas.PhysicalSendRoute{Provider: schemas.OpenAI, Model: "gpt-test"}) {
+		b.Fatal("physical-send route was not installed")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := physicalSendRequest("http://bench/v1/responses", `{"model":"gpt-test","store":false}`)
+		resp := fasthttp.AcquireResponse()
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		if bifrostErr != nil {
+			b.Fatalf("guarded benchmark request failed: %v", bifrostErr)
+		}
 	}
 }

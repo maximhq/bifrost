@@ -4501,6 +4501,50 @@ func (p *fakeBodyPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext,
 	return chunk, nil
 }
 
+type physicalSendStateTestKey struct{}
+
+type physicalSendStatePlugin struct{ fakeBodyPlugin }
+
+func (p *physicalSendStatePlugin) GetName() string { return "physical-send-state-plugin" }
+
+func (p *physicalSendStatePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	ctx.SetTrustedValue(physicalSendStateTestKey{}, "request-bound-receipt")
+	if _, leaked := ctx.GetUserValues()[physicalSendStateTestKey{}]; leaked {
+		return nil, errors.New("trusted physical-send binding was exposed as a user value")
+	}
+	installed := ctx.SetPhysicalSendGuard(schemas.PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1024,
+		Authorize:                 func(context.Context, schemas.PhysicalSendAttempt) error { return nil },
+	})
+	if !installed {
+		return nil, errors.New("physical-send guard installation failed")
+	}
+	return nil, nil
+}
+
+func TestTransportInterceptorMiddlewareTransfersTrustedPhysicalSendStateToCore(t *testing.T) {
+	plugin := &physicalSendStatePlugin{}
+	config := preAuthTestConfig(plugin)
+	var downstreamGuard bool
+	var downstreamBinding any
+	handler := TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		coreContext := getBifrostContextFromFastHTTP(ctx)
+		_, downstreamGuard = coreContext.PhysicalSendGuard()
+		downstreamBinding = coreContext.TrustedValue(physicalSendStateTestKey{})
+	})
+	ctx := preAuthTestCtx()
+	handler(ctx)
+	if !downstreamGuard || downstreamBinding != "request-bound-receipt" {
+		t.Fatalf("transport guard/binding did not reach the Bifrost Core context: guard=%v binding=%v", downstreamGuard, downstreamBinding)
+	}
+	ctx.Request.Reset()
+	clearedContext := getBifrostContextFromFastHTTP(ctx)
+	if _, ok := clearedContext.PhysicalSendGuard(); ok || clearedContext.PhysicalSendGuardRequired() ||
+		clearedContext.TrustedValue(physicalSendStateTestKey{}) != nil {
+		t.Fatal("transport-only physical-send state leaked beyond the HTTP request")
+	}
+}
+
 // bodyTestPhases runs a body test through both transport phases that expose the request body.
 var bodyTestPhases = []struct {
 	name       string

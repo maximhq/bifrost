@@ -18,7 +18,7 @@ var NoDeadline time.Time
 // assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
 // and indexing a map with a non-comparable key (slice, map, func) would panic.
 var reservedKeys = map[BifrostContextKey]struct{}{
-	BifrostContextKeyStreamUsageProvisional:      {},
+	BifrostContextKeyStreamUsageProvisional:  {},
 	BifrostContextKeyVirtualKey:              {},
 	BifrostContextKeyAPIKeyName:              {},
 	BifrostContextKeyAPIKeyID:                {},
@@ -100,19 +100,22 @@ var pluginLogStorePool = sync.Pool{
 // It supports deadlines, can be derived from other contexts, and provides layered
 // value inheritance when derived from another BifrostContext.
 type BifrostContext struct {
-	parent                context.Context
-	deadline              time.Time
-	hasDeadline           bool
-	done                  chan struct{}
-	doneOnce              sync.Once
-	err                   error
-	errMu                 sync.RWMutex
-	userValues            map[any]any
-	realtimeTurnKeys      map[any]struct{} // opt-in keys copied from HTTP setup into a realtime or Live session
-	trustedValues         map[any]any      // read only by a holder of the key; see SetTrustedValue
-	valuesMu              sync.RWMutex
-	blockRestrictedWrites atomic.Bool
-	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
+	parent                    context.Context
+	deadline                  time.Time
+	hasDeadline               bool
+	done                      chan struct{}
+	doneOnce                  sync.Once
+	err                       error
+	errMu                     sync.RWMutex
+	userValues                map[any]any
+	realtimeTurnKeys          map[any]struct{} // opt-in keys copied from HTTP setup into a realtime or Live session
+	trustedValues             map[any]any      // read only by a holder of the key; see SetTrustedValue
+	valuesMu                  sync.RWMutex
+	blockRestrictedWrites     atomic.Bool
+	grant                     atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
+	physicalSendGuard         atomic.Pointer[PhysicalSendGuard]
+	physicalSendRoute         atomic.Pointer[PhysicalSendRoute]
+	physicalSendGuardRequired atomic.Bool
 
 	// Plugin scoping fields
 	pluginScope   *string                        // Non-nil when this is a scoped plugin context
@@ -146,6 +149,25 @@ func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostConte
 		hasDeadline:           !deadline.IsZero(),
 		done:                  make(chan struct{}),
 		blockRestrictedWrites: atomic.Bool{},
+	}
+	if ancestor, hasBifrostAncestor := BifrostContextFromContext(parent); hasBifrostAncestor {
+		if ancestor.PhysicalSendGuardRequired() {
+			ctx.physicalSendGuardRequired.Store(true)
+		}
+	} else {
+		if state, ok := parent.Value(physicalSendTransportStateKey{}).(*physicalSendTransportState); ok && state != nil {
+			if state.guard != nil {
+				guard := *state.guard
+				ctx.physicalSendGuard.Store(&guard)
+			}
+			ctx.physicalSendGuardRequired.Store(state.required || state.guard != nil)
+			if len(state.trustedValues) > 0 {
+				ctx.trustedValues = make(map[any]any, len(state.trustedValues))
+				for key, value := range state.trustedValues {
+					ctx.trustedValues[key] = value
+				}
+			}
+		}
 	}
 	ctx.blockRestrictedWrites.Store(false)
 	// Only start goroutine if there's something to watch:
@@ -843,6 +865,114 @@ func (bc *BifrostContext) TrustedValue(key any) any {
 		return parent.TrustedValue(key)
 	}
 	return nil
+}
+
+// PublishPhysicalSendStateToParent transfers the private guard and trusted
+// binding across the HTTP transport's fasthttp-to-core context boundary. The
+// state is stored under an unexported key, not in GetUserValues.
+func (bc *BifrostContext) PublishPhysicalSendStateToParent() bool {
+	if bc == nil {
+		return false
+	}
+	root := bc.Root()
+	if root == nil {
+		return false
+	}
+	guard := root.physicalSendGuard.Load()
+	required := root.physicalSendGuardRequired.Load()
+	if guard == nil && !required {
+		return false
+	}
+	setter, ok := root.parent.(interface{ SetUserValue(any, any) })
+	if !ok {
+		return false
+	}
+	state := &physicalSendTransportState{guard: guard, required: required}
+	root.valuesMu.RLock()
+	if len(root.trustedValues) > 0 {
+		state.trustedValues = make(map[any]any, len(root.trustedValues))
+		for key, value := range root.trustedValues {
+			state.trustedValues[key] = value
+		}
+	}
+	root.valuesMu.RUnlock()
+	setter.SetUserValue(physicalSendTransportStateKey{}, state)
+	return true
+}
+
+// SetPhysicalSendGuard installs the request's physical-send authorizer once.
+// The guard is not inherited by a newly derived BifrostContext; internal
+// requests must opt in separately. Plugin-scoped contexts install it on their
+// root request context.
+func (bc *BifrostContext) SetPhysicalSendGuard(guard PhysicalSendGuard) bool {
+	if bc == nil || guard.Authorize == nil || guard.MaxSerializedRequestBytes <= 0 {
+		return false
+	}
+	root := bc.Root()
+	if !root.physicalSendGuardRequired.CompareAndSwap(false, true) {
+		return false
+	}
+	installed := guard
+	return root.physicalSendGuard.CompareAndSwap(nil, &installed)
+}
+
+// PhysicalSendGuard returns the authorizer installed on this request context.
+func (bc *BifrostContext) PhysicalSendGuard() (PhysicalSendGuard, bool) {
+	if bc == nil {
+		return PhysicalSendGuard{}, false
+	}
+	guard := bc.Root().physicalSendGuard.Load()
+	if guard == nil {
+		return PhysicalSendGuard{}, false
+	}
+	return *guard, true
+}
+
+// PhysicalSendGuardRequired reports whether this request or an ancestor request
+// was admitted under a physical-send guard. Internal child requests shed the
+// guard itself but retain this requirement, so they cannot silently send
+// unguarded bytes.
+func (bc *BifrostContext) PhysicalSendGuardRequired() bool {
+	return bc != nil && bc.Root().physicalSendGuardRequired.Load()
+}
+
+// SetPhysicalSendRoute updates core-owned provider/model identity for the
+// current guarded attempt. It is intentionally unavailable to unguarded
+// requests, which avoids changing ordinary request-context state.
+func (bc *BifrostContext) SetPhysicalSendRoute(route PhysicalSendRoute) bool {
+	if bc == nil || route.Provider == "" || route.Model == "" {
+		return false
+	}
+	root := bc.Root()
+	if root.physicalSendGuard.Load() == nil {
+		return false
+	}
+	current := route
+	root.physicalSendRoute.Store(&current)
+	return true
+}
+
+// PhysicalSendRoute returns the current core-owned route for a guarded attempt.
+func (bc *BifrostContext) PhysicalSendRoute() (PhysicalSendRoute, bool) {
+	if bc == nil {
+		return PhysicalSendRoute{}, false
+	}
+	route := bc.Root().physicalSendRoute.Load()
+	if route == nil {
+		return PhysicalSendRoute{}, false
+	}
+	return *route, true
+}
+
+// ClearPhysicalSendGuard removes the guard from this request context. Core
+// calls this when deriving a provider-internal request that must not reuse the
+// caller's authorization.
+func (bc *BifrostContext) ClearPhysicalSendGuard() {
+	if bc != nil {
+		root := bc.Root()
+		root.physicalSendGuard.Store(nil)
+		root.physicalSendRoute.Store(nil)
+	}
 }
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.

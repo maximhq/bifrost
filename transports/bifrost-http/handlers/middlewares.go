@@ -1160,6 +1160,14 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			publishedPhysicalSendState := bifrostCtx.PublishPhysicalSendStateToParent()
+			if bifrostCtx.PhysicalSendGuardRequired() && !publishedPhysicalSendState {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "physical-send authorization state could not be transferred to Bifrost Core")
+				_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
+				return
+			}
+			// Keep the private state on fasthttp's request context until that request
+			// is recycled, including deferred response streams.
 			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 
