@@ -246,7 +246,8 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 
 	// ==== PART 3: Dump all rate limits and budgets to database ====
-	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+	dumper := t.store.GetRateLimitDumper(ctx, nil, nil)
+	if err := dumper(ctx); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
 		}
@@ -255,7 +256,8 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+	dumper = t.store.GetBudgetDumper(ctx, nil)
+	if err := dumper(ctx); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
 		}
@@ -438,10 +440,12 @@ func (t *UsageTracker) Cleanup() error {
 	// Flush all in-memory state after the worker has fully stopped. The plugin
 	// waits for its asynchronous accounting goroutines before calling Cleanup,
 	// so these snapshots include every accepted update since the last tick.
-	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
+	dumper := t.store.GetBudgetDumper(context.Background(), nil)
+	if err := dumper(context.Background()); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}
-	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
+	dumper = t.store.GetRateLimitDumper(context.Background(), nil, nil)
+	if err := dumper(context.Background()); err != nil {
 		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
 	}
 

@@ -6073,6 +6073,8 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 		rateLimit.TokenLastReset = existing.TokenLastReset
 		rateLimit.RequestCurrentUsage = existing.RequestCurrentUsage
 		rateLimit.RequestLastReset = existing.RequestLastReset
+		rateLimit.TokenUsageResetEpoch = existing.TokenUsageResetEpoch
+		rateLimit.RequestUsageResetEpoch = existing.RequestUsageResetEpoch
 		// created_at is immutable: Save writes every column, so a caller passing a row
 		// it didn't read from the DB (e.g. a config.json reload) would zero it out.
 		rateLimit.CreatedAt = existing.CreatedAt
@@ -6267,6 +6269,7 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		budget.UsageResetEpoch = existing.UsageResetEpoch
 		// A write that names no owner at all keeps the business unit the row already has: a budget a
 		// unit links by budget_id is written here naming no owner, and saving the row as given would
 		// detach it from its unit with nothing on the unit's side to notice. A write that names any
