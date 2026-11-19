@@ -10,6 +10,7 @@ import (
 // DynamicPlugin is a generic dynamic plugin that can implement any combination of plugin interfaces
 // It uses optional function pointers - nil pointers indicate the interface is not implemented
 type DynamicPlugin struct {
+	ExpectedSHA256 string
 	Enabled bool
 	Path    string
 	Config  any
