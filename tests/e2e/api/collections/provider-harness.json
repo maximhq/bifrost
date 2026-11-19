@@ -346554,6 +346554,155 @@
           }
         }
       ]
+    },
+    {
+      "name": "373. Error log row names the key that ran (error selected key)",
+      "description": "A request that failed at the provider was logged with an empty selected key, so the Logs page showed no key on error rows. Core clears selected_key_* on a final error and keeps the attempt trail as the record of the keys tried; the logging plugin only read selected_key_*. plugins/logging/writer.go now takes the trail's last record when the selected key is empty, as the governance plugin already does to charge the key that ran. The seed sends an unknown openai model so the provider answers 404 after a key was picked; the read pins that the error row carries that key's id and name. Red before the fix: selected_key_id is empty and selected_key is absent.",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai harness-no-such-model error-selected-key seed: provider 404",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh session per run, so the read sees only this run's row.",
+                  "pm.collectionVariables.set('errorKeySession', 'harness-error-selected-key-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('errorKeyIds', '[]');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The log row id is the request id; recorded so the cleanup step can delete this seed.",
+                  "function addErrorKeyIds(ids) { var cur = JSON.parse(pm.collectionVariables.get('errorKeyIds') || '[]'); ids.forEach(function (id) { if (id && cur.indexOf(id) === -1) { cur.push(id); } }); pm.collectionVariables.set('errorKeyIds', JSON.stringify(cur)); }",
+                  "addErrorKeyIds([pm.response.headers.get('x-bifrost-request-id')]);",
+                  "pm.test('error-selected-key seed: unknown model fails at the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{errorKeySession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/harness-no-such-model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai error-selected-key: error row carries the key that ran",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('error-selected-key list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('errorKeyTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('errorKeyTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  // The seed row is written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('errorKeyTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('errorKeyTries');",
+                  "function addErrorKeyIds(ids) { var cur = JSON.parse(pm.collectionVariables.get('errorKeyIds') || '[]'); ids.forEach(function (id) { if (id && cur.indexOf(id) === -1) { cur.push(id); } }); pm.collectionVariables.set('errorKeyIds', JSON.stringify(cur)); }",
+                  "addErrorKeyIds(logs.map(function (l) { return l.id; }));",
+                  "pm.test('error-selected-key: the error row names the key that ran', function () {",
+                  "  pm.expect(logs.length, 'rows in session: ' + pm.response.text()).to.equal(1);",
+                  "  var row = logs[0];",
+                  "  var shape = JSON.stringify({ status: row.status, selected_key_id: row.selected_key_id, selected_key_name: row.selected_key_name, selected_key: row.selected_key, attempt_trail: row.attempt_trail });",
+                  "  pm.expect(row.status, shape).to.equal('error');",
+                  "  pm.expect(row.selected_key_id, 'selected_key_id empty: ' + shape).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(row.selected_key_name, 'selected_key_name empty: ' + shape).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(row.selected_key, 'selected_key absent: ' + shape).to.be.an('object');",
+                  "  pm.expect(row.selected_key.id, shape).to.equal(row.selected_key_id);",
+                  "  pm.expect(row.selected_key.name, 'key resolved as deleted: ' + shape).to.not.include('(deleted)');",
+                  "  if (row.attempt_trail && row.attempt_trail.length) {",
+                  "    pm.expect(row.selected_key_id, 'not the last key tried: ' + shape).to.equal(row.attempt_trail[row.attempt_trail.length - 1].key_id);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{errorKeySession}}&limit=10"
+          }
+        },
+        {
+          "name": "openai error-selected-key cleanup: delete the seeded log",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Persistent log stores and reused gateways would otherwise keep the seeded row.",
+                  "var ids = JSON.parse(pm.collectionVariables.get('errorKeyIds') || '[]');",
+                  "pm.test('error-selected-key cleanup: exactly the seeded log id is targeted', function () {",
+                  "  pm.expect(ids, 'ids: ' + JSON.stringify(ids)).to.have.lengthOf(1);",
+                  "});",
+                  "pm.test('error-selected-key cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('errorKeyIds');",
+                  "pm.collectionVariables.unset('errorKeySession');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":{{errorKeyIds}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/logs"
+          }
+        }
+      ]
     }
   ]
 }
