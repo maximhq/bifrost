@@ -3610,7 +3610,7 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason(t *testing.T) {
 		},
 		{name: "end_turn", events: textTurn("end_turn"), expected: "end_turn"},
 		{name: "max_tokens", events: textTurn("max_tokens"), expected: "max_tokens"},
-		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "refusal"},
+		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "end_turn"},
 		{name: "model_context_window_exceeded", events: textTurn("model_context_window_exceeded"), expected: "model_context_window_exceeded"},
 	}
 
@@ -3652,7 +3652,7 @@ func TestToAnthropicInvokeStreamBytes_StopReasonWithoutIncompleteDetails(t *test
 		{stopReason: "stop", expected: "end_turn"},
 		{stopReason: "compaction", expected: "compaction"},
 		{stopReason: "pause_turn", expected: "pause_turn"},
-		{stopReason: "guardrail_intervened", expected: "refusal"},
+		{stopReason: "guardrail_intervened", expected: "end_turn"},
 		{stopReason: "content_filter", expected: "refusal"},
 		{stopReason: "some_future_reason", expected: "end_turn"},
 	}
@@ -3772,5 +3772,31 @@ func TestInvokeAnthropicBody_MidConvSystemReminderStableAcrossTurns(t *testing.T
 		assert.Equal(t, "system", msg.Get("role").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
 		assert.Equal(t, reminder, msg.Get("content.0.text").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
 		assert.Equal(t, "ephemeral", msg.Get("content.0.cache_control.type").String())
+	}
+}
+
+// InvokeModel non-streaming stop_reason follows the Anthropic enum and matches the streaming
+// route: StopReason wins over IncompleteDetails, so a guardrail block (end_turn) is not
+// reported as a model content filter (refusal). Issues #9379, #9495, #9497.
+func TestToBedrockInvokeAnthropicResponse_StopReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		stopReason *string
+		incomplete *schemas.ResponsesResponseIncompleteDetails
+		expected   string
+	}{
+		{"max_tokens from length", schemas.Ptr("length"), nil, "max_tokens"},
+		{"max_tokens from incomplete max_output_tokens", nil, &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens}, "max_tokens"},
+		{"refusal from content_filter", schemas.Ptr("content_filter"), nil, "refusal"},
+		{"refusal from incomplete content_filter", nil, &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter}, "refusal"},
+		{"guardrail_intervened becomes end_turn", schemas.Ptr("guardrail_intervened"), &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter}, "end_turn"},
+		{"model_context_window_exceeded is kept", schemas.Ptr("model_context_window_exceeded"), nil, "model_context_window_exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesResponse{StopReason: tt.stopReason, IncompleteDetails: tt.incomplete}
+			result := toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
+			assert.Equal(t, tt.expected, result.StopReason)
+		})
 	}
 }

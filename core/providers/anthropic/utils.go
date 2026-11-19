@@ -228,10 +228,11 @@ var (
 
 	// Maps Bifrost finish reasons to provider-specific format
 	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
-		"stop":       AnthropicStopReasonEndTurn, // canonical default
-		"length":     AnthropicStopReasonMaxTokens,
-		"tool_calls": AnthropicStopReasonToolUse,
-		"compaction": AnthropicStopReasonCompaction,
+		"stop":           AnthropicStopReasonEndTurn, // canonical default
+		"length":         AnthropicStopReasonMaxTokens,
+		"tool_calls":     AnthropicStopReasonToolUse,
+		"compaction":     AnthropicStopReasonCompaction,
+		"content_filter": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -4033,12 +4034,21 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 	return string(providerReason)
 }
 
-// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
+// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format.
+// The result is always a stop_reason Anthropic defines (or empty for an unset reason):
+// reasons with no Anthropic equivalent, such as Bedrock's guardrail_intervened or
+// malformed_model_output, become end_turn instead of leaking to the client.
 func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
 	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
 		return providerReason
 	}
-	return AnthropicStopReason(bifrostReason)
+	switch reason := AnthropicStopReason(bifrostReason); reason {
+	case "", AnthropicStopReasonEndTurn, AnthropicStopReasonMaxTokens, AnthropicStopReasonStopSequence,
+		AnthropicStopReasonToolUse, AnthropicStopReasonPauseTurn, AnthropicStopReasonRefusal,
+		AnthropicStopReasonModelContextWindowExceeded, AnthropicStopReasonCompaction:
+		return reason
+	}
+	return AnthropicStopReasonEndTurn
 }
 
 // anthropicStopReasonWithSequence restores Anthropic's stop_sequence stop reason, which

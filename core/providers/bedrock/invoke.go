@@ -1894,15 +1894,14 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 	}
 
-	// Stop reason
-	stopReason := "end_turn"
-	if resp.IncompleteDetails != nil {
-		stopReason = resp.IncompleteDetails.Reason
-	} else {
-		// Check for tool_use
+	// Stop reason. A tool_use block still wins over end_turn: some providers (e.g. Gemini)
+	// report a plain stop on a function-call turn.
+	stopReason := anthropicInvokeStopReason(resp)
+	if stopReason == "" || stopReason == string(anthropic.AnthropicStopReasonEndTurn) {
+		stopReason = string(anthropic.AnthropicStopReasonEndTurn)
 		for _, block := range result.Content {
 			if block.Type == "tool_use" {
-				stopReason = "tool_use"
+				stopReason = string(anthropic.AnthropicStopReasonToolUse)
 				break
 			}
 		}
@@ -2145,22 +2144,29 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 	return ""
 }
 
-// anthropicInvokeStopReason maps a terminal event's StopReason to an Anthropic stop_reason.
-// The invoke stream can be served by any provider, so a reason Anthropic does not define
-// (e.g. a passed-through guardrail_intervened) must not reach message_delta as-is.
-func anthropicInvokeStopReason(reason string) string {
-	switch reason {
-	case "content_filter", "guardrail_intervened":
-		return string(anthropic.AnthropicStopReasonRefusal)
+// anthropicInvokeStopReason derives the Anthropic stop_reason for an InvokeModel response,
+// shared by the streaming and non-streaming converters so both report the same reason.
+// StopReason wins over IncompleteDetails: the Converse conversion folds guardrail_intervened
+// and content_filtered into one content_filter incomplete reason, and only StopReason keeps
+// them apart (a guardrail block is end_turn on InvokeModel, a model filter is refusal).
+// IncompleteDetails covers providers that report no StopReason. Returns "" when neither
+// field is set, leaving the default to the caller.
+func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
+	if resp == nil {
+		return ""
 	}
-	switch mapped := anthropic.ConvertBifrostFinishReasonToAnthropic(reason); mapped {
-	case anthropic.AnthropicStopReasonEndTurn, anthropic.AnthropicStopReasonMaxTokens,
-		anthropic.AnthropicStopReasonStopSequence, anthropic.AnthropicStopReasonToolUse,
-		anthropic.AnthropicStopReasonPauseTurn, anthropic.AnthropicStopReasonRefusal,
-		anthropic.AnthropicStopReasonModelContextWindowExceeded, anthropic.AnthropicStopReasonCompaction:
-		return string(mapped)
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		return string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.StopReason))
 	}
-	return string(anthropic.AnthropicStopReasonEndTurn)
+	if resp.IncompleteDetails != nil {
+		switch resp.IncompleteDetails.Reason {
+		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+			return string(anthropic.AnthropicStopReasonMaxTokens)
+		case schemas.ResponsesResponseIncompleteReasonContentFilter:
+			return string(anthropic.AnthropicStopReasonRefusal)
+		}
+	}
+	return ""
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
@@ -2393,21 +2399,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 	// with message_delta + message_stop, or the client never sees the stop reason.
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
-		stopReason := "end_turn"
-		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			// Translate the Responses vocabulary into Anthropic stop reasons.
-			switch resp.Response.IncompleteDetails.Reason {
-			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-				stopReason = "max_tokens"
-			case schemas.ResponsesResponseIncompleteReasonContentFilter:
-				stopReason = "refusal"
-			default:
-				stopReason = resp.Response.IncompleteDetails.Reason
-			}
-		} else if resp.Response != nil && resp.Response.StopReason != nil {
-			// A completed turn carries its reason in StopReason (e.g. "tool_calls" when the
-			// model called a tool), matching the non-streaming converter's tool_use.
-			stopReason = anthropicInvokeStopReason(*resp.Response.StopReason)
+		stopReason := anthropicInvokeStopReason(resp.Response)
+		if stopReason == "" {
+			stopReason = string(anthropic.AnthropicStopReasonEndTurn)
 		}
 
 		// Build message_delta event
