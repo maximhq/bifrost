@@ -87,7 +87,10 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	require.NoError(t, err)
 
 	// The first voice unit opens the session; the row is registered under the session id.
-	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	startedAt := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Second)
+	openCtx := liveUnitCtx("bfsess-1", "unit-1", "voice", true, false)
+	openCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, startedAt)
+	_, _, err = plugin.PreLLMHook(openCtx, liveStartRequest("gpt-live-1"))
 	require.NoError(t, err)
 	// Later units register nothing of their own.
 	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-2", "backend", false, false), liveStartRequest("gpt-5.6-luna"))
@@ -138,6 +141,7 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 
 	root, err := store.FindByID(context.Background(), "bfsess-1")
 	require.NoError(t, err)
+	assert.True(t, root.Timestamp.Equal(startedAt))
 	assert.Equal(t, liveSessionObject, root.Object)
 	assert.Equal(t, logStatusSuccess, root.Status)
 	assert.Equal(t, "gpt-live-1", root.Model)

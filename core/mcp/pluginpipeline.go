@@ -200,6 +200,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 
 	// PreHooks. preReq is the (possibly mutated) request for the op. Their spans chain under
 	// the /mcp HTTP span — no op span exists yet.
+	ctx.SetValue(schemas.BifrostContextKeyMCPRequestStartTime, time.Now())
 	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(ctx, req)
 
 	if preReq != nil {

@@ -413,6 +413,15 @@ type GovernanceInMemoryStore struct {
 	Config *lib.Config
 }
 
+// LogTimestampPrecision reports the precision ClickHouse uses for request log
+// timestamps. Hybrid mode keeps those timestamps in the same database.
+func (s *GovernanceInMemoryStore) LogTimestampPrecision() time.Duration {
+	if cfg := s.Config.LogsStoreConfig; s.Config.LogsStore != nil && cfg != nil && cfg.Type == logstore.LogStoreTypeClickHouse {
+		return time.Millisecond
+	}
+	return 0
+}
+
 // GetConfiguredProviders returns a snapshot of the configured provider map, built under the read
 // lock. Provider edits write to the live map in place, and the governance plugin indexes what
 // this returns after the lock is released (batchBaseProvider, modelMatcher), so handing back the
@@ -1112,7 +1121,7 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 const modelConfigReloadReadTimeout = 30 * time.Second
 
 // ReloadModelConfig reloads a model config from the database into in-memory store
-// If usage was modified (e.g., reset due to config change), syncs it back to DB
+// Usage persistence stays with the accounting paths, which guard writes against resets.
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	// The reload loads the row it was told to load, whoever triggered it, so it reads on the
 	// server's own context: the caller's row-visibility scope must not stop a config the caller
@@ -1132,30 +1141,6 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(ctx, preloadedMC)
 	if updatedMC == nil {
 		return preloadedMC, nil
-	}
-
-	// Sync updated budget usage values back to database if they changed (per budget ID,
-	// since a model config may own multiple budgets).
-	preloadedUsage := make(map[string]float64, len(preloadedMC.Budgets))
-	for i := range preloadedMC.Budgets {
-		preloadedUsage[preloadedMC.Budgets[i].ID] = preloadedMC.Budgets[i].CurrentUsage
-	}
-	for i := range updatedMC.Budgets {
-		b := &updatedMC.Budgets[i]
-		if old, ok := preloadedUsage[b.ID]; ok && old != b.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, b.ID, b.CurrentUsage); err != nil {
-				logger.Error("failed to sync budget usage to database: %v", err)
-			}
-		}
-	}
-	if updatedMC.RateLimit != nil && preloadedMC.RateLimit != nil {
-		tokenUsageChanged := updatedMC.RateLimit.TokenCurrentUsage != preloadedMC.RateLimit.TokenCurrentUsage
-		requestUsageChanged := updatedMC.RateLimit.RequestCurrentUsage != preloadedMC.RateLimit.RequestCurrentUsage
-		if tokenUsageChanged || requestUsageChanged {
-			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedMC.RateLimit.ID, updatedMC.RateLimit.TokenCurrentUsage, updatedMC.RateLimit.RequestCurrentUsage); err != nil {
-				logger.Error("failed to sync rate limit usage to database: %v", err)
-			}
-		}
 	}
 
 	return updatedMC, nil
@@ -1196,7 +1181,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	// Initialize updatedProvider
 	updatedProvider := providerInfo
 
-	// Sync model level budgets in governance plugin (if governance is enabled)
+	// Refresh provider governance config. Accounting persists usage with reset guards.
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
 		governancePlugin, err := s.getGovernancePlugin()
 		if err != nil {
@@ -1206,24 +1191,6 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(ctx, providerInfo)
 			if govUpdated != nil {
 				updatedProvider = govUpdated
-			}
-
-			// Sync updated usage values back to database if they changed
-			if updatedProvider.Budget != nil && providerInfo.Budget != nil {
-				if updatedProvider.Budget.CurrentUsage != providerInfo.Budget.CurrentUsage {
-					if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
-						logger.Error("failed to sync budget usage to database: %v", err)
-					}
-				}
-			}
-			if updatedProvider.RateLimit != nil && providerInfo.RateLimit != nil {
-				tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != providerInfo.RateLimit.TokenCurrentUsage
-				requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != providerInfo.RateLimit.RequestCurrentUsage
-				if tokenUsageChanged || requestUsageChanged {
-					if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
-						logger.Error("failed to sync rate limit usage to database: %v", err)
-					}
-				}
 			}
 		}
 	}

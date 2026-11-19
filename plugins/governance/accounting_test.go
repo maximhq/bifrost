@@ -920,7 +920,7 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 	}
 
 	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
-	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", time.Time{}, true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
 
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
 	want := float64(120)*2.5e-6 + float64(40)*1e-5
@@ -928,4 +928,107 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 		assert.InDelta(c, want, fixture.cost(), 1e-12)
 		assert.Equal(c, int64(160), fixture.tokens())
 	}, time.Second, 10*time.Millisecond)
+}
+
+// TestAccountingUsesRequestStartAcrossResets checks streaming usage that arrives
+// before and after independent counter resets, including the exact cutoff.
+func TestAccountingUsesRequestStartAcrossResets(t *testing.T) {
+	ctx := context.Background()
+	f := newAccountingFixture(t)
+	store := f.tracker.store.(*LocalGovernanceStore)
+	cutoff := time.Now().UTC()
+	startedAt := cutoff.Add(-time.Second)
+	charge := func(id string, start time.Time, final bool) {
+		t.Helper()
+		update := &UsageUpdate{
+			RequestID: id, RequestStartedAt: start, Success: true,
+			IsStreaming: true, IsFinalChunk: final, HasUsageData: true,
+			Cost: 2, TokensUsed: 3,
+		}
+		f.tracker.UpdateUsage(ctx, settleLimits(f.store, "sk-bf-acct", schemas.OpenAI, "gpt-4", update))
+	}
+	charge("crossing", startedAt, false)
+	require.Equal(t, float64(2), f.cost())
+	require.Equal(t, int64(3), f.tokens())
+	_, ok := store.ResetBudgetAt(ctx, "budget1", cutoff)
+	require.True(t, ok)
+	_, ok = store.ResetRateLimitAt(ctx, "rl1", &cutoff, nil)
+	require.True(t, ok)
+
+	charge("crossing", startedAt, true)
+	require.Zero(t, f.cost())
+	require.Zero(t, f.tokens())
+	require.Equal(t, int64(1), f.requests())
+
+	_, ok = store.ResetRateLimitAt(ctx, "rl1", nil, &cutoff)
+	require.True(t, ok)
+	charge("older", startedAt, true)
+	require.Zero(t, f.requests())
+
+	charge("boundary", cutoff, true)
+	charge("unknown", time.Time{}, true)
+	require.Equal(t, float64(4), f.cost())
+	require.Equal(t, int64(6), f.tokens())
+	require.Equal(t, int64(2), f.requests())
+}
+
+// TestAccountingUsesLogTimestampPrecision checks that live counters and
+// ClickHouse logs attribute requests to the same side of a sub-millisecond reset.
+func TestAccountingUsesLogTimestampPrecision(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		precision time.Duration
+		first     int64
+	}{
+		{name: "clickhouse", precision: time.Millisecond, first: 0},
+		{name: "default", first: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			f := newAccountingFixture(t)
+			store := f.tracker.store.(*LocalGovernanceStore)
+			store.logTimestampPrecision = tc.precision
+			ms := time.Now().UTC().Truncate(time.Millisecond).Add(time.Millisecond)
+			cutoff := ms.Add(700 * time.Microsecond)
+			_, ok := store.ResetBudgetAt(ctx, "budget1", cutoff)
+			require.True(t, ok)
+			_, ok = store.ResetRateLimitAt(ctx, "rl1", &cutoff, &cutoff)
+			require.True(t, ok)
+
+			for i, startedAt := range []time.Time{ms.Add(800 * time.Microsecond), ms.Add(time.Millisecond), {}} {
+				update := acctUpdate("", 0, true, 2, 3)
+				update.RequestStartedAt = startedAt
+				f.tracker.UpdateUsage(ctx, settleLimits(f.store, "sk-bf-acct", schemas.OpenAI, "gpt-4", update))
+				want := tc.first + int64(i)
+				require.Equal(t, 2*float64(want), f.cost())
+				require.Equal(t, 3*want, f.tokens())
+				require.Equal(t, want, f.requests())
+			}
+		})
+	}
+}
+
+// TestAccountingUsesRequestStartWhenChargeTriggersReset checks the lazy reset
+// path, where a response is the first operation to observe an expired window.
+func TestAccountingUsesRequestStartWhenChargeTriggersReset(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	anchor := time.Now().Add(-2 * time.Hour)
+	budget := buildBudgetWithUsage("budget", 100, 12, "1h")
+	budget.LastReset = anchor
+	store.budgets.Store(budget.ID, budget)
+	rate := buildRateLimit("rate", 100, 100)
+	hour := "1h"
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &hour
+	rate.TokenLastReset, rate.RequestLastReset = anchor, anchor
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 9, 8
+	store.rateLimits.Store(rate.ID, rate)
+
+	requestCtx := context.WithValue(ctx, usageRequestStartKey, anchor.Add(time.Minute))
+	require.NoError(t, store.BumpBudgetUsage(requestCtx, budget.ID, 2))
+	require.NoError(t, store.BumpRateLimitUsage(requestCtx, rate.ID, 3, true, true))
+	require.Zero(t, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	got := store.LoadRateLimit(ctx, rate.ID)
+	require.Zero(t, got.TokenCurrentUsage)
+	require.Zero(t, got.RequestCurrentUsage)
 }

@@ -5609,6 +5609,8 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	reqProvider, reqModel, _ := req.GetRequestFields()
 
+	requestStartedAt := time.Now()
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
@@ -5666,6 +5668,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 
 	wsProvider, wsModel, _ := preReq.GetRequestFields()
 	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 		// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 		// can read requestType/provider/model from the chunk or error.
 		if result != nil {
@@ -5739,6 +5742,17 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	}
 	provider, model, _ := req.GetRequestFields()
 
+	requestStartedAt, _ := ctx.Value(schemas.BifrostContextKeyStreamStartTime).(time.Time)
+	if req.RequestType == schemas.LiveRequest {
+		// All billing units in a Live session share one log row.
+		if sessionStartedAt, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
+			requestStartedAt = sessionStartedAt
+		}
+	}
+	if requestStartedAt.IsZero() {
+		requestStartedAt = time.Now()
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
@@ -5787,6 +5801,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 			resolvedModel := model
 			// Live admits aliases before selecting its session key; the meter supplies the
 			// pinned key's resolution when the unit settles, as normal inference does.

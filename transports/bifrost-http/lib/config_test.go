@@ -16210,6 +16210,100 @@ func TestGenerateClientConfigHash(t *testing.T) {
 // COMBINED GOVERNANCE RECONCILIATION TEST
 // ===================================================================================
 
+// TestSQLite_Governance_FileCannotSetUsageResetEpochs checks that the import keeps
+// reset history owned by the store, including for newly created associations.
+func TestSQLite_Governance_FileCannotSetUsageResetEpochs(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	data := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+	}, dir)
+	data.SourceOfTruth = SourceOfTruthConfigJSON
+	budget := func(id string) tables.TableBudget {
+		return tables.TableBudget{ID: id, MaxLimit: 10, ResetDuration: "1M", UsageResetEpoch: 900}
+	}
+	rate := func(id string) tables.TableRateLimit {
+		return tables.TableRateLimit{
+			ID: id, TokenMaxLimit: schemas.Ptr(int64(100)), TokenResetDuration: schemas.Ptr("1h"),
+			RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"),
+			TokenUsageResetEpoch: 901, RequestUsageResetEpoch: 902,
+		}
+	}
+	data.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{budget("top")},
+		RateLimits: []tables.TableRateLimit{rate("top-rate")},
+		Teams:      []tables.TableTeam{{ID: "team", Name: "Team", Budgets: []tables.TableBudget{budget("team-budget")}, RateLimit: schemas.Ptr(rate("team-rate"))}},
+		Customers: []tables.TableCustomer{{ID: "customer", Name: "Customer", Budgets: []tables.TableBudget{budget("customer-budget")}, RateLimit: schemas.Ptr(rate("customer-rate")),
+			Teams: []tables.TableTeam{{ID: "embedded-team", Name: "Embedded Team", Budgets: []tables.TableBudget{budget("embedded-team-budget")}, RateLimit: schemas.Ptr(rate("embedded-team-rate"))}},
+		}},
+		ModelConfigs: []tables.TableModelConfig{{ID: "model", ModelName: "gpt-4o", Budgets: []tables.TableBudget{budget("model-budget")}, RateLimit: schemas.Ptr(rate("model-rate"))}},
+		VirtualKeys: []tables.TableVirtualKey{{
+			ID: "vk", Name: "VK", Value: *schemas.NewSecretVar("sk-bf-test"), IsActive: schemas.Ptr(true),
+			Budgets: []tables.TableBudget{budget("key-budget")}, RateLimit: schemas.Ptr(rate("key-rate")),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{
+				Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"},
+				Budgets: []tables.TableBudget{budget("provider-budget")}, RateLimit: schemas.Ptr(rate("provider-rate")),
+			}},
+		}},
+	}
+	createConfigFile(t, dir, data)
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer first.Close(ctx)
+	for _, id := range []string{"top", "team-budget", "customer-budget", "embedded-team-budget", "model-budget", "key-budget", "provider-budget"} {
+		stored, err := first.ConfigStore.GetBudget(ctx, id)
+		require.NoError(t, err, "budget %s", id)
+		assert.Zero(t, stored.UsageResetEpoch, "budget %s", id)
+	}
+
+	for _, id := range []string{"top-rate", "team-rate", "customer-rate", "embedded-team-rate", "model-rate", "key-rate", "provider-rate"} {
+		stored, err := first.ConfigStore.GetRateLimit(ctx, id)
+		require.NoError(t, err, "rate limit %s", id)
+		assert.Zero(t, stored.TokenUsageResetEpoch, "rate limit %s", id)
+		assert.Zero(t, stored.RequestUsageResetEpoch, "rate limit %s", id)
+	}
+
+	// Seed the store through normal persistence, then edit the file and reload.
+	const persistedEpoch int64 = 50
+	data.Governance.Budgets = append(data.Governance.Budgets, budget("existing"))
+	require.NoError(t, first.ConfigStore.CreateBudget(ctx, &tables.TableBudget{
+		ID: "existing", MaxLimit: 5, ResetDuration: "1M", UsageResetEpoch: persistedEpoch,
+	}))
+	data.Governance.RateLimits = append(data.Governance.RateLimits, rate("existing-rate"))
+	existingRate := rate("existing-rate")
+	existingRate.TokenMaxLimit = schemas.Ptr(int64(50))
+	existingRate.TokenUsageResetEpoch = 51
+	existingRate.RequestUsageResetEpoch = 52
+	require.NoError(t, first.ConfigStore.CreateRateLimit(ctx, &existingRate))
+	createConfigFile(t, dir, data)
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	stored, err := second.ConfigStore.GetBudget(ctx, "existing")
+	require.NoError(t, err)
+	assert.EqualValues(t, 10, stored.MaxLimit)
+	assert.Equal(t, persistedEpoch, stored.UsageResetEpoch)
+	storedRate, err := second.ConfigStore.GetRateLimit(ctx, "existing-rate")
+	require.NoError(t, err)
+	require.NotNil(t, storedRate.TokenMaxLimit)
+	assert.EqualValues(t, 100, *storedRate.TokenMaxLimit)
+	assert.EqualValues(t, 51, storedRate.TokenUsageResetEpoch)
+	assert.EqualValues(t, 52, storedRate.RequestUsageResetEpoch)
+
+	budgetIndex := slices.IndexFunc(second.GovernanceConfig.Budgets, func(row tables.TableBudget) bool {
+		return row.ID == "existing"
+	})
+	require.NotEqual(t, -1, budgetIndex)
+	assert.Equal(t, persistedEpoch, second.GovernanceConfig.Budgets[budgetIndex].UsageResetEpoch)
+	rateIndex := slices.IndexFunc(second.GovernanceConfig.RateLimits, func(row tables.TableRateLimit) bool {
+		return row.ID == "existing-rate"
+	})
+	require.NotEqual(t, -1, rateIndex)
+	assert.EqualValues(t, 51, second.GovernanceConfig.RateLimits[rateIndex].TokenUsageResetEpoch)
+	assert.EqualValues(t, 52, second.GovernanceConfig.RateLimits[rateIndex].RequestUsageResetEpoch)
+}
+
 // TestSQLite_Governance_FullReconciliation tests full governance reconciliation
 func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	initTestLogger()
@@ -20266,14 +20360,17 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash":        true,
 		"created_at":         true,
 		"updated_at":         true,
+		"usage_reset_epoch":  true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
 		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
 		"provider_config_id": true, // Internal DB FK for multi-budget ownership
 		"business_unit_id":   true, // Enterprise owner FK; the OSS loader clears it with a warning (ignoreBudgetBusinessUnitIDs)
 	},
 	"tables.TableRateLimit": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"token_usage_reset_epoch":   true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
+		"request_usage_reset_epoch": true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
 	},
 	"tables.TableCustomer": {
 		"config_hash":  true,

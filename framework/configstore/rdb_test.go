@@ -7633,3 +7633,25 @@ func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
 	require.NotNil(t, moved.BusinessUnitID)
 	assert.Equal(t, other, *moved.BusinessUnitID)
 }
+
+// TestUsageResetEpochConfigUpdatesPreserveRuntime verifies configuration-shaped
+// saves cannot erase durable accounting evidence, including unknown zero input.
+func TestUsageResetEpochConfigUpdatesPreserveRuntime(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	epoch := time.Now().UnixNano()
+	budget := &tables.TableBudget{ID: "budget-reset-evidence", MaxLimit: 100, ResetDuration: "1h", CurrentUsage: 7, LastReset: time.Now(), UsageResetEpoch: epoch}
+	rate := &tables.TableRateLimit{ID: "rate-reset-evidence", TokenCurrentUsage: 9, RequestCurrentUsage: 3, TokenUsageResetEpoch: epoch, RequestUsageResetEpoch: epoch - 1}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+	require.NoError(t, store.CreateRateLimit(ctx, rate))
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: budget.ID, MaxLimit: 200, ResetDuration: "1h"}))
+	require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{ID: rate.ID}))
+	loadedBudget, err := store.GetBudget(ctx, budget.ID)
+	require.NoError(t, err)
+	loadedRate, err := store.GetRateLimit(ctx, rate.ID)
+	require.NoError(t, err)
+	require.Equal(t, epoch, loadedBudget.UsageResetEpoch)
+	require.Equal(t, epoch, loadedRate.TokenUsageResetEpoch)
+	require.Equal(t, epoch-1, loadedRate.RequestUsageResetEpoch)
+	require.Equal(t, 7.0, loadedBudget.CurrentUsage)
+}

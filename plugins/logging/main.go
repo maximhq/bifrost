@@ -2040,6 +2040,15 @@ func (p *LoggerPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifr
 	return nil
 }
 
+// logRequestTimestamp uses the same request start as governance accounting.
+func logRequestTimestamp(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) time.Time {
+	startedAt, _ := ctx.Value(key).(time.Time)
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	return startedAt.UTC()
+}
+
 // PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
@@ -2074,7 +2083,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			requestID = sessionID
 		}
 	}
-	createdTimestamp := time.Now().UTC()
+	createdTimestamp := logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime)
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
 
@@ -2334,7 +2343,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Status:    logStatusForError(bifrostErr),
 				Object:    string(requestType),
 				Stream:    bifrost.IsStreamRequestType(requestType),
-				Timestamp: time.Now().UTC(),
+				Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime),
 				CreatedAt: time.Now().UTC(),
 			}
 			if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
@@ -3724,7 +3733,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Get parent request ID if this MCP call is part of a larger LLM request (using the MCP agent original request ID)
 	parentRequestID, _ := ctx.Value(schemas.BifrostMCPAgentOriginalRequestID).(string)
 
-	createdTimestamp := time.Now().UTC()
+	createdTimestamp := logRequestTimestamp(ctx, schemas.BifrostContextKeyMCPRequestStartTime)
 
 	// Extract tool name and arguments from the request
 	var toolName string
@@ -3919,7 +3928,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		entry = &logstore.MCPToolLog{
 			ID:        mcpLogID,
 			RequestID: requestID,
-			Timestamp: time.Now().UTC(),
+			Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyMCPRequestStartTime),
 			Status:    "processing",
 			CreatedAt: time.Now().UTC(),
 		}

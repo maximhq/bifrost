@@ -6333,3 +6333,38 @@ func TestMigrationAddKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
 	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
 }
+
+// TestUsageResetEpochMigrationLeavesUnknown proves legacy boundaries are not
+// promoted into evidence, including nonzero calendar-adoption boundaries.
+func TestUsageResetEpochMigrationLeavesUnknown(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}, &tables.TableRateLimit{}))
+	boundary := time.Now().UTC().Truncate(time.Second)
+	budget := tables.TableBudget{ID: "legacy-budget", MaxLimit: 100, ResetDuration: "1h", CurrentUsage: 7, LastReset: boundary}
+	rate := tables.TableRateLimit{ID: "legacy-rate", TokenCurrentUsage: 9, RequestCurrentUsage: 3, TokenLastReset: boundary, RequestLastReset: boundary.Add(-time.Hour)}
+	require.NoError(t, db.Create(&budget).Error)
+	require.NoError(t, db.Create(&rate).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.NoError(t, db.First(&budget, "id = ?", budget.ID).Error)
+	require.NoError(t, db.First(&rate, "id = ?", rate.ID).Error)
+	require.Zero(t, budget.UsageResetEpoch)
+	require.Zero(t, rate.TokenUsageResetEpoch)
+	require.Zero(t, rate.RequestUsageResetEpoch)
+	require.Equal(t, 7.0, budget.CurrentUsage)
+	require.Equal(t, int64(9), rate.TokenCurrentUsage)
+	require.Equal(t, int64(3), rate.RequestCurrentUsage)
+	require.True(t, budget.LastReset.Equal(boundary))
+	require.True(t, rate.TokenLastReset.Equal(boundary))
+	require.True(t, rate.RequestLastReset.Equal(boundary.Add(-time.Hour)))
+}
