@@ -471,7 +471,10 @@ export function AgentLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]">
+			<SheetContent
+				resizeKey="agent-log-details"
+				className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]"
+			>
 				<AgentTraceView
 					key={log.id}
 					root={log}

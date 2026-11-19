@@ -363,7 +363,7 @@ test.describe('Virtual Key Management', () => {
   })
 })
 
-const VK_SHEET_WIDTH_KEY = 'bifrost.sheet.width.vk-sheet-content'
+const VK_SHEET_WIDTH_KEY = 'bifrost.sheet.width.virtual-key'
 
 test.describe('Virtual Key Sheet Resizing', () => {
   test.beforeEach(async ({ virtualKeysManagementPage }) => {
