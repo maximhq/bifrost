@@ -1202,7 +1202,24 @@ const doneMarker = "data: [DONE]\n\n";
 const completePauseStream = beforePause + afterPause + idleReceipt + doneMarker;
 
 test("idle harness accepts both chunks followed by completion", () => {
-  assert.strictEqual(runStreamAssertion(0, completePauseStream), true);
+  for (const separator of ["\n", "\r\n", "\r"]) {
+    assert.strictEqual(runStreamAssertion(0, completePauseStream.replaceAll("\n", separator)), true);
+  }
+});
+test("idle harness accepts multiline data in a complete content frame", () => {
+  const multiline = completePauseStream.replace('"choices":[', '"choices":\ndata: [');
+  assert.strictEqual(runStreamAssertion(0, multiline), true);
+});
+test("idle harness rejects an unterminated completion frame", () => {
+  for (const tail of ["data: [DONE]", "data: [DONE]\n"]) {
+    assert.strictEqual(runStreamAssertion(0, beforePause + afterPause + idleReceipt + tail), false);
+  }
+});
+test("idle harness rejects a shortened fixture idle window", () => {
+  for (const [idle, pause] of [[1, 3], [999, 3000]]) {
+    const shortened = completePauseStream.replace('"idle_timeout_ms":1000', '"idle_timeout_ms":' + idle).replace('"pause_ms":3000', '"pause_ms":' + pause);
+    assert.strictEqual(runStreamAssertion(0, shortened), false);
+  }
 });
 for (const [name, body] of [
   ["completion before the second chunk", beforePause + doneMarker + afterPause + idleReceipt],
