@@ -351858,6 +351858,245 @@
           }
         }
       ]
+    },
+    {
+      "name": "390. Model listings report the limits of a Bedrock key alias by its model_name (bedrock alias-model-name) (#9932 / PR #10035) [SERIAL]",
+      "description": "A key alias whose model_id is a Bedrock application inference profile (an opaque ARN) names the model it stands for only through model_name. List-models enrichment looked the model up by the alias name and by the profile ARN, neither of which is a datasheet key, so GET /v1/models and GET /anthropic/v1/models listed the alias without context limits, while pricing for the same alias already resolved through model_name (#9932). The folder adds a run-scoped Bedrock key (the profile's credentials from the shared profile's AWS env vars) that serves only harness-bedrock-profile-alias, aliased to a placeholder profile ARN with model_name anthropic.claude-haiku-4-5-20251001-v1:0. The listing backfills the alias from the key's allowlist, so the ARN never has to exist and no inference call is made. Red before the change: the alias is listed with no max_input_tokens / max_output_tokens (max_tokens on the Anthropic shape). The key is deleted at the end, and a key retained by an aborted run is deleted before the next run starts.",
+      "item": [
+        {
+          "name": "bedrock bedrock-alias-model-name setup: add a key whose alias points at an application inference profile - bedrock-alias-model-name - #9932",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('bedrockAliasModelNameKeyId');",
+                  "  pm.collectionVariables.set('bedrockAliasModelNameKeyName', 'harness-bedrock-alias-model-name-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('bedrockAliasModelNameKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/bedrock/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('bedrock-alias-model-name: the retained key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock-alias-model-name: key added', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) { key = {}; }",
+                  "pm.test('bedrock-alias-model-name: the key has an id', function () {",
+                  "  pm.expect(key.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (key.id) { pm.collectionVariables.set('bedrockAliasModelNameKeyId', key.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{bedrockAliasModelNameKeyName}}\",\"bedrock_key_config\":{\"access_key\":\"env.AWS_ACCESS_KEY_ID\",\"secret_key\":\"env.AWS_SECRET_ACCESS_KEY\",\"region\":\"env.AWS_REGION\"},\"models\":[\"harness-bedrock-profile-alias\"],\"weight\":1,\"aliases\":{\"harness-bedrock-profile-alias\":{\"model_id\":\"arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/harnessalias0000\",\"model_name\":\"anthropic.claude-haiku-4-5-20251001-v1:0\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/bedrock/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "bedrock",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock harness-bedrock-profile-alias is listed with the limits of its model_name on GET /v1/models - bedrock-alias-model-name - #9932",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('bedrockAliasModelNameKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "var model = data.filter(function (m) { return m.id === 'bedrock/harness-bedrock-profile-alias'; })[0];",
+                  "pm.test('bedrock-alias-model-name: the alias is listed through its profile', function () {",
+                  "  pm.expect(model, 'bedrock/harness-bedrock-profile-alias not listed').to.be.an('object');",
+                  "  pm.expect(model.alias, 'alias: ' + JSON.stringify(model)).to.equal('arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/harnessalias0000');",
+                  "});",
+                  "pm.test('bedrock-alias-model-name: /v1/models reports the limits of the model the alias names', function () {",
+                  "  pm.expect(model.max_input_tokens, 'no max_input_tokens: ' + JSON.stringify(model)).to.be.a('number').and.above(0);",
+                  "  pm.expect(model.max_output_tokens, 'no max_output_tokens: ' + JSON.stringify(model)).to.be.a('number').and.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock harness-bedrock-profile-alias is listed with the limits of its model_name on GET /anthropic/v1/models - bedrock-alias-model-name - #9932",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('bedrockAliasModelNameKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "var model = data.filter(function (m) { return m.id === 'harness-bedrock-profile-alias'; })[0];",
+                  "pm.test('bedrock-alias-model-name: /anthropic/v1/models reports the limits of the model the alias names', function () {",
+                  "  pm.expect(model, 'harness-bedrock-profile-alias not listed').to.be.an('object');",
+                  "  pm.expect(model.max_input_tokens, 'no max_input_tokens: ' + JSON.stringify(model)).to.be.a('number').and.above(0);",
+                  "  pm.expect(model.max_tokens, 'no max_tokens: ' + JSON.stringify(model)).to.be.a('number').and.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "bedrock"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock bedrock-alias-model-name cleanup: delete the key - bedrock-alias-model-name - #9932",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('bedrockAliasModelNameKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock-alias-model-name: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('bedrockAliasModelNameKeyId');",
+                  "  pm.collectionVariables.unset('bedrockAliasModelNameKeyName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/bedrock/keys/{{bedrockAliasModelNameKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "bedrock",
+                "keys",
+                "{{bedrockAliasModelNameKeyId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
