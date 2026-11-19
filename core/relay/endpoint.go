@@ -76,6 +76,9 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
+	if err := e.checkJobStatusRoutes(); err != nil {
+		return nil, err
+	}
 	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
 		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
 		e.awsRegion = cfg.Credential.AWS.Region.GetValue()

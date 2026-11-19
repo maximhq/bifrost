@@ -25,6 +25,7 @@ const (
 	UnpriceableReasonRelayJobGone    = "endpoint_job_gone"
 	UnpriceableReasonRelayJobDenied  = "endpoint_job_access_denied"
 	UnpriceableReasonRelayJobRefused = "endpoint_job_rejected"
+	UnpriceableReasonRelayJobNoUsage = "endpoint_job_no_usage"
 )
 
 // endpointJobLogNamespace derives the settlement row's id from the job row's id, so a settlement
@@ -162,22 +163,23 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobParams, err)
 	}
 
-	// A settlement interrupted after its row was written is finished without polling again.
-	if job.AggregateLogWrittenAt == nil && time.Since(job.CreatedAt) > time.Duration(snap.Timeout())*time.Second {
+	// Past its timeout a job still gets one last poll, so a job that finished just before the
+	// deadline (or while the sweeper was behind) is charged rather than written off.
+	pastDeadline := time.Since(job.CreatedAt) > time.Duration(snap.Timeout())*time.Second
+	if job.AggregateLogWrittenAt == nil && pastDeadline {
 		// The row may have been written just before a worker stopped; that settlement is finished
-		// rather than dropped. The probe only runs once a job is past its timeout.
+		// without polling again. The probe only runs once a job is past its timeout.
 		_, err := s.logs.FindRelayLog(ctx, s.settlementRowID(job))
 		switch {
-		case errors.Is(err, logstore.ErrNotFound):
-			return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobTimeout, fmt.Errorf("job did not finish within %ds", snap.Timeout()))
-		case err != nil:
+		case err == nil:
+			if err := s.store.MarkProviderJobAggregateLogWritten(ctx, job.ID, runner); err != nil {
+				return err
+			}
+			job.AggregateLogWrittenAt = schemas.Ptr(time.Now().UTC())
+		case !errors.Is(err, logstore.ErrNotFound):
 			err = fmt.Errorf("read settlement row: %w", err)
 			return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, runner, err))
 		}
-		if err := s.store.MarkProviderJobAggregateLogWritten(ctx, job.ID, runner); err != nil {
-			return err
-		}
-		job.AggregateLogWrittenAt = schemas.Ptr(time.Now().UTC())
 	}
 	if job.AggregateLogWrittenAt == nil {
 		pollCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -185,14 +187,22 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		upstreamID := schemas.RelayUpstreamJobID(job.JobID)
 		resp, bErr := s.poller.PollJob(pollCtx, job.Provider, snap.PollRequest(upstreamID))
 		if bErr == nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-			bErr = &schemas.BifrostError{StatusCode: schemas.Ptr(resp.StatusCode), Error: &schemas.ErrorField{Message: fmt.Sprintf("job poll answered %d", resp.StatusCode)}}
+			status := resp.StatusCode
+			if status == 400 && throttledReply(resp.Body) {
+				// AWS JSON APIs (Textract among them) throttle with 400, which is otherwise terminal.
+				status = 429
+			}
+			bErr = &schemas.BifrostError{StatusCode: schemas.Ptr(status), Error: &schemas.ErrorField{Message: fmt.Sprintf("job poll answered %d", resp.StatusCode)}}
 		}
 		if bErr != nil {
-			return s.pollFailed(ctx, job, snap, NewProviderCallError(bErr))
+			return s.pollFailed(ctx, job, snap, bErr, pastDeadline)
 		}
 		status := snap.Status(resp.Body)
 		done, succeeded := snap.Outcome(status)
 		if !done {
+			if pastDeadline {
+				return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobTimeout, fmt.Errorf("job did not finish within %ds (last status %q)", snap.Timeout(), status))
+			}
 			attempts := job.PollAttempts + 1
 			next := time.Now().UTC().Add(endpointJobBackoff(attempts, snap.Interval()))
 			if err := s.store.UpsertProviderJob(ctx, &cstables.TableProviderJob{ID: job.ID, Kind: job.Kind, Provider: job.Provider, JobID: job.JobID, ProviderStatus: status, NextCheckAt: &next, PollAttempts: attempts}); err != nil {
@@ -202,10 +212,13 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		}
 		usage := &schemas.RelayUsage{}
 		if succeeded {
-			usage = snap.Price(resp.ContentType, resp.Body)
+			var priced bool
+			if usage, priced = snap.Price(resp.ContentType, resp.Body); !priced {
+				return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobNoUsage, fmt.Errorf("job %s reported %s without the usage its pricing reads", upstreamID, status))
+			}
 		}
 		if err := s.writeSettlementRow(ctx, job, upstreamID, status, usage); err != nil {
-			return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, runner, err))
+			return s.retryLater(ctx, job, snap, err)
 		}
 		if err := s.store.MarkProviderJobAggregateLogWritten(ctx, job.ID, runner); err != nil {
 			return err
@@ -217,8 +230,7 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		// reports exactly what the row records.
 		row, err := s.logs.FindRelayLog(ctx, s.settlementRowID(job))
 		if err != nil {
-			err = fmt.Errorf("read settlement row: %w", err)
-			return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, runner, err))
+			return s.retryLater(ctx, job, snap, fmt.Errorf("read settlement row: %w", err))
 		}
 		if cost := deref64(row.Cost); cost > 0 {
 			report := RelayUsageReport{
@@ -227,7 +239,7 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 				VirtualKeyID: deref(job.VirtualKeyID), UserID: deref(job.UserID),
 			}
 			if err := s.reporter.ReportRelayUsage(ctx, report); err != nil {
-				return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, runner, err))
+				return s.retryLater(ctx, job, snap, err)
 			}
 		}
 		if err := s.store.MarkProviderJobGovernanceReported(ctx, job.ID, runner); err != nil {
@@ -237,22 +249,53 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 	return s.store.CompleteProviderJob(ctx, job.ID, runner)
 }
 
-func (s *RelayJobSweeper) pollFailed(ctx context.Context, job *cstables.TableProviderJob, snap *relay.JobSnapshot, err error) error {
-	runner := s.config.ClaimedBy
+// pollFailed handles a poll that did not answer 2xx. Every failure is retried until the job's
+// timeout: a 404 from an eventually consistent API, a 403 during a key rotation or a 400 for a
+// job the upstream has not indexed yet is often transient, and giving up on one reply would let
+// the job go uncharged. Past the timeout the job ends unpriced with the reason the last poll gave.
+func (s *RelayJobSweeper) pollFailed(ctx context.Context, job *cstables.TableProviderJob, snap *relay.JobSnapshot, bErr *schemas.BifrostError, pastDeadline bool) error {
+	var err error
+	if bErr.Error != nil && errors.Is(bErr.Error.Error, relay.ErrRelayNotFound) {
+		// A relay missing from the live set (mid reload, or pruned) is not the upstream forgetting the job.
+		err = bErr.Error.Error
+	} else {
+		err = NewProviderCallError(bErr)
+	}
+	if !pastDeadline {
+		return s.retryLater(ctx, job, snap, err)
+	}
+	reason := UnpriceableReasonRelayJobTimeout
 	switch ClassifyProviderCall(err) {
 	case ProviderCallGone:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobGone, err)
+		reason = UnpriceableReasonRelayJobGone
 	case ProviderCallAccessDenied:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobDenied, err)
+		reason = UnpriceableReasonRelayJobDenied
 	case ProviderCallRejected:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobRefused, err)
+		reason = UnpriceableReasonRelayJobRefused
 	}
+	return s.store.MarkProviderJobUnpriceable(ctx, job.ID, s.config.ClaimedBy, reason, err)
+}
+
+// retryLater reschedules a job after a failed poll or settlement step with the poll backoff, so a
+// step that keeps failing is not redone on every sweep, and releases the claim.
+func (s *RelayJobSweeper) retryLater(ctx context.Context, job *cstables.TableProviderJob, snap *relay.JobSnapshot, err error) error {
 	attempts := job.PollAttempts + 1
 	next := time.Now().UTC().Add(endpointJobBackoff(attempts, snap.Interval()))
 	if upErr := s.store.UpsertProviderJob(ctx, &cstables.TableProviderJob{ID: job.ID, Kind: job.Kind, Provider: job.Provider, JobID: job.JobID, NextCheckAt: &next, PollAttempts: attempts}); upErr != nil {
-		return upErr
+		return errors.Join(err, upErr)
 	}
-	return s.store.FailProviderJob(ctx, job.ID, runner, err)
+	return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, s.config.ClaimedBy, err))
+}
+
+// throttledReply reports whether a 400 reply names a throttling error, as AWS JSON APIs do.
+func throttledReply(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, marker := range []string{"throttl", "toomanyrequests", "rate exceeded", "provisionedthroughputexceeded", "limitexceeded"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // settlementTimestamp is stable across retries: ClickHouse keys rows by (timestamp, id), so a retry

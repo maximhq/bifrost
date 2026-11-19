@@ -23,6 +23,14 @@ import http from "node:http";
 //   *    /v1/gated/**     Tavily-shaped: the echo below, plus usage.credits 3 only when the body
 //                        carries "include_usage": true (the harness-relay-forced relay forces it);
 //                        /v1/gated/stream answers the same as SSE
+//   POST /v1/textract    Textract-shaped async jobs (harness-relay-jobs), by X-Amz-Target:
+//                        Textract.StartDocumentAnalysis {Scenario, ClientRequestToken} -> {JobId}; a
+//                        repeated token returns the same id. Textract.GetDocumentAnalysis {JobId}
+//                        walks the scenario: ok (IN_PROGRESS twice, then SUCCEEDED with 3 pages), failed,
+//                        throttle (one 400 ThrottlingException, then SUCCEEDED with 2 pages)
+//   POST /v1/rest/jobs   {"id": "<id>"} -> echoes that id as the job id, to try ids a relay must refuse
+//   GET  /__relay/jobs?id=<id>  {"id", "polls", "scenario", "data": []}
+//   GET  /__relay/escaped       {"hits": <n>}: requests whose raw path left /v1/rest/jobs/
 //   *    /v1/echo, other the method, path, query and headers the upstream received
 const port = Number(process.env.RELAY_UPSTREAM_FIXTURE_PORT || "8783");
 // Loopback by default. The proxy matrix binds every interface, because its relays address the
@@ -30,6 +38,25 @@ const port = Number(process.env.RELAY_UPSTREAM_FIXTURE_PORT || "8783");
 const host = process.env.RELAY_UPSTREAM_FIXTURE_HOST || "127.0.0.1";
 
 const hits = new Map();
+const jobs = new Map();
+const tokens = new Map();
+let jobSeq = 0;
+let escaped = 0;
+
+// One poll of a Textract-shaped job, advancing its scenario.
+const pollJob = (job) => {
+	job.polls++;
+	switch (job.scenario) {
+		case "failed":
+			return [200, { JobStatus: "FAILED", StatusMessage: "unsupported document" }];
+		case "throttle":
+			if (job.polls === 1) return [400, { __type: "ThrottlingException", message: "Rate exceeded" }];
+			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 2 } }];
+		default:
+			if (job.polls < 3) return [200, { JobStatus: "IN_PROGRESS" }];
+			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 3 } }];
+	}
+};
 
 const send = (res, status, body, headers = {}) => {
 	res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -49,9 +76,28 @@ const server = http.createServer(async (req, res) => {
 	const path = url.pathname;
 	const raw = await readBody(req);
 
+	// The raw request target, before URL parsing drops dot segments, so a job id that climbs out is
+	// caught even when it lands on an inspection route. Only a direct read of the counter is exempt.
+	const target = req.url || "";
+	if (/(^|\/)\.\.(\/|\?|$)/.test(target.split("?")[0]) || (target.includes("__relay/escaped") && !target.startsWith("/__relay/escaped"))) {
+		escaped++;
+		send(res, 404, { error: "escaped" });
+		return;
+	}
+
 	if (path === "/__relay/hits") {
 		const tag = url.searchParams.get("tag") || "";
 		send(res, 200, { tag, hits: hits.get(tag) || 0, data: [] });
+		return;
+	}
+	if (path === "/__relay/jobs") {
+		const id = url.searchParams.get("id") || "";
+		const job = jobs.get(id);
+		send(res, 200, { id, polls: job ? job.polls : 0, scenario: job ? job.scenario : "", data: [] });
+		return;
+	}
+	if (path === "/__relay/escaped") {
+		send(res, 200, { hits: escaped, data: [] });
 		return;
 	}
 	if (path === "/__relay/health") {
@@ -67,6 +113,37 @@ const server = http.createServer(async (req, res) => {
 		body = raw ? JSON.parse(raw) : {};
 	} catch {
 		body = {};
+	}
+
+	if (req.method === "POST" && path === "/v1/textract") {
+		const target = String(req.headers["x-amz-target"] || "");
+		if (target === "Textract.StartDocumentAnalysis") {
+			const token = body.ClientRequestToken;
+			let id = token && tokens.get(token);
+			if (!id) {
+				id = `job-${body.Scenario || "ok"}-${Date.now()}-${++jobSeq}`;
+				jobs.set(id, { scenario: body.Scenario || "ok", polls: 0 });
+				if (token) tokens.set(token, id);
+			}
+			send(res, 200, { JobId: id, data: [] });
+			return;
+		}
+		if (target === "Textract.GetDocumentAnalysis") {
+			const job = jobs.get(body.JobId);
+			if (!job) {
+				send(res, 400, { __type: "InvalidJobIdException", message: "unknown job" });
+				return;
+			}
+			const [status, reply] = pollJob(job);
+			send(res, status, { ...reply, data: [] });
+			return;
+		}
+		send(res, 400, { __type: "UnknownOperationException" });
+		return;
+	}
+	if (req.method === "POST" && path === "/v1/rest/jobs") {
+		send(res, 200, { id: body.id, data: [] });
+		return;
 	}
 
 	if (path.startsWith("/v1/gated/")) {

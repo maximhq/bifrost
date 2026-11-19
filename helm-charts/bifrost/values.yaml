@@ -1998,6 +1998,27 @@ bifrost:
   #       - method: "POST"
   #         path: "/"
   #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
+  #       - method: "POST"                   # starts an async job, charged once when it finishes
+  #         path: "/"
+  #         headers: { X-Amz-Target: "Textract.StartDocumentAnalysis" }
+  #         usage: { cost_per_request: 0.01 }
+  #         job:
+  #           id_path: "JobId"
+  #           poll:                          # {{job.id}} is replaced with the job id
+  #             path: "/"
+  #             headers: { X-Amz-Target: "Textract.GetDocumentAnalysis" }
+  #             body: '{"JobId":"{{job.id}}","MaxResults":1}'
+  #             content_type: "application/x-amz-json-1.1"
+  #           status_path: "JobStatus"
+  #           succeeded: ["SUCCEEDED", "PARTIAL_SUCCESS"]
+  #           failed: ["FAILED"]
+  #           interval_seconds: 30
+  #           timeout_seconds: 21600
+  #           usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015 }
+  #       - method: "POST"                   # callers' own status checks must be free
+  #         path: "/"
+  #         headers: { X-Amz-Target: "Textract.Get*" }
+  #         billable: false
 
   # Model routers: named complexity classifiers that each take the requests their routing matches,
   # after governance.routingRules. Each entry takes id, name and description, the settings of

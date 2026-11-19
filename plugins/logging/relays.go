@@ -586,10 +586,10 @@ func applyEndpointUsage(entry *logstore.RelayLog, usage *schemas.RelayUsage) {
 const maxEndpointJobGenerations = 64
 
 // recordEndpointJob writes the job row the sweeper settles. The row is keyed by endpoint and upstream
-// job id, so a caller retrying an idempotent start (the upstream answers with the same id while the
-// job runs) records nothing new and is billed once. An id the upstream reuses after the first job was
-// settled is a new job: it takes the next generation slot, so retries of that job dedupe against the
-// same slot instead of each start opening a row of its own.
+// job id, so a caller retrying an idempotent start (the upstream answers with the same id, while the
+// job runs or after it finished) records nothing new and is billed once. Only a job configured with
+// reused_id_is_new_job treats an id returned after settlement as new work: it takes the next
+// generation slot, so retries of that job dedupe against the same slot.
 func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.RelayJobHandle) {
 	if p.batchStore == nil || job == nil || job.ID == "" {
 		return
@@ -619,6 +619,11 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.
 		}
 		if existing.AccountingStatus != tables.ProviderJobAccountingStatusAccounted && existing.AccountingStatus != tables.ProviderJobAccountingStatusUnpriceable {
 			return // an idempotent retry of a start whose job is still open
+		}
+		if !job.ReusedIDIsNewJob {
+			// The upstream returned the id of a job already settled: a retry with the same idempotency
+			// token (Textract's ClientRequestToken) does no new work, so it is not charged again.
+			return
 		}
 	}
 	next := time.Now().UTC().Add(time.Duration(max(job.IntervalSeconds, 1)) * time.Second)
