@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +42,7 @@ func TestBaseten(t *testing.T) {
 			{Provider: schemas.Baseten, Model: "openai/gpt-oss-120b"},
 		},
 		ReasoningModel: "zai-org/GLM-5.3",
+		DecisionModel:  "decision-models/baseten-joey-2b-latest",
 		Scenarios: llmtests.TestScenarios{
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -52,6 +55,7 @@ func TestBaseten(t *testing.T) {
 			CompleteEnd2End:       true,
 			ListModels:            true,
 			Reasoning:             true,
+			Decision:              true,
 		},
 	}
 
@@ -368,6 +372,496 @@ func TestBasetenUnsupportedFileAndPassthrough(t *testing.T) {
 	}
 	if n := len(seen()); n != 0 {
 		t.Fatalf("expected no upstream call, got %d", n)
+	}
+}
+
+// TestBasetenImageGenerationPredict pins that a deployment_url copied from the
+// dashboard as /predict is called as given with OpenAI's image body and Bearer auth,
+// and that both reply shapes come back as images: a FLUX.1 Truss's {"data": base64}
+// and the OpenAI {"data": [{"b64_json"}]} of recipes that map /predict to
+// /v1/images/generations.
+func TestBasetenImageGenerationPredict(t *testing.T) {
+	t.Parallel()
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-dev",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), Seed: schemas.Ptr(7), NumInferenceSteps: schemas.Ptr(20)},
+	}
+	for name, tc := range map[string]struct {
+		reply string
+		want  []string
+	}{
+		"truss base64":  {reply: `{"data":"aW1n"}`, want: []string{"aW1n"}},
+		"openai images": {reply: `{"created":5,"data":[{"b64_json":"YQ=="},{"b64_json":"Yg=="}]}`, want: []string{"YQ==", "Yg=="}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.reply)
+			})
+			provider := newProvider(t, server.URL+"/v1")
+			resp, err := provider.ImageGeneration(contextWithDeployment(server.URL+"/environments/production/predict/"), testKey, req)
+			if err != nil {
+				t.Fatalf("ImageGeneration: %v", llmtests.GetErrorMessage(err))
+			}
+			got := seen()
+			if len(got) != 1 || got[0].Path != "/environments/production/predict" {
+				t.Fatalf("expected one call to the /predict URL as given, got %+v", got)
+			}
+			body := got[0].Body
+			if got[0].Auth != "Bearer bt-test-key" || body["prompt"] != "a lighthouse at dusk" || body["size"] != "1024x1024" || body["seed"] != float64(7) || body["num_inference_steps"] != float64(20) {
+				t.Fatalf("unexpected upstream request: %+v", got[0])
+			}
+			if len(resp.Data) != len(tc.want) {
+				t.Fatalf("expected %d images, got %+v", len(tc.want), resp.Data)
+			}
+			for i, b64 := range tc.want {
+				if resp.Data[i].B64JSON != b64 || resp.Data[i].Index != i {
+					t.Fatalf("image %d: expected %q at index %d, got %+v", i, b64, i, resp.Data[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBasetenImageGenerationPredictRejects pins that a /predict reply without an
+// image fails rather than returning an empty list, and that other operations refuse
+// a /predict URL before any call.
+func TestBasetenImageGenerationPredictRejects(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"output":"not an image"}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	predictURL := server.URL + "/environments/production/predict"
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-dev",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+	}
+
+	if _, err := provider.ImageGeneration(contextWithDeployment(predictURL), testKey, req); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "no image") {
+		t.Fatalf("expected a missing-image error, got %+v", err)
+	}
+	if _, err := provider.ChatCompletion(contextWithDeployment(predictURL), testKey, chatRequest("flux-dev")); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "/predict") {
+		t.Fatalf("expected chat against a /predict URL to fail naming it, got %+v", err)
+	}
+	if n := len(seen()); n != 1 {
+		t.Fatalf("expected only the image call upstream, got %d", n)
+	}
+}
+
+// TestBasetenImageGenerationDefaultsToBase64 pins that a request without
+// response_format asks the deployment for b64_json on both URL forms, since Baseten's
+// image servers reject OpenAI's url default, and that the caller's request is not
+// modified.
+func TestBasetenImageGenerationDefaultsToBase64(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"created":1,"data":[{"b64_json":"aW1n"}]}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-2",
+		Input:    &schemas.ImageGenerationInput{Prompt: "dog playing"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("512x512")},
+	}
+	for _, u := range []string{server.URL + "/environments/production/sync/v1", server.URL + "/environments/production/predict"} {
+		if _, err := provider.ImageGeneration(contextWithDeployment(u), testKey, req); err != nil {
+			t.Fatalf("ImageGeneration(%s): %v", u, llmtests.GetErrorMessage(err))
+		}
+	}
+	got := seen()
+	if len(got) != 2 {
+		t.Fatalf("expected two upstream calls, got %+v", got)
+	}
+	for _, call := range got {
+		if call.Body["response_format"] != "b64_json" || call.Body["size"] != "512x512" {
+			t.Fatalf("expected response_format b64_json and the caller's size on %s, got %+v", call.Path, call.Body)
+		}
+	}
+	if req.Params.ResponseFormat != nil {
+		t.Fatalf("expected the caller's request to stay unmodified, got response_format %q", *req.Params.ResponseFormat)
+	}
+}
+
+// TestBasetenImageGenerationErrorDetail pins that a deployment error carried in
+// error.detail or a top-level detail reaches the client as the message.
+func TestBasetenImageGenerationErrorDetail(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]string{
+		"error.detail": `{"error":{"detail":"response_format=url is not supported"}}`,
+		"detail":       `{"detail":"response_format=url is not supported"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server, _ := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, reply)
+			})
+			provider := newProvider(t, server.URL+"/v1")
+			req := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Baseten,
+				Model:    "flux-2",
+				Input:    &schemas.ImageGenerationInput{Prompt: "dog playing"},
+				Params:   &schemas.ImageGenerationParameters{ResponseFormat: schemas.Ptr("url")},
+			}
+			_, err := provider.ImageGeneration(contextWithDeployment(server.URL+"/environments/production/sync/v1"), testKey, req)
+			if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest || err.Error.Message != "response_format=url is not supported" {
+				t.Fatalf("expected a 400 carrying the deployment's detail, got %+v", err)
+			}
+		})
+	}
+}
+
+// TestBasetenRerankBEI pins BEI rerank: the alias /sync/v1 deployment_url is called
+// on /sync/rerank with the query and document texts, results come back highest score
+// first, top_n trims them and return_documents attaches the request documents.
+func TestBasetenRerankBEI(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"index":1,"score":0.2},{"index":2,"score":0.9},{"index":0,"score":0.5}]`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	req := &schemas.BifrostRerankRequest{
+		Provider:  schemas.Baseten,
+		Model:     "qwen3-reranker",
+		Query:     "what causes tides",
+		Documents: []schemas.RerankDocument{{Text: "a"}, {Text: "b"}, {Text: "c", ID: schemas.Ptr("doc-c")}},
+		Params:    &schemas.RerankParameters{TopN: schemas.Ptr(2), ReturnDocuments: schemas.Ptr(true)},
+	}
+
+	if _, err := provider.Rerank(contextWithDeployment(""), testKey, req); err == nil {
+		t.Fatal("expected rerank without a deployment_url to fail")
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream call without a deployment, got %d", n)
+	}
+
+	resp, err := provider.Rerank(contextWithDeployment(server.URL+"/environments/production/sync/v1"), testKey, req)
+	if err != nil {
+		t.Fatalf("Rerank: %v", llmtests.GetErrorMessage(err))
+	}
+	got := seen()
+	if len(got) != 1 || got[0].Path != "/environments/production/sync/rerank" || got[0].Auth != "Bearer bt-test-key" {
+		t.Fatalf("expected one Bearer call to /sync/rerank, got %+v", got)
+	}
+	if got[0].Body["query"] != "what causes tides" || fmt.Sprint(got[0].Body["texts"]) != "[a b c]" {
+		t.Fatalf("unexpected rerank body: %+v", got[0].Body)
+	}
+	for _, field := range []string{"model", "documents", "top_n", "return_documents"} {
+		if _, ok := got[0].Body[field]; ok {
+			t.Fatalf("expected %q to stay off the BEI body, got %+v", field, got[0].Body)
+		}
+	}
+	if len(resp.Results) != 2 || resp.Model != "qwen3-reranker" {
+		t.Fatalf("expected two results for qwen3-reranker, got %+v", resp)
+	}
+	first, second := resp.Results[0], resp.Results[1]
+	if first.Index != 2 || first.RelevanceScore != 0.9 || first.ID == nil || *first.ID != "doc-c" || first.Document == nil || first.Document.Text != "c" {
+		t.Fatalf("expected doc-c first with its document, got %+v", first)
+	}
+	if second.Index != 0 || second.RelevanceScore != 0.5 || second.Document == nil || second.Document.Text != "a" {
+		t.Fatalf("expected document 0 second, got %+v", second)
+	}
+}
+
+// TestBasetenRerankRejects pins that an empty query or document list fails as a 400
+// before any call, that an out-of-range index from BEI fails rather than panicking,
+// and that BEI's {"error": "..."} body reaches the client as the message.
+func TestBasetenRerankRejects(t *testing.T) {
+	t.Parallel()
+	reply := `[{"index":5,"score":0.9}]`
+	status := http.StatusOK
+	var mu sync.Mutex
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprint(w, reply)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	deployment := server.URL + "/environments/production/sync/v1"
+	request := func(query string, docs ...string) *schemas.BifrostRerankRequest {
+		documents := make([]schemas.RerankDocument, len(docs))
+		for i, d := range docs {
+			documents[i] = schemas.RerankDocument{Text: d}
+		}
+		return &schemas.BifrostRerankRequest{Provider: schemas.Baseten, Model: "reranker", Query: query, Documents: documents}
+	}
+
+	for name, req := range map[string]*schemas.BifrostRerankRequest{
+		"empty query":  request(" ", "a"),
+		"no documents": request("q"),
+	} {
+		_, err := provider.Rerank(contextWithDeployment(deployment), testKey, req)
+		if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: expected a 400, got %+v", name, err)
+		}
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream call for rejected requests, got %d", n)
+	}
+
+	if _, err := provider.Rerank(contextWithDeployment(deployment), testKey, request("q", "a")); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "outside the documents") {
+		t.Fatalf("expected an out-of-range index error, got %+v", err)
+	}
+
+	mu.Lock()
+	reply, status = `{"error":"input exceeds max batch size","error_type":"Validation"}`, http.StatusUnprocessableEntity
+	mu.Unlock()
+	_, err := provider.Rerank(contextWithDeployment(deployment), testKey, request("q", "a"))
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusUnprocessableEntity || err.Error.Message != "input exceeds max batch size" {
+		t.Fatalf("expected BEI's 422 message, got %+v", err)
+	}
+}
+
+// basetenDecisionQuestions asks one question of each System One type.
+func basetenDecisionQuestions() []schemas.DecisionQuestion {
+	return []schemas.DecisionQuestion{
+		{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("refund"), Instructions: schemas.NewDecisionText("Is the customer asking for a refund?")},
+		{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("route"), Choices: []schemas.DecisionChoice{
+			{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: schemas.NewDecisionText("Payments and refunds")},
+			{Value: schemas.DecisionScalar{Str: schemas.Ptr("bug")}, Description: schemas.NewDecisionText("Software defects")},
+		}},
+		{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("urgency"), Levels: []schemas.DecisionLevel{
+			{Label: "0", Description: schemas.NewDecisionText("Routine")},
+			{Label: "1", Description: schemas.NewDecisionText("Urgent")},
+		}},
+	}
+}
+
+const basetenDecisionBody = `{"model":"joey","answers":{` +
+	`"refund":{"type":"noul","noul":0.91},` +
+	`"route":{"type":"choice","choice":"billing","probabilities":{"billing":0.8,"bug":0.2},"confidence":0.4},` +
+	`"urgency":{"type":"score","score":0.7,"probabilities":{"0":0.3,"1":0.7},"legend":{"0":"Routine","1":"Urgent"}}},` +
+	`"usage":{"input_tokens":40,"output_tokens":3}}`
+
+// TestBasetenDecisionSystemOne pins the System One wire shape: text state as a string,
+// questions keyed by name, answers mapped back in question order.
+func TestBasetenDecisionSystemOne(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, basetenDecisionBody)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	resp, err := provider.Decision(contextWithDeployment(""), testKey, &schemas.BifrostDecisionRequest{
+		Provider:  schemas.Baseten,
+		Model:     "decision-models/baseten-joey-2b-latest",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("I was charged twice, please refund me.")},
+		Questions: basetenDecisionQuestions(),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", llmtests.GetErrorMessage(err))
+	}
+	got := seen()
+	if len(got) != 1 || got[0].Path != "/v1/systemone" || got[0].Auth != "Bearer bt-test-key" {
+		t.Fatalf("expected one authorized call to /v1/systemone, got %+v", got)
+	}
+	body := got[0].Body
+	if body["model"] != "decision-models/baseten-joey-2b-latest" || body["state"] != "I was charged twice, please refund me." {
+		t.Fatalf("unexpected model or state: %+v", body)
+	}
+	questions, _ := body["questions"].(map[string]any)
+	route, _ := questions["route"].(map[string]any)
+	urgency, _ := questions["urgency"].(map[string]any)
+	refund, _ := questions["refund"].(map[string]any)
+	if refund["type"] != "noul" || route["type"] != "choice" || urgency["type"] != "score" {
+		t.Fatalf("unexpected question types: %+v", questions)
+	}
+	if criteria, _ := route["criteria"].(map[string]any); criteria["billing"] != "Payments and refunds" {
+		t.Fatalf("choice criteria not keyed by option: %+v", route)
+	}
+	if levels, _ := urgency["criteria"].([]any); len(levels) != 2 {
+		t.Fatalf("score criteria not an ordered array: %+v", urgency)
+	}
+
+	if len(resp.Answers) != 3 {
+		t.Fatalf("expected 3 answers, got %+v", resp.Answers)
+	}
+	if a := resp.Answers[0]; a.Type != schemas.DecisionTypePredicate || a.Probability == nil || *a.Probability != 0.91 {
+		t.Fatalf("unexpected predicate answer: %+v", a)
+	}
+	if a := resp.Answers[1]; a.Type != schemas.DecisionTypeChoice || a.Choice == nil || a.Choice.Str == nil || *a.Choice.Str != "billing" {
+		t.Fatalf("unexpected choice answer: %+v", a)
+	}
+	if a := resp.Answers[2]; a.Type != schemas.DecisionTypeScore || a.Score == nil || *a.Score != 0.7 {
+		t.Fatalf("unexpected score answer: %+v", a)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 40 || resp.Usage.CompletionTokens != 3 {
+		t.Fatalf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+// TestBasetenDecisionConversationState pins that a message input is wrapped as
+// {"messages": [...]} (Baseten renders a top-level array as text), with text and
+// inline images as System One content parts.
+func TestBasetenDecisionConversationState(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, basetenDecisionBody)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	_, err := provider.Decision(contextWithDeployment(""), testKey, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Baseten,
+		Model:    "decision-models/baseten-joey-2b-latest",
+		Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+			{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("The order arrived damaged.")}},
+			{Role: "assistant", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+				{Type: schemas.DecisionInputPartTypeOutputText, Text: schemas.NewDecisionText("Replacement or refund?")},
+			}}},
+			{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+				{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("A refund. Photo attached.")},
+				{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")},
+			}}},
+		}},
+		Questions: basetenDecisionQuestions(),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", llmtests.GetErrorMessage(err))
+	}
+	got := seen()
+	if len(got) != 1 {
+		t.Fatalf("expected one upstream call, got %d", len(got))
+	}
+	state, ok := got[0].Body["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected state to be a {messages} object, got %#v", got[0].Body["state"])
+	}
+	want := []any{
+		map[string]any{"role": "user", "content": "The order arrived damaged."},
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "Replacement or refund?"}}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "A refund. Photo attached."},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,iVBORw0KGgo="}},
+		}},
+	}
+	if !reflect.DeepEqual(state["messages"], want) {
+		t.Fatalf("unexpected conversation state:\n got %#v\nwant %#v", state["messages"], want)
+	}
+}
+
+// TestBasetenDecisionRejectsUnreadableInput pins that inputs System One has no shape
+// for fail before any upstream call instead of being sent as text.
+func TestBasetenDecisionRejectsUnreadableInput(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, basetenDecisionBody)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	cases := []struct {
+		name     string
+		messages []schemas.DecisionInputMessage
+		wantErr  string
+	}{
+		{"tool output", []schemas.DecisionInputMessage{{Type: schemas.Ptr(schemas.DecisionInputItemTypeFunctionCallOutput), CallID: schemas.Ptr("c1")}}, "send only user and assistant messages"},
+		{"image by reference", []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img1"), Data: schemas.DecisionData{File: []byte{0x89, 'P', 'N', 'G'}}},
+		}}}}, "image sent by reference"},
+		{"audio part", []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{{Type: "input_audio"}}}}}, `an "input_audio" part`},
+		{"system role", []schemas.DecisionInputMessage{{Role: "system", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Be strict.")}}}, `has role "system"`},
+		{"developer role", []schemas.DecisionInputMessage{{Role: "developer", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Be strict.")}}}, `has role "developer"`},
+		{"assistant image", []schemas.DecisionInputMessage{{Role: "assistant", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")},
+		}}}}, "images only on user messages"},
+		{"17 images", []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: slices.Repeat([]schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")},
+		}, 17)}}}, "at most 16 per request"},
+	}
+	for _, tc := range cases {
+		_, err := provider.Decision(contextWithDeployment(""), testKey, &schemas.BifrostDecisionRequest{
+			Provider:  schemas.Baseten,
+			Model:     "decision-models/baseten-joey-2b-latest",
+			Input:     schemas.DecisionInput{Messages: tc.messages},
+			Questions: basetenDecisionQuestions(),
+		})
+		if err == nil || err.Error == nil {
+			t.Errorf("%s: expected an error, got %+v", tc.name, err)
+			continue
+		}
+		if !strings.Contains(err.Error.Message, tc.wantErr) {
+			t.Errorf("%s: error %q does not contain %q", tc.name, err.Error.Message, tc.wantErr)
+		}
+		if err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: want status 400, got %v", tc.name, err.StatusCode)
+		}
+		if err.Error.Type == nil || *err.Error.Type != "invalid_request_error" || err.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+			t.Errorf("%s: want an invalid_request_error from the caller, got type %v, class %q", tc.name, err.Error.Type, err.ExtraFields.ErrorType)
+		}
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream calls, got %d", n)
+	}
+}
+
+// TestBasetenDecisionImageDetailAndDefaultRole pins that a message without a role is
+// sent as user, and that an image detail other than "auto", which System One rejects,
+// is dropped while "auto" is kept.
+func TestBasetenDecisionImageDetailAndDefaultRole(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, basetenDecisionBody)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	_, err := provider.Decision(contextWithDeployment(""), testKey, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Baseten,
+		Model:    "decision-models/baseten-joey-2b-latest",
+		Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+			{Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+				{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA"), Detail: schemas.Ptr("high")},
+				{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,BBBB"), Detail: schemas.Ptr("auto")},
+			}}},
+		}},
+		Questions: basetenDecisionQuestions(),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", llmtests.GetErrorMessage(err))
+	}
+	state, _ := seen()[0].Body["state"].(map[string]any)
+	want := []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,BBBB", "detail": "auto"}},
+	}}}
+	if !reflect.DeepEqual(state["messages"], want) {
+		t.Fatalf("unexpected conversation state:\n got %#v\nwant %#v", state["messages"], want)
+	}
+}
+
+// TestBasetenDecisionError pins that System One's string-valued error body surfaces
+// with its message, type and status.
+func TestBasetenDecisionError(t *testing.T) {
+	t.Parallel()
+	server, _ := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":"Question type must be choice, noul or score","error_type":"Validation"}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	_, err := provider.Decision(contextWithDeployment(""), testKey, &schemas.BifrostDecisionRequest{
+		Provider:  schemas.Baseten,
+		Model:     "decision-models/baseten-joey-2b-latest",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("x")},
+		Questions: basetenDecisionQuestions(),
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %v", err.StatusCode)
+	}
+	if err.Error == nil || err.Error.Message != "Question type must be choice, noul or score" || err.Error.Type == nil || *err.Error.Type != "Validation" {
+		t.Fatalf("unexpected error: %+v", err.Error)
 	}
 }
 

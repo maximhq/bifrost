@@ -1953,7 +1953,7 @@ func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
 // prompt on a warm conversation. See inlineMidConversationSystem.
 func assertInlinedReminder(t *testing.T, result *AnthropicMessageRequest, text string) {
 	t.Helper()
-	want := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	want := "<system-reminder>\n" + text + "\n</system-reminder>"
 
 	var found bool
 	for _, msg := range result.Messages {

@@ -80,8 +80,9 @@ type OAuth2Provider struct {
 	// reads behind unrelated revoke traffic.
 	tempTokens atomic.Pointer[temptoken.Service]
 
-	clientMetadataPaths atomic.Pointer[clientMetadataPaths]                           // set once at startup; see SetClientMetadataDocumentPaths
-	credentialsRotated  atomic.Pointer[func(ctx context.Context, mcpClientID string)] // see SetCredentialsRotatedHook
+	clientMetadataPaths  atomic.Pointer[clientMetadataPaths]                           // set once at startup; see SetClientMetadataDocumentPaths
+	hostedClientMetadata atomic.Pointer[func() string]                                 // see SetHostedClientMetadataDocumentURL
+	credentialsRotated   atomic.Pointer[func(ctx context.Context, mcpClientID string)] // see SetCredentialsRotatedHook
 
 	// userTokens caches per-user access-token lookups keyed by
 	// (auth mode, identity, mcp client). It owns its own locking and must
@@ -789,9 +790,11 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	supportsClientMetadataDocument := config.UseClientMetadataDocument || (discovered != nil && discovered.ClientIDMetadataDocumentSupported)
 
 	// Prefer CIMD over DCR (deprecated in 2026-07-28).
+	clientMetadataDocument := false
 	if documentID := clientMetadataDocumentID(config.ClientMetadataURL, supportsClientMetadataDocument); !clientID.IsSet() && documentID != "" {
 		clientID = &schemas.SecretVar{Val: documentID, SecretType: schemas.SecretTypePlainText}
 		clientSecret = nil // a public client: its document declares token_endpoint_auth_method none
+		clientMetadataDocument = true
 		logger.Debug("Using Bifrost's Client ID Metadata Document as client_id: %s", documentID)
 	}
 
@@ -849,7 +852,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		ServerURL:       config.ServerURL,
 		UseDiscovery:    config.UseDiscovery,
 
-		DynamicallyRegistered: dynamicallyRegistered,
+		DynamicallyRegistered:  dynamicallyRegistered,
+		ClientMetadataDocument: clientMetadataDocument,
 	}
 	if discovered != nil {
 		oauthConfigRecord.Issuer, oauthConfigRecord.IssParameterSupported = discovered.Issuer, discovered.IssParameterSupported
@@ -1772,7 +1776,7 @@ var (
 
 	// ErrClientMetadataDocumentUnavailable means use_client_metadata_document was set but Bifrost's
 	// document is not at an address an authorization server can fetch (public HTTPS, not loopback).
-	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")
+	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL, or host the document yourself with the client metadata document URL")
 
 	// ErrOAuthDiscoveryFailed means the authorization endpoints could not be discovered from the MCP
 	// server, so the caller has to provide them in the OAuth config.
@@ -2125,6 +2129,42 @@ func (p *OAuth2Provider) SetClientMetadataDocumentPaths(callbackPath, documentPa
 
 type clientMetadataPaths struct{ callback, document string }
 
+// SetHostedClientMetadataDocumentURL installs hostedURL, which returns where the admin hosts Bifrost's Client
+// ID Metadata Document, or "" when it is served under Bifrost's base URL. nil removes it.
+func (p *OAuth2Provider) SetHostedClientMetadataDocumentURL(hostedURL func() string) {
+	if p == nil {
+		return
+	}
+	if hostedURL == nil {
+		p.hostedClientMetadata.Store(nil)
+		return
+	}
+	p.hostedClientMetadata.Store(&hostedURL)
+}
+
+// ClientMetadataDocumentURL returns Bifrost's Client ID Metadata Document URL for a sign-in presenting
+// redirectURI: the hosted one when configured, else the one served under the callback's base.
+func (p *OAuth2Provider) ClientMetadataDocumentURL(redirectURI string) string {
+	if p == nil {
+		return ""
+	}
+	return p.currentClientMetadataDocument(p.clientMetadataPaths.Load(), redirectURI)
+}
+
+// currentClientMetadataDocument returns the document a sign-in presenting redirectURI should use: the hosted
+// one when configured, else the one served under the callback's base, or "" when neither applies.
+func (p *OAuth2Provider) currentClientMetadataDocument(paths *clientMetadataPaths, redirectURI string) string {
+	if hosted := p.hostedClientMetadata.Load(); hosted != nil {
+		if url := (*hosted)(); url != "" {
+			return url
+		}
+	}
+	if paths == nil || !strings.HasSuffix(redirectURI, paths.callback) {
+		return ""
+	}
+	return strings.TrimSuffix(redirectURI, paths.callback) + paths.document
+}
+
 // SetCredentialsRotatedHook installs hook, run after the provider itself rotates an MCP client's OAuth
 // credentials (a metadata-document client_id following Bifrost's address, or a sign-in moving the
 // config to a new authorization server), so the caller can drop that client's cached tokens and
@@ -2140,23 +2180,25 @@ func (p *OAuth2Provider) SetCredentialsRotatedHook(hook func(ctx context.Context
 	p.credentialsRotated.Store(&hook)
 }
 
-// followClientMetadataDocument moves a metadata-document client_id to the document served under the base
-// the sign-in presents its callback on, so the authorization server fetches a document that lists that
-// callback. Tokens issued to the old client_id are marked to sign in again: they cannot be refreshed
-// under the new one.
+// followClientMetadataDocument moves a metadata-document client_id to Bifrost's current document: the hosted
+// one when configured, else the one served under the base the sign-in presents its callback on, so the
+// authorization server fetches a document that lists that callback. Tokens issued to the old client_id are
+// marked to sign in again: they cannot be refreshed under the new one.
 func (p *OAuth2Provider) followClientMetadataDocument(ctx context.Context, config *tables.TableOauthConfig, mcpClientID, redirectURI string) (*tables.TableOauthConfig, error) {
 	paths := p.clientMetadataPaths.Load()
 	clientID := config.GetResolvedClientID()
-	if paths == nil || !strings.HasSuffix(clientID, paths.document) || !strings.HasSuffix(redirectURI, paths.callback) {
+	// Only Bifrost's own document moves, so a document configured by hand is left alone. Configs stored
+	// before the marker are recognised by the document sitting under the base of their stored callback.
+	ours := config.ClientMetadataDocument || (paths != nil && strings.HasSuffix(clientID, paths.document) &&
+		strings.HasSuffix(config.RedirectURI, paths.callback) &&
+		strings.TrimSuffix(clientID, paths.document) == strings.TrimSuffix(config.RedirectURI, paths.callback))
+	if !ours {
 		return config, nil
 	}
-	// Only Bifrost's own document moves: it sits under the base of the callback stored with the config,
-	// so a document on another host, configured by hand, is left alone.
-	if strings.TrimSuffix(clientID, paths.document) != strings.TrimSuffix(config.RedirectURI, paths.callback) {
-		return config, nil
-	}
-	current := strings.TrimSuffix(redirectURI, paths.callback) + paths.document
-	// A base the authorization server cannot fetch (http, loopback) keeps the stored document.
+	current := p.currentClientMetadataDocument(paths, redirectURI)
+	// A base the authorization server cannot fetch (http, loopback) keeps the stored document. An unmoved
+	// hosted document keeps its stored callback too: rewriting it would sign out tokens the client_id still
+	// owns, and sign-ins use the callback on their flow.
 	if current == clientID || clientMetadataDocumentID(current, true) == "" {
 		return config, nil
 	}
@@ -2172,9 +2214,10 @@ func (p *OAuth2Provider) followClientMetadataDocument(ctx context.Context, confi
 		TokenURL:     config.TokenURL,
 		Resource:     config.Resource,
 		Scopes:       scopes,
-		RedirectURI:  redirectURI, // the stored callback moves with the document, so the next move is ours too
+		RedirectURI:  redirectURI, // the stored callback moves with the document
 
-		ExpectedClientID: &clientID, // a sign-in that loaded the config before another moved it must not move it again
+		ClientMetadataDocument: true,
+		ExpectedClientID:       &clientID, // a sign-in that loaded the config before another moved it must not move it again
 	}
 	if config.RegistrationURL != nil {
 		fields.RegistrationURL = *config.RegistrationURL

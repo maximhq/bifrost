@@ -75,6 +75,19 @@ export const putConfig = (id, name, mutate, asserts) => request(id, name, "PUT",
 
 export const restoreConfig = (id) => putConfig(id, "teardown: restore the original config", [], [A.status(200)]);
 
+// schemasLack asserts, on a tools/list answer, that each named tool is listed with an object inputSchema whose
+// properties include none of props. A tool or schema that is missing fails rather than passing for want of properties.
+export const schemasLack = (tools, props) => A.custom(`${tools.join(", ")} take no ${props.join(" or ")} argument`, [
+  "var byName = {}; ((pm.response.json().result || {}).tools || []).forEach(function (t) { byName[t.name] = t; });",
+  `${lit(tools)}.forEach(function (n) {`,
+  "  pm.expect(byName, n + ' in tools/list').to.have.property(n);",
+  "  var schema = byName[n].inputSchema;",
+  "  pm.expect(schema, n + ' inputSchema').to.be.an('object');",
+  "  var properties = schema.properties || {};",
+  `  ${lit(props)}.forEach(function (p) { pm.expect(properties, n).to.not.have.property(p); });`,
+  "});",
+]);
+
 // OAuth endpoints answer {error, error_description}.
 export const O = {
   error: (code) => A.custom(`error is ${lit(code)}`, ["var b = pm.response.json();", `pm.expect(b.error, 'body: ' + pm.response.text()).to.equal(${lit(code)});`]),

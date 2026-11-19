@@ -1,0 +1,8 @@
+description: Read Pylon issues through Bifrost's MCP server. The MCP output rule redacts emails and phone numbers before the result leaves Bifrost. Set PYLON_SEARCH_TOOL and its args.
+surface: 7-mcp-tool-guardrail
+kind: mcp_call
+tool: ${PYLON_SEARCH_TOOL}
+args: {}
+expect:
+  absent_patterns:
+    - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
