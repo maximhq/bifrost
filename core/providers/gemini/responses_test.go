@@ -1124,6 +1124,51 @@ func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
 	})
 }
 
+// Annotation Index is a position in action.Sources, and URL-less sources produce no chunk.
+func TestBuildGroundingMetadataMapsSourceIndexPastURLLessSources(t *testing.T) {
+	webSearchCall := &schemas.ResponsesMessage{
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+					Query: schemas.Ptr("weather"),
+					Sources: []schemas.ResponsesWebSearchToolCallActionSearchSource{
+						{Type: "api", Name: "oai-weather"},
+						{Type: "url", URL: "https://example.com/a", Title: schemas.Ptr("A")},
+						{Type: "url", URL: "https://example.com/b", Title: schemas.Ptr("B")},
+					},
+				},
+			},
+		},
+	}
+	annotations := []schemas.ResponsesOutputMessageContentTextAnnotation{
+		{
+			Type:       "url_citation",
+			Index:      schemas.Ptr(1),
+			URL:        schemas.Ptr("https://example.com/a"),
+			Text:       schemas.Ptr("first"),
+			StartIndex: schemas.Ptr(0),
+			EndIndex:   schemas.Ptr(5),
+		},
+		{
+			Type:       "url_citation",
+			Index:      schemas.Ptr(0),
+			URL:        schemas.Ptr("https://example.com/b"),
+			Text:       schemas.Ptr("second"),
+			StartIndex: schemas.Ptr(6),
+			EndIndex:   schemas.Ptr(12),
+		},
+	}
+
+	gm := buildGroundingMetadataFromWebSearch(webSearchCall, annotations, nil)
+	require.NotNil(t, gm)
+	require.Len(t, gm.GroundingChunks, 2)
+	assert.Equal(t, "https://example.com/a", gm.GroundingChunks[0].Web.URI)
+	assert.Equal(t, "https://example.com/b", gm.GroundingChunks[1].Web.URI)
+	require.Len(t, gm.GroundingSupports, 2)
+	assert.Equal(t, []int32{0}, gm.GroundingSupports[0].GroundingChunkIndices, "source 1 (A) is chunk 0")
+	assert.Equal(t, []int32{1}, gm.GroundingSupports[1].GroundingChunkIndices, "URL-less source 0 falls back to URL match on B")
+}
+
 // executableCode and codeExecutionResult arrive as two sibling parts. They must land as
 // one structured code_interpreter_call carrying code and outputs, not as prose text —
 // that is the shape OpenAI and Anthropic already produce.
