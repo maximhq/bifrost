@@ -38,7 +38,7 @@
 		"asyncJobTtl": "异步任务结果 TTL（秒）",
 		"asyncJobTtlHelp": "异步任务结果的默认存活时间（秒）。过期后结果会自动清理。",
 		"bifrostUrl": "Bifrost URL",
-		"bifrostUrlHelp": "客户端访问此网关所用的 URL，包括任何基础路径。<code0>/v1/mcp</code0> 和 Warp 的配置工具需要此项：它们的调用会被视为从此处到达，因此结果中的链接指向该 URL。留空则二者都会停用；绝不会改用请求发送的 Host 标头。",
+		"bifrostUrlHelp": "客户端访问此网关所用的 URL，包括任何基础路径。<code0>/v1/mcp</code0> 需要此项：它的工具调用会被视为从此处到达，因此结果中的链接指向该 URL。留空则会停用；绝不会改用请求发送的 Host 标头。",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "OpenAPI URL",
 		"openapiUrlHelp": "<code0>/v1/mcp</code0> 用于生成工具的 OpenAPI 规范：一个 http(s) URL，或用于离线环境、相对于应用目录的路径。留空则读取此版本已发布的规范。",

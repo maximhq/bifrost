@@ -45,11 +45,56 @@ type ModelMatcher func(provider, model string, allowed []string) bool
 // agents are decided by the granting level alone.
 type Access struct {
 	// bases is every permit the caller holds, as given. Levels are read off each permit when needed.
-	bases     []schemas.Permit
-	levelMode CompositionMode
-	scoping   schemas.Permit
-	mode      CompositionMode
-	matcher   ModelMatcher
+	bases        []schemas.Permit
+	levelMode    CompositionMode
+	scoping      schemas.Permit
+	mode         CompositionMode
+	matcher      ModelMatcher
+	keyMatcher   KeyScopedModelMatcher // optional; replaces matcher when set
+	aliasTargets AliasTargets          // optional; what a requested name can become through key aliases
+}
+
+// KeyScopedModelMatcher is a ModelMatcher that is also told which of the provider's keys the
+// provider permit lets serve the request (["*"] for every key, empty for none). A name that only a
+// key alias makes allowed depends on the keys that can serve it, so a deployment resolving aliases
+// supplies this instead of a plain ModelMatcher.
+type KeyScopedModelMatcher func(provider, model string, allowed, keyIDs []string) bool
+
+// WithKeyScopedMatcher sets the key-scoped matcher, which takes the place of the access's
+// ModelMatcher, and returns the access. A nil access is left alone.
+func (a *Access) WithKeyScopedMatcher(f KeyScopedModelMatcher) *Access {
+	if a != nil {
+		a.keyMatcher = f
+	}
+	return a
+}
+
+// WithModelMatcher returns a copy of the access that matches models through matcher alone, with no
+// key-scoped matcher and no alias-target source: the same permits, levels and modes, read as names
+// that reach the provider as written. A nil access gives nil.
+func (a *Access) WithModelMatcher(matcher ModelMatcher) *Access {
+	if a == nil {
+		return nil
+	}
+	literal := *a
+	literal.matcher = matcher
+	literal.keyMatcher = nil
+	literal.aliasTargets = nil
+	return &literal
+}
+
+// AliasTargets calls visit with each model that key aliases map model to on provider, considering
+// only the keys keyIDs names (["*"] for every key, empty for none). It is how an access learns what a
+// requested name can become once key selection has resolved it, so a blacklist on that model is not
+// side-stepped by naming it through an alias.
+type AliasTargets func(provider, model string, keyIDs []string, visit func(target string))
+
+// WithAliasTargets sets the alias-target source and returns the access. A nil access is left alone.
+func (a *Access) WithAliasTargets(f AliasTargets) *Access {
+	if a != nil {
+		a.aliasTargets = f
+	}
+	return a
 }
 
 // NewAccess folds the permits the caller holds together with the permit scoping this request.
@@ -360,6 +405,34 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 	return keyIDs, true
 }
 
+// RestrictsKeys reports whether any permit of the access holds a key restriction for provider.
+// When none does, KeysForModel reports no restriction for every model of the provider, so a caller
+// on a hot path can skip it. It reads the permits in place and allocates nothing.
+func (a *Access) RestrictsKeys(provider string) bool {
+	if a == nil {
+		return false
+	}
+	restricts := func(p schemas.Permit) bool {
+		if isNilPermit(p) {
+			return false
+		}
+		// This package's own permit is read in place; ProviderPermits hands out a copy.
+		pps := []schemas.ProviderPermit(nil)
+		if own, ok := p.(*Permit); ok {
+			pps = own.providerPermits
+		} else {
+			pps = p.ProviderPermits()
+		}
+		for i := range pps {
+			if pps[i].Provider == provider && !pps[i].KeyIDs.IsUnrestricted() {
+				return true
+			}
+		}
+		return false
+	}
+	return slices.ContainsFunc(a.bases, restricts) || restricts(a.scoping)
+}
+
 // capKeys narrows the caller's keys by each capping level that restricts this provider's keys. A
 // level with no restriction for the provider leaves them alone.
 func (a *Access) capKeys(keys schemas.WhiteList, holds bool, provider string, model string) (schemas.WhiteList, bool) {
@@ -415,13 +488,14 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		// Whether *this* permit permits it: under a union the other side may be the one authorizing
 		// the request, and a permit that blacklists the model must not serve it. One blacklisting
 		// provider permit blocks the provider for that model across the whole permit, so a
-		// permissive one cannot reopen it:
-		if blacklistsModel(owner, provider, model) {
+		// permissive one cannot reopen it, and so does one that blacklists a model the name becomes through
+		// a key alias:
+		if !a.permitAllowsModel(owner, provider, model) {
 			return false
 		}
 		// And whether this provider permit in particular permits it, so a permit holding several for
 		// a provider only offers the ones that can serve the model:
-		if !a.permitsModel(pp, model) {
+		if !a.permitsModel(pp, model, pp.KeyIDs) {
 			return false
 		}
 		// A candidate a capping level refuses can only be a union scope's, which serves it itself.
@@ -929,14 +1003,18 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 	}
 	pps := p.ProviderPermits()
 	found := false
+	var keyIDs schemas.WhiteList
 	for i := range pps {
 		pp := &pps[i]
 		if pp.Provider != provider {
 			continue
 		}
+		if !found && (a.keyMatcher != nil || a.aliasTargets != nil) {
+			keyIDs = keyIDsServing(pps, provider)
+		}
 		found = true
-		if a.permitsModel(pp, model) {
-			return true
+		if a.permitsModel(pp, model, keyIDs) {
+			return a.aliasTargetsNotBlacklisted(pps, provider, model, keyIDs)
 		}
 	}
 	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
@@ -947,9 +1025,70 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 	return false
 }
 
-// permitsModel applies one provider permit's allowed-models rule, through the matcher when there is
-// one and by name otherwise.
-func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string) bool {
+// aliasTargetsNotBlacklisted reports that no model model can become through a key alias is blacklisted
+// by the provider permits pps. It reads the permits already fetched by the caller and does nothing,
+// allocating nothing, unless an alias source is set and a permit blacklists something for provider.
+func (a *Access) aliasTargetsNotBlacklisted(pps []schemas.ProviderPermit, provider, model string, keyIDs schemas.WhiteList) bool {
+	if a.aliasTargets == nil {
+		return true
+	}
+	blacklists := false
+	for i := range pps {
+		if pps[i].Provider == provider && len(pps[i].BlacklistedModels) > 0 {
+			blacklists = true
+			break
+		}
+	}
+	if !blacklists {
+		return true
+	}
+	ok := true
+	a.aliasTargets(provider, model, keyIDs, func(target string) {
+		for i := range pps {
+			if pps[i].Provider == provider && pps[i].BlacklistedModels.IsBlocked(target) {
+				ok = false
+				return
+			}
+		}
+	})
+	return ok
+}
+
+// allKeyIDs is the key restriction that restricts nothing.
+var allKeyIDs = schemas.WhiteList{"*"}
+
+// keyIDsServing is the key restriction a request permitted by one of pps on provider is served
+// under. Key selection may use the keys of every provider permit the permit holds for the provider
+// (see unionKeysHeldBy), so with more than one it answers the union of their keys: every key when
+// one of them is unrestricted, otherwise only the keys some permit names, so a key no permit lets
+// serve the request cannot veto an alias. One provider permit, the usual case, allocates nothing.
+func keyIDsServing(pps []schemas.ProviderPermit, provider string) schemas.WhiteList {
+	var keyIDs schemas.WhiteList
+	n := 0
+	for i := range pps {
+		if pps[i].Provider != provider {
+			continue
+		}
+		if n == 0 {
+			keyIDs = pps[i].KeyIDs
+		} else {
+			keyIDs = composeKeyIDs(keyIDs, pps[i].KeyIDs, Union)
+		}
+		n++
+	}
+	if n == 0 {
+		return allKeyIDs
+	}
+	return keyIDs
+}
+
+// permitsModel applies one provider permit's allowed-models rule, through the key-scoped matcher or
+// the matcher when there is one and by name otherwise. keyIDs is the key restriction the request is
+// served under; only the key-scoped matcher reads it.
+func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string, keyIDs schemas.WhiteList) bool {
+	if a.keyMatcher != nil {
+		return a.keyMatcher(pp.Provider, model, pp.AllowedModels, keyIDs)
+	}
 	if a.matcher == nil {
 		return pp.AllowedModels.IsAllowed(model)
 	}
