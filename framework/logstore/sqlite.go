@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/storehooks"
@@ -28,12 +29,14 @@ func sqliteDSN(path string, busyTimeoutMs int) string {
 	return fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=%d&_wal_autocheckpoint=1000&_foreign_keys=1", path, busyTimeoutMs)
 }
 
-// initSQLiteAutoVacuum sets auto_vacuum=INCREMENTAL on a database that has no
-// pages yet, so a new logs.db can later give freed pages back to the OS through
-// ReclaimSpace. It runs once, on a dedicated connection, before migrations. A
-// database that already has content keeps its mode (NONE or FULL); moving a
-// NONE database to INCREMENTAL needs a one-off VACUUM.
-func initSQLiteAutoVacuum(path string) error {
+// initSQLiteAutoVacuum makes sure logs.db runs with auto_vacuum=INCREMENTAL so
+// freed pages can go back to the OS through ReclaimSpace. It runs once, on a
+// dedicated connection, before migrations. An empty file only needs the pragma.
+// An existing file in the default NONE mode is converted with a one-off VACUUM,
+// which rewrites the file and needs free disk space about the size of the
+// database; if that fails the file keeps its mode and the next start retries. A
+// file already in FULL or INCREMENTAL mode is left alone.
+func initSQLiteAutoVacuum(path string, logger schemas.Logger) error {
 	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormlogger.Discard})
 	if err != nil {
 		return err
@@ -49,13 +52,30 @@ func initSQLiteAutoVacuum(path string) error {
 	if err := db.Raw("PRAGMA page_count").Scan(&pages).Error; err != nil {
 		return err
 	}
-	if pages > 0 {
+	if pages == 0 {
+		// The pragma alone writes the header of the empty file, so the mode is
+		// stored without creating anything that an interrupted start could
+		// leave behind.
+		return db.Exec("PRAGMA auto_vacuum = INCREMENTAL").Error
+	}
+	var mode int
+	if err := db.Raw("PRAGMA auto_vacuum").Scan(&mode).Error; err != nil {
+		return err
+	}
+	if mode != 0 {
 		return nil
 	}
-	// The pragma alone writes the header of the empty file, so the mode is
-	// stored without creating anything that an interrupted start could leave
-	// behind.
-	return db.Exec("PRAGMA auto_vacuum = INCREMENTAL").Error
+	logger.Info("migrating logs.db to auto_vacuum=incremental with a one-off VACUUM (%d pages); this can take a while on a large database and needs free disk space about its size", pages)
+	start := time.Now()
+	if err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("VACUUM").Error; err != nil {
+		logger.Warn("logs.db auto_vacuum migration failed, will retry on next start: %v", err)
+		return nil
+	}
+	logger.Info("logs.db auto_vacuum migration finished in %s", time.Since(start).Round(time.Millisecond))
+	return nil
 }
 
 // newSqliteLogStore creates a new SQLite log store.
@@ -68,7 +88,7 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 		}
 		_ = f.Close()
 	}
-	if err := initSQLiteAutoVacuum(config.Path); err != nil {
+	if err := initSQLiteAutoVacuum(config.Path, logger); err != nil {
 		return nil, fmt.Errorf("failed to initialise sqlite auto_vacuum: %w", err)
 	}
 	dsn := sqliteDSN(config.Path, sqliteBusyTimeoutMs)

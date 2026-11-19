@@ -163,14 +163,16 @@ func TestSQLiteReclaimSpace_ShrinksFileAfterRetention(t *testing.T) {
 	require.Zero(t, free)
 }
 
-// TestSQLiteReclaimSpace_LegacyDatabaseIsNoOp pins that a file created before
-// the change (auto_vacuum=NONE) keeps its mode and ReclaimSpace leaves it alone.
-func TestSQLiteReclaimSpace_LegacyDatabaseIsNoOp(t *testing.T) {
+// TestSQLiteAutoVacuum_LegacyDatabaseIsMigrated pins that a file created before
+// the change (auto_vacuum=NONE) is converted on open with a one-off VACUUM, keeps
+// its data, and then shrinks after retention like a new file.
+func TestSQLiteAutoVacuum_LegacyDatabaseIsMigrated(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "logs.db")
 	legacy, err := gorm.Open(sqlite.Open(path))
 	require.NoError(t, err)
 	require.NoError(t, legacy.Exec("CREATE TABLE legacy_marker (id INTEGER)").Error)
+	require.NoError(t, legacy.Exec("INSERT INTO legacy_marker VALUES (42)").Error)
 	sqlDB, err := legacy.DB()
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
@@ -181,15 +183,41 @@ func TestSQLiteReclaimSpace_LegacyDatabaseIsNoOp(t *testing.T) {
 
 	var mode int
 	require.NoError(t, store.db.Raw("PRAGMA auto_vacuum").Scan(&mode).Error)
-	require.Equal(t, 0, mode)
+	require.Equal(t, 2, mode, "an existing NONE database must be migrated to INCREMENTAL")
+	var marker int
+	require.NoError(t, store.db.Raw("SELECT id FROM legacy_marker").Scan(&marker).Error)
+	require.Equal(t, 42, marker, "VACUUM must keep existing data")
 
 	seedExpiredLogs(t, store, 5000, 10)
+	peak := dbFileSize(t, store, path)
 	drainRetention(t, store)
-	size := dbFileSize(t, store, path)
 	released, err := store.ReclaimSpace(ctx, 500)
 	require.NoError(t, err)
-	require.Zero(t, released)
-	require.Equal(t, size, dbFileSize(t, store, path))
+	require.Positive(t, released)
+	require.Less(t, dbFileSize(t, store, path), peak/5)
+}
+
+// TestSQLiteReclaimSpace_ShrinksWithoutManualCheckpoint pins that ReclaimSpace
+// itself checkpoints the WAL: the main file shrinks while the store stays open
+// and no one else checkpoints.
+func TestSQLiteReclaimSpace_ShrinksWithoutManualCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "logs.db")
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: path}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	seedExpiredLogs(t, store, 4000, 1000)
+	drainRetention(t, store)
+	peak := dbFileSize(t, store, path) // checkpoints, so the file holds the full peak
+
+	released, err := store.ReclaimSpace(ctx, 500)
+	require.NoError(t, err)
+	require.Positive(t, released)
+
+	st, err := os.Stat(path) // no checkpoint here
+	require.NoError(t, err)
+	require.Less(t, st.Size(), peak/2, "ReclaimSpace must leave the file shrunk (peak=%d after=%d)", peak, st.Size())
 }
 
 // TestSQLiteAutoVacuum_FullDatabaseKeepsFull pins that reopening a database in

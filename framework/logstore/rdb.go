@@ -5506,7 +5506,19 @@ func (s *RDBLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, er
 			break
 		}
 	}
-	return released, ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return released, err
+	}
+	// In WAL mode the released pages sit in the WAL until a checkpoint copies
+	// them back and truncates the main file, which would otherwise wait for the
+	// WAL to pass _wal_autocheckpoint. PASSIVE never waits for readers or
+	// writers; if one blocks it, the next write's auto-checkpoint finishes.
+	if released > 0 {
+		if err := db.Exec("PRAGMA wal_checkpoint(PASSIVE)").Error; err != nil {
+			return released, err
+		}
+	}
+	return released, nil
 }
 
 // Close stops matview maintenance and closes the log store.
