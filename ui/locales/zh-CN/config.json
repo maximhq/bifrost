@@ -250,6 +250,8 @@
 		"deleteExpiredVirtualKeysHelp": "启用后，每日清理任务会删除所有已过期的虚拟密钥，并发送列出已删除密钥的通知。每个密钥都可通过其<b0>过期后删除</b0>开关覆盖此设置：设为关闭的密钥会保留；即使此设置关闭，设为开启的密钥仍会删除。",
 		"enforceVkObjectOwnership": "将提供商对象限制为创建它的虚拟密钥",
 		"enforceVkObjectOwnershipHelp": "启用后，使用虚拟密钥创建的文件、批次、视频、容器、缓存内容和实时会话，只能使用同一密钥读取、列出或删除。其他虚拟密钥会收到未找到错误，也无法在列表中看到这些对象。不受虚拟密钥保护的请求不受影响。即使此选项关闭，也会记录创建对象的密钥；再次启用后，期间创建的对象也会受到限制，但无法记录创建密钥的对象除外。",
+		"excludeCachedTokensFromRateLimits": "不将缓存 Token 计入速率限制",
+		"excludeCachedTokensFromRateLimitsHelp": "启用后，提供商从其前缀缓存中提供的提示 Token（cached_tokens）不计入 Token 速率限制。缓存写入和输出 Token 仍会计入，成本计算方式不变。部分提供商（如 OpenAI）会将缓存 Token 计入其自身的每分钟 Token 限额，因此映射此类配额的速率限制可能放行超出提供商接受范围的请求。",
 		"bifrostMcpAllowWrites": "允许通过 Bifrost MCP 更改配置",
 		"bifrostMcpAllowWritesHelp": "将网关中非 GET 的 /api 操作作为 <code0>/v1/mcp</code0> 上的工具提供。推理、批处理和文件路由始终提供。破坏性工具会要求 MCP 客户端确认。",
 		"proofRequired": "输入当前管理员密码以确认此更改。仪表盘保护已关闭，因此此会话未登录。如果不知道密码，请改用设置令牌。",

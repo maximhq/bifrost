@@ -1365,6 +1365,19 @@ type ResponsesResponseUsage struct {
 	OutputTokensExplicitZero bool `json:"-"`
 }
 
+// RateLimitTokens applies RateLimitTokens to Responses usage; InputTokens
+// includes cached reads, as PromptTokens does on the chat shape.
+func (u *ResponsesResponseUsage) RateLimitTokens(excludeCachedReads bool) int64 {
+	if u == nil {
+		return 0
+	}
+	var cachedRead int64
+	if u.InputTokensDetails != nil {
+		cachedRead = int64(u.InputTokensDetails.CachedReadTokens)
+	}
+	return RateLimitTokens(int64(u.TotalTokens), int64(u.InputTokens), cachedRead, excludeCachedReads)
+}
+
 // PreserveTokenCountZeros retains presence for Responses-to-Chat conversion without
 // changing the Responses wire format or keeping the provider response buffer.
 func (u *ResponsesResponseUsage) PreserveTokenCountZeros(data []byte, inputPath, outputPath string) {

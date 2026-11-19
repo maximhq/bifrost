@@ -407,6 +407,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Same for exclude_cached_tokens_from_rate_limits: a null would silently turn the setting off.
+	if raw, present := clientConfigFields["exclude_cached_tokens_from_rate_limits"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, "exclude_cached_tokens_from_rate_limits must be true or false")
+		return
+	}
 	// A JSON null would decode as 0 and silently reset the limit; an explicit 0 is the reset.
 	if raw, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be an integer between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
@@ -995,6 +1000,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
+	}
+	// Copied only when sent, so a partial save (an older dashboard, an API client) doesn't silently
+	// turn it off. Governance reads it through a getter when it charges usage, so no reload is needed.
+	if _, present := clientConfigFields["exclude_cached_tokens_from_rate_limits"]; present {
+		updatedConfig.ExcludeCachedTokensFromRateLimits = payload.ClientConfig.ExcludeCachedTokensFromRateLimits
 	}
 	// Copied only when sent, so a partial save keeps the limit; 0 resets it to the default.
 	// The next spec load reads it, so no reload is needed.

@@ -2165,6 +2165,36 @@ type BifrostLLMUsage struct {
 	CompletionTokensExplicitZero bool `json:"-"` // Completion wire: zero was reported, not missing/null.
 }
 
+// RateLimitTokens returns the token count a token rate limit charges.
+//
+// excludeCachedReads=false returns total unchanged, which is exactly the
+// historical count. true deducts the prompt tokens the provider served from its
+// prefix cache. Cache writes are never deducted: they are new tokens, billed at a
+// premium. The deduction is clamped to [0, prompt], so a malformed payload can
+// neither credit tokens nor charge more than total.
+//
+// This is a Bifrost accounting policy, not a mirror of the upstream's own limit:
+// some providers (OpenAI) count cached reads toward their TPM, others (Anthropic)
+// do not.
+func RateLimitTokens(total, prompt, cachedRead int64, excludeCachedReads bool) int64 {
+	if !excludeCachedReads || total <= 0 || cachedRead <= 0 {
+		return total
+	}
+	return max(total-min(cachedRead, max(prompt, 0)), 0)
+}
+
+// RateLimitTokens applies the package-level RateLimitTokens to this usage.
+func (u *BifrostLLMUsage) RateLimitTokens(excludeCachedReads bool) int64 {
+	if u == nil {
+		return 0
+	}
+	var cachedRead int64
+	if u.PromptTokensDetails != nil {
+		cachedRead = int64(u.PromptTokensDetails.CachedReadTokens)
+	}
+	return RateLimitTokens(int64(u.TotalTokens), int64(u.PromptTokens), cachedRead, excludeCachedReads)
+}
+
 // PreserveTokenCountZeros records numeric zeros at the given JSON field paths.
 // Used when decoding completion responses from providers or cached snapshots.
 // Nil/nonzero usage needs no JSON lookup; no response buffer is retained.

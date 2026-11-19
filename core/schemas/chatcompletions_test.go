@@ -491,3 +491,83 @@ func TestChatToolChoiceAllowedTools_CustomEntryRoundTrip(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", out, in)
 	}
 }
+
+func TestRateLimitTokens(t *testing.T) {
+	cases := []struct {
+		name                      string
+		total, prompt, cachedRead int64
+		exclude                   bool
+		want                      int64
+	}{
+		{"exclude off keeps total", 1050, 1000, 900, false, 1050},
+		{"exclude on deducts cached reads", 1050, 1000, 900, true, 150},
+		{"no cached reads keeps total", 1050, 1000, 0, true, 1050},
+		{"cached reads above prompt clamp to prompt", 1050, 1000, 5000, true, 50},
+		{"negative cached reads deduct nothing", 1050, 1000, -10, true, 1050},
+		{"negative prompt never raises the charge", 1050, -500, 900, true, 1050},
+		{"zero total stays zero", 0, 1000, 900, true, 0},
+		{"negative total is passed through", -5, 1000, 900, true, -5},
+		{"total below the deduction floors at zero", 100, 1000, 900, true, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RateLimitTokens(tc.total, tc.prompt, tc.cachedRead, tc.exclude); got != tc.want {
+				t.Fatalf("RateLimitTokens(%d, %d, %d, %t) = %d, want %d", tc.total, tc.prompt, tc.cachedRead, tc.exclude, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBifrostLLMUsageRateLimitTokens(t *testing.T) {
+	var nilUsage *BifrostLLMUsage
+	if got := nilUsage.RateLimitTokens(true); got != 0 {
+		t.Fatalf("nil usage = %d, want 0", got)
+	}
+
+	noDetails := &BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 50, TotalTokens: 1050}
+	if got := noDetails.RateLimitTokens(true); got != 1050 {
+		t.Fatalf("usage without details = %d, want 1050", got)
+	}
+
+	// Cache writes are new tokens and are never deducted; only reads are.
+	usage := &BifrostLLMUsage{
+		PromptTokens:        1000,
+		CompletionTokens:    50,
+		TotalTokens:         1050,
+		PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 600, CachedWriteTokens: 300},
+	}
+	if got := usage.RateLimitTokens(false); got != 1050 {
+		t.Fatalf("exclude off = %d, want 1050", got)
+	}
+	if got := usage.RateLimitTokens(true); got != 450 {
+		t.Fatalf("exclude on = %d, want 450 (1050 - 600 reads, writes kept)", got)
+	}
+
+	// OpenAI's wire spelling (prompt_tokens_details.cached_tokens) reaches the same field.
+	var wire BifrostLLMUsage
+	if err := Unmarshal([]byte(`{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_tokens_details":{"cached_tokens":900}}`), &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := wire.RateLimitTokens(true); got != 150 {
+		t.Fatalf("cached_tokens wire = %d, want 150", got)
+	}
+}
+
+func BenchmarkBifrostLLMUsageRateLimitTokens(b *testing.B) {
+	usage := &BifrostLLMUsage{
+		PromptTokens:        1000,
+		CompletionTokens:    50,
+		TotalTokens:         1050,
+		PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 900},
+	}
+	for _, exclude := range []bool{false, true} {
+		b.Run(map[bool]string{false: "exclude=false", true: "exclude=true"}[exclude], func(b *testing.B) {
+			b.ReportAllocs()
+			var sink int64
+			for b.Loop() {
+				sink += usage.RateLimitTokens(exclude)
+			}
+			_ = sink
+		})
+	}
+}

@@ -296,6 +296,12 @@ func usageReportFor(provider schemas.ModelProvider, entry *logstore.Log, out *Ou
 		TokensUsed:   int64(entry.TotalTokens),
 		BudgetIDs:    stringSliceFromParsedOrJSON(entry.BudgetIDsParsed, entry.BudgetIDs),
 		RateLimitIDs: stringSliceFromParsedOrJSON(entry.RateLimitIDsParsed, entry.RateLimitIDs),
+		PromptTokens: int64(entry.PromptTokens),
+	}
+	// Read from the parsed usage rather than entry.CachedReadTokens: that column is only filled when
+	// the row is serialized for a write, which a retried settlement skips.
+	if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.PromptTokensDetails != nil {
+		report.CachedReadTokens = int64(entry.TokenUsageParsed.PromptTokensDetails.CachedReadTokens)
 	}
 	if entry.UserID != nil {
 		report.UserID = *entry.UserID
@@ -324,7 +330,17 @@ func modelUsageFromBreakdowns(breakdowns map[string]schemas.BatchModelBreakdown)
 		if breakdown.Cost != nil {
 			cost = *breakdown.Cost
 		}
-		usage = append(usage, ModelUsage{Model: model, Cost: cost, TokensUsed: int64(breakdown.Usage.TotalTokens)})
+		var cachedRead int64
+		if breakdown.Usage.PromptTokensDetails != nil {
+			cachedRead = int64(breakdown.Usage.PromptTokensDetails.CachedReadTokens)
+		}
+		usage = append(usage, ModelUsage{
+			Model:            model,
+			Cost:             cost,
+			TokensUsed:       int64(breakdown.Usage.TotalTokens),
+			PromptTokens:     int64(breakdown.Usage.PromptTokens),
+			CachedReadTokens: cachedRead,
+		})
 	}
 	if len(usage) == 0 {
 		return nil

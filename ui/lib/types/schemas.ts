@@ -1631,6 +1631,7 @@ export const coreConfigSchema = z.object({
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	enforce_vk_object_ownership: z.boolean().default(true),
+	exclude_cached_tokens_from_rate_limits: z.boolean().default(false),
 	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
 	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
 	entity_access_profile_mode: z.enum(["union", "intersect"]).default("union"),

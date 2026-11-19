@@ -224,6 +224,72 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 	}
 }
 
+// TestMockerPlugin_CachedReadTokens pins that a rule's cached_read_tokens reaches both usage shapes, so
+// a harness case can drive governance's cache-read accounting without a live provider cache hit.
+func TestMockerPlugin_CachedReadTokens(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin, err := Init(MockerConfig{
+		Enabled: true,
+		Rules: []MockRule{{
+			Name:        "cached",
+			Enabled:     true,
+			Priority:    100,
+			Probability: 1.0,
+			Conditions:  Conditions{Providers: []string{"openai"}},
+			Responses: []Response{{
+				Type: ResponseTypeSuccess,
+				Content: &SuccessResponse{
+					Message: "cached",
+					Usage:   &Usage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, CachedReadTokens: 400},
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Expected no error creating plugin, got: %v", err)
+	}
+	account := BaseAccount{}
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	chat, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("hi")},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Expected no error, got: %v", bifrostErr)
+	}
+	if chat.Usage.PromptTokensDetails == nil || chat.Usage.PromptTokensDetails.CachedReadTokens != 400 {
+		t.Fatalf("Expected 400 cached read tokens on chat usage, got %+v", chat.Usage.PromptTokensDetails)
+	}
+
+	responses, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: bifrost.Ptr("hi")},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Expected no error, got: %v", bifrostErr)
+	}
+	if responses.Usage.InputTokensDetails == nil || responses.Usage.InputTokensDetails.CachedReadTokens != 400 {
+		t.Fatalf("Expected 400 cached read tokens on responses usage, got %+v", responses.Usage.InputTokensDetails)
+	}
+}
+
 // TestMockerPlugin_ErrorResponse tests error response generation
 func TestMockerPlugin_ErrorResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

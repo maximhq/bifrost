@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newOfflinePricingCatalog(t *testing.T) *modelcatalog.ModelCatalog {
+func newOfflinePricingCatalog(t testing.TB) *modelcatalog.ModelCatalog {
 	t.Helper()
 	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
 	require.NoError(t, err)

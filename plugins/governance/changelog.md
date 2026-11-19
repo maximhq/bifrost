@@ -1,5 +1,6 @@
 - feat: the Codex passthrough model list is filtered to the caller's allowed models
 - feat: virtual keys are read from the `xi-api-key` header for ElevenLabs clients
+- feat: `client.exclude_cached_tokens_from_rate_limits` leaves cached prompt tokens out of token rate limits, for requests and settled jobs; cost is unchanged (thanks [@engel75](https://github.com/engel75)!)
 - fix: updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!)
 - fix: a team's cached virtual keys follow its new customer
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

@@ -2795,3 +2795,44 @@ func BenchmarkToolUsageUnmarshal(b *testing.B) {
 		}
 	}
 }
+
+func TestResponsesResponseUsageRateLimitTokens(t *testing.T) {
+	var nilUsage *ResponsesResponseUsage
+	assert.Equal(t, int64(0), nilUsage.RateLimitTokens(true))
+
+	noDetails := &ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 50, TotalTokens: 1050}
+	assert.Equal(t, int64(1050), noDetails.RateLimitTokens(true))
+
+	usage := &ResponsesResponseUsage{
+		InputTokens:        1000,
+		OutputTokens:       50,
+		TotalTokens:        1050,
+		InputTokensDetails: &ResponsesResponseInputTokens{CachedReadTokens: 600, CachedWriteTokens: 300},
+	}
+	assert.Equal(t, int64(1050), usage.RateLimitTokens(false))
+	assert.Equal(t, int64(450), usage.RateLimitTokens(true), "only cache reads are deducted")
+
+	// OpenAI's Responses wire spelling (input_tokens_details.cached_tokens).
+	var wire ResponsesResponseUsage
+	require.NoError(t, Unmarshal([]byte(`{"input_tokens":1000,"output_tokens":50,"total_tokens":1050,"input_tokens_details":{"cached_tokens":900}}`), &wire))
+	assert.Equal(t, int64(150), wire.RateLimitTokens(true))
+}
+
+func BenchmarkResponsesResponseUsageRateLimitTokens(b *testing.B) {
+	usage := &ResponsesResponseUsage{
+		InputTokens:        1000,
+		OutputTokens:       50,
+		TotalTokens:        1050,
+		InputTokensDetails: &ResponsesResponseInputTokens{CachedReadTokens: 900},
+	}
+	for _, exclude := range []bool{false, true} {
+		b.Run(map[bool]string{false: "exclude=false", true: "exclude=true"}[exclude], func(b *testing.B) {
+			b.ReportAllocs()
+			var sink int64
+			for b.Loop() {
+				sink += usage.RateLimitTokens(exclude)
+			}
+			_ = sink
+		})
+	}
+}

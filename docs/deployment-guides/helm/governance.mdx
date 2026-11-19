@@ -124,6 +124,8 @@ bifrost:
         request_reset_duration: "1h"
 ```
 
+Token limits count prompt tokens the provider read from its prefix cache. To leave them out of every token limit, set `bifrost.client.excludeCachedTokensFromRateLimits: true` (renders into `client.exclude_cached_tokens_from_rate_limits`). Cost is unchanged; see [Cached Prompt Tokens](../../features/governance/budget-and-limits#cached-prompt-tokens).
+
 ---
 
 ## Customers & Teams

@@ -9,6 +9,7 @@
 - feat: encrypt - PBKDF2-HMAC-SHA-256 key derivation and password hashing in FIPS 140-3 mode; both formats stay readable
 - feat: usage estimation settings and cost for estimated tokens
 - feat: MCP log stats with cancelled counts, a latency histogram and previous-period comparison, and user, team and customer filter data
+- feat: `exclude_cached_tokens_from_rate_limits` column on `config_client`; job usage reports carry prompt and cached-read tokens (thanks [@engel75](https://github.com/engel75)!)
 - fix: logstore - Postgres retention deletes shrink their batch on statement timeouts, and retention tables get tighter autovacuum settings
 - fix: logstore - ClickHouse hybrid storage updates `has_object` in batches
 - fix: logstore - Relay Logs filter values read the last 30 days, and MCP log team and customer filters match JSON array columns

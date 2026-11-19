@@ -3365,6 +3365,23 @@ func TestSchemaClientMCPFields(t *testing.T) {
 	})
 }
 
+// client.exclude_cached_tokens_from_rate_limits must be declared: client has additionalProperties:false,
+// so without it every config.json that sets the field would be rejected.
+func TestSchemaClientExcludeCachedTokensFromRateLimits(t *testing.T) {
+	schema := loadSchema(t)
+	if _, found := navigateJSON(schema, "properties", "client", "properties", "exclude_cached_tokens_from_rate_limits"); !found {
+		t.Fatal("client is missing 'exclude_cached_tokens_from_rate_limits' property — ClientConfig Go struct defines this field")
+	}
+
+	compiled := compileSchema(t)
+	if err := validateConfig(t, compiled, `{"client": {"exclude_cached_tokens_from_rate_limits": true}}`); err != nil {
+		t.Errorf("a boolean should be valid, got: %v", err)
+	}
+	if err := validateConfig(t, compiled, `{"client": {"exclude_cached_tokens_from_rate_limits": "yes"}}`); err == nil {
+		t.Error("a non-boolean should be rejected")
+	}
+}
+
 func TestSchemaProviderRawRequest(t *testing.T) {
 	schema := loadSchema(t)
 

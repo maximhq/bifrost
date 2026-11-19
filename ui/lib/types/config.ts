@@ -969,6 +969,8 @@ export interface CoreConfig {
 	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
 	// virtual key that created them.
 	enforce_vk_object_ownership: boolean;
+	// Token rate limits skip prompt tokens read from the provider's prefix cache; cost is unchanged.
+	exclude_cached_tokens_from_rate_limits?: boolean;
 	// Enterprise: a user's first access profile does not create a virtual key for them.
 	skip_access_profile_user_virtual_key_creation?: boolean;
 	// Enterprise: losing the last access profile does not delete the user's virtual keys.

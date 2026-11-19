@@ -2853,6 +2853,42 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t 
 	assert.NotEqual(t, creationHash, deletionHash)
 }
 
+// TestUpdateClientConfig_ExcludeCachedTokensFromRateLimitsRoundTrip pins that the setting persists in
+// both directions, and that only the opt-in is hashed so a config written before the field existed
+// keeps its hash.
+func TestUpdateClientConfig_ExcludeCachedTokensFromRateLimitsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.ExcludeCachedTokensFromRateLimits, "off by default")
+
+	on := off
+	on.ExcludeCachedTokensFromRateLimits = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.ExcludeCachedTokensFromRateLimits)
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.ExcludeCachedTokensFromRateLimits, "an explicit false survives the write")
+
+	legacy := off // a config from before the field existed
+	legacyHash, err := legacy.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, legacyHash, offHash, "off is not hashed, so existing configs keep their hash")
+	assert.NotEqual(t, offHash, onHash, "turning it on is a config change")
+}
+
 // TestUpdateClientConfig_MCPClientMetadataURLRoundTrip pins that the hosted Client ID Metadata Document URL
 // persists with its env reference, is hashed only when set, and is masked when it comes from env.
 func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {

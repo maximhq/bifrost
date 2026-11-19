@@ -1,1 +1,2 @@
+- feat: rules can report `cached_read_tokens` on chat and Responses usage (thanks [@engel75](https://github.com/engel75)!)
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

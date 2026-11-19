@@ -598,6 +598,48 @@ func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testin
 	}
 }
 
+// TestUpdateConfig_ExcludeCachedTokensFromRateLimitsPresence pins that the setting is copied only when
+// sent, so a partial save (an older dashboard, an API client) can't silently turn it off, that the
+// getter governance charges through sees a save at once, and that null is refused.
+func TestUpdateConfig_ExcludeCachedTokensFromRateLimitsPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.ExcludeCachedTokensFromRateLimits
+	}
+	put := func(body string) {
+		t.Helper()
+		req := putConfigCtx(body)
+		h.updateConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), string(req.Response.Body()))
+	}
+
+	require.False(t, cfg.ShouldExcludeCachedTokensFromRateLimits(), "off by default")
+
+	put(`{"client_config":{"log_retention_days":8,"exclude_cached_tokens_from_rate_limits":true}}`)
+	assert.True(t, stored())
+	assert.True(t, cfg.ShouldExcludeCachedTokensFromRateLimits(), "governance's getter sees the save without a reload")
+
+	put(`{"client_config":{"log_retention_days":9}}`)
+	assert.True(t, stored(), "an omitted field keeps the stored value")
+	assert.True(t, cfg.ShouldExcludeCachedTokensFromRateLimits(), "an omitted field keeps the live value")
+
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":8,"exclude_cached_tokens_from_rate_limits":null}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.True(t, stored(), "a refused null leaves the stored value unchanged")
+
+	put(`{"client_config":{"log_retention_days":8,"exclude_cached_tokens_from_rate_limits":false}}`)
+	assert.False(t, stored())
+	assert.False(t, cfg.ShouldExcludeCachedTokensFromRateLimits())
+}
+
 // mcp_openapi_max_spec_mb is copied only when sent, so a partial save keeps the stored limit, 0
 // resets it to the default, and a value outside 0..maxMCPOpenAPISpecMB is refused before anything
 // changes.

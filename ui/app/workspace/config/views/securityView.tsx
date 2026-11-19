@@ -156,6 +156,8 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
+		const excludeCachedTokensFromRateLimitsChanged =
+			(localConfig.exclude_cached_tokens_from_rate_limits ?? false) !== (config.exclude_cached_tokens_from_rate_limits ?? false);
 		const bifrostMCPAllowWritesChanged = (localConfig.bifrost_mcp_allow_writes ?? true) !== (config.bifrost_mcp_allow_writes ?? true);
 		const skipAccessProfileUserVirtualKeyCreationChanged =
 			IS_ENTERPRISE &&
@@ -182,6 +184,7 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
+			excludeCachedTokensFromRateLimitsChanged ||
 			bifrostMCPAllowWritesChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
 			skipAccessProfileUserVirtualKeyDeletionChanged ||
@@ -669,6 +672,22 @@ export default function SecurityView() {
 						data-testid="security-enforce-vk-object-ownership-switch"
 						checked={localConfig.enforce_vk_object_ownership ?? true}
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
+					/>
+				</div>
+				{/* Token rate limits skip prompt tokens served from the provider's prefix cache */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="exclude-cached-tokens-from-rate-limits" className="text-sm font-medium">
+							{t("security.excludeCachedTokensFromRateLimits")}
+						</label>
+						<p className="text-muted-foreground text-sm">{t("security.excludeCachedTokensFromRateLimitsHelp")}</p>
+					</div>
+					<Switch
+						id="exclude-cached-tokens-from-rate-limits"
+						data-testid="security-exclude-cached-tokens-from-rate-limits-switch"
+						disabled={isConfigLoading || !config || !hasSettingsUpdateAccess}
+						checked={localConfig.exclude_cached_tokens_from_rate_limits ?? false}
+						onCheckedChange={(checked) => handleConfigChange("exclude_cached_tokens_from_rate_limits", checked)}
 					/>
 				</div>
 				{/* Bifrost MCP: whether /v1/mcp serves non-GET /api operations as tools */}

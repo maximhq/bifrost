@@ -20,6 +20,11 @@ import http from "node:http";
 //   POST /v1/stream      SSE: credits 1 on the first event, none on the second, 3 on the last
 //   POST /v1/pages       usage.chars = the request body's "chars" (block and minimum pricing)
 //   POST /v1/reported    usage.cost 0.005 (a provider-reported cost)
+//
+// OpenAI-compatible routes for the rate limit cached tokens folder, which registers this fixture
+// as a custom openai provider (model "cached-fixture"):
+//   GET  /v1/models            the one fixture model
+//   POST /v1/chat/completions  usage: 1000 prompt tokens, 400 of them cached_tokens, 100 completion
 //   *    /v1/echo, other the method, path, query and headers the upstream received
 const port = Number(process.env.RELAY_UPSTREAM_FIXTURE_PORT || "8783");
 // Loopback by default. The proxy matrix binds every interface, because its relays address the
@@ -94,6 +99,19 @@ const server = http.createServer(async (req, res) => {
 			return;
 		case "POST /v1/reported":
 			send(res, 200, { data: [], usage: { cost: 0.005 } });
+			return;
+		case "GET /v1/models":
+			send(res, 200, { object: "list", data: [{ id: "cached-fixture", object: "model", owned_by: "fixture" }] });
+			return;
+		case "POST /v1/chat/completions":
+			send(res, 200, {
+				id: "chatcmpl-cached-fixture",
+				object: "chat.completion",
+				created: 1,
+				model: body.model || "cached-fixture",
+				choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_tokens: 400 } },
+			});
 			return;
 		default:
 			send(res, 200, {

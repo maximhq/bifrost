@@ -376,6 +376,11 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "exclude_cached_tokens_from_rate_limits": {
+          "type": "boolean",
+          "description": "When true, prompt tokens the provider served from its prefix cache (prompt_tokens_details.cached_tokens) are not counted against token rate limits, for synchronous requests and settled batch jobs alike. Cache writes and output tokens still count, and cost calculation is unchanged. Some providers (OpenAI) count cached reads toward their own TPM limit, so a limit that mirrors such a quota can let through more than the provider accepts.",
+          "default": false
+        },
         "entity_access_profile_mode": {
           "type": "string",
           "enum": [
