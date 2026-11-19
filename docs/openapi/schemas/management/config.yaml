@@ -472,6 +472,14 @@ ClientConfig:
               properties:
                 value:
                   type: string
+                ref:
+                  type: string
+                type:
+                  type: string
+                  enum:
+                    - plain_text
+                    - env
+                    - vault
                 env_var:
                   type: string
                 from_env:
@@ -484,6 +492,36 @@ ClientConfig:
             a PUT /api/config that does the same is refused with HTTP 400. The issuer is never
             derived from the request Host header while OAuth is enabled. Supports env var
             syntax ("env.MY_VAR").
+        browser_base_url:
+          oneOf:
+            - type: string
+              description: Plain URL or env var reference (e.g. "env.MY_VAR")
+            - type: object
+              properties:
+                value:
+                  type: string
+                ref:
+                  type: string
+                type:
+                  type: string
+                  enum:
+                    - plain_text
+                    - env
+                    - vault
+                env_var:
+                  type: string
+                from_env:
+                  type: boolean
+              additionalProperties: false
+          description: >
+            Base URL users' browsers reach Bifrost on, for deployments where MCP clients reach it
+            on a hostname browsers cannot resolve. The authorization_endpoint advertised in
+            discovery, the consent page redirect and client gateway device sign-in pages use it;
+            the issuer, token, registration and JWKS endpoints and token claims stay on
+            issuer_url. Unset, browsers use issuer_url. Must be an absolute http(s) URL with no
+            query, fragment or credentials, and include server.base_path when Bifrost is mounted
+            under one; a trailing slash is ignored. Changing it while dashboard auth is disabled
+            is refused with HTTP 403. Supports env var syntax ("env.MY_VAR").
         auth_code_ttl:
           type: integer
           minimum: 1
