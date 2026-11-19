@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,4 +109,83 @@ func TestSpeechStreamSendsTheAPIKeyHeaderAndEmitsDeltasThenDoneWithTokens(t *tes
 	assert.Equal(t, 9, done.Usage.InputTokens)
 	assert.Equal(t, 73, done.Usage.OutputTokens)
 	assert.Equal(t, 82, done.Usage.TotalTokens)
+}
+
+// A response_format Gemini TTS cannot produce is the caller's mistake, so it answers 400 on the unary and
+// the streaming path, and the request never reaches Google.
+func TestSpeechRefusesAnUnsupportedResponseFormatAsACallerError(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamCalls.Add(1) }))
+	defer ts.Close()
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+	passThrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	voice := "Kore"
+
+	for _, format := range []string{"mp3", "opus", "flac", "aac", "pcm"} {
+		t.Run(format, func(t *testing.T) {
+			request := &schemas.BifrostSpeechRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.5-flash-preview-tts",
+				Input:    &schemas.SpeechInput{Input: "hello"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, ResponseFormat: format},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			_, bifrostErr := provider.Speech(ctx, key, request)
+			require.NotNil(t, bifrostErr)
+			assert.Equal(t, http.StatusBadRequest, bifrostErr.EffectiveHTTPStatus(), "unary: %+v", bifrostErr.Error)
+			assert.Contains(t, bifrostErr.Error.Message, format)
+
+			_, bifrostErr = provider.SpeechStream(ctx, passThrough, func(context.Context) {}, key, request)
+			require.NotNil(t, bifrostErr)
+			assert.Equal(t, http.StatusBadRequest, bifrostErr.EffectiveHTTPStatus(), "stream: %+v", bifrostErr.Error)
+		})
+	}
+	assert.Zero(t, upstreamCalls.Load(), "a refused request must not reach Google")
+}
+
+// wav and an empty format stay accepted: the refusal is only for formats Gemini TTS cannot produce.
+func TestToGeminiSpeechRequestAcceptsWavAndEmptyFormat(t *testing.T) {
+	voice := "Kore"
+	for _, format := range []string{"", "wav"} {
+		_, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+			Model:  "gemini-2.5-flash-preview-tts",
+			Input:  &schemas.SpeechInput{Input: "hello"},
+			Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, ResponseFormat: format},
+		})
+		require.NoError(t, err, "response_format %q", format)
+	}
+	_, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+		Model:  "gemini-2.5-flash-preview-tts",
+		Input:  &schemas.SpeechInput{Input: "hello"},
+		Params: &schemas.SpeechParameters{ResponseFormat: "mp3"},
+	})
+	require.Error(t, err)
+	assert.True(t, providerUtils.IsInvalidRequestError(err), "an unsupported response_format must be a caller error")
+}
+
+// Gemini TTS has no instructions field; a style direction in front of the text is what steers it.
+func TestToGeminiSpeechRequestPutsInstructionsInFrontOfTheText(t *testing.T) {
+	voice := "Kore"
+	build := func(instructions string) string {
+		request, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+			Model:  "gemini-2.5-flash-preview-tts",
+			Input:  &schemas.SpeechInput{Input: "The report is ready."},
+			Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, Instructions: instructions},
+		})
+		require.NoError(t, err)
+		require.Len(t, request.Contents, 1)
+		require.Len(t, request.Contents[0].Parts, 1)
+		return request.Contents[0].Parts[0].Text
+	}
+
+	assert.Equal(t, "Speak slowly and warmly: The report is ready.", build("Speak slowly and warmly"))
+	assert.Equal(t, "Speak slowly and warmly: The report is ready.", build("  Speak slowly and warmly  "))
+	assert.Equal(t, "The report is ready.", build(""), "no instructions leaves the text alone")
+	assert.Equal(t, "The report is ready.", build("   "), "blank instructions leave the text alone")
 }

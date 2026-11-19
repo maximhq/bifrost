@@ -8,9 +8,18 @@ export type WarpEventType = "start" | "delta" | "tool_call_start" | "tool_call_e
 /** A structured question Warp poses when it cannot safely guess. */
 export interface WarpQuestion {
 	question: string;
-	kind?: "time_range" | "scope" | "other";
+	kind?: "time_range" | "scope" | "other" | "confirm";
 	options: WarpQuestionOption[];
 	allow_other?: boolean;
+	/** On a confirmation card, the write it would run. Older stored cards lack it. */
+	action?: WarpConfirmAction;
+}
+
+export interface WarpConfirmAction {
+	tool: string;
+	/** The JSON arguments, exactly as they will run. */
+	arguments: string;
+	destructive?: boolean;
 }
 
 export interface WarpUsage {
@@ -195,6 +204,7 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 					allow_other: message.question.allow_other,
 					kind: message.question.kind as WarpQuestion["kind"],
 				};
+				if (message.question.action) turn.question.action = message.question.action;
 			} else {
 				turn.question = { question: message.content, options: [] };
 			}
@@ -381,6 +391,7 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 
 	switch (code) {
 		case "not_configured":
+		case "no_bifrost_mcp":
 		case "max_iterations":
 		case "timeout":
 		case "upstream_error":
@@ -403,6 +414,7 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 
 type WarpErrorCode =
 	| "not_configured"
+	| "no_bifrost_mcp"
 	| "max_iterations"
 	| "timeout"
 	| "upstream_error"
@@ -436,6 +448,7 @@ export function encodeTurnError(code: string | undefined, message: string): stri
 
 const WARP_ERROR_CODES = new Set([
 	"not_configured",
+	"no_bifrost_mcp",
 	"upstream_error",
 	"access_denied",
 	"budget_exceeded",

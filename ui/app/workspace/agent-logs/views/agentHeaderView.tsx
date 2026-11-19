@@ -81,11 +81,13 @@ export function AgentHeaderView({
 	}, [onSearchChange]);
 
 	return (
-		<div className="flex grow flex-wrap items-center justify-between gap-2">
+		// Below @4xl the controls wrap: buttons on one row, search on its own, then the
+		// date picker with the icon button. Wrapped rows stretch so each fills evenly.
+		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/agent-logs-header:flex-nowrap @4xl/agent-logs-header:justify-between">
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/agent-logs-header:flex-none"
 				onClick={onRefresh}
 				disabled={loading}
 				data-testid="agent-logs-header-refresh-btn"
@@ -96,7 +98,7 @@ export function AgentHeaderView({
 			<Button
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/agent-logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 				data-testid="agent-logs-header-live-btn"
 			>
@@ -108,7 +110,7 @@ export function AgentHeaderView({
 					<Button
 						variant={grouped ? "default" : "outline"}
 						size="sm"
-						className="h-7.5"
+						className="h-7.5 flex-1 @4xl/agent-logs-header:flex-none"
 						onClick={() => onGroupedToggle(!grouped)}
 						data-testid="agent-logs-header-group-btn"
 						aria-pressed={grouped}
@@ -121,7 +123,7 @@ export function AgentHeaderView({
 					{t("agentLogs.header.groupHelp")}
 				</TooltipContent>
 			</Tooltip>
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border @4xl/agent-logs-header:basis-auto">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
@@ -143,9 +145,11 @@ export function AgentHeaderView({
 					</button>
 				)}
 			</div>
-			<div className="flex items-center gap-2">
+			<div className="flex flex-1 items-center gap-2 @4xl/agent-logs-header:flex-none">
 				<DateTimePickerWithRange
-					buttonClassName="w-full sm:w-auto"
+					className="flex-1 @4xl/agent-logs-header:flex-none"
+					buttonClassName="w-full @4xl/agent-logs-header:w-auto"
+					triggerTestId="agent-logs-header-date-range"
 					dateTime={{ from: startTime, to: endTime }}
 					predefinedPeriod={period || undefined}
 					showTimezone
