@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -13,6 +13,9 @@ MCPAuthType:
     - token_exchange: Delegated token exchange (each caller's own identity-provider token is
       exchanged for a short-lived token scoped to this server on every call; nothing is
       stored per caller). Requires an enabled identity-provider integration (enterprise).
+    - client_credentials: OAuth client_credentials grant with a client registered in advance
+      at the server's authorization server; one token is shared by every caller and no
+      user signs in (MCP OAuth Client Credentials extension).
 
 OAuthConfigRequest:
   type: object
