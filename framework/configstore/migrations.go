@@ -5,13 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"slices"
-	"strconv"
-	"strings"
-	"time"
-	"unicode"
-
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,6 +18,12 @@ import (
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
 )
 
 // addColumnIfNotExists is a package-local alias for migrator.AddColumnIfNotExists,
@@ -608,6 +607,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17716,4 +17716,30 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 			return nil
 		},
 	}
+}
+
+// migrationAddGovernanceUsageResetEpochs preserves actual reset evidence across
+// restarts. LastReset also advances on calendar adoption, so legacy rows retain
+// zero unknown evidence. Rollback would discard evidence and is not supported.
+func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	const migrationName = "add_governance_usage_reset_epochs"
+	migration := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "UsageResetEpoch"); err != nil {
+				return err
+			}
+			for _, field := range []string{"TokenUsageResetEpoch", "RequestUsageResetEpoch"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("%s cannot be rolled back without losing reset evidence", migrationName)
+		},
+	}})
+	return migration.Migrate()
 }
