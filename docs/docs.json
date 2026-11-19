@@ -1881,6 +1881,22 @@
                 ]
               },
               {
+                "group": "Phrase Suggestions",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers/{router_id}/suggestions",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}",
+                  "PUT /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}/status",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/runs",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/runs",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/runs/estimate",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/test",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/impact",
+                  "POST /api/routing/model-routers/{router_id}/phrases"
+                ]
+              },
+              {
                 "group": "Complexity Analyzer (deprecated)",
                 "expanded": false,
                 "pages": [

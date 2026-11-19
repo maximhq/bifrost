@@ -68,7 +68,7 @@ The router is created when you finish the last step, so leaving the wizard part-
 
 The **Routers** list shows each router's name and description, classifier, scope, priority, requests over the selected period, and an **Active** switch. The ⋯ menu on each row has **Edit** and **Delete**. Deleting a router also deletes its models and routing.
 
-A router's page has four tabs. Its ⋯ menu has **View logs**, **Edit**, and **Delete**.
+A router's page has four tabs, plus a **Suggestions** tab on a semantic router when [phrase suggestions](#phrase-suggestions) are enabled. Its ⋯ menu has **View logs**, **Edit**, and **Delete**.
 
 **Overview tab**
 
@@ -149,6 +149,7 @@ When enabled routing rules use `complexity_tier`, this tab warns that the same r
 | `GET /api/routing/model-routers/{router_id}/status` | Classifier readiness and semantic warmup |
 | `POST /api/routing/model-routers/{router_id}/status/retry` | Restart a failed semantic warmup |
 | `POST /api/routing/model-routers/{router_id}/classify` | [Test the router](#test-a-router) on statements you supply |
+| `POST /api/routing/model-routers/{router_id}/phrases` | Add reference phrases and serve them. See [Phrase suggestions](#use-suggestions-through-the-api) for this and the `/suggestions` endpoints |
 
 ```bash
 # 1. Create a router with the decision model. It starts off.
@@ -376,6 +377,7 @@ These settings are the same for routers and for the deprecated Complexity Router
 | `llm.prompt` | string | Shipped default guidance | Replaces the shipped classification guidance (max 4,000 characters). The tier-name and response-format reinforcement is appended by Bifrost regardless and cannot be edited |
 | `llm.message_history_count` | integer | `1` | Number of recent user messages sent to the classifier, oldest first (1 to 10) |
 | `llm.count_toward_budgets` | boolean | `false` | Count classification completion cost toward virtual-key budgets (record-only, never enforced) |
+| `suggestions` | object | None | [Phrase suggestions](#phrase-suggestions) for a semantic router: sampling, schedule, and the models that write phrases and pick tiers |
 | `session.enabled` | boolean | `false` | Retain the highest observed tier across normally sequential turns for 24 hours of inactivity. A semantic primary needs a `semantic` block; overlapping requests for the same session are best-effort |
 | `keywords.simple_keywords` | string[] | 50 built-in phrases | Reference phrases for the Simple tier; required, but unused by the decision model and the LLM classifier |
 | `keywords.medium_keywords` | string[] | 50 built-in phrases | Reference phrases for the Medium tier; required, but unused by the decision model and the LLM classifier |
@@ -651,6 +653,255 @@ A decision-model or LLM router, or one that falls back to them, makes one billed
 
 ---
 
+## Phrase suggestions
+
+A semantic router is only as good as its [reference phrases](#reference-phrases). Phrase suggestions write those phrases for you from your own traffic. A run groups the router's recent requests by similarity, finds the groups the router handles badly today, and proposes phrases and a tier for each. Nothing reaches live routing until you add the phrases.
+
+- **Semantic only.** Suggestions need `semantic` as the router's primary classifier. Switching a router to another classifier turns them off.
+- **A shared vector store.** Sampled requests are kept in the top-level `vector_store`: Weaviate, Qdrant, Redis, or Pinecone. With Chromem, or no vector store, nothing is sampled and runs are refused.
+- **Logged request content.** Suggestion examples, the phrase-writing model, and the impact replay all read request text from the logs. Only the vector and routing details are kept in the vector store.
+- **A chat model** to write the phrases, and optionally a model to decide each suggestion's tier.
+
+<Note>
+The **Suggestions** tab is behind the `phrase-suggestions` feature flag, which is off by default. Turn it on in **Settings > Feature Flags**, with `PUT /api/feature-flags/phrase-suggestions`, or under `feature_flags.flags` in `config.json`. The flag only hides the dashboard: the suggestion APIs, sampling, and scheduled runs work as the router's settings say, flag on or off.
+</Note>
+
+### How a run works
+
+```mermaid
+graph LR
+    A[Sampled requests<br/>in the window] --> B[Group by<br/>similarity]
+    B --> C{Handled well<br/>today?}
+    C -- yes --> X[Skipped]
+    C -- no --> D[LLM writes<br/>phrases]
+    D --> E[Tier model<br/>picks a tier]
+    E --> F[Open suggestion]
+```
+
+1. **Sample.** While suggestions are on, a share of the requests the router classifies (`sample_rate`) is kept for `lookback_days`. When a run's window reaches back before sampling started, or suggestions are off, it first embeds the router's logged requests from that window (the same share, newest first).
+2. **Group.** Up to `max_clustered_requests` requests are grouped by similarity in the router's embedding space; the rest of the window is counted into the groups found, so request counts cover all of it. Groups smaller than `min_cluster_requests` are dropped. A run raises that minimum to 0.1% of the requests in its window when that is larger.
+3. **Write phrases.** The suggestion model reads each group's example requests and writes reference phrases for it. It skips a group that is not one kind of request, and a group your phrases already route well is not suggested. At most 200 groups are sent to the model per run, largest first.
+4. **Pick a tier.** The tier model reads the phrases next to your router's own phrases for each tier and proposes one, with a confidence. When it is not confident, no tier is proposed and you choose.
+
+Each suggestion says why the group is there:
+
+| Reason | Meaning |
+|---|---|
+| **No match** | Most of the group's requests match no phrase above the cutoff, so they get no tier |
+| **Weak match** | The requests reach the proposed tier, but only through weak matches |
+| **Different tier** | The requests confidently match phrases of a tier other than the one proposed |
+| **Mixed tiers** | Similar requests are split across tiers today |
+| **Prompt template** | The requests are one prompt template sent with different fills, so the phrases are written from the template |
+
+**Runs repeat safely.** Each group is matched to the suggestions already stored. One you accepted or dismissed is left as it is, with no model call, so your decision sticks. An open one is refreshed in place. An open one that no group matches any more, or whose group is now covered by your phrases, is marked **superseded**. Grouping samples the window afresh each time, so two runs over the same traffic can produce somewhat different groups and counts.
+
+A suggestion computed before the router's phrases last changed shows **Phrases changed since** (`stale` in the API). Run again, or test it against the current phrases, before you add it.
+
+### Configure suggestions
+
+<Tabs group="config-method">
+
+<Tab title="Web UI">
+
+On a semantic router's page, open the **Suggestions** tab and select **Turn on suggestions**, or the settings icon on the run card.
+
+<Frame>
+  <img src="/media/routers/ui-router-suggestions-settings.png" alt="Suggestion settings sheet with the Phrase suggestions switch on, a 100% sample rate, 7 days of lookback, a daily schedule with its first run, OpenAI gpt-4.1 as the phrase-writing model, and the phrase generation prompt" />
+</Frame>
+
+- **Phrase suggestions**: sample requests and run on the schedule. While it is off, settings are kept and you can still start a run by hand.
+- **Sampling**: **Sample rate (%)** and **Lookback (days)**.
+- **Schedule**: **Run every** (hours, days, or weeks) and **First run**, in your local time. Runs repeat every interval from the first run.
+- **Phrase writing**: the provider and model that write phrases, and the **Phrase generation prompt**.
+- **Tier decision**: decide tiers with an **LLM** or a **Decision model**, its model, and the prompt or tier choices it is sent.
+
+</Tab>
+
+<Tab title="API">
+
+Suggestions are part of the router's classifier settings, so send the `suggestions` block with the rest of them to `PUT /api/routing/model-routers/{router_id}`. A body with any classifier setting replaces the whole configuration, so start from `GET /api/routing/model-routers/{router_id}`:
+
+```bash
+curl -s http://localhost:8080/api/routing/model-routers/support \
+  | jq '{classifier, semantic, keywords, session, suggestions: {
+      enabled: true, sample_rate: 0.1, lookback_days: 7,
+      schedule: {every: "1d", start_at: "2026-11-20T03:00:00Z"},
+      provider: "openai", model: "gpt-4.1"}}' \
+  | curl -X PUT http://localhost:8080/api/routing/model-routers/support \
+      -H "Content-Type: application/json" -d @-
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+Add a `suggestions` block to a semantic entry in `model_routers`:
+
+```json
+{
+  "model_routers": [
+    {
+      "id": "support",
+      "name": "Support",
+      "classifier": "semantic",
+      "semantic": {
+        "provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        "min_similarity": 0.4
+      },
+      "keywords": {
+        "simple_keywords": ["how do I reset my password?"],
+        "medium_keywords": ["why is my invoice higher than last month?"],
+        "complex_keywords": ["plan a zero-downtime migration of our SSO setup."]
+      },
+      "suggestions": {
+        "enabled": true,
+        "sample_rate": 0.1,
+        "lookback_days": 7,
+        "schedule": { "every": "1d", "start_at": "2026-11-20T03:00:00Z" },
+        "provider": "openai",
+        "model": "gpt-4.1",
+        "tier": { "classifier": "llm" }
+      }
+    }
+  ],
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": { "scheme": "http", "host": "localhost:9000" }
+  }
+}
+```
+
+In Helm, `bifrost.modelRouters[].suggestions` takes the same block.
+
+</Tab>
+
+</Tabs>
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | Required | Sample requests and run on the schedule. With `false`, runs start only on demand |
+| `sample_rate` | number | `0.1` | Share of classified requests sampled, above `0` and at most `1` |
+| `lookback_days` | integer | `7` | Days of traffic a run reads, and how long samples are kept (1 to 90, never longer than log retention) |
+| `schedule.every` | string | `1d` | Interval: `1h` to `23h`, `1d` to `30d`, or `1w` to `4w` |
+| `schedule.start_at` | string | `1970-01-01T03:00:00Z` | First run, in RFC 3339. Also sets the time of day of later runs, in UTC |
+| `max_clustered_requests` | integer | `20000` | Most requests one run groups (1,000 to 100,000) |
+| `min_cluster_requests` | integer | `6` | Smallest group a suggestion is written for (2 to 1,000) |
+| `provider`, `model` | string | The `llm` block's model | Chat model that writes phrases. Set both or neither. A run without one fails |
+| `instructions` | string | Shipped instructions | Replaces the phrase-writing instructions (max 8,000 characters). The output and safety rules are always added |
+| `tier.classifier` | string | `llm` | How a suggestion's tier is decided: `llm` or `decision` |
+| `tier.provider`, `tier.model` | string | The phrase model, or the decision model | Model that decides tiers |
+| `tier.prompt` | string | Generated each run | `llm` only: the whole tier prompt (max 16,000 characters) |
+| `tier.instructions`, `tier.criteria` | | Generated from the router | `decision` only: the choice question and each tier's definition, signals, and examples |
+
+<Note>
+A run makes at most three model calls per group it sends (up to two phrase attempts and one tier decision), on your provider keys, and records their cost on the run. `GET .../suggestions/runs/estimate` gives the most model calls a run would make before you start it.
+</Note>
+
+### Review and apply suggestions
+
+<Frame>
+  <img src="/media/routers/ui-router-suggestions-list.png" alt="Suggestions tab with a run over the last 7 days that analyzed 5,002 requests into 77 groups, its breakdown, the Simple, Medium and Complex drop targets, and request groups with their request counts, reason, today's tier split and proposed tier" />
+</Frame>
+
+The run card shows the last run: its window, how many requests it analyzed, how many groups it suggested, and when the next run is. **How did … become … groups?** breaks the count down step by step. **Re-run** starts a run over a window you pick.
+
+Below it, each request group shows its requests, why it is there with today's tier split, and the proposed tier. **Show details** adds the nearest existing phrase and its similarity, the tier model's reasoning, and example requests.
+
+<Frame>
+  <img src="/media/routers/ui-router-suggestions-details.png" alt="An expanded suggestion explaining that its requests match no phrase closely enough, with the nearest phrase at 0.37 similarity below the 0.40 cutoff, the tier model's reason for choosing Medium, and five example requests about explaining OAuth" />
+</Frame>
+
+1. **Accept** a group to add its phrases to the proposed tier, or use **Set tier** (or drag it onto a tier) to choose another. **Accept all proposed** and **Set selected to** work on many groups at once. Select **×** to dismiss a group; later runs will not suggest it again.
+2. Accepted groups go into a **Draft**. They are not live yet.
+3. Select **Review impact** on the draft bar to see what the draft would do to recent traffic (see [Estimating impact](#estimating-impact)).
+4. Select **Apply** to save the phrases, or **Discard** to drop the draft.
+
+Applying saves the phrases like any phrase change, so the router re-embeds them in the background (see [Status and warmup](#status-and-warmup)) and the applied suggestions are marked accepted.
+
+### Estimating impact
+
+The impact replay routes the router's sampled requests from the window twice, by nearest phrase: once with the live phrases, and once with the draft phrases added. It reports how many requests each tier gets under both, the requests that change tier, and the estimated savings. Nothing is saved.
+
+<Frame>
+  <img src="/media/routers/ui-router-suggestions-impact.png" alt="Impact replay of the last 7 days over 5,002 captured requests: 2,487 requests (49.7%) would change tier with estimated savings of $2.00, a tier mix table of live and draft counts for Simple, Medium, Complex and No match, and a draft bar with 73 groups not live yet" />
+</Frame>
+
+**How the savings are priced:**
+
+- Only requests that change tier are priced, both sides at the router's **current** models.
+- The live side is the request's logged tokens at the highest-weighted model of its live tier. When the live tier has no model, or the request had no match, it is the model that actually served the request.
+- The draft side is the same tokens at the highest-weighted model of its new tier.
+- Prices are list prices from the model catalog, before caching. A different model's answer is assumed to be the same length.
+- A request that moves into no match, to a tier without a model or a known price, or whose log is gone, is counted as **unpriced**.
+- Past 10,000 requests, a uniform sample of the window is replayed and its costs are scaled up to the whole window.
+
+The replay matches each request on its own, without session-aware routing or the fallback classifier, so live results differ slightly.
+
+**Needs your attention** lists draft phrases that take requests the live phrases matched confidently in another tier: at least 0.60 similarity, or 0.20 above `min_similarity` when that is higher. Review those groups before you apply.
+
+### Use suggestions through the API
+
+Every endpoint is under `/api/routing/model-routers/{router_id}`. They work whether or not the feature flag is on, and on a router with `enabled: false`, as long as it has a `suggestions` block.
+
+| Method and path | What it does |
+|---|---|
+| `GET .../suggestions/runs/estimate?window=7d` | Size a run before starting it |
+| `POST .../suggestions/runs?window=7d` | Start a run now. Returns `202` with the `run_id` |
+| `GET .../suggestions/runs` | List runs, newest first, with their counts, cost, and status |
+| `POST .../suggestions/runs/{run_id}/cancel` | Cancel a queued or running run. What it found so far is kept |
+| `GET .../suggestions?status=open` | List suggestions, largest group first |
+| `GET .../suggestions/{suggestion_id}` | One suggestion, with the text of its example requests |
+| `PUT .../suggestions/{suggestion_id}/status` | Accept, dismiss, or reopen a suggestion without changing phrases |
+| `POST .../suggestions/test` | Route example requests against the live phrases and the phrases given |
+| `POST .../suggestions/impact?window=7d` | Replay the window with extra phrases and price the change |
+| `POST .../phrases` | Add phrases to the router and serve them. The only call that changes routing |
+
+`window` takes hours or days, such as `24h` or `7d`, up to `lookback_days`. Leave it out to read the whole lookback.
+
+```bash
+R=http://localhost:8080/api/routing/model-routers/support
+
+# 1. Start a run over the last 7 days, then poll until it is done
+curl -X POST "$R/suggestions/runs?window=7d"
+curl "$R/suggestions/runs" | jq '.runs[0] | {status, requests_read, created, refreshed, superseded, cost}'
+
+# 2. Read the open suggestions
+curl "$R/suggestions?status=open&limit=100" \
+  | jq '.suggestions[] | {id, tier, phrases, category, request_count}'
+
+# 3. Check what some phrases would do before adding them
+curl -X POST "$R/suggestions/impact?window=7d" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phrases": {
+      "SIMPLE": ["please make a csv out of the following list:"],
+      "MEDIUM": ["help me write a regex matching this pattern. explain it please."]
+    }
+  }' | jq '{changed_count, live_cost, draft_cost, savings, unpriced, tiers, attention}'
+
+# 4. Add them, and mark the suggestions they came from as accepted
+curl -X POST "$R/phrases" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phrases": {
+      "SIMPLE": ["please make a csv out of the following list:"],
+      "MEDIUM": ["help me write a regex matching this pattern. explain it please."]
+    },
+    "suggestion_ids": ["<suggestion-id>", "<suggestion-id>"]
+  }'
+```
+
+- **Listing.** `status` is a comma-separated list of `open`, `accepted`, `dismissed`, and `superseded` (default `open`). `limit` is 1 to 500 (default 100), with `offset`. The response also has `total`, `counts` per status, `last_run`, and `next_run_at`.
+- **Impact.** `phrases` maps `SIMPLE`, `MEDIUM`, or `COMPLEX` to phrases added on top of the live ones; any text works, not only suggestions. An optional `min_similarity` (at least `0`, below `1`) tries a different cutoff for the draft. The response lists the first 25 changed requests, with their text when you can read their logs.
+- **Adding phrases.** A phrase the tier already holds is skipped and reported. A phrase another tier holds, or a total past the 750-phrase limit, refuses the whole request and saves nothing. `suggestion_ids` is optional; each must be one of this router's open suggestions (`404` if unknown, `409` if not open). The response lists what was `added`, `skipped`, and `accepted`.
+- **Status.** An open suggestion can be `accepted` or `dismissed`, and either can be set back to `open`. Accepting this way only records the decision; its phrases are not served until you add them.
+
+See the [Phrase Suggestions API reference](/api-reference/routing/list-phrase-suggestions) for every field and response.
+
+---
+
 ## Status and warmup
 
 The decision model and the LLM classifier have no warmup: saved settings apply from the next request. A semantic router embeds its reference phrases in the background (**warmup**) after every change. Unchanged phrases are reused; changing the embedding provider or model re-embeds them all.
@@ -915,7 +1166,7 @@ If Semantic is ready but some requests still get no tier, add a [fallback](#fall
 
 ### Requests landing in the wrong tier
 
-**Semantic**: read the matched phrase and similarity in the routing decision log. Add phrases like your real traffic to the right tier, or remove the phrase that keeps winning. If everything lands in one tier, check that the lists are balanced in length and style (see [Reference phrases](#reference-phrases)). If `min_similarity` is above `0`, genuine matches can fall under it; the log records the nearest phrase and its score.
+**Semantic**: read the matched phrase and similarity in the routing decision log. Add phrases like your real traffic to the right tier, or remove the phrase that keeps winning. If everything lands in one tier, check that the lists are balanced in length and style (see [Reference phrases](#reference-phrases)). If `min_similarity` is above `0`, genuine matches can fall under it; the log records the nearest phrase and its score. To find these gaps across all your traffic at once, turn on [phrase suggestions](#phrase-suggestions).
 
 **Decision model**: if session routing is on, first check whether `complexity_mechanism: session` kept an earlier, higher tier. Then filter the router's logs by `complexity_mechanism=decision` and collect a few misrouted requests. A low confidence usually means two tiers' guidance both fit. Fix it in the [tier guidance](#tier-guidance), at the boundary between the two tiers involved:
 
@@ -923,7 +1174,17 @@ If Semantic is ready but some requests still get no tier, add a [fallback](#fall
 - If a whole class of requests is misrouted, add or sharpen a **signal** that describes what the work requires, and make sure the neighbouring tier has no signal that also fits.
 - Change a **definition** only when the tier itself means something different for you than the default does.
 
-Classify tests the router as it is served, so save a fix before checking it. To try a change without affecting live traffic, make it on a second router with the same settings that is turned off, wait until a semantic router's status is `ready`, and then run the misrouted requests through [classify](#test-a-router).
+Classify tests the router as it is served, so save a fix before checking it.
+
+### A suggestion run is refused or fails
+
+- `409` **phrase suggestions are not set up**: the router has no `suggestions` block. Add one; `enabled` can stay `false` to run only on demand.
+- `409` while another run is queued or running. Wait for it, or cancel it.
+- `503`: no shared vector store is configured (Chromem does not count), or the router's phrases are not serving yet. Check the router's [status](#status-and-warmup).
+- `400` for the window: it is not a duration like `24h` or `7d`, or it is longer than `lookback_days`.
+- The run is accepted but fails: usually no suggestion model is set, or its provider has no enabled key. The run's error is on `GET .../suggestions/runs` and on the run card.
+- The run succeeds with no suggestions: too little traffic in the window for a group to reach `min_cluster_requests`, request content is not logged, or your phrases already cover the traffic. The run card's breakdown shows where the requests went.
+- No **Suggestions** tab: turn on the `phrase-suggestions` feature flag, and check the router uses the semantic classifier. To try a change without affecting live traffic, make it on a second router with the same settings that is turned off, wait until a semantic router's status is `ready`, and then run the misrouted requests through [classify](#test-a-router).
 
 ---
 
