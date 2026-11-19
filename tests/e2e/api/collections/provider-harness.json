@@ -346509,7 +346509,7 @@
     },
     {
       "name": "372. Cached prompt tokens and token rate limits against a local upstream (rate limit cached tokens) [SERIAL]",
-      "description": "Pins client.exclude_cached_tokens_from_rate_limits. A custom openai provider points at the local relay upstream fixture (tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783, which make run-provider-harness-test starts), whose /v1/chat/completions reports 1000 prompt tokens, 400 of them prompt_tokens_details.cached_tokens, and 100 completion tokens. No third party is called, so the folder costs nothing. With the setting on, a virtual key's token rate limit is charged 1100 - 400 = 700; with it off, the full 1100 as before. [SERIAL]: the setting is gateway-wide, so the folder reads the stored client config, sends it back whole with the setting changed (a partial PUT would reset unrelated fields), and restores the stored value at the end. Red before the change: the setting does not exist and the on-key is charged 1100. To run the fixture elsewhere, pass --env-var relayUpstreamUrl=... . Run with FEATURE=\"rate limit cached tokens\".",
+      "description": "Pins client.exclude_cached_tokens_from_rate_limits. A custom openai provider points at the local relay upstream fixture (tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783, which make run-provider-harness-test starts), whose /v1/chat/completions reports 1000 prompt tokens, 400 of them prompt_tokens_details.cached_tokens, and 100 completion tokens. No third party is called, so the folder costs nothing. With the setting on, a virtual key's token rate limit is charged 1100 - 400 = 700; with it off, the full 1100 as before. [SERIAL]: the setting is gateway-wide, so the folder reads the stored client config, sends it back whole with the setting changed (a partial PUT would reset unrelated fields), and restores the stored value at the end. PUT /api/config refuses log_retention_days below 1, so a stored 0 (never delete logs) is written back as 365, the column default; the cleanup step asserts the final value and the run logs a warning. Red before the change: the setting does not exist and the on-key is charged 1100. To run the fixture elsewhere, pass --env-var relayUpstreamUrl=... . Run with FEATURE=\"rate limit cached tokens\".",
       "item": [
         {
           "name": "[EXPECT-200] openai rate limit cached tokens: read the stored client config",
@@ -346535,8 +346535,14 @@
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  var cc = pm.response.json().client_config;",
                   "  pm.expect(cc, pm.response.text()).to.be.an('object');",
-                  "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
-                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+                  "  // A stored log_retention_days of 0 (never delete logs, as a fresh install can read back) cannot be written",
+                  "  // back: PUT /api/config refuses values below 1. The folder then sends 365, the column default, and the cleanup",
+                  "  // step asserts it, so the change is reported rather than silent.",
+                  "  pm.collectionVariables.set('rlctRetention', String(cc.log_retention_days >= 1 ? cc.log_retention_days : 365));",
+                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) {",
+                  "    console.warn('rate limit cached tokens: log_retention_days reads back ' + cc.log_retention_days + '; PUT /api/config refuses it, so this folder leaves it at 365');",
+                  "    cc.log_retention_days = 365;",
+                  "  }",
                   "  pm.collectionVariables.set('rlctClientConfig', JSON.stringify(cc));",
                   "  pm.collectionVariables.set('rlctOriginal', cc.exclude_cached_tokens_from_rate_limits === true ? 'true' : 'false');",
                   "});"
@@ -347014,6 +347020,15 @@
                 "exec": [
                   "pm.test('cleanup: stored setting restored', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config?from_db=true', method: 'GET' }, function (err, res) {",
+                  "  pm.test('cleanup: the setting and log_retention_days read back as before the folder (a stored 0 as 365)', function () {",
+                  "    pm.expect(err, String(err)).to.not.be.ok;",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var cc = res.json().client_config;",
+                  "    pm.expect(cc.exclude_cached_tokens_from_rate_limits === true, res.text()).to.equal(pm.collectionVariables.get('rlctOriginal') === 'true');",
+                  "    pm.expect(cc.log_retention_days, res.text()).to.equal(Number(pm.collectionVariables.get('rlctRetention')));",
+                  "  });",
                   "});"
                 ]
               }

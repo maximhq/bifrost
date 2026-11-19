@@ -95,6 +95,20 @@ func loggingPluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*logging.
 	return loggingConfig, nil
 }
 
+// governancePluginConfig decodes the governance plugin config and attaches the getters that read the live client
+// config. A reload decodes the stored plugin config, which cannot carry them (they are json:"-").
+func governancePluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*governance.Config, error) {
+	governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+	if err != nil {
+		return nil, err
+	}
+	if governanceConfig == nil {
+		governanceConfig = &governance.Config{}
+	}
+	governanceConfig.ExcludeCachedTokensFromRateLimits = bifrostConfig.ShouldExcludeCachedTokensFromRateLimits
+	return governanceConfig, nil
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
@@ -138,7 +152,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 
 	case governance.PluginName:
-		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+		governanceConfig, err := governancePluginConfig(pluginConfig, bifrostConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}

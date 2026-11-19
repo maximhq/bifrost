@@ -143379,11 +143379,6 @@
                 "default": true,
                 "description": "Restrict provider objects (files, batches, containers, ...) to the virtual key that created them. Applied only when the field is sent; omit it to keep the stored value.\n"
               },
-              "exclude_cached_tokens_from_rate_limits": {
-                "type": "boolean",
-                "default": false,
-                "description": "Do not count prompt tokens the provider served from its prefix cache (prompt_tokens_details.cached_tokens) against token rate limits. Cache writes and output tokens still count, and cost calculation is unchanged. Some providers (OpenAI) count cached reads toward their own TPM limit, so a limit that mirrors such a quota can let through more than the provider accepts. Applied only when the field is sent; omit it to keep the stored value.\n"
-              },
               "hidden_request_types": {
                 "type": "array",
                 "items": {
@@ -144278,11 +144273,6 @@
                 "type": "boolean",
                 "default": true,
                 "description": "Restrict provider objects (files, batches, containers, ...) to the virtual key that created them. Applied only when the field is sent; omit it to keep the stored value.\n"
-              },
-              "exclude_cached_tokens_from_rate_limits": {
-                "type": "boolean",
-                "default": false,
-                "description": "Do not count prompt tokens the provider served from its prefix cache (prompt_tokens_details.cached_tokens) against token rate limits. Cache writes and output tokens still count, and cost calculation is unchanged. Some providers (OpenAI) count cached reads toward their own TPM limit, so a limit that mirrors such a quota can let through more than the provider accepts. Applied only when the field is sent; omit it to keep the stored value.\n"
               },
               "hidden_request_types": {
                 "type": "array",

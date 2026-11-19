@@ -234,6 +234,9 @@ test.describe("Inference auth setup defaults", () => {
     await expect(
       page.getByTestId("enforce-auth-on-inference-switch"),
     ).toBeDisabled();
+    await expect(
+      page.getByTestId("security-exclude-cached-tokens-from-rate-limits-switch"),
+    ).toBeDisabled();
   });
 });
 

@@ -685,6 +685,7 @@ export default function SecurityView() {
 					<Switch
 						id="exclude-cached-tokens-from-rate-limits"
 						data-testid="security-exclude-cached-tokens-from-rate-limits-switch"
+						disabled={isConfigLoading || !config || !hasSettingsUpdateAccess}
 						checked={localConfig.exclude_cached_tokens_from_rate_limits ?? false}
 						onCheckedChange={(checked) => handleConfigChange("exclude_cached_tokens_from_rate_limits", checked)}
 					/>
