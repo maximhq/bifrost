@@ -26,7 +26,8 @@ LogEntry:
       type: string
     status:
       type: string
-      enum: ["processing", "success", "error"]
+      enum: ["processing", "success", "error", "cancelled"]
+      description: cancelled means the caller disconnected before the response (HTTP 499).
     object:
       type: string
     timestamp:
