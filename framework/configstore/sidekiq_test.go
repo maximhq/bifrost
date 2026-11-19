@@ -780,3 +780,45 @@ func TestListSidekiqJobs(t *testing.T) {
 		assert.Contains(t, ids, "routine-done", "nothing is quiet unless asked")
 	})
 }
+
+// TestDeleteTerminalSidekiqJobs pins that only finished jobs of the kind last
+// updated before the cutoff are deleted, at most limit per call.
+func TestDeleteTerminalSidekiqJobs(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	old := time.Now().Add(-48 * time.Hour)
+	for _, j := range []struct{ id, kind, status string }{
+		{"done-1", "timer", tables.SidekiqStatusCompleted},
+		{"done-2", "timer", tables.SidekiqStatusFailed},
+		{"done-3", "timer", tables.SidekiqStatusCancelled},
+		{"pending", "timer", tables.SidekiqStatusPending},
+		{"running", "timer", tables.SidekiqStatusRunning},
+		{"other", "manual", tables.SidekiqStatusCompleted},
+		{"recent", "timer", tables.SidekiqStatusCompleted},
+	} {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: j.id, Kind: j.kind, Status: j.status}))
+		if j.id != "recent" {
+			setUpdatedAt(t, store, j.id, old)
+		}
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	n, err := store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n, "limit bounds one call")
+	n, err = store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+	n, err = store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+
+	for _, id := range []string{"pending", "running", "other", "recent"} {
+		getJob(t, store, id)
+	}
+	for _, id := range []string{"done-1", "done-2", "done-3"} {
+		job, err := store.GetSidekiqJob(ctx, id)
+		require.NoError(t, err)
+		assert.Nil(t, job, id)
+	}
+}
