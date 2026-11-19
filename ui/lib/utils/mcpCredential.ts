@@ -126,3 +126,16 @@ export function supportsClientReregistration(authType?: MCPAuthType): boolean {
 export function shouldSuggestReplacementClient(authType: MCPAuthType | undefined, statusReason?: string): boolean {
 	return supportsClientReregistration(authType) && providerRejectedTheClient(statusReason);
 }
+/**
+ * sessionRowRights is which credential actions an Auth Sessions row offers the
+ * caller. A caller manages their own sign-ins end to end; anyone else's needs
+ * the delete permission to revoke and the create permission to refresh.
+ * Refresh also needs the server to accept it for the row (can_refresh).
+ */
+export function sessionRowRights(
+	row: { owned_by_caller?: boolean; can_refresh?: boolean },
+	rights: { canDelete: boolean; canCreate: boolean },
+): { revoke: boolean; refresh: boolean } {
+	const own = !!row.owned_by_caller;
+	return { revoke: own || rights.canDelete, refresh: !!row.can_refresh && (own || rights.canCreate) };
+}
