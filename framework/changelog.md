@@ -17,6 +17,7 @@
 - fix: modelcatalog - `allowed_models` accepts a key alias that resolves to an allowed model (thanks [@aharshit123456](https://github.com/aharshit123456)!)
 - fix: modelcatalog - stored model parameters survive the URL sync (thanks [@Constantine3](https://github.com/Constantine3)!)
 - fix: modelcatalog - ElevenLabs Scribe works with wildcard virtual keys
+- fix: modelcatalog - list models reports context limits for a key alias whose model_id is a Bedrock application inference profile
 - fix: configstore - config hashes are deterministic for map fields (thanks [@rojinebrahimi](https://github.com/rojinebrahimi)!)
 - fix: configstore - customer and team saves no longer rewrite their associations
 - fix: jobaccounting - Seedance video settlements record output tokens
