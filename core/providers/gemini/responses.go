@@ -5867,8 +5867,10 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	// Extract grounding chunks from sources
 	var groundingChunks []*GroundingChunk
 	urlToIndexMap := make(map[string][]int32) // Map URL to chunk indices (multiple RAG chunks may share a document URL)
+	sourceToChunkIdx := make([]int32, len(action.Sources))
 
-	for _, source := range action.Sources {
+	for i, source := range action.Sources {
+		sourceToChunkIdx[i] = -1
 		if source.URL == "" {
 			continue
 		}
@@ -5896,7 +5898,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			}
 		}
 		groundingChunks = append(groundingChunks, chunk)
-		urlToIndexMap[source.URL] = append(urlToIndexMap[source.URL], int32(len(groundingChunks)-1))
+		sourceToChunkIdx[i] = int32(len(groundingChunks) - 1)
+		urlToIndexMap[source.URL] = append(urlToIndexMap[source.URL], sourceToChunkIdx[i])
 	}
 
 	if len(groundingChunks) > 0 {
@@ -5929,8 +5932,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 
 		// Map annotation to chunk indices, preferring explicit source index, then (URL, Title), then URL.
 		var candidateIndices []int32
-		if annotation.Index != nil && *annotation.Index >= 0 && *annotation.Index < len(groundingChunks) {
-			candidateIndices = []int32{int32(*annotation.Index)}
+		if annotation.Index != nil && *annotation.Index >= 0 && *annotation.Index < len(sourceToChunkIdx) && sourceToChunkIdx[*annotation.Index] >= 0 {
+			candidateIndices = []int32{sourceToChunkIdx[*annotation.Index]}
 		} else if annotation.URL != nil {
 			candidateIndices = urlToIndexMap[*annotation.URL]
 			if annotation.Title != nil && *annotation.Title != "" && len(candidateIndices) > 1 {
