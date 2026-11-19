@@ -503,6 +503,15 @@ func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNativeMidConversationSystem is the datasheet's supports_native_mid_conversation_system,
+// the gate the Anthropic converter reads in place of SupportsMidConversationSystem.
+func (c ModelCaps) SupportsNativeMidConversationSystem(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeMidConversationSystem != nil {
+		return *c.record.SupportsNativeMidConversationSystem
+	}
+	return fallback
+}
+
 // SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
 // on a role:"system" message inside messages (per-message effort). The record is keyed per
 // (provider, model), so it decides for both the provider and the model when set.
