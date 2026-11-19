@@ -209,15 +209,16 @@ func TestResolveChatAudioURLsCancelledContextIsNotBadRequest(t *testing.T) {
 func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		newCtx    func() (context.Context, context.CancelFunc)
+		newCtx    func(fetchStarted <-chan struct{}) (context.Context, context.CancelFunc)
 		wantType  string
 		wantCode  *int
 		wantCause error
 	}{
 		{
 			name: "deadline",
-			newCtx: func() (context.Context, context.CancelFunc) {
-				return context.WithTimeout(context.Background(), time.Millisecond)
+			// Long enough for the request to reach the fetch; the stub then blocks until it fires.
+			newCtx: func(<-chan struct{}) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 250*time.Millisecond)
 			},
 			wantType:  schemas.RequestTimedOut,
 			wantCode:  schemas.Ptr(http.StatusGatewayTimeout),
@@ -225,11 +226,14 @@ func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
 		},
 		{
 			name: "cancellation",
-			newCtx: func() (context.Context, context.CancelFunc) {
+			newCtx: func(fetchStarted <-chan struct{}) (context.Context, context.CancelFunc) {
 				ctx, cancel := context.WithCancel(context.Background())
 				go func() {
-					time.Sleep(time.Millisecond)
-					cancel()
+					select {
+					case <-fetchStarted:
+						cancel()
+					case <-ctx.Done():
+					}
 				}()
 				return ctx, cancel
 			},
@@ -238,7 +242,12 @@ func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			fetchStarted := make(chan struct{})
+			var fetches atomic.Int32
 			stubAudioFetch(t, func(ctx context.Context, _ string) (string, string, error) {
+				if fetches.Add(1) == 1 {
+					close(fetchStarted)
+				}
 				<-ctx.Done()
 				return "", "", ctx.Err()
 			})
@@ -254,7 +263,7 @@ func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
 			}, testNoopLogger{})
 			key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
 
-			parent, cancel := tc.newCtx()
+			parent, cancel := tc.newCtx(fetchStarted)
 			defer cancel()
 			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 			_, bErr := provider.ChatCompletion(ctx, key, chatAudioURLRequest("https://audio.example/sample.wav"))
@@ -264,6 +273,7 @@ func TestChatCompletionInterruptedAudioDownloadKeepsContextError(t *testing.T) {
 			require.Equal(t, tc.wantType, *bErr.Error.Type)
 			require.Equal(t, tc.wantCode, bErr.StatusCode)
 			require.ErrorIs(t, bErr.Error.Error, tc.wantCause)
+			require.Equal(t, int32(1), fetches.Load(), "the context must interrupt a download that had started")
 			require.Zero(t, upstreamHits.Load())
 		})
 	}
