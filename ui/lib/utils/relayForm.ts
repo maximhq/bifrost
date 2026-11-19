@@ -45,6 +45,25 @@ type RouteOrderKey = Pick<RelayRouteConfig, "method" | "path" | "headers">;
 const GLOB_CHARS = /[*?[]/;
 const codePointOrder = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * What identifies a route, since routes have no id: its method, path and header matchers. JSON keeps
+ * each part separate, so a header value containing "y: b" cannot pass for a second header.
+ */
+export function routeKey(r: { method: string; path: string; headers: { name: string; value: string }[] }): string {
+	const headers = r.headers
+		.filter((h) => h.name.trim())
+		.map((h) => [h.name.trim().toLowerCase(), h.value.trim()])
+		// Its own comparison, so the key does not depend on the route-ranking helpers.
+		.sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0));
+	return JSON.stringify([r.method.toUpperCase(), r.path, headers]);
+}
+
+/** Where an opened route is now, as the list can refetch in a new order; -1 when it is gone. */
+export function locateRoute<T extends Parameters<typeof routeKey>[0]>(routes: T[], index: number, key: string): number {
+	if (routes[index] && routeKey(routes[index]) === key) return index;
+	return routes.findIndex((r) => routeKey(r) === key);
+}
+
 /** The sort key of a route path; see compareRoutes. */
 function pathRank(path: string): number[] {
 	const segments = path.replace(/^\//, "").split("/");
@@ -389,7 +408,13 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 }
 
 /** Drops a job's empty optional fields so the stored config carries only what was set. */
-export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsageForm }): RelayJobConfig {
+export function cleanJob(
+	job: Omit<RelayJobConfig, "usage" | "interval_seconds" | "timeout_seconds"> & {
+		usage?: RelayUsageForm;
+		interval_seconds?: number | null;
+		timeout_seconds?: number | null;
+	},
+): RelayJobConfig {
 	const poll = {
 		...(job.poll.method ? { method: job.poll.method } : {}),
 		path: job.poll.path.trim(),
@@ -407,6 +432,7 @@ export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsa
 		...(job.interval_seconds ? { interval_seconds: job.interval_seconds } : {}),
 		...(job.timeout_seconds ? { timeout_seconds: job.timeout_seconds } : {}),
 		...(usage ? { usage } : {}),
+		...(job.reused_id_is_new_job ? { reused_id_is_new_job: true } : {}),
 	};
 }
 

@@ -11,11 +11,22 @@ Priced as ordinary calls, such an API is charged on every status check, and the 
 1. The call that starts the job is charged as usual, with the route's fee.
 2. Bifrost reads the job id from the reply and checks the job itself, with the relay's credential, until it reports a final status.
 3. When the job succeeds, Bifrost prices that final reply (for example, pages times a price per page) and charges it **once** to the budgets the start call was charged to.
-4. The caller's own status checks go through a route with `billable: false`, so they cost nothing.
+4. The caller's own status checks cost nothing: Bifrost recognizes a call that matches the job's status check and relays it free, whatever route it reaches.
 
 ## Set up a job
 
 <Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Relays**, select the relay and select **Add Async Job** above its routes.
+2. Under **Start Route (Charged)**, set the call that starts the job: method `POST`, path `/` and the header matcher `X-Amz-Target` = `Textract.StartDocumentAnalysis`. Set **Fee per Start (USD)** to `0.01` and **Job ID Path** to `JobId`.
+3. Under **Status Check (Free)**, set how Bifrost checks the job: method `POST`, path `/`, the header `X-Amz-Target` = `Textract.GetDocumentAnalysis`, the body `{"JobId":"{{job.id}}","MaxResults":1}` with content type `application/x-amz-json-1.1`, **Status Path** `JobStatus`, **Succeeded Statuses** `SUCCEEDED, PARTIAL_SUCCESS` and **Failed Statuses** `FAILED`.
+4. Under **Job Pricing**, set **Price per Unit (USD)** to `0.0015`, **Units Read From** to the response, **Measure** to **Number at path** and **Units Path** to `DocumentMetadata.Pages`.
+5. Select **Add Async Job**.
+
+The job shows in the routes table on its start route. Editing that route opens the async job again.
+
+</Tab>
 <Tab title="config.json">
 
 This Textract relay charges $0.01 to start an analysis and $0.0015 per page when it finishes. Status checks are free.
