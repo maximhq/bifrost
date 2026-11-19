@@ -996,6 +996,7 @@ export interface CoreConfig {
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;
+		browser_base_url?: SecretVar; // where browsers sign in when MCP clients use another hostname; unset means issuer_url
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
