@@ -146,14 +146,15 @@ func RelayExtraHeaderConflict(headers map[string]SecretVar) (string, bool) {
 // route's own fee. Settlement runs on the job accounting sweeper, with the endpoint's credential,
 // and charges the budgets the start call was subject to.
 type RelayJobConfig struct {
-	IDPath          string            `json:"id_path"`                    // start response path of the job id (Textract: JobId)
-	Poll            RelayJobPoll      `json:"poll"`                       // the request that reports where the job stands
-	StatusPath      string            `json:"status_path"`                // poll response path of the status (JobStatus)
-	Succeeded       []string          `json:"succeeded"`                  // statuses that end the job with work to bill
-	Failed          []string          `json:"failed,omitempty"`           // statuses that end the job at no charge
-	IntervalSeconds int               `json:"interval_seconds,omitempty"` // seconds between polls (default 30)
-	TimeoutSeconds  int               `json:"timeout_seconds,omitempty"`  // give up polling after this long (default 3600)
-	Usage           *RelayUsageConfig `json:"usage,omitempty"`            // terminal poll mapping over the route's; only its own cost_per_request is charged
+	IDPath           string            `json:"id_path"`                        // start response path of the job id (Textract: JobId)
+	Poll             RelayJobPoll      `json:"poll"`                           // the request that reports where the job stands
+	StatusPath       string            `json:"status_path"`                    // poll response path of the status (JobStatus)
+	Succeeded        []string          `json:"succeeded"`                      // statuses that end the job with work to bill
+	Failed           []string          `json:"failed,omitempty"`               // statuses that end the job at no charge
+	IntervalSeconds  int               `json:"interval_seconds,omitempty"`     // seconds between polls (default 30)
+	TimeoutSeconds   int               `json:"timeout_seconds,omitempty"`      // give up polling after this long (default 3600)
+	Usage            *RelayUsageConfig `json:"usage,omitempty"`                // terminal poll mapping over the route's; only its own cost_per_request is charged
+	ReusedIDIsNewJob bool              `json:"reused_id_is_new_job,omitempty"` // an id returned again after its job was charged is new work (caller-chosen ids)
 }
 
 // RelayJobPoll is the request the sweeper sends to check a job. {{job.id}} in the path, a
@@ -171,6 +172,30 @@ const MaxRelayJobTimeoutSeconds = 7 * 24 * 3600
 
 // JobIDPlaceholder is replaced with the job id in a poll request.
 const JobIDPlaceholder = "{{job.id}}"
+
+// DefaultRelayJobTimeoutSeconds is how long a job is polled when timeout_seconds is unset.
+const DefaultRelayJobTimeoutSeconds = 3600
+
+// credentialQueryParams are query parameter names that carry a credential.
+var credentialQueryParams = map[string]struct{}{
+	"key": {}, "api_key": {}, "apikey": {}, "api-key": {}, "token": {}, "access_token": {}, "auth": {},
+	"secret": {}, "client_secret": {}, "password": {}, "signature": {}, "sig": {}, "code": {},
+	"x-amz-signature": {}, "x-amz-credential": {}, "x-amz-security-token": {},
+}
+
+func isCredentialQueryParam(name string) bool {
+	_, ok := credentialQueryParams[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+func headersMention(headers map[string]string, s string) bool {
+	for _, v := range headers {
+		if strings.Contains(v, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // RelayScopedJobID ties an upstream job id to the call that started it, for the job row and its
 // settlement. Some APIs let the caller choose the id and reuse it after a delete (Azure batch
@@ -491,8 +516,36 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 	if j.TimeoutSeconds > MaxRelayJobTimeoutSeconds {
 		return fmt.Errorf("%s.timeout_seconds must be at most %d (7 days)", field, MaxRelayJobTimeoutSeconds)
 	}
-	if j.IntervalSeconds > 0 && j.TimeoutSeconds > 0 && j.IntervalSeconds > j.TimeoutSeconds {
-		return fmt.Errorf("%s.interval_seconds must not exceed timeout_seconds, or the job is never polled", field)
+	// The default timeout counts too: an interval past it means the job is never polled before the deadline.
+	timeout := j.TimeoutSeconds
+	if timeout == 0 {
+		timeout = DefaultRelayJobTimeoutSeconds
+	}
+	if j.IntervalSeconds > timeout {
+		return fmt.Errorf("%s.interval_seconds (%d) must not exceed the job's timeout (%ds), or the job is never polled", field, j.IntervalSeconds, timeout)
+	}
+	// A blank status would match a reply with no status field, and a padded one never matches.
+	for _, list := range [][]string{j.Succeeded, j.Failed} {
+		for _, s := range list {
+			if strings.TrimSpace(s) == "" || strings.TrimSpace(s) != s {
+				return fmt.Errorf("%s: status %q must be non-empty with no surrounding spaces", field, s)
+			}
+		}
+	}
+	if !strings.Contains(j.Poll.Path+j.Poll.Body, JobIDPlaceholder) && !headersMention(j.Poll.Headers, JobIDPlaceholder) {
+		return fmt.Errorf("%s.poll: %s must appear in the path, a header or the body, or every poll asks about no job", field, JobIDPlaceholder)
+	}
+	if _, query, ok := strings.Cut(j.Poll.Path, "?"); ok {
+		values, err := url.ParseQuery(query)
+		if err != nil {
+			return fmt.Errorf("%s.poll.path: invalid query: %v", field, err)
+		}
+		// The poll is stored in plain text; the relay adds its own credential.
+		for name := range values {
+			if isEndpointCredentialHeader(name) || isCredentialQueryParam(name) {
+				return fmt.Errorf("%s.poll.path: query parameter %q carries a credential; the relay adds its own to every poll", field, name)
+			}
+		}
 	}
 	for _, s := range j.Succeeded {
 		for _, f := range j.Failed {
@@ -514,7 +567,7 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 			return fmt.Errorf("%s.poll.headers: %q is not a valid header name", field, name)
 		}
 		// The relay's credential is added to every poll, and poll headers are stored in plain text.
-		if IsSensitiveHeader(name) {
+		if isEndpointCredentialHeader(name) {
 			return fmt.Errorf("%s.poll.headers: %q carries a credential; the relay adds its own to every poll", field, name)
 		}
 	}

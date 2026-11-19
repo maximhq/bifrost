@@ -208,13 +208,80 @@ func TestEndpointJobSweeperFailedAndGoneJobs(t *testing.T) {
 	require.Len(t, logs.rows, 1)
 	assert.Empty(t, reporter.reports, "a failed job is recorded at no charge")
 
+}
+
+// One 4xx poll does not forgive a job: eventually consistent APIs answer 404 for a new job and a key
+// rotation answers 403, so the poll is retried until the timeout and only then ends the job unpriced.
+func TestEndpointJobSweeperRetriesClientErrorsUntilTimeout(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		reason string
+	}{
+		{"not found", http.StatusNotFound, `{}`, UnpriceableReasonRelayJobGone},
+		{"access denied", http.StatusForbidden, `{"__type":"AccessDeniedException"}`, UnpriceableReasonRelayJobDenied},
+		{"refused id", http.StatusBadRequest, `{"__type":"InvalidJobIdException"}`, UnpriceableReasonRelayJobRefused},
+		{"conflict", http.StatusConflict, `{}`, UnpriceableReasonRelayJobRefused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			poller := &fakeEndpointPoller{status: tc.status, body: tc.body}
+			sweeper := NewRelayJobSweeper(store, poller, &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}, &fakeEndpointReporter{}, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+			_ = sweeper.SweepOnce(ctx)
+			assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus, "retried before the timeout")
+			assert.True(t, job.NextCheckAt.After(time.Now()))
+
+			job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+			makeDue(job)
+			_ = sweeper.SweepOnce(ctx)
+			assert.Equal(t, 2, poller.calls, "polled once more past the timeout")
+			assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+			require.NotNil(t, job.UnpriceableReason)
+			assert.Equal(t, tc.reason, *job.UnpriceableReason)
+		})
+	}
+
+	// The same 4xx answering a later poll before the timeout no longer matters once the job succeeds.
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	poller := &fakeEndpointPoller{status: http.StatusNotFound, body: `{}`}
+	reporter := &fakeEndpointReporter{}
+	sweeper := NewRelayJobSweeper(store, poller, &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	_ = sweeper.SweepOnce(ctx)
+	poller.status, poller.body = 200, `{"status":"SUCCEEDED","pages":2}`
+	makeDue(job)
+	require.NoError(t, sweeper.SweepOnce(ctx))
+	require.Len(t, reporter.reports, 1, "a job that answered 404 once is still charged when it succeeds")
+	assert.InDelta(t, 2*0.05, reporter.reports[0].Cost, 1e-12)
+}
+
+// A job past its timeout is polled one last time, so one that finished just before the deadline,
+// or while the sweeper was behind, is charged; one still running is written off.
+func TestEndpointJobSweeperPollsOnceMorePastTimeout(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
+	reporter := &fakeEndpointReporter{}
+	sweeper := NewRelayJobSweeper(store, poller, &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	require.NoError(t, sweeper.SweepOnce(ctx))
+	assert.Equal(t, 1, poller.calls)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12)
+
 	store = newFakeAccountingStore()
 	job = seedEndpointJob(t, store)
-	sweeper = NewRelayJobSweeper(store, &fakeEndpointPoller{status: http.StatusNotFound, body: `{}`}, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	sweeper = NewRelayJobSweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}, &fakeEndpointReporter{}, RelayJobSweeperConfig{ClaimedBy: "node-1"})
 	require.NoError(t, sweeper.SweepOnce(ctx))
-	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus, "a job the upstream forgot stops being polled")
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
-	assert.Equal(t, UnpriceableReasonRelayJobGone, *job.UnpriceableReason)
+	assert.Equal(t, UnpriceableReasonRelayJobTimeout, *job.UnpriceableReason)
 }
 
 // A poll the upstream throttles, or one sent while the relay is missing from the live set (a reload,
@@ -236,12 +303,6 @@ func TestEndpointJobSweeperRetriesThrottledAndMissingRelayPolls(t *testing.T) {
 		})
 	}
 
-	// A 400 that is not throttling still ends the job: the upstream refuses the id itself.
-	store := newFakeAccountingStore()
-	job := seedEndpointJob(t, store)
-	sweeper := NewRelayJobSweeper(store, &fakeEndpointPoller{status: http.StatusBadRequest, body: `{"__type":"InvalidJobIdException"}`}, &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}, &fakeEndpointReporter{}, RelayJobSweeperConfig{ClaimedBy: "node-1"})
-	require.NoError(t, sweeper.SweepOnce(ctx))
-	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 }
 
 // A succeeded job whose reply carries no units cannot be priced, so it is not recorded as a free success.

@@ -7946,7 +7946,8 @@
         "succeeded": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "minItems": 1,
           "description": "Statuses that end the job and bill it (case-insensitive)"
@@ -7954,7 +7955,8 @@
         "failed": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "description": "Statuses that end the job at no charge"
         },
@@ -7967,7 +7969,11 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 604800,
-          "description": "Stop polling after this long, default 3600, at most 7 days. A job that has not finished by then is not charged"
+          "description": "Stop polling after this long, default 3600, at most 7 days. The job is checked once more at the deadline; one still running then is not charged"
+        },
+        "reused_id_is_new_job": {
+          "type": "boolean",
+          "description": "true when the upstream can return an id it already used for new work (a caller-chosen job id), so a start that returns the id of a job already charged starts a new billable job. By default a start that returns an already charged id is a retry of that job and is not charged again"
         },
         "usage": {
           "description": "Usage mapping for the terminal poll reply, over the route's and the relay's. Only a cost_per_request set here is charged at settlement; the route's fee was charged on the start call",

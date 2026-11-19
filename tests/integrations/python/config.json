@@ -2117,7 +2117,7 @@
           "method": "POST",
           "path": "/v1/textract",
           "headers": {
-            "X-Amz-Target": "Textract.Start*"
+            "X-Amz-Target": "Textract.StartDocumentAnalysis"
           },
           "usage": {
             "cost_per_request": 0.01

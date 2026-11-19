@@ -163,22 +163,23 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobParams, err)
 	}
 
-	// A settlement interrupted after its row was written is finished without polling again.
-	if job.AggregateLogWrittenAt == nil && time.Since(job.CreatedAt) > time.Duration(snap.Timeout())*time.Second {
+	// Past its timeout a job still gets one last poll, so a job that finished just before the
+	// deadline (or while the sweeper was behind) is charged rather than written off.
+	pastDeadline := time.Since(job.CreatedAt) > time.Duration(snap.Timeout())*time.Second
+	if job.AggregateLogWrittenAt == nil && pastDeadline {
 		// The row may have been written just before a worker stopped; that settlement is finished
-		// rather than dropped. The probe only runs once a job is past its timeout.
+		// without polling again. The probe only runs once a job is past its timeout.
 		_, err := s.logs.FindRelayLog(ctx, s.settlementRowID(job))
 		switch {
-		case errors.Is(err, logstore.ErrNotFound):
-			return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobTimeout, fmt.Errorf("job did not finish within %ds", snap.Timeout()))
-		case err != nil:
+		case err == nil:
+			if err := s.store.MarkProviderJobAggregateLogWritten(ctx, job.ID, runner); err != nil {
+				return err
+			}
+			job.AggregateLogWrittenAt = schemas.Ptr(time.Now().UTC())
+		case !errors.Is(err, logstore.ErrNotFound):
 			err = fmt.Errorf("read settlement row: %w", err)
 			return errors.Join(err, s.store.FailProviderJob(ctx, job.ID, runner, err))
 		}
-		if err := s.store.MarkProviderJobAggregateLogWritten(ctx, job.ID, runner); err != nil {
-			return err
-		}
-		job.AggregateLogWrittenAt = schemas.Ptr(time.Now().UTC())
 	}
 	if job.AggregateLogWrittenAt == nil {
 		pollCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -194,16 +195,14 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 			bErr = &schemas.BifrostError{StatusCode: schemas.Ptr(status), Error: &schemas.ErrorField{Message: fmt.Sprintf("job poll answered %d", resp.StatusCode)}}
 		}
 		if bErr != nil {
-			// A relay missing from the live set (mid reload, or pruned) is not the upstream forgetting
-			// the job; it is retried until the job's timeout.
-			if bErr.Error != nil && errors.Is(bErr.Error.Error, relay.ErrRelayNotFound) {
-				return s.retryLater(ctx, job, snap, bErr.Error.Error)
-			}
-			return s.pollFailed(ctx, job, snap, NewProviderCallError(bErr))
+			return s.pollFailed(ctx, job, snap, bErr, pastDeadline)
 		}
 		status := snap.Status(resp.Body)
 		done, succeeded := snap.Outcome(status)
 		if !done {
+			if pastDeadline {
+				return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobTimeout, fmt.Errorf("job did not finish within %ds (last status %q)", snap.Timeout(), status))
+			}
 			attempts := job.PollAttempts + 1
 			next := time.Now().UTC().Add(endpointJobBackoff(attempts, snap.Interval()))
 			if err := s.store.UpsertProviderJob(ctx, &cstables.TableProviderJob{ID: job.ID, Kind: job.Kind, Provider: job.Provider, JobID: job.JobID, ProviderStatus: status, NextCheckAt: &next, PollAttempts: attempts}); err != nil {
@@ -215,7 +214,7 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 		if succeeded {
 			var priced bool
 			if usage, priced = snap.Price(resp.ContentType, resp.Body); !priced {
-				return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobNoUsage, fmt.Errorf("job %s reported %s with no units in its reply", upstreamID, status))
+				return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobNoUsage, fmt.Errorf("job %s reported %s without the usage its pricing reads", upstreamID, status))
 			}
 		}
 		if err := s.writeSettlementRow(ctx, job, upstreamID, status, usage); err != nil {
@@ -250,17 +249,31 @@ func (s *RelayJobSweeper) handle(ctx context.Context, job *cstables.TableProvide
 	return s.store.CompleteProviderJob(ctx, job.ID, runner)
 }
 
-func (s *RelayJobSweeper) pollFailed(ctx context.Context, job *cstables.TableProviderJob, snap *relay.JobSnapshot, err error) error {
-	runner := s.config.ClaimedBy
+// pollFailed handles a poll that did not answer 2xx. Every failure is retried until the job's
+// timeout: a 404 from an eventually consistent API, a 403 during a key rotation or a 400 for a
+// job the upstream has not indexed yet is often transient, and giving up on one reply would let
+// the job go uncharged. Past the timeout the job ends unpriced with the reason the last poll gave.
+func (s *RelayJobSweeper) pollFailed(ctx context.Context, job *cstables.TableProviderJob, snap *relay.JobSnapshot, bErr *schemas.BifrostError, pastDeadline bool) error {
+	var err error
+	if bErr.Error != nil && errors.Is(bErr.Error.Error, relay.ErrRelayNotFound) {
+		// A relay missing from the live set (mid reload, or pruned) is not the upstream forgetting the job.
+		err = bErr.Error.Error
+	} else {
+		err = NewProviderCallError(bErr)
+	}
+	if !pastDeadline {
+		return s.retryLater(ctx, job, snap, err)
+	}
+	reason := UnpriceableReasonRelayJobTimeout
 	switch ClassifyProviderCall(err) {
 	case ProviderCallGone:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobGone, err)
+		reason = UnpriceableReasonRelayJobGone
 	case ProviderCallAccessDenied:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobDenied, err)
+		reason = UnpriceableReasonRelayJobDenied
 	case ProviderCallRejected:
-		return s.store.MarkProviderJobUnpriceable(ctx, job.ID, runner, UnpriceableReasonRelayJobRefused, err)
+		reason = UnpriceableReasonRelayJobRefused
 	}
-	return s.retryLater(ctx, job, snap, err)
+	return s.store.MarkProviderJobUnpriceable(ctx, job.ID, s.config.ClaimedBy, reason, err)
 }
 
 // retryLater reschedules a job after a failed poll or settlement step with the poll backoff, so a

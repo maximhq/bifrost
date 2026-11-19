@@ -76,6 +76,15 @@ const server = http.createServer(async (req, res) => {
 	const path = url.pathname;
 	const raw = await readBody(req);
 
+	// The raw request target, before URL parsing drops dot segments, so a job id that climbs out is
+	// caught even when it lands on an inspection route. Only a direct read of the counter is exempt.
+	const target = req.url || "";
+	if (/(^|\/)\.\.(\/|\?|$)/.test(target.split("?")[0]) || (target.includes("__relay/escaped") && !target.startsWith("/__relay/escaped"))) {
+		escaped++;
+		send(res, 404, { error: "escaped" });
+		return;
+	}
+
 	if (path === "/__relay/hits") {
 		const tag = url.searchParams.get("tag") || "";
 		send(res, 200, { tag, hits: hits.get(tag) || 0, data: [] });
@@ -89,12 +98,6 @@ const server = http.createServer(async (req, res) => {
 	}
 	if (path === "/__relay/escaped") {
 		send(res, 200, { hits: escaped, data: [] });
-		return;
-	}
-	// The raw request target, before any normalisation, so a job id that climbs out is caught.
-	if ((req.url || "").includes("__relay/escaped") || (req.url || "").includes("/v1/rest/jobs/..")) {
-		escaped++;
-		send(res, 404, { error: "escaped" });
 		return;
 	}
 	if (path === "/__relay/health") {

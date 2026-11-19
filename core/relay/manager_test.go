@@ -839,6 +839,19 @@ func TestUpsertRefusesJobWhoseStatusChecksAreBilled(t *testing.T) {
 		schemas.RelayRouteConfig{Method: "POST", Path: "/"},
 	)), "a free status route ahead of the catch-all")
 	require.NoError(t, m.Upsert(textract()), "no route for status checks: callers are refused, never charged")
+
+	// A free route that matches only one literal id does not make real ids' checks free.
+	rest := bearerConfig("jobs", "https://jobs.example.com")
+	rest.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/start", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"}, Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}"}}},
+		{Method: "POST", Path: "/jobs/job-id", Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/jobs/**"},
+	}
+	err = m.Upsert(rest)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[2], which is billable")
+	rest.Routes[1].Path = "/jobs/**"
+	require.NoError(t, m.Upsert(rest), "a free route for every job id")
 }
 
 func TestServeRequestSideBillingRefusesAmbiguousBody(t *testing.T) {

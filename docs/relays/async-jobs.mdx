@@ -32,7 +32,7 @@ This Textract relay charges $0.01 to start an analysis and $0.0015 per page when
         {
           "method": "POST",
           "path": "/",
-          "headers": { "X-Amz-Target": "Textract.Start*" },
+          "headers": { "X-Amz-Target": "Textract.StartDocumentAnalysis" },
           "usage": { "cost_per_request": 0.01 },
           "job": {
             "id_path": "JobId",
@@ -86,7 +86,7 @@ bifrost:
         - method: POST
           path: /
           headers:
-            X-Amz-Target: "Textract.Start*"
+            X-Amz-Target: "Textract.StartDocumentAnalysis"
           usage:
             cost_per_request: 0.01
           job:
@@ -118,21 +118,24 @@ bifrost:
 
 `MaxResults: 1` keeps each check small: Textract still reports `JobStatus` and `DocumentMetadata.Pages`, without the full results.
 
+The start route names one operation because each start has its own status call: `StartDocumentAnalysis` is checked with `GetDocumentAnalysis`, while `StartDocumentTextDetection` needs `GetDocumentTextDetection`. To charge text detection jobs too, add a second start route for `Textract.StartDocumentTextDetection` with its own `job.poll`.
+
 ## Fields
 
 | Field | Required | What it does |
 | --- | --- | --- |
 | `id_path` | Yes | Where the job id is in the start call's reply, such as `JobId`. |
 | `poll.method` | No | Method of the status check. Default `POST`. |
-| `poll.path` | Yes | Path of the status check below the base URL. `{{job.id}}` is replaced with the job id, as in `/jobs/{{job.id}}`. |
+| `poll.path` | Yes | Path of the status check below the base URL. `{{job.id}}` is replaced with the job id, as in `/jobs/{{job.id}}`. `{{job.id}}` must appear in the path, a header or the body. A query parameter that carries a credential is refused. |
 | `poll.headers` | No | Headers of the status check. Values may contain `{{job.id}}`. Headers that carry a credential are refused: the relay adds its own. |
-| `poll.body` | No | Body of the status check. `{{job.id}}` is replaced, escaped for JSON in a JSON body. |
+| `poll.body` | No | Body of the status check. `{{job.id}}` is replaced, escaped for the body's type: JSON, form-encoded or XML. |
 | `poll.content_type` | No | Content type of the body. Default `application/json`. |
 | `status_path` | Yes | Where the status is in the status check's reply, such as `JobStatus`. |
 | `succeeded` | Yes | Statuses that end the job and charge it. Letter case is ignored. |
 | `failed` | No | Statuses that end the job without a charge. |
-| `interval_seconds` | No | Seconds between checks. Default `30`. Bifrost looks for due jobs every 10 seconds, and checks less often after many attempts. |
-| `timeout_seconds` | No | Stop checking after this long. Default `3600`, at most 7 days. |
+| `interval_seconds` | No | Seconds between checks. Default `30`, and no longer than the timeout. Bifrost looks for due jobs every 10 seconds, and checks less often after many attempts. |
+| `timeout_seconds` | No | Stop checking after this long. Default `3600`, at most 7 days. The job is checked once more at the deadline. |
+| `reused_id_is_new_job` | No | `true` when the API can hand back an id it already used for new work, such as a job id the caller picks. Then a start that returns the id of a job already charged starts a new job. Default `false`: such a start is a retry and is not charged again. |
 | `usage` | No | How the final reply is priced, over the route's and the relay's [pricing](./pricing). Only a `cost_per_request` set here is charged again: the route's fee was charged when the job started. |
 
 A route that starts a job must be billable and is never streamed, because Bifrost reads the job id from its reply.
@@ -144,12 +147,11 @@ A route that starts a job must be billable and is never streamed, because Bifros
 | Started | The start route's fee, like any call. |
 | Reports a `succeeded` status | Its final reply priced with the job's `usage`, once. |
 | Reports a `failed` status | Nothing more. |
-| Succeeds, but its reply has no units where `units_path` points | Nothing more. Check `units_path`. |
-| Still running after `timeout_seconds` | Nothing more. |
-| Unknown to the API (`404`, `410`), the credential is refused (`401`, `403`), or the check is refused with another `4xx` | Nothing more. |
-| A check is throttled or fails with `5xx` | Nothing yet. Bifrost tries again later. |
+| Succeeds, but its reply lacks what `usage` reads (units, `cost_path` or tokens) | Nothing more. Check the paths in `usage`. |
+| Still running at its last check, after `timeout_seconds` | Nothing more. |
+| A check fails: unknown to the API (`404`), the credential is refused (`401`, `403`), another `4xx`, throttling or `5xx` | Nothing yet. Bifrost tries again until `timeout_seconds`, since these are often temporary (a job not visible yet, a key being rotated). If the last check still fails, nothing more. |
 
-A caller that retries a start and gets the same job id back (Textract does this for a repeated `ClientRequestToken`) pays the start fee again, but the job is charged only once.
+A caller that retries a start and gets the same job id back (Textract does this for a repeated `ClientRequestToken`) pays the start fee again, but the job is charged only once, also when the retry comes after the job finished. Set `reused_id_is_new_job` only for an API that reuses ids for new work.
 
 The final charge goes to the budgets of the virtual key, team and customer that started the job, even if they changed since. It counts no extra request against rate limits.
 
