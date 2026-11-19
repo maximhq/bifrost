@@ -607,6 +607,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_entity_access_profile_mode_column"}, run: migrationAddClientConfigEntityAccessProfileModeColumn},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
+	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16983,6 +16984,28 @@ func mcpMaxProtocolVersionColumnsMigration(ctx context.Context, migrationName st
 			return fmt.Errorf("%s is non-rollbackable: dropping the columns would delete every configured global and per-server MCP protocol cap; they are additive and older binaries ignore them", migrationName)
 		},
 	}
+}
+
+// migrationAddClientConfigMCPServerMaxProtocolVersionColumn adds the cap on the protocol version
+// Bifrost's own /mcp serves. Existing rows read "", which is uncapped, as before.
+func migrationAddClientConfigMCPServerMaxProtocolVersionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_server_max_protocol_version_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column /mcp serves every version, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+	})
 }
 
 var mcpClientDiscoveredListColumns = []string{"discovered_resources_json", "discovered_resource_templates_json", "discovered_prompts_json"}

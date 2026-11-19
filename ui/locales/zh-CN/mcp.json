@@ -1074,7 +1074,7 @@
 		"refreshesOnNextUse": "下次使用时刷新",
 		"unknown": "未知",
 		"revokeTitle": "撤销此 OAuth 授权？",
-		"revokeDescription": "此授权的刷新令牌会立即停止轮换，MCP 客户端无法再续期访问。其当前访问令牌是短期 JWT，在过期前仍可在 /mcp 端点使用（默认 10 分钟），之后客户端会被完全切断，须通过 OAuth 同意流程重新连接。",
+		"revokeDescription": "此授权的刷新令牌会立即停止轮换，客户端无法再续期访问。其当前访问令牌是短期 JWT，在过期前仍可使用，之后客户端会被完全切断，须通过 OAuth 同意流程重新登录。",
 		"filter": {
 			"identity": "身份",
 			"virtualKey": "虚拟密钥",

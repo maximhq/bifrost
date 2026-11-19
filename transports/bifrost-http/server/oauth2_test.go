@@ -7,6 +7,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -150,4 +152,14 @@ func TestDropStaleMCPOAuthState(t *testing.T) {
 	dropStaleMCPOAuthState(perUser)(context.Background(), "linear")
 	require.Equal(t, []string{"linear"}, perUser.evicted)
 	assert.Equal(t, []string{"linear"}, perUser.closed)
+}
+
+// TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker pins that shutdown drains the
+// client gateways even without a config store, where no OAuth2 sweep worker is started.
+func TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker(t *testing.T) {
+	gateways := handlers.NewClientGatewayHandler(&lib.Config{}, nil, nil, nil)
+	s := &BifrostHTTPServer{ClientGateways: gateways}
+	s.stopOAuth2Background()
+	assert.True(t, gateways.Closed(), "client gateway telemetry must be stopped when no sweep worker runs")
+	assert.Nil(t, s.OAuth2SweepWorker)
 }

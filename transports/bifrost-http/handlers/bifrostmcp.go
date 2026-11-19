@@ -39,10 +39,10 @@ import (
 
 const (
 	// DefaultOpenAPIURL is the spec /v1/mcp reads while the framework config's
-	// openapi_url is unset: dev's openapi-oss.json, which bundle.py writes without
+	// openapi_url is unset: the published openapi-oss.json, which bundle.py writes without
 	// the enterprise-only operations. A build that serves another spec passes its
 	// own default to StartBifrostMCP.
-	DefaultOpenAPIURL = "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi-oss.json"
+	DefaultOpenAPIURL = "https://getbifrost.ai/openapi-oss.json"
 
 	bifrostMCPUnavailableMsg = "the Bifrost MCP spec is unavailable"
 )
@@ -80,6 +80,8 @@ var bifrostMCPDeniedRoutes = bifrostMCPRouteSet(
 	"POST /agents/a2a/{name}/rest/message:stream", "POST /agents/a2a/{name}/rest/tasks/{taskId}:subscribe",
 	// The other MCP server, whose session a stateless tool call cannot hold.
 	"POST /mcp", "GET /mcp",
+	// This server: a tool that calls /v1/mcp would nest MCP inside MCP.
+	"POST /v1/mcp", "GET /v1/mcp",
 	// Binary downloads and installer manifests: a model only sees "[binary response]".
 	"GET /api/skills/serve/all/download.zip", "GET /api/skills/serve/{skill-name}/download.zip",
 	"GET /api/skills/serve/{skill-name}/files/{filepath}",

@@ -1,6 +1,6 @@
 // Unit tests for item→haystack reduction. Run directly: `node haystack.test.mjs`.
 import assert from "node:assert";
-import { buildHaystack } from "./haystack.mjs";
+import { buildHaystack, declaredProviderOf } from "./haystack.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -101,6 +101,37 @@ test("a non-string description content is still ignored", () => {
   const nested = buildHaystack({ name: "x", description: { content: { nested: "zzsentinelzz" } } }, []);
   assert.ok(!nested.includes("zzsentinelzz"), `non-string description content leaked: ${nested}`);
   assert.strictEqual(nested, baseline, "a non-string content must reduce to the no-description case");
+});
+
+// A multipart upload to /openai/v1/files names its real provider in a "provider" form field. The
+// route keyword "/openai" must not decide the partition for it, so the field is read on its own.
+test("a multipart provider field is the declared provider", () => {
+  const upload = (fields) => ({
+    name: "365.05 azure /openai/v1/files pdf upload",
+    request: { method: "POST", url: { raw: "{{baseUrl}}/openai/v1/files" }, body: { mode: "formdata", formdata: fields } },
+  });
+  assert.strictEqual(declaredProviderOf(upload([{ key: "purpose", value: "user_data" }, { key: "provider", value: "Azure", type: "text" }])), "azure");
+  assert.strictEqual(declaredProviderOf(upload([{ key: "provider", value: "gemini", disabled: true }])), undefined, "a disabled field is not sent");
+  assert.strictEqual(declaredProviderOf(upload([{ key: "purpose", value: "user_data" }])), undefined);
+  assert.strictEqual(
+    declaredProviderOf({ request: { body: { mode: "urlencoded", urlencoded: [{ key: "provider", value: "openai" }] } } }),
+    "openai"
+  );
+  assert.strictEqual(declaredProviderOf({ request: { body: { mode: "raw", raw: '{"provider":"azure"}' } } }), undefined, "a JSON body names its model, not a form field");
+  assert.strictEqual(declaredProviderOf({ name: "folder" }), undefined);
+});
+
+// The matching delete names its provider as a query parameter. If it stayed in the openai
+// partition, chain expansion would pull the azure upload back in as its producer.
+test("a provider query parameter is the declared provider", () => {
+  const del = (url) => ({ name: "365.24 azure deletes a file", request: { method: "DELETE", url } });
+  assert.strictEqual(
+    declaredProviderOf(del({ raw: "{{baseUrl}}/openai/v1/files/{{id}}?provider=azure", query: [{ key: "provider", value: "azure" }] })),
+    "azure"
+  );
+  assert.strictEqual(declaredProviderOf(del({ raw: "{{baseUrl}}/openai/v1/files/{{id}}", query: [{ key: "provider", value: "azure", disabled: true }] })), undefined);
+  assert.strictEqual(declaredProviderOf(del("{{baseUrl}}/openai/v1/files/x?limit=2&provider=Gemini")), "gemini", "a string URL is read too");
+  assert.strictEqual(declaredProviderOf(del("{{baseUrl}}/openai/v1/files?limit=2")), undefined);
 });
 
 console.log(`\n${passed} passed`);

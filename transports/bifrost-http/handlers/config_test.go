@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -794,6 +795,185 @@ func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, body.Response.StatusCode(), string(body.Response.Body()))
 	assert.False(t, cfg.ShouldSendExtraFieldsInHeaders())
 	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryPlainHeaders pins plain telemetry header values, which
+// the config API redacts: a value sent back redacted keeps the stored one (also with auth
+// bypassed, where a change would be refused), a new value replaces it, and headers are matched
+// by their collector's endpoint, so removing a collector cannot move a secret onto another.
+func TestUpdateConfig_ClientGatewayTelemetryPlainHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	dest := func(endpoint, header string) string {
+		return `{"endpoint":"` + endpoint + `","headers":{"authorization":"` + header + `"}}`
+	}
+	body := func(dests ...string) string {
+		return `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"managed_settings":null,"telemetry":{"enabled":true,"destinations":[` +
+			strings.Join(dests, ",") + `]}}}}}}`
+	}
+	put := func(name, b string, bypassed bool) {
+		t.Helper()
+		ctx := putConfigCtx(b)
+		if bypassed {
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), name+": "+string(ctx.Response.Body()))
+	}
+	headers := func() map[string]string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		live, saved := map[string]string{}, map[string]string{}
+		for _, d := range cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations {
+			live[d.Endpoint.GetValue()] = d.Headers["authorization"].GetValue()
+		}
+		for _, d := range persisted.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations {
+			saved[d.Endpoint.GetValue()] = d.Headers["authorization"].GetValue()
+		}
+		require.Equal(t, live, saved, "the live config and the stored row must agree")
+		return live
+	}
+
+	put("set", body(dest("https://a.example.com", "Bearer token-a"), dest("https://b.example.com", "Bearer token-b")), false)
+	assert.Equal(t, map[string]string{"https://a.example.com": "Bearer token-a", "https://b.example.com": "Bearer token-b"}, headers())
+
+	put("resent redacted", body(dest("https://a.example.com", "<REDACTED>"), dest("https://b.example.com", "<REDACTED>")), false)
+	assert.Equal(t, map[string]string{"https://a.example.com": "Bearer token-a", "https://b.example.com": "Bearer token-b"}, headers())
+
+	put("resent redacted with auth bypassed", body(dest("https://a.example.com", "<REDACTED>"), dest("https://b.example.com", "<REDACTED>")), true)
+
+	put("first collector removed", body(dest("https://b.example.com", "<REDACTED>")), false)
+	assert.Equal(t, map[string]string{"https://b.example.com": "Bearer token-b"}, headers())
+
+	put("replaced", body(dest("https://b.example.com", "Bearer token-new")), false)
+	assert.Equal(t, map[string]string{"https://b.example.com": "Bearer token-new"}, headers())
+
+	// A redacted value that matches nothing must be typed again, never saved as the credential.
+	refused := func(name, b string) {
+		t.Helper()
+		ctx := putConfigCtx(b)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), name+": "+string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "re-enter the value", name)
+	}
+	refused("endpoint changed", body(dest("https://c.example.com", "<REDACTED>")))
+	refused("header renamed", body(`{"endpoint":"https://b.example.com","headers":{"x-token":"<REDACTED>"}}`))
+	assert.Equal(t, map[string]string{"https://b.example.com": "Bearer token-new"}, headers())
+
+	// Two collectors on one endpoint cannot be told apart on a later save, so they are refused
+	// even while forwarding is paused.
+	paused := strings.Replace(body(dest("https://d.example.com", "Bearer token-1"), dest("https://d.example.com", "Bearer token-2")), `"telemetry":{"enabled":true`, `"telemetry":{"enabled":false`, 1)
+	dup := putConfigCtx(paused)
+	h.updateConfig(dup)
+	require.Equal(t, fasthttp.StatusBadRequest, dup.Response.StatusCode(), string(dup.Response.Body()))
+	assert.Contains(t, string(dup.Response.Body()), "repeats destinations[0]")
+	assert.Equal(t, map[string]string{"https://b.example.com": "Bearer token-new"}, headers())
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryDestinations pins that a caller admitted with
+// auth bypassed may resend the Claude Code telemetry destinations but not change them,
+// since a destination decides where its env or vault header values are sent.
+func TestUpdateConfig_ClientGatewayTelemetryDestinations(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "otel-token")
+	t.Setenv("BIFROST_TEST_SERVER_SECRET", "server-secret")
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	body := func(endpoint, header string, enabled bool) string {
+		return `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"managed_settings":null,"telemetry":{"enabled":` +
+			strconv.FormatBool(enabled) + `,"destinations":[{"endpoint":"` + endpoint + `","headers":{"authorization":"` + header + `"}}]}}}}}}`
+	}
+	endpoint := func() string {
+		t.Helper()
+		return cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0].Endpoint.GetValue()
+	}
+
+	set := putConfigCtx(body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true))
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+
+	for name, b := range map[string]string{
+		"resent unchanged": body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true),
+		"paused":           body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", false),
+	} {
+		ok := putConfigCtx(b)
+		ok.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(ok)
+		require.Equal(t, fasthttp.StatusOK, ok.Response.StatusCode(), name+": "+string(ok.Response.Body()))
+	}
+
+	for name, b := range map[string]string{
+		"new endpoint": body("https://attacker.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true),
+		"new header":   body("https://otel.example.com", "env.BIFROST_TEST_SERVER_SECRET", true),
+	} {
+		changed := putConfigCtx(b)
+		changed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(changed)
+		require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), name+": "+string(changed.Response.Body()))
+		assert.Contains(t, string(changed.Response.Body()), "telemetry destinations requires an authenticated admin session")
+		assert.Equal(t, "https://otel.example.com", endpoint(), name)
+	}
+
+	// A plain header holding the text of a reference, stored while telemetry is paused, must
+	// not let a bypassed caller swap in the real reference: the source type is compared too.
+	plain := `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"managed_settings":null,"telemetry":{"enabled":false,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":{"value":"env.BIFROST_TEST_SERVER_SECRET","ref":"","type":"plain"}}}]}}}}}}`
+	stored := putConfigCtx(plain)
+	h.updateConfig(stored)
+	require.Equal(t, fasthttp.StatusOK, stored.Response.StatusCode(), string(stored.Response.Body()))
+	swapped := putConfigCtx(body("https://otel.example.com", "env.BIFROST_TEST_SERVER_SECRET", true))
+	swapped.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(swapped)
+	require.Equal(t, fasthttp.StatusForbidden, swapped.Response.StatusCode(), string(swapped.Response.Body()))
+
+	admin := putConfigCtx(body("https://otel2.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true))
+	h.updateConfig(admin)
+	require.Equal(t, fasthttp.StatusOK, admin.Response.StatusCode(), string(admin.Response.Body()))
+	assert.Equal(t, "https://otel2.example.com", endpoint())
+}
+
+// TestUpdateConfig_ClientGatewayNeedsAdminWhileBypassed pins that a caller without an admin
+// session cannot switch the client gateway on, change its managed settings or its dropped
+// telemetry attributes, while switching it off stays allowed.
+func TestUpdateConfig_ClientGatewayNeedsAdminWhileBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	body := func(enabled bool, managed, drop string) string {
+		return `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":` +
+			strconv.FormatBool(enabled) + `,"managed_settings":` + managed + `,"telemetry":{"enabled":false,"drop_attributes":` + drop + `}}}}}}`
+	}
+	put := func(name, b string, bypassed bool, want int) {
+		t.Helper()
+		c := putConfigCtx(b)
+		if bypassed {
+			c.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		h.updateConfig(c)
+		require.Equal(t, want, c.Response.StatusCode(), name+": "+string(c.Response.Body()))
+	}
+	gateway := func() *configtables.ClaudeCodeGatewayConfig {
+		return cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway()
+	}
+	stored := body(true, `{"model":"opus"}`, `["prompt"]`)
+	put("admin stores the gateway", stored, false, fasthttp.StatusOK)
+
+	put("resent unchanged", stored, true, fasthttp.StatusOK)
+	put("managed settings changed", body(true, `{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://attacker.example.com"}}`, `["prompt"]`), true, fasthttp.StatusForbidden)
+	put("dropped attribute removed", body(true, `{"model":"opus"}`, `[]`), true, fasthttp.StatusForbidden)
+	assert.Equal(t, map[string]any{"model": "opus"}, gateway().ManagedSettings)
+	assert.Equal(t, []string{"prompt"}, gateway().Telemetry.DropAttributes)
+
+	put("switched off", body(false, `{"model":"opus"}`, `["prompt"]`), true, fasthttp.StatusOK)
+	put("switched back on", stored, true, fasthttp.StatusForbidden)
+	assert.False(t, gateway().Enabled)
 }
 
 // entity_access_profile_mode is copied only when sent, so a partial save keeps the stored mode,

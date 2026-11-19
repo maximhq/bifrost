@@ -388,48 +388,6 @@ func TestIsVertexMultiRegionEndpoint(t *testing.T) {
 	}
 }
 
-func TestGetVertexModelListingAPIHost(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		region   string
-		expected string
-	}{
-		{
-			name:     "global listing endpoint",
-			region:   "global",
-			expected: "aiplatform.googleapis.com",
-		},
-		{
-			name:     "us multi-region uses standard listing endpoint",
-			region:   "us",
-			expected: "aiplatform.googleapis.com",
-		},
-		{
-			name:     "eu multi-region uses standard listing endpoint",
-			region:   "eu",
-			expected: "aiplatform.googleapis.com",
-		},
-		{
-			name:     "single region listing endpoint",
-			region:   "us-central1",
-			expected: "us-central1-aiplatform.googleapis.com",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			actual := getVertexModelListingAPIHost(tt.region)
-			if actual != tt.expected {
-				t.Fatalf("expected %q, got %q", tt.expected, actual)
-			}
-		})
-	}
-}
-
 func TestGetVertexPublisherModelURL(t *testing.T) {
 	t.Parallel()
 
@@ -1963,6 +1921,37 @@ func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
 			}
 			if hits.Load() == 0 {
 				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// A us/eu key lists Model Garden on its rep host, the one its inference uses, so an org policy
+// that allows only that endpoint (constraints/gcp.restrictEndpointUsage) does not fail listing.
+func TestVertexListModelsMultiRegionUsesRepHost(t *testing.T) {
+	for _, region := range []string{"us", "eu"} {
+		t.Run(region, func(t *testing.T) {
+			var mu sync.Mutex
+			var hosts []string
+			var hits atomic.Int32
+			garden := vertexModelGarden(&hits, "gemini-2.5-flash")
+			provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				hosts = append(hosts, r.Host)
+				mu.Unlock()
+				garden.ServeHTTP(w, r)
+			}))
+			key.VertexKeyConfig.Region = *schemas.NewSecretVar(region)
+			key.Models = schemas.WhiteList{"*"}
+			listedVertexModels(t, provider, key)
+			want := "aiplatform." + region + ".rep.googleapis.com"
+			if len(hosts) == 0 {
+				t.Fatal("Model Garden was never called")
+			}
+			for _, h := range hosts {
+				if h != want {
+					t.Errorf("listed on host %q, want %q", h, want)
+				}
 			}
 		})
 	}

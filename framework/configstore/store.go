@@ -1246,6 +1246,10 @@ type ConfigStore interface {
 	// ErrNotFound when no longer pending, so concurrent double-consent can't
 	// overwrite an already-minted code.
 	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	// DenyOAuth2AuthorizeRequest atomically transitions a still-pending request to
+	// revoked when the person on the consent page refuses it - returns ErrNotFound
+	// when no longer pending.
+	DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error
 	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
 
 	// OAuth2 refresh tokens
@@ -1260,15 +1264,15 @@ type ConfigStore interface {
 	// new one — if either fails the old token stays active and the client can retry.
 	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
 	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
-	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
-	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2), and returns how many it revoked.
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error)
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
 	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
 	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
 	// authorization codes and its active refresh tokens. Used when a virtual key
-	// rotates; pass tx to commit it together with the key update.
-	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
+	// rotates; pass tx to commit it together with the key update. Returns the number of refresh tokens revoked.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error)
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

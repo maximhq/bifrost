@@ -126,7 +126,8 @@ var ignoreGoFields = map[string]string{
 	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
 	// Same shape: the client column stores the global MCP protocol cap, which config.json sets
 	// only as mcp.max_protocol_version (applyMCPMaxProtocolVersion).
-	"/properties/client|mcp_max_protocol_version": "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_max_protocol_version":        "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_server_max_protocol_version": "storage column; configured only via mcp.server_max_protocol_version",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
@@ -195,6 +196,10 @@ var ignoreGoFields = map[string]string{
 	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
 	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
 	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
+	// A business unit declares its budgets on business_units[] itself; the loader clears this owner FK
+	// on governance.budgets with a warning (ignoreBudgetBusinessUnitIDs). Mirrors excludedGoFields in
+	// transports/bifrost-http/lib/config_test.go.
+	"/properties/governance/properties/budgets/items|business_unit_id": "owner FK set from business_units[]; the loader clears it on governance.budgets (ignoreBudgetBusinessUnitIDs)",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -241,6 +246,14 @@ var narrowedEnumPaths = map[string]struct {
 		excluded: []string{"baseten", "byteplus", "kimchi", "machgen", "minimax", "sagemaker", "soniox"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
+}
+
+// wireRenamedEnumConsts are schema paths whose Go type marshals some consts under a different
+// wire value (custom MarshalJSON), keyed Go value -> wire value. The schema enum lists wire values,
+// so checkEnum compares the renamed value instead of the Go one.
+var wireRenamedEnumConsts = map[string]map[string]string{
+	// MCPServerTypeOnSlugInherit is "" in Go and storage, written as "inherit" (MCPServerTypeOnSlug.String).
+	"/properties/mcp/properties/client_configs/items/properties/server_type_on_slug": {"": "inherit"},
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
@@ -1042,7 +1055,11 @@ func (c *checker) checkEnum(goVals []string, schemaNode map[string]any, schemaPa
 		}
 	}
 	goSet := map[string]bool{}
+	renamed := wireRenamedEnumConsts[schemaPath]
 	for _, v := range goVals {
+		if wire, ok := renamed[v]; ok {
+			v = wire
+		}
 		goSet[v] = true
 	}
 	excused := map[string]bool{}
