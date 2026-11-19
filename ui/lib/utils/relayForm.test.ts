@@ -9,7 +9,9 @@ import {
 	emptyNetworkForm,
 	emptyRelayForm,
 	emptyUsageForm,
+	locateRoute,
 	mergeUsage,
+	routeKey,
 	toBodyOverridePairs,
 	toBodyOverrides,
 	toRelayConfig,
@@ -268,7 +270,7 @@ describe("relay form", () => {
 			succeeded: ["SUCCEEDED"],
 			failed: [],
 			interval_seconds: 30,
-			timeout_seconds: undefined,
+			timeout_seconds: null,
 			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015, cost_per_request: undefined },
 		});
 		expect(job).toEqual({
@@ -279,6 +281,12 @@ describe("relay form", () => {
 			interval_seconds: 30,
 			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015 },
 		});
+	});
+
+	it("keeps a job's reused id switch, which only the API used to set", () => {
+		const job = { id_path: "id", poll: { path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		expect(cleanJob({ ...job, reused_id_is_new_job: true }).reused_id_is_new_job).toBe(true);
+		expect(cleanJob({ ...job, reused_id_is_new_job: false })).not.toHaveProperty("reused_id_is_new_job");
 	});
 
 	it("leaves the reported cost out of the price when the relay ignores it", () => {
@@ -385,5 +393,27 @@ describe("relayGatewayPath", () => {
 		vi.stubGlobal("window", { __BIFROST_BASE_PATH__: "/bifrost" });
 		expect(relayGatewayPath({ name: "tavily", url: "/relay/tavily" })).toBe("/bifrost/relay/tavily");
 		expect(relayGatewayPath({ name: "tavily" })).toBe("/bifrost/relay/tavily");
+	});
+});
+
+describe("locateRoute", () => {
+	const r = (path: string) => ({ method: "GET", path, headers: [] });
+
+	it("follows the opened route when the list reorders", () => {
+		expect(locateRoute([r("/a"), r("/b")], 0, routeKey(r("/b")))).toBe(1);
+	});
+
+	it("keeps the position of an identical duplicate", () => {
+		expect(locateRoute([r("/a"), r("/a")], 1, routeKey(r("/a")))).toBe(1);
+	});
+
+	it("reports a route that is gone", () => {
+		expect(locateRoute([r("/a")], 0, routeKey(r("/b")))).toBe(-1);
+	});
+
+	it("treats header matchers as part of the route", () => {
+		const start = { ...r("/"), headers: [{ name: "X-Target", value: "Start" }] };
+		const get = { ...r("/"), headers: [{ name: "x-target", value: "Get" }] };
+		expect(locateRoute([get, start], 0, routeKey(start))).toBe(1);
 	});
 });

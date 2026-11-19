@@ -11,7 +11,7 @@ import i18n from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { cleanUsage, routeBillableByDefault, withoutPricing } from "@/lib/utils/relayForm";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, Waypoints } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm, type Control, type FieldValues } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -95,7 +95,6 @@ export function RouteSheet({
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
-							<Waypoints className="h-5 w-5" />
 							{isNew ? t("relays.routeSheet.titleAdd") : t("relays.routeSheet.titleEdit")}
 						</div>
 					</SheetTitle>

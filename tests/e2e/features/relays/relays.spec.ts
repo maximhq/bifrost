@@ -367,6 +367,164 @@ test.describe("Relays", () => {
     await expect(page.page.getByTestId("relay-route-header-value-0")).not.toBeFocused();
   });
 
+  test("adds an async job with a free status route listed under its start route", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://textract.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await expect(page.routesEmpty).toBeVisible();
+
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({
+      start: { path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.StartDocumentAnalysis" }] },
+      fee: "0.01",
+      idPath: "JobId",
+      poll: { method: "POST", path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.GetDocumentAnalysis" }] },
+      statusPath: "JobStatus",
+      succeeded: "SUCCEEDED",
+      failed: "FAILED",
+    });
+    // A status check that never names the job is refused on the field, as the gateway would refuse it.
+    await page.page.getByTestId("relay-async-job-save").click();
+    await expect(page.asyncJobSheet).toContainText("every check asks about no job");
+    await page.page.getByTestId("relay-job-poll-body").fill('{"JobId":"{{job.id}}"}');
+    await page.page.getByTestId("relay-job-poll-content-type").fill("application/x-amz-json-1.1");
+    // No route takes the caller's status checks yet, so saving adds a free one.
+    await expect(page.page.getByTestId("relay-async-job-status-route-add")).toContainText(
+      "POST / · X-Amz-Target: Textract.GetDocumentAnalysis",
+    );
+    await page.saveAsyncJob();
+
+    const relay = await getRelay(request, name);
+    expect(relay.routes).toHaveLength(2);
+    const start = relay.routes.find((r: { job?: unknown }) => r.job);
+    const status = relay.routes.find((r: { job?: unknown }) => !r.job);
+    expect(start).toMatchObject({
+      method: "POST",
+      path: "/",
+      headers: { "X-Amz-Target": "Textract.StartDocumentAnalysis" },
+      usage: { cost_per_request: 0.01 },
+      job: { id_path: "JobId", poll: { method: "POST", path: "/" }, status_path: "JobStatus", succeeded: ["SUCCEEDED"], failed: ["FAILED"] },
+    });
+    expect(status).toMatchObject({ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.GetDocumentAnalysis" }, billable: false });
+
+    // The status route is listed right under its start route and is free.
+    const rows = page.routeRows();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator('[data-testid^="relay-route-job-badge-"]')).toBeVisible();
+    await expect(rows.nth(1).locator('[data-testid^="relay-route-status-badge-"]')).toBeVisible();
+    await expect(rows.nth(1)).toContainText("Free");
+
+    // Editing the status row opens the job, not a plain route; reopening it finds the free route in place.
+    const statusIndex = relay.routes.indexOf(status);
+    await page.page.getByTestId(`relay-route-actions-${statusIndex}`).click();
+    await page.page.getByTestId(`relay-route-edit-${statusIndex}`).click();
+    await expect(page.asyncJobSheet).toBeVisible();
+    await expect(page.page.getByTestId("relay-job-id-path")).toHaveValue("JobId");
+    await expect(page.page.getByTestId("relay-async-job-status-route-reuse")).toBeVisible();
+    await page.page.getByTestId("relay-job-reused-id").click();
+    await page.saveAsyncJob();
+    const saved = await getRelay(request, name);
+    expect(saved.routes).toHaveLength(2);
+    expect(saved.routes.find((r: { job?: unknown }) => r.job).job.reused_id_is_new_job).toBe(true);
+  });
+
+  test("async job sheet keeps each job's status check headers and its route settings", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-edit-${Date.now()}`;
+    created.push(name);
+    const job = (path: string, headers: Record<string, string>) => ({
+      id_path: "id",
+      poll: { method: "GET", path: `${path}/{{job.id}}`, headers },
+      status_path: "status",
+      succeeded: ["done"],
+    });
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [
+          { method: "POST", path: "/a", job: job("/a", { "X-Mode": "A" }) },
+          { method: "POST", path: "/b", job: job("/b", { "X-Mode": "B", "X-Region": "east" }) },
+        ],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    await page.goto();
+    await page.select(name);
+    const relay = await getRelay(request, name);
+    const indexOf = (path: string) => relay.routes.findIndex((r: { path: string }) => r.path === path);
+    const openJob = async (index: number) => {
+      await page.page.getByTestId(`relay-route-actions-${index}`).click();
+      await page.page.getByTestId(`relay-route-edit-${index}`).click();
+      await expect(page.asyncJobSheet).toBeVisible();
+    };
+
+    // Opening a second job shows its own headers, and editing one keeps the other.
+    await openJob(indexOf("/a"));
+    await expect(page.page.locator('[data-testid^="relay-job-poll-header-name-"]')).toHaveCount(1);
+    await page.page.getByTestId("relay-async-job-cancel").click();
+    await expect(page.asyncJobSheet).toBeHidden();
+    await openJob(indexOf("/b"));
+    const names = page.page.locator('[data-testid^="relay-job-poll-header-name-"]');
+    await expect(names).toHaveCount(2);
+    const modeRow = (await names.nth(0).inputValue()) === "X-Mode" ? 0 : 1;
+    await page.page.getByTestId(`relay-job-poll-header-value-${modeRow}`).fill("C");
+    await page.saveAsyncJob();
+    let current = await getRelay(request, name);
+    expect(current.routes.find((r: { path: string }) => r.path === "/b").job.poll.headers).toEqual({ "X-Mode": "C", "X-Region": "east" });
+    expect(current.routes.find((r: { path: string }) => r.path === "/a").job.poll.headers).toEqual({ "X-Mode": "A" });
+
+    // A job route's body overrides are reached through its route settings, and the job survives.
+    const start = current.routes.findIndex((r: { path: string }) => r.path === "/b");
+    await page.page.getByTestId(`relay-route-actions-${start}`).click();
+    await page.page.getByTestId(`relay-route-settings-${start}`).click();
+    await expect(page.routeSheet).toBeVisible();
+    await page.waitForSheetAnimation();
+    await page.fillBodyOverrides("relay-route-body-override", [{ path: "search_depth", value: '"advanced"' }]);
+    await page.saveRoute();
+    current = await getRelay(request, name);
+    const route = current.routes.find((r: { path: string }) => r.path === "/b");
+    expect(route.body_overrides).toEqual({ search_depth: "advanced" });
+    expect(route.job.id_path).toBe("id");
+  });
+
+  test("async job sheet refuses a disabled status route and a per-unit price with no units path", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-refuse-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [{ method: "GET", path: "/jobs/**", enabled: false }],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    await page.goto();
+    await page.select(name);
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({ start: { path: "/jobs" }, idPath: "id", poll: { method: "GET", path: "/jobs/{{job.id}}" }, statusPath: "status", succeeded: "done" });
+    await expect(page.page.getByTestId("relay-async-job-status-route-disabled")).toBeVisible();
+    await expect(page.page.getByTestId("relay-async-job-save")).toBeDisabled();
+
+    // A status check on its own path needs no route, so only the missing units path is left to refuse.
+    await page.page.getByTestId("relay-job-poll-path").fill("/status/{{job.id}}");
+    await expect(page.page.getByTestId("relay-async-job-save")).toBeEnabled();
+    await page.page.getByTestId("relay-job-usage-cost-per-unit").fill("0.5");
+    await page.page.getByTestId("relay-async-job-save").click();
+    await expect(page.page.getByTestId("relay-job-usage-units-path")).toHaveAttribute("aria-invalid", "true");
+    await expect(page.asyncJobSheet).toBeVisible();
+    expect((await getRelay(request, name)).routes).toHaveLength(1);
+  });
+
   test("sets body overrides on a route and on the relay, refusing a value that is not JSON", async ({ relaysPage: page, request }) => {
     const name = `e2e-pte-body-${Date.now()}`;
     created.push(name);

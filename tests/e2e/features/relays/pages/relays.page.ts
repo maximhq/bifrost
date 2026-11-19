@@ -24,6 +24,17 @@ export interface RouteInput {
   bodyOverrides?: BodyOverride[];
 }
 
+/** An async job as the async job sheet takes it; the status check posts its body with the job id. */
+export interface AsyncJobInput {
+  start: RouteInput;
+  fee?: string;
+  idPath: string;
+  poll: { method?: RouteInput["method"]; path: string; headers?: RouteHeaderMatcher[]; body?: string; contentType?: string };
+  statusPath: string;
+  succeeded: string;
+  failed?: string;
+}
+
 /** Page object for /workspace/relays. */
 export class RelaysPage extends BasePage {
   readonly createButton: Locator;
@@ -33,6 +44,7 @@ export class RelaysPage extends BasePage {
   readonly addSheet: Locator;
   readonly configSheet: Locator;
   readonly routeSheet: Locator;
+  readonly asyncJobSheet: Locator;
   readonly routesTable: Locator;
   readonly routesEmpty: Locator;
   readonly authTypeTrigger: Locator;
@@ -46,6 +58,7 @@ export class RelaysPage extends BasePage {
     this.addSheet = page.getByTestId("relay-add-sheet");
     this.configSheet = page.getByTestId("relay-config-sheet");
     this.routeSheet = page.getByTestId("relay-route-sheet");
+    this.asyncJobSheet = page.getByTestId("relay-async-job-sheet");
     this.routesTable = page.getByTestId("relay-routes-table");
     this.routesEmpty = page.getByTestId("relay-routes-empty");
     this.authTypeTrigger = page.getByTestId("relay-auth-type");
@@ -204,5 +217,53 @@ export class RelaysPage extends BasePage {
     await expect(confirm).toBeVisible();
     await confirm.click();
     await this.waitForSuccessToast("Route deleted");
+  }
+
+  /** Opens the async job sheet for a new job. */
+  async openAddAsyncJob(): Promise<void> {
+    await this.page.getByTestId("relay-routes-add-job").click();
+    await expect(this.asyncJobSheet).toBeVisible();
+    await this.waitForSheetAnimation();
+  }
+
+  /** Fills the open async job sheet: the start route, the status check and its statuses. */
+  async fillAsyncJob(job: AsyncJobInput): Promise<void> {
+    if (job.start.method) {
+      await fillSelect(this.page, '[data-testid="relay-async-job-method"]', job.start.method);
+    }
+    await this.page.getByTestId("relay-async-job-path").fill(job.start.path);
+    for (const header of job.start.headers ?? []) {
+      const trailing = (await this.page.locator('[data-testid^="relay-async-job-header-name-"]').count()) - 1;
+      await this.page.getByTestId(`relay-async-job-header-name-${trailing}`).fill(header.name);
+      await this.page.getByTestId(`relay-async-job-header-value-${trailing}`).fill(header.value);
+    }
+    if (job.fee !== undefined) await this.page.getByTestId("relay-async-job-fee").fill(job.fee);
+    await this.page.getByTestId("relay-job-id-path").fill(job.idPath);
+    if (job.poll.method) {
+      await fillSelect(this.page, '[data-testid="relay-job-poll-method"]', job.poll.method);
+    }
+    await this.page.getByTestId("relay-job-poll-path").fill(job.poll.path);
+    for (const [i, header] of (job.poll.headers ?? []).entries()) {
+      await this.page.getByTestId("relay-job-poll-add-header").click();
+      await this.page.getByTestId(`relay-job-poll-header-name-${i}`).fill(header.name);
+      await this.page.getByTestId(`relay-job-poll-header-value-${i}`).fill(header.value);
+    }
+    if (job.poll.body !== undefined) await this.page.getByTestId("relay-job-poll-body").fill(job.poll.body);
+    if (job.poll.contentType !== undefined) await this.page.getByTestId("relay-job-poll-content-type").fill(job.poll.contentType);
+    await this.page.getByTestId("relay-job-status-path").fill(job.statusPath);
+    await this.page.getByTestId("relay-job-succeeded").fill(job.succeeded);
+    if (job.failed !== undefined) await this.page.getByTestId("relay-job-failed").fill(job.failed);
+  }
+
+  /** Saves the open async job sheet and waits for it to close. */
+  async saveAsyncJob(): Promise<void> {
+    await this.page.getByTestId("relay-async-job-save").click();
+    await this.waitForSuccessToast();
+    await expect(this.asyncJobSheet).toBeHidden({ timeout: 10000 });
+  }
+
+  /** The routes table rows in the order shown, which lists a job's status route under its start route. */
+  routeRows(): Locator {
+    return this.routesTable.locator('tbody tr[data-testid^="relay-route-row-"]');
   }
 }

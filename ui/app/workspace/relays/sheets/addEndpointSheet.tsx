@@ -7,7 +7,6 @@ import { relayFormSchema, type RelayFormValues } from "@/lib/types/schemas";
 import { emptyRelayForm, toRelayConfig } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Waypoints } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -54,10 +53,7 @@ export function AddEndpointSheet({
 			<SheetContent className="p-0 pt-4" data-testid="relay-add-sheet" onInteractOutside={(e) => e.preventDefault()}>
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>
-						<div className="font-lg flex items-center gap-2">
-							<Waypoints className="h-5 w-5" />
-							{t("relays.addSheet.title")}
-						</div>
+						<div className="font-lg flex items-center gap-2">{t("relays.addSheet.title")}</div>
 					</SheetTitle>
 				</SheetHeader>
 				<Form {...form}>
@@ -81,10 +77,7 @@ export function AddEndpointSheet({
 								name="base_url"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel
-											label={t("relays.fields.baseUrlLabel")}
-											info={t("relays.fields.baseUrlInfo")}
-										/>
+										<InfoLabel label={t("relays.fields.baseUrlLabel")} info={t("relays.fields.baseUrlInfo")} />
 										<FormControl>
 											<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
 										</FormControl>
@@ -96,10 +89,10 @@ export function AddEndpointSheet({
 						</div>
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={close} disabled={isLoading}>
-									{t("cancel", { ns: "common" })}
+								{t("cancel", { ns: "common" })}
 							</Button>
 							<Button type="submit" disabled={!canCreate || isLoading} isLoading={isLoading} data-testid="relay-create">
-									{t("relays.page.addRelay")}
+								{t("relays.page.addRelay")}
 							</Button>
 						</div>
 					</form>
