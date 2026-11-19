@@ -1122,6 +1122,9 @@ type ConfigStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+	// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind that reached a
+	// terminal status before the cutoff and returns how many it removed.
+	DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error)
 
 	// Phrase-suggestion schedule state: the next run of a router's schedule,
 	// claimed by one node when due. On the interface rather than read off the
