@@ -38,7 +38,7 @@
 		"asyncJobTtl": "非同期ジョブ結果の TTL（秒）",
 		"asyncJobTtlHelp": "非同期ジョブ結果のデフォルト有効期間（秒）。期限後に結果は自動削除されます。",
 		"bifrostUrl": "Bifrost の URL",
-		"bifrostUrlHelp": "クライアントがこのゲートウェイにアクセスする URL です（ベースパスを含む）。<code0>/v1/mcp</code0> と Warp の設定ツールに必須です。これらの呼び出しはここに届いたものとして扱われ、結果内のリンクはこの URL を指します。空のままにすると両方とも無効になり、リクエストが送る Host ヘッダーが代わりに使われることはありません。",
+		"bifrostUrlHelp": "クライアントがこのゲートウェイにアクセスする URL です（ベースパスを含む）。<code0>/v1/mcp</code0> に必須です。そのツール呼び出しはここに届いたものとして扱われ、結果内のリンクはこの URL を指します。空のままにすると無効になり、リクエストが送る Host ヘッダーが代わりに使われることはありません。",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "OpenAPI URL",
 		"openapiUrlHelp": "<code0>/v1/mcp</code0> がツールを生成する元となる OpenAPI 仕様です。http(s) URL、またはエアギャップ環境向けにアプリディレクトリからの相対パスを指定します。空のままにすると、このビルドの公開仕様を読み込みます。",
