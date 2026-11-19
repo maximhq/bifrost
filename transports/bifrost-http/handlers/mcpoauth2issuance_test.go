@@ -272,6 +272,18 @@ func TestHandleAuthorize(t *testing.T) {
 		assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 	})
 
+	t.Run("browser_base_url hosts the consent page", func(t *testing.T) {
+		h, store, cfg := newIssuanceHandler(t)
+		cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+		cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})
+		// The resource is still the issuer's /mcp, so the request is accepted.
+		ctx := getCtx("/oauth2/authorize?" + base(cid, "http://127.0.0.1:1234/cb").Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), string(ctx.Response.Header.Peek("Location")))
+		assert.True(t, strings.HasPrefix(string(ctx.Response.Header.Peek("Location")), testBrowserBase+"/oauth/consent?flow="))
+	})
+
 	t.Run("loopback redirect matches on any port", func(t *testing.T) {
 		h, store, _ := newIssuanceHandler(t)
 		cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})

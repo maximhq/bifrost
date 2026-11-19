@@ -59,6 +59,22 @@ func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	return lib.BuildBaseURL(ctx, "")
 }
 
+// oauth2BrowserBaseURL is the base of URLs a user's browser opens in the OAuth
+// flow (authorize, consent, device sign-in): browser_base_url when set, else the
+// issuer. Only those URLs move; the issuer, server-to-server endpoints and token
+// claims stay on oauth2IssuerURL.
+func oauth2BrowserBaseURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
+	store.Mu.RLock()
+	cfg := store.ClientConfig.OAuth2ServerConfig
+	store.Mu.RUnlock()
+	if cfg != nil && cfg.BrowserBaseURL.IsSet() {
+		if base := strings.TrimRight(cfg.BrowserBaseURL.GetValue(), "/"); base != "" {
+			return base
+		}
+	}
+	return oauth2IssuerURL(ctx, store)
+}
+
 // oauth2MCPResourceURL returns the canonical RFC 8707 resource identifier for
 // the /mcp endpoint — the single protected resource this server issues tokens
 // for. Discovery advertises it, the authorize endpoint pins the request's

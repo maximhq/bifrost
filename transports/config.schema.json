@@ -683,6 +683,29 @@
               ],
               "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
+            "browser_base_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "env_var": {
+                      "type": "string"
+                    },
+                    "from_env": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Base URL users' browsers reach Bifrost on, for deployments where MCP clients reach it on a hostname browsers cannot resolve (for example a hosted client through a private tunnel). The authorization endpoint, the consent page redirect and the device sign-in pages use it; the issuer, token, registration and JWKS endpoints and token claims stay on issuer_url. Unset, browsers use issuer_url. Must be an absolute http(s) URL and include server.base_path when Bifrost is mounted under one; a trailing slash is ignored. Supports env var syntax: \"env.MY_VAR\"."
+            },
             "auth_code_ttl": {
               "type": "integer",
               "minimum": 1,

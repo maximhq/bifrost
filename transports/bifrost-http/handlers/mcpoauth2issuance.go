@@ -398,8 +398,7 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		tempToken = tok
 	}
 
-	base := oauth2IssuerURL(ctx, h.store)
-	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", base, url.QueryEscape(req.ID))
+	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2BrowserBaseURL(ctx, h.store), url.QueryEscape(req.ID))
 	if tempToken != "" {
 		consentURL += "#t=" + url.QueryEscape(tempToken)
 	}

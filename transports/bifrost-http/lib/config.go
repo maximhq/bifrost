@@ -1645,6 +1645,11 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
+	// Failing rather than ignoring it: falling back to the issuer would send
+	// browsers to a hostname they may not resolve.
+	if err := configstore.ValidateOAuth2BrowserBaseURL(cc.OAuth2ServerConfig); err != nil {
+		return err
+	}
 	// Entries match exactly, so a partial wildcard would silently approve nothing.
 	// PUT /api/config rejects one; config.json and older DB rows reach here.
 	if oc := cc.OAuth2ServerConfig; oc != nil {

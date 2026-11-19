@@ -69,8 +69,8 @@ function CodeEntry({ prefill }: { prefill: string }) {
 				setError(body?.error?.message || t("device.verifyFailed"));
 				return;
 			}
-			// The consent URL is built by the server from the configured issuer, which
-			// may be a different host than the one serving this page. Only refuse a
+			// The consent URL is built by the server from browser_base_url (or the issuer),
+			// which may be a different host than the one serving this page. Only refuse a
 			// scheme that could execute script when assigned to location.href.
 			const target = new URL(body.consent_url, window.location.origin);
 			if (target.protocol !== "https:" && target.protocol !== "http:") {

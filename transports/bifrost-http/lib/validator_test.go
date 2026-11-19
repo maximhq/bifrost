@@ -4772,6 +4772,8 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
 		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
 		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+		{"oauth with browser_base_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":"https://bifrost.corp.example.com"}}}`, false},
+		{"browser_base_url as an env reference", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":{"value":"env.BIFROST_BROWSER_URL","env_var":"BIFROST_BROWSER_URL","from_env":true}}}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateConfigSchema([]byte(tc.config))

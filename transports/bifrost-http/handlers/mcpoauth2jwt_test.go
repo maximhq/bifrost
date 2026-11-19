@@ -27,6 +27,9 @@ import (
 // deterministic across mint and verify.
 const testIssuer = "https://bifrost.test"
 
+// testBrowserBase is a browser_base_url on a different host from testIssuer.
+const testBrowserBase = "https://bifrost.corp.test"
+
 // testMCPResource is the canonical /mcp resource audience derived from the issuer.
 const testMCPResource = testIssuer + "/mcp"
 

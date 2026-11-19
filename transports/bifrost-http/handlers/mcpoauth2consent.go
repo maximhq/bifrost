@@ -314,17 +314,16 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		consent["bf_sub"] = req.BfSub
 	}
 
-	issuer := oauth2IssuerURL(ctx, h.store)
 	if isDeviceFlow {
 		consent["grant"] = "device_code"
 		lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
-		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(issuer)})
+		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(oauth2BrowserBaseURL(ctx, h.store))})
 		return
 	}
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
-		"iss":   issuer, // RFC 9207: include issuer so client can validate
+		"iss":   oauth2IssuerURL(ctx, h.store), // RFC 9207: the issuer, never the browser base URL
 	})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to build redirect URL: %v", err))
@@ -471,7 +470,7 @@ func (h *OAuth2ConsentHandler) denyFlow(ctx *fasthttp.RequestCtx, req *configtab
 	}
 	lib.RecordAuditChange(ctx, "oauth2_consent.denied", "oauth2_consent", req.ID, req.ClientID, nil,
 		map[string]any{"client_id": req.ClientID, "grant": "device_code"})
-	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceDeniedURL(oauth2IssuerURL(ctx, h.store))})
+	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceDeniedURL(oauth2BrowserBaseURL(ctx, h.store))})
 }
 
 type consentError struct {

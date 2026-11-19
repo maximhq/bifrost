@@ -630,6 +630,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 				hash.Write([]byte("oauth2IssuerURL:val:" + oc.IssuerURL.GetValue()))
 			}
 		}
+		// Hashed only when set, so configs without it keep their hash. The NUL ends the
+		// unframed issuer URL, which cannot hold control characters.
+		if oc.BrowserBaseURL.IsSet() {
+			writeLengthPrefixed(hash, "\x00oauth2BrowserBaseURL:", secretVarHashForm(oc.BrowserBaseURL))
+		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
 		// Unset policy fields contribute nothing so rows stored before they were
@@ -3081,6 +3086,22 @@ func ValidatePublicBaseURL(value string) error {
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(value, "#") {
 		return fmt.Errorf("must not contain userinfo, query, or fragment components")
+	}
+	return nil
+}
+
+// ValidateOAuth2BrowserBaseURL checks oauth2_server_config.browser_base_url, which
+// must be an absolute HTTP(S) base URL when set, and a reference must resolve.
+func ValidateOAuth2BrowserBaseURL(oc *tables.OAuth2ServerConfig) error {
+	if oc == nil || !oc.BrowserBaseURL.IsSet() {
+		return nil
+	}
+	// The error names a reference, never what it resolves to.
+	if oc.BrowserBaseURL.IsFromSecret() && oc.BrowserBaseURL.GetValue() == "" {
+		return fmt.Errorf("oauth2_server_config.browser_base_url references %s, which resolves to an empty value", oc.BrowserBaseURL.GetRawRef())
+	}
+	if err := ValidatePublicBaseURL(oc.BrowserBaseURL.GetValue()); err != nil {
+		return fmt.Errorf("oauth2_server_config.browser_base_url %w", err)
 	}
 	return nil
 }
