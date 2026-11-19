@@ -27,7 +27,7 @@ LogEntry:
     status:
       type: string
       enum: ["processing", "success", "error", "cancelled"]
-      description: cancelled means the caller disconnected before the response (HTTP 499).
+      description: cancelled means the request ended before a response because the caller cancelled or disconnected (HTTP 499), or its deadline ran out. Upstream provider timeouts are logged as error.
     object:
       type: string
     timestamp:
