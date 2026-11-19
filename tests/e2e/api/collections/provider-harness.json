@@ -346506,6 +346506,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "363. Vertex passthrough keeps an explicit v1beta1 for Google publisher models (vertex-google-v1beta1-passthrough) (#9891 / PR #9896)",
+      "description": "Vertex passthrough rebuilt the upstream URL with /v1 for every /models/ path, so an explicit /genai_passthrough/v1beta1 request to a Google publisher model reached /v1. Fields that exist only in v1beta1, such as Part.mediaProcessing, then failed with 400 \"Unknown name\". Google publisher models now keep the client version; other model calls (Claude streamRawPredict, 212.5), requests without a version and Gemini's v1beta stay on v1.\n\n363.1 sends mediaProcessing: AGENTIC on an inline video part to gemini-3.8-flash through /genai_passthrough/v1beta1. It returns 200 only when the request reaches v1beta1. The Vertex key must allow gemini-3.8-flash.",
+      "item": [
+        {
+          "name": "363.1 vertex gemini-3.8-flash v1beta1 passthrough accepts mediaProcessing (vertex-google-v1beta1-passthrough) - #9891",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('363.1 status 200: the request reached v1beta1 - vertex-google-v1beta1-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('363.1 v1beta1-only field not rejected as unknown - vertex-google-v1beta1-passthrough', function () {",
+                  "  pm.expect(body, 'v1 rejects mediaProcessing: ' + body.slice(0, 400)).to.not.include('Unknown name');",
+                  "});",
+                  "pm.test('363.1 model answered with a candidate - vertex-google-v1beta1-passthrough', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.candidates, 'no candidates: ' + body.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"inlineData\": {\n            \"mimeType\": \"video/mp4\",\n            \"data\": \"AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAwNtZGF0AAACrQYF//+p3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSByMzIyMiBiMzU2MDVhIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTMgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAA2ZYiEABb//u5U/gU3Ux6dNVNIZEntdeOrC8lPG1FX+m9QuWnDaKTjUGAGuz5TCtQUoABOwTwJAAAADEGaIWxBX/7WpVAD8gAAAzJtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAH0AABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACXXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAH0AAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAoAAAAFoAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAB9AAAAAAAAEAAAAAAdVtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAACAAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAGAbWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABQHN0YmwAAADAc3RzZAAAAAAAAAABAAAAsGF2YzEAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAoABaAEgAAABIAAAAAAAAAAEUTGF2YzYzLjEuMTAyIGxpYngyNjQAAAAAAAAAAAAAAAAY//8AAAA2YXZjQwFkAAr/4QAZZ2QACqzZQo35MBEAAAMAAQAAAwACDxIllgEABmjr48siwP34+AAAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAL7AAAAAAAAAAYc3R0cwAAAAAAAAABAAAAAgAAQAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAAusAAAAQAAAAFHN0Y28AAAAAAAAAAQAAADAAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAy\"\n          },\n          \"mediaProcessing\": \"AGENTIC\"\n        },\n        {\n          \"text\": \"What is the dominant color in this short video? Answer with one word.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0,\n    \"maxOutputTokens\": 256\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/google/models/gemini-3.8-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "gemini-3.8-flash:generateContent"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
