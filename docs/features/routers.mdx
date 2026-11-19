@@ -679,7 +679,7 @@ graph LR
 ```
 
 1. **Sample.** While suggestions are on, a share of the requests the router classifies (`sample_rate`) is kept for `lookback_days`. When a run's window reaches back before sampling started, or suggestions are off, it first embeds the router's logged requests from that window (the same share, newest first).
-2. **Group.** Up to `max_clustered_requests` requests are grouped by similarity in the router's embedding space; the rest of the window is counted into the groups found, so request counts cover all of it. Groups smaller than `min_cluster_requests` are dropped. A run raises that minimum to 0.1% of the requests in its window when that is larger.
+2. **Group.** Up to `max_clustered_requests` requests are grouped by similarity in the router's embedding space. Up to ten times as many more are then counted into the groups found; requests past that bound are skipped and left out of the counts. So request counts cover the whole window only when it holds at most eleven times `max_clustered_requests`. Groups smaller than `min_cluster_requests` are dropped. A run raises that minimum to 0.1% of the requests it groups and counts, when that is larger.
 3. **Write phrases.** The suggestion model reads each group's example requests and writes reference phrases for it. It skips a group that is not one kind of request, and a group your phrases already route well is not suggested. At most 200 groups are sent to the model per run, largest first.
 4. **Pick a tier.** The tier model reads the phrases next to your router's own phrases for each tier and proposes one, with a confidence. When it is not confident, no tier is proposed and you choose.
 
@@ -723,10 +723,12 @@ Suggestions are part of the router's classifier settings, so send the `suggestio
 
 ```bash
 curl -s http://localhost:8080/api/routing/model-routers/support \
-  | jq '{classifier, semantic, keywords, session, suggestions: {
-      enabled: true, sample_rate: 0.1, lookback_days: 7,
-      schedule: {every: "1d", start_at: "2026-11-20T03:00:00Z"},
-      provider: "openai", model: "gpt-4.1"}}' \
+  | jq '{classifier, semantic, decision, llm, session, keywords, tier_boundaries}
+      | with_entries(select(.value != null))
+      | .suggestions = {
+          enabled: true, sample_rate: 0.1, lookback_days: 7,
+          schedule: {every: "1d", start_at: "2026-11-20T03:00:00Z"},
+          provider: "openai", model: "gpt-4.1"}' \
   | curl -X PUT http://localhost:8080/api/routing/model-routers/support \
       -H "Content-Type: application/json" -d @-
 ```
