@@ -140,7 +140,8 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := FetchAndEncodeURL(t.Context(), tt.url)
+			ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(func() schemas.HTTPExchangeObserver { t.Error("media fetch reached inference observer"); return nil }))
+			_, _, err := FetchAndEncodeURL(ctx, tt.url)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
