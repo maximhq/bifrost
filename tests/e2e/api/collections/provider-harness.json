@@ -352427,6 +352427,54 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Bedrock list models includes cross-region inference profiles (bedrock inference profiles)",
+      "description": "Pins the ListInferenceProfiles merge in Bedrock list models. ListFoundationModels returns only bare model ids (anthropic.claude-...), and most Claude, Llama and Stability models are invokable on bedrock-runtime only through a system-defined cross-region profile (us./eu./apac./global. ...). Before the change none of those profile ids appeared in /v1/models even though the key could call them. Bifrost now calls GET /inference-profiles?type=SYSTEM_DEFINED in each key's region and merges the ACTIVE profile ids, so a us key lists us./global. ids and an eu key lists eu./global. ids. Red before the change: no geo-prefixed bedrock id in the list.",
+      "item": [
+        {
+          "name": "/v1/models - bedrock lists cross-region profile ids next to bare ids - bedrock inference profiles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/models?provider=bedrock: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "var ids = data.map(function (m) { return m && m.id; }).filter(function (id) { return typeof id === 'string'; });",
+                  "var profileRe = /^bedrock\\/(us-gov|us|eu|apac|au|jp|ca|in|global)\\.[a-z0-9-]+\\./;",
+                  "var profiles = ids.filter(function (id) { return profileRe.test(id); });",
+                  "var bare = ids.filter(function (id) { return id.indexOf('bedrock/') === 0 && !profileRe.test(id); });",
+                  "pm.test('cross-region inference profile ids are listed', function () { pm.expect(profiles, 'no us./eu./global. profile id in: ' + JSON.stringify(ids).slice(0, 800)).to.not.be.empty; });",
+                  "pm.test('bare foundation-model ids are still listed', function () { pm.expect(bare, 'no bare bedrock id in: ' + JSON.stringify(ids).slice(0, 800)).to.not.be.empty; });",
+                  "pm.test('profile ids are listed once', function () { var seen = {}; profiles.forEach(function (id) { pm.expect(seen[id], 'duplicate ' + id).to.be.undefined; seen[id] = true; }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

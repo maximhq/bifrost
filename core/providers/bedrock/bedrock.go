@@ -956,6 +956,68 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
 }
 
+// bedrockInferenceProfilesMaxPages bounds ListInferenceProfiles pagination (1000 per page).
+const bedrockInferenceProfilesMaxPages = 10
+
+// listInferenceProfiles fetches the SYSTEM_DEFINED (cross-region) inference profiles callable
+// from the key's region via ListInferenceProfiles. Profiles are per source region, so a us-east-1
+// key yields us./global. IDs and an eu-west-1 key yields eu./global. IDs; the multi-key fan-out
+// unions them. Best-effort: returns nil on any failure (e.g. IAM lacking
+// bedrock:ListInferenceProfiles) so the foundation-model list is still returned.
+func (provider *BedrockProvider) listInferenceProfiles(ctx *schemas.BifrostContext, key schemas.Key, region string) *BedrockListInferenceProfilesResponse {
+	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region)
+	merged := &BedrockListInferenceProfilesResponse{}
+	nextToken := ""
+	for range bedrockInferenceProfilesMaxPages {
+		params := url.Values{}
+		params.Set("type", "SYSTEM_DEFINED")
+		params.Set("maxResults", "1000")
+		if nextToken != "" {
+			params.Set("nextToken", nextToken)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://%s/inference-profiles?%s", host, params.Encode()), nil)
+		if err != nil {
+			provider.logger.Warn("failed to build list-inference-profiles request: %v", err)
+			return nil
+		}
+		providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+		} else if bifrostErr := signAWSRequest(ctx, req, key.BedrockKeyConfig, region, bedrockSigningService); bifrostErr != nil {
+			provider.logger.Warn("failed to sign list-inference-profiles request: %v", bifrostErr.Error.Message)
+			return nil
+		}
+
+		resp, err := providerUtils.DoHTTPRequest(provider.client, req)
+		if err != nil {
+			provider.logger.Warn("list-inference-profiles request failed: %v", err)
+			return nil
+		}
+		responseBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			provider.logger.Warn("failed to read list-inference-profiles response: %v", err)
+			return nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			provider.logger.Warn("list-inference-profiles returned status %d", resp.StatusCode)
+			return nil
+		}
+
+		page := &BedrockListInferenceProfilesResponse{}
+		if err := sonic.Unmarshal(responseBody, page); err != nil {
+			provider.logger.Warn("failed to parse list-inference-profiles response: %v", err)
+			return nil
+		}
+		merged.InferenceProfileSummaries = append(merged.InferenceProfileSummaries, page.InferenceProfileSummaries...)
+		if page.NextToken == nil || *page.NextToken == "" {
+			return merged
+		}
+		nextToken = *page.NextToken
+	}
+	return merged
+}
+
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -1049,13 +1111,34 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil)
 	}
 
+	seen := make(map[string]struct{}, len(response.Data))
+	for _, m := range response.Data {
+		seen[m.ID] = struct{}{}
+	}
+
+	// Merge in the cross-region inference profiles (us./eu./apac./global. ...): ListFoundationModels
+	// returns only bare IDs, and most Claude/Llama/Stability models are invokable only through a
+	// profile. Same gating, dedup by id. With by* filters set, only profiles whose foundation
+	// model survived the filter are kept.
+	if profilesResponse := provider.listInferenceProfiles(ctx, key, region); profilesResponse != nil {
+		foundationModels := make(map[string]BedrockModel, len(bedrockResponse.ModelSummaries))
+		for _, m := range bedrockResponse.ModelSummaries {
+			foundationModels[m.ModelID] = m
+		}
+		if profileModels := profilesResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered, foundationModels, len(params) > 0); profileModels != nil {
+			for _, m := range profileModels.Data {
+				if _, ok := seen[m.ID]; ok {
+					continue
+				}
+				seen[m.ID] = struct{}{}
+				response.Data = append(response.Data, m)
+			}
+		}
+	}
+
 	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
 	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
 	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
-		seen := make(map[string]struct{}, len(response.Data))
-		for _, m := range response.Data {
-			seen[m.ID] = struct{}{}
-		}
 		for _, m := range mantleResponse.Data {
 			if _, ok := seen[m.ID]; ok {
 				continue
