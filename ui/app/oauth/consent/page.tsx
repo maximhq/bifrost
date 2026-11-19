@@ -16,6 +16,7 @@ import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
+import { formatUserCode, isCompleteUserCode, recallDeviceUserCode } from "@/lib/utils/deviceUserCode";
 import { buildLoginHref } from "@/lib/utils/loginGoto";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
@@ -66,6 +67,12 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const [submitFlow, { isLoading: submitting }] = useSubmitOAuth2ConsentFlowMutation();
 	const [vkValue, setVkValue] = useState("");
 	const [selectedMode, setSelectedMode] = useState<"vk" | "session" | "user" | null>(null);
+	// A device sign-in is approved with the code from the terminal. The device page keeps it
+	// for this tab; a consent link opened anywhere else has none, so the user types it.
+	const [userCode, setUserCode] = useState(() => recallDeviceUserCode(flowId));
+	const [codeRecalled] = useState(() => recallDeviceUserCode(flowId) !== "");
+	const isDeviceFlow = !!flow && !flow.redirect_uri;
+	const codeMissing = isDeviceFlow && !isCompleteUserCode(userCode);
 
 	// TempTokenScope installs the token during its own render, so any
 	// sessionStorage restore has already happened by now.
@@ -89,12 +96,26 @@ function ConsentView({ flowId }: { flowId: string }) {
 		void Promise.resolve(refetch()).finally(() => setFlowRechecked(true));
 	}, [awaitingRecheck, refetch]);
 
+	// Refusing a device sign-in (Claude Code's /login) ends the device's polling at once.
+	const handleDeny = async () => {
+		try {
+			const res = await submitFlow({ flowId, body: { deny: true } }).unwrap();
+			if (!isSafeRedirect(res.redirect_url)) {
+				toast.error(t("consent.authFailed"), { description: t("consent.invalidRedirect") });
+				return;
+			}
+			window.location.href = res.redirect_url;
+		} catch (err) {
+			toast.error(t("consent.authFailed"), { description: getErrorMessage(err) });
+		}
+	};
+
 	const handleSubmit = async (mode: "vk" | "session" | "user") => {
 		setSelectedMode(mode);
 		try {
 			const res = await submitFlow({
 				flowId,
-				body: { mode, value: mode === "vk" ? vkValue : undefined },
+				body: { mode, value: mode === "vk" ? vkValue : undefined, user_code: isDeviceFlow ? userCode : undefined },
 			}).unwrap();
 			// Defence-in-depth: the server validates redirect_uri against the
 			// registered client, but never hand a javascript:/data: URL to
@@ -182,10 +203,40 @@ function ConsentView({ flowId }: { flowId: string }) {
 						)}
 					</>
 				) : (
-					// Device sign-ins (Claude Code gateway) have no callback; the device polls for the result.
-					<p className="mt-4 text-sm" data-testid="oauth-consent-device-signin">
-						{t("consent.deviceSignInConfirm")}
-					</p>
+					// Device sign-ins (client gateways) have no callback; the device polls for the result.
+					<>
+						<div className="mt-4 rounded-sm border p-3 text-left" data-testid="oauth-consent-device-code">
+							{codeRecalled ? (
+								<>
+									<p className="text-muted-foreground text-xs">{t("consent.deviceCodeLabel")}</p>
+									<p className="mt-1 text-center font-mono text-lg tracking-widest" data-testid="oauth-consent-device-code-value">
+										{userCode}
+									</p>
+								</>
+							) : (
+								<>
+									<label htmlFor="oauth-consent-device-code-input" className="text-sm font-medium">
+										{t("consent.deviceCodeEnter")}
+									</label>
+									<Input
+										id="oauth-consent-device-code-input"
+										data-testid="oauth-consent-device-code-input"
+										autoComplete="off"
+										autoCapitalize="characters"
+										spellCheck={false}
+										placeholder="XXXX-XXXX" // i18n-ignore: the user-code format, not prose
+										className="mt-2 text-center font-mono text-lg tracking-widest"
+										value={userCode}
+										onChange={(e) => setUserCode(formatUserCode(e.target.value))}
+										disabled={submitting}
+									/>
+								</>
+							)}
+						</div>
+						<p className="mt-3 text-sm" data-testid="oauth-consent-device-signin">
+							{t("consent.deviceSignInConfirm")}
+						</p>
+					</>
 				)}
 			</div>
 
@@ -214,7 +265,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							data-testid="oauth-consent-continue-user-btn"
 							className="mt-4 w-full"
 							onClick={() => handleSubmit("user")}
-							disabled={submitting}
+							disabled={submitting || codeMissing}
 						>
 							{submitting && selectedMode === "user" ? (
 								<>
@@ -279,7 +330,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							value={vkValue}
 							onChange={(e) => setVkValue(e.target.value)}
 							onKeyDown={(e) => {
-								if (e.key === "Enter" && vkValue.trim()) {
+								if (e.key === "Enter" && vkValue.trim() && !codeMissing) {
 									void handleSubmit("vk");
 								}
 							}}
@@ -290,7 +341,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							data-testid="oauth-consent-connect-vk-btn"
 							className="w-full"
 							onClick={() => handleSubmit("vk")}
-							disabled={submitting || !vkValue.trim()}
+							disabled={submitting || !vkValue.trim() || codeMissing}
 						>
 							{submitting && selectedMode === "vk" ? (
 								<>
@@ -321,7 +372,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 						variant="ghost"
 						className="text-muted-foreground hover:text-foreground h-auto w-full justify-start gap-3 px-4 py-3"
 						onClick={() => handleSubmit("session")}
-						disabled={submitting}
+						disabled={submitting || codeMissing}
 					>
 						<Fingerprint className="size-4 shrink-0" />
 						<div className="text-left">
@@ -333,6 +384,19 @@ function ConsentView({ flowId }: { flowId: string }) {
 					</Button>
 				)}
 			</div>
+
+			{/* Refusing comes last, after the ways to approve. */}
+			{isDeviceFlow && (
+				<Button
+					variant="ghost"
+					className="text-destructive hover:text-destructive mt-4 w-full"
+					onClick={() => void handleDeny()}
+					disabled={submitting}
+					data-testid="oauth-consent-deny-btn"
+				>
+					{t("consent.denyButton")}
+				</Button>
+			)}
 
 			{/* Expiry */}
 			<p className="text-muted-foreground mt-6 text-center text-xs">

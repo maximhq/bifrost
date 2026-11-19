@@ -15,6 +15,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -22,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
 
@@ -72,6 +74,10 @@ type ClientGatewayProfile interface {
 	// WriteAuthError writes a bearer failure in the client's own error format.
 	// unauthorized is true when the client should prompt the user to sign in again.
 	WriteAuthError(ctx *fasthttp.RequestCtx, status int, unauthorized bool, message string)
+	// Telemetry returns the gateway's telemetry block, or nil when the client sends
+	// none or the operator configured none. Routes registered with
+	// ep.telemetryHandler use it.
+	Telemetry(cfg *configtables.OAuth2ServerConfig) *configtables.ClientGatewayTelemetryConfig
 	// RegisterExtraRoutes adds protocol endpoints beyond sign-in and inference,
 	// such as managed settings or a telemetry sink, using ep for the prefix, the
 	// store and the bearer check.
@@ -96,6 +102,12 @@ func clientGatewayProfileByClientID(clientID string) ClientGatewayProfile {
 // the code their client displays. It is shared by every client gateway.
 func clientGatewayDeviceVerificationURL(issuer string) string {
 	return strings.TrimRight(issuer, "/") + "/oauth/device"
+}
+
+// clientGatewayDeviceDeniedURL is where the consent page sends the browser after
+// the user refuses a device grant; the page confirms the sign-in was cancelled.
+func clientGatewayDeviceDeniedURL(issuer string) string {
+	return clientGatewayDeviceVerificationURL(issuer) + "?denied=1"
 }
 
 // clientGatewayDeviceApprovedURL is where the consent page sends the browser after
@@ -136,6 +148,7 @@ type ClientGatewayHandler struct {
 	verifyLimiter     *ipRateLimiter
 	polls             *devicePollTracker
 	tokens            *gatewayTokenCache
+	telemetry         *telemetryForwarder
 
 	endpoints []*clientGatewayEndpoint
 }
@@ -163,11 +176,28 @@ func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		verifyLimiter:     newIPRateLimiter(clientGatewayDeviceVerifyLimit, clientGatewayRateLimitWindow),
 		polls:             newDevicePollTracker(),
 		tokens:            newGatewayTokenCache(clientGatewayTokenCacheMaxEntries),
+		telemetry:         newTelemetryForwarder(telemetryHTTPClient(store.HTTPClientFactory)),
 	}
 	for _, p := range profiles {
 		h.endpoints = append(h.endpoints, &clientGatewayEndpoint{ClientGatewayHandler: h, profile: p})
 	}
 	return h
+}
+
+// Close stops forwarding telemetry and drains what is queued, until ctx ends.
+func (h *ClientGatewayHandler) Close(ctx context.Context) {
+	h.telemetry.Close(ctx)
+}
+
+// Closed reports whether Close has run.
+func (h *ClientGatewayHandler) Closed() bool {
+	return h.telemetry.closing.Load()
+}
+
+// MetricsGatherer exposes the client gateway metrics (telemetry forwarding) for
+// the server's /metrics endpoint.
+func (h *ClientGatewayHandler) MetricsGatherer() prometheus.Gatherer {
+	return h.telemetry.metrics.registry
 }
 
 // endpoint returns the mounted profile named name, or nil.
@@ -196,16 +226,24 @@ func (h *ClientGatewayHandler) RegisterRoutes(r *router.Router, _ ...schemas.Bif
 }
 
 // RegisterInferenceRoutes wires every profile's inference routes. The bearer
-// check runs first and turns the gateway token into the identity it stands for,
-// so the inference middlewares and governance then treat the request exactly
-// like one that presented that virtual key (or user) directly.
-func (h *ClientGatewayHandler) RegisterInferenceRoutes(r *router.Router, client *bifrost.Bifrost, accessResolver integrations.AccessResolver, middlewares ...schemas.BifrostHTTPMiddleware) {
+// check turns the gateway token into the identity it stands for, so the auth
+// middlewares and governance then treat the request exactly like one that
+// presented that virtual key (or user) directly.
+//
+// The bearer check is inserted at authStart: the middlewares before it (tracing,
+// recovery, request metrics) see gateway rejections like any other failed request,
+// and the auth middlewares after it see the resolved identity. 0 puts it first.
+func (h *ClientGatewayHandler) RegisterInferenceRoutes(r *router.Router, client *bifrost.Bifrost, accessResolver integrations.AccessResolver, authStart int, middlewares ...schemas.BifrostHTTPMiddleware) {
+	authStart = min(max(authStart, 0), len(middlewares))
 	for _, ep := range h.endpoints {
 		routes := ep.profile.InferenceRoutes(ep.profile.PathPrefix(), h.store)
 		if len(routes) == 0 {
 			continue
 		}
-		chain := append([]schemas.BifrostHTTPMiddleware{ep.BearerMiddleware}, middlewares...)
+		chain := make([]schemas.BifrostHTTPMiddleware, 0, len(middlewares)+1)
+		chain = append(chain, middlewares[:authStart]...)
+		chain = append(chain, ep.BearerMiddleware)
+		chain = append(chain, middlewares[authStart:]...)
 		integrations.NewGenericRouter(client, h.store, accessResolver, routes, nil, logger).RegisterRoutes(r, chain...)
 	}
 }
@@ -253,7 +291,7 @@ func (ep *clientGatewayEndpoint) handleMetadata(ctx *fasthttp.RequestCtx) {
 	}
 	ctx.Response.Header.Set("Cache-Control", "no-store")
 	base := ep.baseURL(ctx)
-	data, err := sonic.Marshal(map[string]any{
+	data, err := providerUtils.MarshalSorted(map[string]any{
 		"issuer":                                base,
 		"device_authorization_endpoint":         base + "/oauth/device_authorization",
 		"token_endpoint":                        base + "/oauth/token",
@@ -340,7 +378,7 @@ func (ep *clientGatewayEndpoint) handleDeviceAuthorization(ctx *fasthttp.Request
 	}
 
 	verificationURI := clientGatewayDeviceVerificationURL(oauth2IssuerURL(ctx, ep.store))
-	data, err := sonic.Marshal(map[string]any{
+	data, err := providerUtils.MarshalSorted(map[string]any{
 		"device_code":               deviceCode,
 		"user_code":                 userCode,
 		"verification_uri":          verificationURI,
@@ -506,10 +544,12 @@ func (ep *clientGatewayEndpoint) handleRevoke(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "temporarily_unavailable", "failed to look up token")
 		return
 	case rt.ClientID == ep.profile.ClientID():
-		if err := ep.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, rt.FamilyID); err != nil {
+		revokedRows, err := ep.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, rt.FamilyID)
+		if err != nil {
 			sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "temporarily_unavailable", "failed to revoke token")
 			return
 		}
+		logTokenEvent(ctx, "family.revoked", "reason=client_revoked family_id=%s refresh_token_id=%s revoked_rows=%d", rt.FamilyID, rt.ID, revokedRows)
 	}
 	ctx.SetStatusCode(fasthttp.StatusOK)
 }
@@ -701,6 +741,7 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		// reads both when the request context is built.
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, claims.Subject)
 		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialMCPToken, claims.Subject))
+		lib.MarkPreAuthenticated(ctx, lib.PreAuthClientGateway)
 	case schemas.MCPAuthModeSession:
 		ep.store.Mu.RLock()
 		enforceAuth := ep.store.ClientConfig.EnforceAuthOnInference
@@ -712,6 +753,10 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	default:
 		return fasthttp.StatusUnauthorized, "the gateway session is invalid; " + hint
 	}
+	// The verified claims (shared with the token cache, so no allocation) stay
+	// on the request for handlers that need the identity itself, such as
+	// telemetry stamping; the inference path never reads them.
+	ctx.SetUserValue(clientGatewayClaimsKey{}, claims)
 	return 0, ""
 }
 

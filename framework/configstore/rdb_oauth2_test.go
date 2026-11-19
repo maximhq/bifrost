@@ -316,6 +316,27 @@ func TestConsentOAuth2AuthorizeRequest_AtomicPendingTransition(t *testing.T) {
 	assert.Equal(t, "code-hash-1", *got.CodeHash)
 }
 
+// TestDenyOAuth2AuthorizeRequest_OnlyFromPending pins that refusing a sign-in on the consent page
+// moves a pending request to revoked, and never undoes a consent that already won.
+func TestDenyOAuth2AuthorizeRequest_OnlyFromPending(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	seedAuthorizeRequest(t, s, "req-pending", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+	seedAuthorizeRequest(t, s, "req-consented", tables.OAuth2AuthorizeRequestStatusConsented, nil, time.Now().Add(time.Minute))
+
+	require.NoError(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"))
+	got, err := s.GetOAuth2AuthorizeRequestByID(ctx, "req-pending")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusRevoked, got.Status)
+
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"), ErrNotFound, "a refused request cannot be refused again")
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-consented"), ErrNotFound, "a consented request is not undone")
+	got, err = s.GetOAuth2AuthorizeRequestByID(ctx, "req-consented")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "missing"), ErrNotFound)
+}
+
 func TestOAuth2AuthorizeRequest_DeviceCodeLookups(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()
@@ -437,10 +458,12 @@ func TestRevokeOAuth2RefreshTokensByFamilyID(t *testing.T) {
 	require.NoError(t, s.DB().Create(makeRefreshToken("b", "fam-1", "c", "hb")).Error)
 	require.NoError(t, s.DB().Create(makeRefreshToken("c", "fam-2", "c", "hc")).Error)
 
-	require.NoError(t, s.RevokeOAuth2RefreshTokensByFamilyID(ctx, "fam-1"))
+	n, err := s.RevokeOAuth2RefreshTokensByFamilyID(ctx, "fam-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
 
 	// fam-1 fully revoked; fam-2 untouched.
-	_, err := s.GetOAuth2RefreshTokenByHash(ctx, "ha")
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "ha")
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "hb")
 	assert.ErrorIs(t, err, ErrNotFound)
@@ -599,10 +622,12 @@ func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
 		require.NoError(t, s.DB().Create(ar).Error)
 	}
 
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	revoked, err := s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), revoked, "both of the subject's active refresh tokens are counted")
 
 	// The subject's pending code can no longer be exchanged; another key's still can.
-	err := s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
+	err = s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
 	assert.ErrorIs(t, err, ErrNotFound, "a consented code for the revoked subject must not mint a new grant")
 	otherKeyToken := makeRefreshToken("v-new-2", "ar-vk2", "c", "h-new-2")
 	otherKeyToken.BfSub = "vk-2"
@@ -623,7 +648,9 @@ func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
 	require.NoError(t, err)
 
 	// Idempotent on an identity with nothing left to revoke.
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	revoked, err = s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
+	assert.Zero(t, revoked)
 }
 
 // TestRevokeOAuth2GrantsBySubjectEndsCodesFirst: a revoked identity's consented codes move to a
@@ -646,7 +673,8 @@ func TestRevokeOAuth2GrantsBySubjectEndsCodesFirst(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = s.DB().Callback().Update().Remove("test:record_update_order") })
 
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	_, err := s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
 
 	assert.Equal(t, []string{"oauth2_authorize_requests", "oauth2_refresh_tokens"}, updated, "codes are ended before tokens are revoked")
 	ar, err := s.GetOAuth2AuthorizeRequestByID(ctx, "ar-vk1")

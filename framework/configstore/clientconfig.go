@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
 	"math"
 	"net/url"
 	"path/filepath"
@@ -642,7 +643,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		// Client gateways are only hashed when set, so configs without them keep
 		// their existing hash.
 		if cc := oc.ClaudeCodeGateway(); cc != nil {
-			hash.Write([]byte("gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
+			// The NUL starts the block where no redirect URI can reach: URIs are written
+			// unframed (kept for existing hashes) and cannot hold control characters.
+			hash.Write([]byte("\x00gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
 			if cc.ManagedSettings != nil {
 				// MarshalSorted sorts map keys at every level, so the bytes are stable.
 				settings, err := providerUtils.MarshalSorted(cc.ManagedSettings)
@@ -651,6 +654,22 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 				}
 				hash.Write([]byte("gateways.claude_code.managed_settings:"))
 				hash.Write(settings)
+			}
+			if t := cc.Telemetry; t != nil {
+				hash.Write([]byte("gateways.claude_code.telemetry.enabled:" + strconv.FormatBool(t.Enabled)))
+				// Length-prefixed, so where one value ends is unambiguous: concatenated, a value
+				// containing the next field's text hashed like two shorter values.
+				for _, d := range t.Destinations {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.endpoint:", secretVarHashForm(d.Endpoint))
+					names := slices.Sorted(maps.Keys(d.Headers))
+					for _, name := range names {
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.name:", name)
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.value:", secretVarHashForm(d.Headers[name]))
+					}
+				}
+				for _, key := range t.DropAttributes {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.drop:", key)
+				}
 			}
 		}
 	}
@@ -725,6 +744,7 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	if c.BifrostURL != nil && c.BifrostURL.IsFromSecret() {
 		out.BifrostURL = c.BifrostURL.Redacted()
 	}
+	out.OAuth2ServerConfig = c.OAuth2ServerConfig.Redacted()
 	return out
 }
 
@@ -3055,4 +3075,17 @@ func ValidatePublicBaseURL(value string) error {
 // a value can never run on into the field written after it.
 func writeLengthPrefixed(h hash.Hash, prefix, value string) {
 	h.Write([]byte(prefix + strconv.Itoa(len(value)) + ":" + value))
+}
+
+// secretVarHashForm is the form of a SecretVar that goes into the config hash:
+// the reference for an env or vault value (so a changed environment does not
+// look like a changed config), the plain value otherwise.
+func secretVarHashForm(v *schemas.SecretVar) string {
+	if v == nil {
+		return ""
+	}
+	if v.IsFromSecret() {
+		return "ref:" + v.GetRawRef()
+	}
+	return "val:" + v.GetValue()
 }

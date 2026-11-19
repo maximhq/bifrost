@@ -1,27 +1,31 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatUserCode, isCompleteUserCode, rememberDeviceUserCode } from "@/lib/utils/deviceUserCode";
 import { getEndpointUrl } from "@/lib/utils/port";
-import { CheckCircle2, Loader2, Terminal } from "lucide-react";
+import { CheckCircle2, Loader2, Terminal, XCircle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-// Same charset and shape the gateway issues (RFC 8628 §6.1 base-20 consonants).
-const USER_CODE_LENGTH = 8;
-
-function normalizeUserCode(value: string): string {
-	return value.toUpperCase().replace(/[^A-Z]/g, "");
-}
-
-function formatUserCode(value: string): string {
-	const code = normalizeUserCode(value).slice(0, USER_CODE_LENGTH);
-	return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
-}
-
 export default function DeviceSignInPage() {
 	const { t } = useTranslation("login");
 	const [approved] = useQueryState("approved");
+	const [denied] = useQueryState("denied");
 	const [prefill] = useQueryState("user_code");
+
+	if (denied) {
+		return (
+			<Shell>
+				<div className="text-center" data-testid="claude-code-device-denied">
+					<div className="bg-destructive/10 mx-auto mb-4 flex size-14 items-center justify-center rounded-full">
+						<XCircle className="text-destructive size-7" />
+					</div>
+					<h1 className="text-xl font-semibold tracking-tight">{t("device.deniedTitle")}</h1>
+					<p className="text-muted-foreground mt-2 text-sm">{t("device.deniedBody")}</p>
+				</div>
+			</Shell>
+		);
+	}
 
 	if (approved) {
 		return (
@@ -47,7 +51,7 @@ function CodeEntry({ prefill }: { prefill: string }) {
 	const [code, setCode] = useState(() => formatUserCode(prefill));
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
-	const complete = normalizeUserCode(code).length === USER_CODE_LENGTH;
+	const complete = isCompleteUserCode(code);
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
@@ -73,6 +77,9 @@ function CodeEntry({ prefill }: { prefill: string }) {
 				setError(t("device.invalidLink"));
 				return;
 			}
+			// The consent page needs the code to approve; keep it for this tab only.
+			const flowId = target.searchParams.get("flow");
+			if (flowId) rememberDeviceUserCode(flowId, code);
 			window.location.href = target.toString();
 		} catch {
 			setError(t("device.unreachable"));

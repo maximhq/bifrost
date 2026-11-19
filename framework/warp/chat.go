@@ -140,7 +140,9 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	}
 	// Leased: the catalog's load stays open until the turn releases it (RunTurn, or Release).
 	management, catalog, release := s.leaseManagementTools()
-	if catalog == nil {
+	// Coupled, Warp does not answer without the Bifrost MCP. Decoupled, it
+	// answers from its own tools, with no catalog.
+	if catalog == nil && s.bifrostMCP {
 		release()
 		return nil, ErrNoBifrostMCP
 	}

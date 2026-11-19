@@ -43,6 +43,13 @@ func (claudeCodeProfile) Enabled(cfg *configtables.OAuth2ServerConfig) bool {
 	return cfg.IsClaudeCodeGatewayEnabled()
 }
 
+func (claudeCodeProfile) Telemetry(cfg *configtables.OAuth2ServerConfig) *configtables.ClientGatewayTelemetryConfig {
+	if cc := cfg.ClaudeCodeGateway(); cc != nil {
+		return cc.Telemetry
+	}
+	return nil
+}
+
 // InferenceRoutes mounts the Anthropic integration's Messages, count_tokens and
 // models routes. Claude Code only speaks the Messages API, so the legacy
 // completions route is left out.
@@ -73,13 +80,14 @@ func (claudeCodeProfile) WriteAuthError(ctx *fasthttp.RequestCtx, status int, un
 	}
 }
 
-// RegisterExtraRoutes adds managed settings and the OTLP sink, both behind the
-// gateway bearer.
+// RegisterExtraRoutes adds managed settings and the OTLP endpoints, both behind
+// the gateway bearer. While signed in to a gateway Claude Code sends its
+// telemetry here instead of to its own collector.
 func (p claudeCodeProfile) RegisterExtraRoutes(r *router.Router, ep *clientGatewayEndpoint) {
 	prefix := ep.profile.PathPrefix()
 	r.GET(prefix+"/managed/settings", ep.BearerMiddleware(p.managedSettingsHandler(ep.store)))
 	for _, signal := range []string{"metrics", "logs", "traces"} {
-		r.POST(prefix+"/v1/"+signal, ep.BearerMiddleware(handleClaudeCodeOTLP))
+		r.POST(prefix+"/v1/"+signal, ep.BearerMiddleware(ep.telemetryHandler(signal)))
 	}
 }
 
@@ -136,16 +144,6 @@ func claudeCodeSettingsChecksum(settings map[string]any) (string, error) {
 	}
 	sum := sha256.Sum256(bytes.TrimRight(buf.Bytes(), "\n"))
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-// --- POST /gateway/claude-code/v1/{metrics,logs,traces} ---
-
-// handleClaudeCodeOTLP accepts Claude Code's OTLP/HTTP exports. While signed in
-// to a gateway the client sends telemetry here instead of to its configured
-// collector; the protocol asks for 200 whether the gateway forwards or discards,
-// since a 404 makes the exporter log an error on every flush.
-func handleClaudeCodeOTLP(ctx *fasthttp.RequestCtx) {
-	ctx.SetStatusCode(fasthttp.StatusOK)
 }
 
 // sendAnthropicError writes the Anthropic error envelope.

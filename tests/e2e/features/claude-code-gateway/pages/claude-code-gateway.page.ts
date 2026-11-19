@@ -7,6 +7,8 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly saveBtn: Locator
   readonly enabledSwitch: Locator
   readonly issuerURLInput: Locator
+  readonly accessTokenTTLInput: Locator
+  readonly allowTempTokenSwitch: Locator
   readonly gatewayURL: Locator
   readonly connectInstructions: Locator
   readonly managedSettingsInput: Locator
@@ -14,6 +16,17 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly deviceContinueBtn: Locator
   readonly deviceError: Locator
   readonly deviceApproved: Locator
+  readonly deviceDenied: Locator
+  readonly consentDeviceCode: Locator
+  readonly consentDeviceCodeInput: Locator
+  readonly consentVKInput: Locator
+  readonly consentConnectVKBtn: Locator
+  readonly telemetrySwitch: Locator
+  readonly telemetryAddBtn: Locator
+  readonly telemetryEndpointInput: Locator
+  readonly telemetryHeaderNameInput: Locator
+  readonly telemetryHeaderValueInput: Locator
+  readonly telemetryDropInput: Locator
 
   constructor(page: Page) {
     super(page)
@@ -21,6 +34,8 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.saveBtn = page.getByTestId('claude-code-save-btn')
     this.enabledSwitch = page.getByTestId('claude-code-gateway-switch')
     this.issuerURLInput = page.getByTestId('gateways-issuer-url-input')
+    this.accessTokenTTLInput = page.getByTestId('gateways-access-token-ttl-input')
+    this.allowTempTokenSwitch = page.getByTestId('gateways-allow-temp-token-switch')
     this.gatewayURL = page.getByTestId('claude-code-gateway-url')
     this.connectInstructions = page.getByTestId('claude-code-connect-instructions')
     this.managedSettingsInput = page.getByTestId('claude-code-managed-settings-input')
@@ -28,6 +43,17 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.deviceContinueBtn = page.getByTestId('claude-code-device-continue-btn')
     this.deviceError = page.getByTestId('claude-code-device-error')
     this.deviceApproved = page.getByTestId('claude-code-device-approved')
+    this.deviceDenied = page.getByTestId('claude-code-device-denied')
+    this.consentDeviceCode = page.getByTestId('oauth-consent-device-code-value')
+    this.consentDeviceCodeInput = page.getByTestId('oauth-consent-device-code-input')
+    this.consentVKInput = page.getByTestId('oauth-consent-vk-input')
+    this.consentConnectVKBtn = page.getByTestId('oauth-consent-connect-vk-btn')
+    this.telemetrySwitch = page.getByTestId('claude-code-telemetry-switch')
+    this.telemetryAddBtn = page.getByTestId('claude-code-telemetry-add-btn')
+    this.telemetryEndpointInput = page.getByTestId('claude-code-telemetry-endpoint-input')
+    this.telemetryHeaderNameInput = page.getByTestId('claude-code-telemetry-header-0-name-0')
+    this.telemetryHeaderValueInput = page.getByTestId('claude-code-telemetry-header-0-value-0')
+    this.telemetryDropInput = page.getByTestId('claude-code-telemetry-drop-input')
   }
 
   async goto(): Promise<void> {
@@ -37,5 +63,9 @@ export class ClaudeCodeGatewayPage extends BasePage {
 
   async gotoDevicePage(query: string): Promise<void> {
     await this.page.goto(`/oauth/device${query}`)
+  }
+
+  async gotoConsentPage(flowId: string): Promise<void> {
+    await this.page.goto(`/oauth/consent?flow=${encodeURIComponent(flowId)}`)
   }
 }

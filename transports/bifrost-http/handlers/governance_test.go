@@ -76,12 +76,12 @@ func (m *mockRotateConfigStore) ExecuteTransaction(_ context.Context, fn func(tx
 	return fn(nil)
 }
 
-func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) error {
+func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) (int64, error) {
 	if m.revokeErr != nil {
-		return m.revokeErr
+		return 0, m.revokeErr
 	}
 	m.revokedGrants = append(m.revokedGrants, bfMode+":"+bfSub)
-	return nil
+	return 1, nil
 }
 
 func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
@@ -4429,6 +4429,55 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
 		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
 	}
+}
+
+// TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON is a regression test for
+// updating the budget of a VK provisioned from config.json. Such a VK carries its
+// budget as a standalone row (TableBudget.VirtualKeyID set, no model config), and the
+// first update adopts that row into a new VK-scoped model config. The adoption only
+// moves the row to its new owner; it must not run TableBudget's BeforeSave hook,
+// which validates a zero-value model and rejects it with
+// "invalid reset duration format: ".
+func TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	const vkID = "vk-from-config"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "svc-from-config",
+		Value:    *schemas.NewSecretVar("sk-bf-config-json-secret"),
+		IsActive: &active,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	// The shape config.json provisioning writes: a budget owned directly by the VK.
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{
+		ID:            "bud-from-config",
+		MaxLimit:      100,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr(vkID),
+	}))
+
+	updateCtx := newTestRequestCtx(`{"budgets":[{"max_limit":250,"reset_duration":"1M"}]}`)
+	updateCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(updateCtx)
+	require.Equal(t, fasthttp.StatusOK, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+
+	persisted, err := store.GetVirtualKey(ctx, vkID)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-bf-config-json-secret", persisted.Value.GetValue(), "the key value must not change")
+
+	budgets, err := store.GetBudgets(ctx)
+	require.NoError(t, err)
+	var limits []float64
+	for _, budget := range budgets {
+		assert.Nil(t, budget.VirtualKeyID, "no budget is left owned directly by the VK after adoption: %+v", budget)
+		limits = append(limits, budget.MaxLimit)
+	}
+	assert.Equal(t, []float64{250}, limits, "the VK keeps exactly one budget, at the new limit")
 }
 
 // TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the

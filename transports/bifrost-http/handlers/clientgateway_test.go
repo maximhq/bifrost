@@ -95,7 +95,7 @@ func approveWithVK(t *testing.T, h *clientGatewayEndpoint, consent *OAuth2Consen
 	require.NoError(t, err)
 	flowID := parsed.Query().Get("flow")
 
-	submit := jsonPostCtx(`{"mode":"vk","value":"` + vkValue + `"}`)
+	submit := jsonPostCtx(`{"mode":"vk","value":"` + vkValue + `","user_code":"` + userCode + `"}`)
 	submit.SetUserValue("id", flowID)
 	consent.flowSubmit(submit)
 	require.Equal(t, fasthttp.StatusOK, submit.Response.StatusCode(), string(submit.Response.Body()))
@@ -309,14 +309,17 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	inference := bearerCtx(accessToken)
 	inference.Request.Header.Set("x-api-key", "sk-bf-someone-else")
 	var seenVK, seenAuth, seenAPIKey string
+	var seenGatewayUser bool
 	h.BearerMiddleware(func(ctx *fasthttp.RequestCtx) {
 		seenVK = string(ctx.Request.Header.Peek("x-bf-vk"))
 		seenAuth = string(ctx.Request.Header.Peek("Authorization"))
 		seenAPIKey = string(ctx.Request.Header.Peek("x-api-key"))
+		_, seenGatewayUser = lib.PreAuthenticated(ctx)
 	})(inference)
 	assert.Equal(t, vk.Value.GetValue(), seenVK)
 	assert.Empty(t, seenAuth)
 	assert.Empty(t, seenAPIKey)
+	assert.False(t, seenGatewayUser, "a vk-mode request is authenticated by its x-bf-vk downstream, not by the user marker")
 
 	// Claude Code refreshes with only grant_type and refresh_token.
 	refresh := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}.Encode())
@@ -485,6 +488,8 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 			called = true
 			assert.Empty(t, string(c.Request.Header.Peek("Authorization")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
+			_, ok := lib.PreAuthenticated(c)
+			assert.False(t, ok, "an anonymous session must not be marked as an authenticated user")
 		})(ctx)
 		assert.True(t, called)
 	})
@@ -520,6 +525,11 @@ func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
 			assert.Empty(t, string(c.Request.Header.Peek("Authorization")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-api-key")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
+			// The enterprise identity middleware runs next and finds no bearer
+			// left; this marker is what tells it the user is already authenticated.
+			method, ok := lib.PreAuthenticated(c)
+			assert.True(t, ok, "user-mode request must be marked pre-authenticated")
+			assert.Equal(t, lib.PreAuthClientGateway, method)
 		})(ctx)
 		assert.True(t, called, string(ctx.Response.Body()))
 	})
@@ -568,6 +578,65 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 			assert.Contains(t, jsonBody(t, ctx)["consent_url"], "/oauth/consent?flow=")
 		})
 	}
+}
+
+// TestClaudeCodeGateway_DeniedSignIn pins the consent page's Deny on a device sign-in: the
+// browser is sent to the denied page, the device's next poll is answered access_denied (RFC
+// 8628 §3.5) instead of polling until the code expires, and the refused sign-in cannot then be
+// approved.
+func TestClaudeCodeGateway_DeniedSignIn(t *testing.T) {
+	h, consent, store, _ := newClaudeCodeGateway(t, false)
+	vk := seedGatewayVK(t, store, "vk-deny", "sk-bf-deny")
+	deviceCode, userCode := startDeviceSignIn(t, h)
+
+	verify := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+	h.handleDeviceVerify(verify)
+	require.Equal(t, fasthttp.StatusOK, verify.Response.StatusCode(), string(verify.Response.Body()))
+	consentURL, _ := jsonBody(t, verify)["consent_url"].(string)
+	parsed, err := url.Parse(consentURL)
+	require.NoError(t, err)
+	flowID := parsed.Query().Get("flow")
+
+	deny := jsonPostCtx(`{"deny":true}`)
+	deny.SetUserValue("id", flowID)
+	consent.flowSubmit(deny)
+	require.Equal(t, fasthttp.StatusOK, deny.Response.StatusCode(), string(deny.Response.Body()))
+	var resp consentFlowSubmitResponse
+	require.NoError(t, json.Unmarshal(deny.Response.Body(), &resp))
+	assert.Equal(t, testIssuer+"/oauth/device?denied=1", resp.RedirectURL)
+
+	assert.Equal(t, "access_denied", oauthErrorCode(t, pollDeviceToken(h, deviceCode)))
+
+	approve := jsonPostCtx(`{"mode":"vk","value":"` + vk.Value.GetValue() + `","user_code":"` + userCode + `"}`)
+	approve.SetUserValue("id", flowID)
+	consent.flowSubmit(approve)
+	assert.NotEqual(t, fasthttp.StatusOK, approve.Response.StatusCode(), "a refused sign-in must not be approvable afterwards")
+}
+
+// TestClientGateway_BearerRunsInsideOuterMiddlewares pins where the bearer check sits
+// in the inference chain: after the outer middlewares (tracing, recovery), so its own
+// rejections are traced and a panic in it is recovered, and before the auth
+// middlewares, which must see the identity it resolved rather than the raw token.
+func TestClientGateway_BearerRunsInsideOuterMiddlewares(t *testing.T) {
+	h, _, _, _ := newClaudeCodeGateway(t, true)
+	var outerSaw, authSaw bool
+	outer := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { outerSaw = true; next(ctx) }
+	}
+	auth := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { authSaw = true; next(ctx) }
+	}
+	r := router.New()
+	h.ClientGatewayHandler.RegisterInferenceRoutes(r, nil, nil, 1, outer, auth)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(claudeCodeGatewayPathPrefix + "/v1/messages")
+	r.Handler(ctx)
+
+	assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.True(t, outerSaw, "the outer middlewares must see a request the gateway rejects, or its 401s go untraced")
+	assert.False(t, authSaw, "the auth middlewares run after the bearer check, so a rejected request never reaches them")
 }
 
 func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {

@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/cmd/e2eseed
 
-go 1.27.3
+go 1.27.4
 
 replace (
 	github.com/maximhq/bifrost/core => ../../core

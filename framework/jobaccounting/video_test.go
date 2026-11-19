@@ -385,6 +385,61 @@ func TestAccountVideoJob_SettlesFromTheCallersTerminalResponse(t *testing.T) {
 	require.Len(t, reporter.reports, 1)
 }
 
+// A token-metered provider (BytePlus Seedance) reports completion_tokens on the
+// terminal retrieve. The settlement row is the only row that bills the job, so its
+// token columns, and the token count governance is told, must carry them.
+func TestAccountVideoJob_SettlementRowCarriesReportedOutputTokens(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	job := videoJob(t, "vid_tokens_row", generationDims("sora-2-pro", "1280x720", 10))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+
+	out := accountVideoInline(t, store, reporter, "vid_tokens_row", &schemas.BifrostVideoGenerationResponse{
+		ID:     "vid_tokens_row",
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		Usage:  &schemas.VideoUsage{OutputTokens: 216900},
+	})
+
+	require.NotNil(t, out)
+	require.True(t, out.Accounted)
+	require.Len(t, store.logs, 1)
+	for _, row := range store.logs {
+		assert.Zero(t, row.PromptTokens)
+		assert.Equal(t, 216900, row.CompletionTokens)
+		assert.Equal(t, 216900, row.TotalTokens)
+		require.NotNil(t, row.TokenUsageParsed)
+		assert.Equal(t, 216900, row.TokenUsageParsed.CompletionTokens)
+		assert.Equal(t, 216900, row.TokenUsageParsed.TotalTokens)
+	}
+	require.Len(t, reporter.reports, 1)
+	assert.Equal(t, int64(216900), reporter.reports[0].TokensUsed)
+}
+
+// A provider that reports no tokens leaves the settlement row's token columns empty
+// rather than inventing a count.
+func TestAccountVideoJob_SettlementRowWithoutReportedTokensStaysEmpty(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	job := videoJob(t, "vid_no_tokens", generationDims("sora-2-pro", "1920x1080", 8))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+
+	out := accountVideoInline(t, store, reporter, "vid_no_tokens", &schemas.BifrostVideoGenerationResponse{
+		ID:     "vid_no_tokens",
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+	})
+
+	require.NotNil(t, out)
+	require.Len(t, store.logs, 1)
+	for _, row := range store.logs {
+		assert.Zero(t, row.CompletionTokens)
+		assert.Zero(t, row.TotalTokens)
+	}
+	require.Len(t, reporter.reports, 1)
+	assert.Zero(t, reporter.reports[0].TokensUsed)
+}
+
 // A video submitted before this build was charged at submission. Settling it now,
 // off a row we never wrote, would bill it a second time.
 func TestAccountVideoJob_RefusesAJobWeNeverSawSubmitted(t *testing.T) {

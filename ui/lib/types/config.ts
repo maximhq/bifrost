@@ -1000,7 +1000,8 @@ export interface CoreConfig {
 			claude_code?: {
 				enabled?: boolean;
 				// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
-				managed_settings?: Record<string, unknown>;
+				managed_settings?: Record<string, unknown> | null; // null: no managed policy
+				telemetry?: ClientGatewayTelemetry;
 			};
 		};
 	};
@@ -1078,3 +1079,14 @@ export interface ProviderFormData {
 
 // Status types
 export type ProviderStatus = "active" | "error" | "deleted";
+
+// Client gateway telemetry forwarding. Endpoints and header values come back from
+// the API as SecretVar objects and are sent as plain strings ("env.X" for a reference).
+export interface ClientGatewayTelemetry {
+	enabled?: boolean;
+	destinations?: {
+		endpoint?: SecretVar | string;
+		headers?: Record<string, SecretVar | string>;
+	}[];
+	drop_attributes?: string[];
+}

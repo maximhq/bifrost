@@ -48,7 +48,7 @@ func RunPassthroughExtraParamsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 				CreateBasicChatMessage("Say hello in one word"),
 			},
 			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(10),
+				MaxCompletionTokens: bifrost.Ptr(16), // Perplexity rejects max_tokens below 16
 				// Set extraParams with custom_param and nested structure
 				ExtraParams: map[string]interface{}{
 					"custom_param": "test_value_123",
