@@ -1673,6 +1673,81 @@ func TestPostLLMHookReconcilesEvictedPartialRowError(t *testing.T) {
 	}
 }
 
+// TestPostLLMHookErrorRowKeepsKeyThatRan: core clears selected_key_* when a request finally
+// fails, so the error row takes the key from the attempt trail's last record.
+func TestPostLLMHookErrorRowKeepsKeyThatRan(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-error-selected-key"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+		Params:   &schemas.ChatParameters{},
+	}}
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	// What core leaves on the context after the last key fails: an empty selected key and the trail.
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "")
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{Attempt: 0, KeyID: "key-a", KeyName: "Key A", TriggeredRotation: true},
+		{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
+	})
+
+	statusCode := 401
+	bifrostErr := &schemas.BifrostError{
+		StatusCode: &statusCode,
+		Error:      &schemas.ErrorField{Message: "invalid api key"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err := plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != logStatusError {
+		t.Fatalf("status = %q, want %q", row.Status, logStatusError)
+	}
+	if row.SelectedKeyID != "key-b" || row.SelectedKeyName != "Key B" {
+		t.Fatalf("selected key = (%q, %q), want (key-b, Key B)", row.SelectedKeyID, row.SelectedKeyName)
+	}
+}
+
+// BenchmarkApplyOutputFieldsSelectedKey measures the selected-key stamp on a served row (key set)
+// and on a failed one (key taken from the attempt trail).
+func BenchmarkApplyOutputFieldsSelectedKey(b *testing.B) {
+	trail := []schemas.KeyAttemptRecord{{Attempt: 0, KeyID: "key-a", KeyName: "Key A"}}
+	for _, tc := range []struct{ name, keyID, keyName string }{{"served", "key-a", "Key A"}, {"failed", "", ""}} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			entry := &logstore.Log{}
+			for b.Loop() {
+				applyOutputFieldsToEntry(entry, tc.keyID, tc.keyName, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", 0, 0, nil, nil, trail)
+			}
+		})
+	}
+}
+
 // fallbackSpyStore counts the DB-fallback probe (IsLogEntryPresent) so we can
 // assert the terminal-call guard prevents per-chunk DB hits.
 type fallbackSpyStore struct {
