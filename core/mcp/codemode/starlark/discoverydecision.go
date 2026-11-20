@@ -88,7 +88,9 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 
 // call describes one decision call for the log: the provider and model that
 // served it, else the configured ones, and its usage, which for a failed call
-// is what the provider billed anyway.
+// is what the provider billed anyway. When a key alias served the call, the
+// model is the alias's wire model, not the alias name, so the row is priced
+// for the model that ran.
 func (r *decisionDiscoveryRanker) call(started time.Time, resp *schemas.BifrostDecisionResponse, bifrostErr *schemas.BifrostError) schemas.MCPDiscoveryRankerCall {
 	call := schemas.MCPDiscoveryRankerCall{Provider: r.provider, Model: r.model, StartedAt: started, Latency: time.Since(started)}
 	var served schemas.RoutingInfo
@@ -98,8 +100,12 @@ func (r *decisionDiscoveryRanker) call(started time.Time, resp *schemas.BifrostD
 	case resp != nil:
 		served, call.Usage = resp.ExtraFields.RoutingInfo, resp.Usage
 	}
-	if served.Provider != "" && served.Model != "" {
-		call.Provider, call.Model = served.Provider, served.Model
+	model := served.Model
+	if served.ResolvedKeyAlias != nil && served.ResolvedKeyAlias.ModelID != "" {
+		model = served.ResolvedKeyAlias.ModelID
+	}
+	if served.Provider != "" && model != "" {
+		call.Provider, call.Model = served.Provider, model
 	}
 	return call
 }

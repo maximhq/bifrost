@@ -401,9 +401,12 @@ func assertLexicalFallback(t *testing.T, out string) {
 func TestListToolFilesExternalRankerTimeoutFallsBack(t *testing.T) {
 	release := make(chan struct{})
 	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
+		// The timer ends the handler on its own when the ranker timeout is broken,
+		// so the elapsed-time check below still runs and reports it.
 		select {
 		case <-release:
 		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
 		}
 	})
 	defer close(release)
@@ -426,9 +429,6 @@ func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {
 		},
 		"not json": func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {
 			_, _ = w.Write([]byte("<html>"))
-		},
-		"redirect": func(w http.ResponseWriter, r *http.Request, _ discoveryRankRequest) {
-			http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
 		},
 		"unknown id": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
 			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
@@ -475,6 +475,24 @@ func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {
 		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
 		useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL, TokenFile: filepath.Join(t.TempDir(), "missing")})
 		assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+	})
+
+	t.Run("redirect is not followed", func(t *testing.T) {
+		var redirected atomic.Int32
+		destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			redirected.Add(1)
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": "", "candidates": []map[string]interface{}{}})
+		}))
+		t.Cleanup(destination.Close)
+		rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, _ discoveryRankRequest) {
+			http.Redirect(w, r, destination.URL+"/rank", http.StatusTemporaryRedirect)
+		})
+		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+		useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+		assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+		if got := redirected.Load(); got != 0 {
+			t.Fatalf("the redirect was followed: the destination received %d requests", got)
+		}
 	})
 }
 
@@ -545,8 +563,10 @@ func TestDiscoveryRankerConfigUpdates(t *testing.T) {
 	if got := httpRankerOf(t, mode).timeout; got != 3*time.Second {
 		t.Fatalf("expected 3s timeout, got %v", got)
 	}
-	// An invalid update keeps the current ranker; nil leaves it; an empty URL removes it.
+	// An invalid update keeps the current ranker, fallbacks alone included; nil
+	// leaves it; an empty object removes it.
 	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{URL: "ftp://x"}})
+	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{Fallbacks: []string{"openai/gpt-5-nano"}}})
 	mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelTool})
 	if got := httpRankerOf(t, mode); got.endpoint != "http://127.0.0.1:1/rank" {
 		t.Fatalf("ranker changed unexpectedly: %+v", got)
@@ -554,5 +574,35 @@ func TestDiscoveryRankerConfigUpdates(t *testing.T) {
 	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{}})
 	if mode.discoveryRanker.Load() != nil {
 		t.Fatal("an empty URL must remove the ranker")
+	}
+}
+
+// TestListToolFilesRankedKeepsBindingOfRevision switches the binding level while
+// the ranker runs: the shortlist must keep the binding its revision was built for.
+func TestListToolFilesRankedKeepsBindingOfRevision(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelServer)
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelTool})
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			if c.ID == "servers/slack/send_message.pyi" {
+				relevance = 0.9
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores})
+	})
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+
+	out := listToolFiles(t, mode, `{"query":"tell the team the deploy finished"}`)
+	if mode.GetBindingLevel() != schemas.CodeModeBindingLevelTool {
+		t.Fatal("the binding level was not switched while ranking")
+	}
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/slack.pyi" {
+		t.Fatalf("expected the server file the revision was built for, got %v\n%s", paths, out)
+	}
+	if !strings.Contains(out, "tools: send_message") {
+		t.Fatalf("expected server binding notes:\n%s", out)
 	}
 }

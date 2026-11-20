@@ -11286,8 +11286,8 @@
             },
             "decision_model": {
               "type": "string",
-              "pattern": "^[^/\\s]+/\\S.*$",
-              "description": "Decision model that ranks the tools instead of an external URL, as provider/model (e.g. openai/gpt-5-nano). Cannot be combined with url or token_file."
+              "pattern": "^$|^[^/\\s]+/\\S.*$",
+              "description": "Decision model that ranks the tools instead of an external URL, as provider/model (e.g. openai/gpt-5-nano). Empty disables it. Cannot be combined with url or token_file."
             },
             "fallbacks": {
               "type": "array",

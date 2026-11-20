@@ -446,9 +446,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					DiscoveryRanker:      mcpConfig.ToolManagerConfig.CodeModeDiscoveryRanker,
 				}
 			}
-			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
-			codeMode.SetDecisionRequestFunc(bifrost.codeModeDecisionRequest)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, bifrost.newCodeMode(codeModeConfig))
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -4869,6 +4867,14 @@ func (bifrost *Bifrost) SetMCPInProcessServerFactory(factory schemas.InProcessSe
 	}
 }
 
+// newCodeMode builds the Starlark code mode with its decision callback, so a
+// decision-model discovery ranker works however the MCP manager was created.
+func (bifrost *Bifrost) newCodeMode(config *mcp.CodeModeConfig) *starlark.StarlarkCodeMode {
+	codeMode := starlark.NewStarlarkCodeMode(config, bifrost.logger)
+	codeMode.SetDecisionRequestFunc(bifrost.codeModeDecisionRequest)
+	return codeMode
+}
+
 // ensureLazyMCPManager creates the MCP manager on first use when Init did not
 // (no mcp block in the config). Callers run it before reading MCPManager, so
 // the sync.Once publishes the manager to every caller; a manager injected with
@@ -4880,7 +4886,7 @@ func (bifrost *Bifrost) ensureLazyMCPManager() {
 		if bifrost.MCPManager != nil {
 			return
 		}
-		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
+		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, bifrost.newCodeMode(nil))
 		if bifrost.mcpDiscoveryChangeCallback != nil {
 			bifrost.MCPManager.SetDiscoveryChangeCallback(bifrost.mcpDiscoveryChangeCallback)
 		}

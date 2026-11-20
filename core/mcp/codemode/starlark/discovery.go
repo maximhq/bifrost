@@ -15,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -137,7 +138,7 @@ func parseListToolFilesArgs(raw string) (string, int, error) {
 // discoveryCatalogue collects the code mode tools visible to this caller, the
 // same set the complete listing shows, sorted by ID. The revision changes when
 // any visible tool's definition or the binding level changes.
-func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryTool, string) {
+func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel schemas.CodeModeBindingLevel) ([]discoveryTool, string) {
 	toolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 	type entry struct {
 		tool       discoveryTool
@@ -190,7 +191,7 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryT
 	sort.Slice(entries, func(i, j int) bool { return entries[i].tool.candidate.ID < entries[j].tool.candidate.ID })
 
 	hash := sha256.New()
-	hash.Write([]byte(s.GetBindingLevel()))
+	hash.Write([]byte(bindingLevel))
 	items := make([]discoveryTool, len(entries))
 	for i, e := range entries {
 		items[i] = e.tool
@@ -341,7 +342,10 @@ func validDiscoveryProbability(n float64) bool {
 
 // handleRankedToolFiles answers listToolFiles(query=...).
 func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall, query string, limit int) (*schemas.ChatMessage, error) {
-	catalogue, revision := s.discoveryCatalogue(ctx)
+	// Read once: the revision and the rendered shortlist must use the same
+	// binding level even when a config update lands while the ranker runs.
+	bindingLevel := s.GetBindingLevel()
+	catalogue, revision := s.discoveryCatalogue(ctx, bindingLevel)
 	if len(catalogue) == 0 {
 		// Nothing to rank: the complete listing explains why.
 		return s.handleCompleteToolFiles(ctx, toolCall)
@@ -351,7 +355,7 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 	for _, item := range catalogue {
 		c := item.candidate
 		if strings.EqualFold(query, c.ID) || strings.EqualFold(query, c.Server+"."+c.Name) {
-			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, []discoveryTool{item}, nil, limit,
+			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, []discoveryTool{item}, nil, limit,
 				fmt.Sprintf("# Exact match for this query: 1 of %d tools visible to this caller.", len(catalogue))), false), nil
 		}
 	}
@@ -374,7 +378,7 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 		if reason != "" {
 			header += "\n# The discovery ranker was not used (" + reason + ")."
 		}
-		return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, matched, nil, limit, header), false)
+		return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, matched, nil, limit, header), false)
 	}
 
 	rankerRef := s.discoveryRanker.Load()
@@ -426,14 +430,13 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 	if resp.Sufficient != nil && *resp.Sufficient < discoveryInsufficientBelow {
 		header += "\n# The ranker reports these tools may not cover the request; call listToolFiles without query for the complete listing."
 	}
-	return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, selected, scores, limit, header), false), nil
+	return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, selected, scores, limit, header), false), nil
 }
 
 // discoveryShortlist renders up to limit tool files in rank order. At server
 // binding several tools share one file, which is listed once with the matching
 // tool names. scores, when set, annotates each file with its best relevance.
-func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, items []discoveryTool, scores map[string]float64, limit int, header string) string {
-	bindingLevel := s.GetBindingLevel()
+func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, bindingLevel schemas.CodeModeBindingLevel, items []discoveryTool, scores map[string]float64, limit int, header string) string {
 	type file struct {
 		path      string
 		server    string
@@ -530,19 +533,21 @@ type httpDiscoveryRanker struct {
 
 func (r *httpDiscoveryRanker) maxCandidates() int { return discoveryMaxRankCandidates }
 
-// storeDiscoveryRanker publishes the ranker. nil keeps the current one, a
-// config with neither a URL nor a decision model removes it, and an invalid
-// config is ignored.
+// storeDiscoveryRanker publishes the ranker. nil keeps the current one, an
+// invalid config is ignored, and a valid config with neither a URL nor a
+// decision model removes it.
 func (s *StarlarkCodeMode) storeDiscoveryRanker(config *schemas.MCPCodeModeDiscoveryRanker) {
 	if config == nil {
 		return
 	}
-	if !config.Enabled() {
-		s.discoveryRanker.Store(nil)
-		return
-	}
+	// Validated first: an invalid config such as fallbacks alone must keep the
+	// current ranker, not remove it as a disabled one.
 	if err := config.Validate(); err != nil {
 		s.logger.Warn("%s ignoring invalid code mode discovery ranker: %v", codemcp.CodeModeLogPrefix, err)
+		return
+	}
+	if !config.Enabled() {
+		s.discoveryRanker.Store(nil)
 		return
 	}
 	var ranker toolRanker
@@ -612,13 +617,22 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 }
 
 // readDiscoveryToken reads the bearer token on every call, so a rotated token
-// is picked up without a restart.
+// is picked up without a restart. The path is opened without blocking and must
+// be a regular file: opening a named pipe with no writer would otherwise block
+// past the ranker deadline.
 func readDiscoveryToken(path string) (string, error) {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("read token file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("token file must be a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, discoveryMaxTokenBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)

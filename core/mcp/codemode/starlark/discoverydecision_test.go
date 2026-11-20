@@ -124,7 +124,7 @@ func TestListToolFilesDecisionRanker(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	catalogue, _ := mode.discoveryCatalogue(t.Context())
+	catalogue, _ := mode.discoveryCatalogue(t.Context(), mode.GetBindingLevel())
 	var visible []string
 	for _, item := range scoreDiscovery(catalogue, "tell the team the deploy finished") {
 		visible = append(visible, item.candidate.ID)
@@ -326,6 +326,16 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 				resp := decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1}, nil)
 				resp.Usage, resp.ExtraFields.RoutingInfo = usage, served
+				return resp, nil
+			},
+			want: schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
+		},
+		// A key alias served it, so the row names the alias's wire model, not the alias.
+		"answered through a key alias": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				resp := decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1}, nil)
+				resp.Usage = usage
+				resp.ExtraFields.RoutingInfo = schemas.RoutingInfo{Provider: "openai", Model: "ranker", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "gpt-5-nano"}}
 				return resp, nil
 			},
 			want: schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},

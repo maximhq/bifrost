@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -789,5 +790,53 @@ func testSDKInProcessResults(t *testing.T) {
 	}
 	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow,stops" {
 		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow,stops", after, before)
+	}
+}
+
+// warnRecorder is a no-op logger that keeps the warnings.
+type warnRecorder struct {
+	schemas.Logger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *warnRecorder) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
+}
+
+func (l *warnRecorder) joined() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.warns, "\n")
+}
+
+// TestLazyMCPManagerWiresDecisionRanker starts without MCPConfig, so the MCP
+// manager is created lazily, then installs a decision-model discovery ranker:
+// a ranked listToolFiles query must reach the decision API.
+func TestLazyMCPManagerWiresDecisionRanker(t *testing.T) {
+	a := newAlphaServer(t)
+	logger := &warnRecorder{Logger: NewNoOpLogger()}
+	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
+	client := alphaClient(a.url)
+	client.IsCodeModeClient = true
+	if err := b.AddMCPClient(context.Background(), client); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+		CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "ranker-test-missing/ranker"},
+	})
+
+	msg, bErr := execChat(b, "listToolFiles", `{"query":"echo this text back"}`)
+	if bErr != nil {
+		t.Fatalf("listToolFiles: %s", errorText(bErr))
+	}
+	if !strings.Contains(contentOf(msg), "discovery ranker was not used") {
+		t.Fatalf("expected the lexical fallback after the failing decision call:\n%s", contentOf(msg))
+	}
+	warns := logger.joined()
+	if strings.Contains(warns, "decision API is not available") || !strings.Contains(warns, "decision request to ranker-test-missing/ranker failed") {
+		t.Fatalf("the decision API was not called, warnings:\n%s", warns)
 	}
 }
