@@ -2581,6 +2581,8 @@ type verificationRecorder struct {
 	verified  []string
 	activated []*schemas.MCPClientConfig // configs handed over as recording the verification
 	added     []*schemas.MCPClientConfig
+	updated   []*schemas.MCPClientConfig // configs handed to the runtime as an update
+	onVerify  func()                     // runs while a per-user OAuth verification is in flight
 }
 
 // verifiedDiscovery is what verification finds: a tool, the server's instructions, a resource and
@@ -2600,10 +2602,16 @@ func (r *verificationRecorder) VerifyHeadersConnection(_ context.Context, config
 }
 
 func (r *verificationRecorder) VerifyPerUserOAuthConnection(_ context.Context, config *schemas.MCPClientConfig, _ string) (*schemas.MCPDiscovery, error) {
+	if r.onVerify != nil {
+		r.onVerify()
+	}
 	return r.verifiedDiscovery(config)
 }
 
-func (r *verificationRecorder) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+func (r *verificationRecorder) UpdateMCPClient(_ context.Context, _ string, config *schemas.MCPClientConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.updated = append(r.updated, config)
 	return nil
 }
 
@@ -3168,6 +3176,42 @@ func TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothi
 	require.NoError(t, err)
 	assert.Nil(t, stored.DiscoveredTools)
 	assert.Empty(t, recorder.toolsSet)
+}
+
+// TestCompleteMCPClientOAuth_KeepsADescriptionEditedDuringVerification: verification is a call to
+// the upstream and can take a while. A description edited meanwhile is the latest one, so
+// completing the sign-in must not write the description it read before verifying back over it, in
+// the database or in the runtime.
+func TestCompleteMCPClientOAuth_KeepsADescriptionEditedDuringVerification(t *testing.T) {
+	ctx := context.Background()
+	h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+	require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+		ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+		AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-wiki", Name: "wiki", Description: "Wiki search", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+		OauthConfigID: schemas.Ptr("oauth-wiki"), PendingOAuthConfig: &schemas.OAuth2Config{}, ToolsToExecute: []string{"*"},
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+		ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+	}))
+	recorder.onVerify = func() {
+		row, err := h.store.ConfigStore.GetMCPClientByID(ctx, "client-wiki")
+		require.NoError(t, err)
+		row.Description = "Edited while verifying"
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientConfig(ctx, "client-wiki", row))
+	}
+
+	status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Equal(t, "Edited while verifying", stored.Description)
+	require.Len(t, recorder.updated, 1)
+	assert.Equal(t, "Edited while verifying", recorder.updated[0].Description, "the runtime follows the database")
 }
 
 // assertKeepsNoDiscovery checks config keeps nothing the admin's verification found: no tools,

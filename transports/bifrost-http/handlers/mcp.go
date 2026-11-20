@@ -5089,6 +5089,16 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 
 		if isUpdateFlow {
+			// Verification is a call to the upstream, so the description may have been edited since
+			// this request read the client. The stored one is the latest: keep it, in the database,
+			// the rollback copy and the runtime, rather than writing the earlier one back.
+			latest, err := h.store.ConfigStore.GetMCPClientByID(ctx, mcpClientConfig.ID)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing mcp client config: %v", err))
+				return
+			}
+			mcpClientConfig.Description = latest.Description
+			existingDBConfig.Description = latest.Description
 			oldDBConfig := *existingDBConfig
 			// per_user_discovery is left unset, keeping the stored value: an
 			// update racing this one may have changed it.

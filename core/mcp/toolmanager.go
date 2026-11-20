@@ -748,10 +748,11 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 		return
 	}
 
-	instructions := AggregateServerInstructions(callerDiscovery.Instructions, m.instructionCaps())
+	var codeModeClients []string
 	if m.codeMode != nil {
-		instructions = withCodeModePointer(instructions, callerDiscovery.CodeModeClients)
+		codeModeClients = callerDiscovery.CodeModeClients
 	}
+	instructions := aggregateWithCodeModePointer(callerDiscovery.Instructions, m.instructionCaps(), codeModeClients)
 	if instructions == "" {
 		return
 	}

@@ -544,6 +544,15 @@ func TestGenerateMCPClientHash_Description(t *testing.T) {
 	assert.Equal(t, before, hash(""), "an unset description must not move existing stored hashes")
 	assert.NotEqual(t, before, hash("Dashboards and alerts"), "setting a description must drift the hash")
 	assert.NotEqual(t, hash("Dashboards and alerts"), hash("Prometheus queries"), "editing a description must drift the hash")
+
+	// A description that ends in the text a later flag writes must not hash as that flag being on.
+	flagged := func(description string, codeMode bool, perUser *bool) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", Description: description, IsCodeModeClient: codeMode, PerUserDiscovery: perUser})
+		require.NoError(t, err)
+		return h
+	}
+	assert.NotEqual(t, flagged("x", true, nil), flagged("xis_code_mode_client:true", false, nil), "is_code_mode_client")
+	assert.NotEqual(t, flagged("x", false, schemas.Ptr(true)), flagged("xper_user_discovery:true", false, nil), "per_user_discovery")
 }
 
 // Unset allow-lists leave the hash as it was; [] and a list each drift it, so editing them in

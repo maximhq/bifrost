@@ -47411,8 +47411,7 @@
                           },
                           "description": {
                             "type": "string",
-                            "maxLength": 200,
-                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -47797,8 +47796,7 @@
                           },
                           "description": {
                             "type": "string",
-                            "maxLength": 200,
-                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -48192,8 +48190,7 @@
                           },
                           "description": {
                             "type": "string",
-                            "maxLength": 200,
-                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -48607,8 +48604,7 @@
                           },
                           "description": {
                             "type": "string",
-                            "maxLength": 200,
-                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -49014,8 +49010,7 @@
                   },
                   "description": {
                     "type": "string",
-                    "maxLength": 200,
-                    "description": "One-line summary of what the MCP server is for, shown to models in the\ncode mode catalogue. Omitting it keeps the stored description; an empty\nstring clears it. Trimmed and validated as on create (at most 200 characters,\nno control characters), otherwise 400.\n"
+                    "description": "One-line summary of what the MCP server is for, shown to models in the code mode catalogue. Omitting it keeps the stored description; an empty string clears it. Trimmed and validated as on create (at most 200 characters after trimming, no control characters), otherwise 400."
                   },
                   "is_code_mode_client": {
                     "type": "boolean",

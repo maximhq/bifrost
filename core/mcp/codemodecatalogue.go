@@ -114,17 +114,35 @@ func codeModePointer(names []string) string {
 	return pointer + "."
 }
 
-// withCodeModePointer appends the pointer to the aggregated server instructions.
-func withCodeModePointer(instructions string, codeModeClients []string) string {
+// aggregateWithCodeModePointer renders the instruction blocks and the code mode pointer within one
+// budget, so max_instructions_total bounds the whole text the model is sent. The pointer is a
+// single line that tells the model code mode servers exist: when both do not fit, the blocks give
+// way and the pointer stays whole. A pointer longer than the whole budget is cut, like any text.
+func aggregateWithCodeModePointer(parts []schemas.MCPServerInstructions, caps InstructionCaps, codeModeClients []string) string {
 	pointer := codeModePointer(codeModeClients)
-	switch {
-	case pointer == "":
-		return instructions
-	case instructions == "":
-		return pointer
-	default:
-		return instructions + "\n\n" + pointer
+	if pointer == "" {
+		return AggregateServerInstructions(parts, caps)
 	}
+	caps = caps.orDefaults()
+	if len(pointer) >= caps.Total {
+		cut, _ := truncateInstructions(pointer, caps.Total)
+		return cut
+	}
+	if len(parts) == 0 {
+		return pointer
+	}
+	const separator = len("\n\n")
+	total := caps.Total
+	caps.Total -= len(pointer) + separator
+	if caps.Total <= 0 {
+		return pointer
+	}
+	blocks := AggregateServerInstructions(parts, caps)
+	// The omitted-servers notice is written even when no budget is left, so check the sum.
+	if blocks == "" || len(blocks)+separator+len(pointer) > total {
+		return pointer
+	}
+	return blocks + "\n\n" + pointer
 }
 
 // catalogueDescription flattens a description to one bounded line, so text written before the

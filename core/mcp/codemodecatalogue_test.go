@@ -188,6 +188,24 @@ func TestCodeModePointer(t *testing.T) {
 		assert.Equal(t, pointer("codey"), m.GetAggregatedServerInstructions(context.Background()))
 	})
 
+	t.Run("max_instructions_total bounds the blocks and the pointer together", func(t *testing.T) {
+		ptr := pointer("codey")
+		parts := []schemas.MCPServerInstructions{{ClientName: "alpha", Instructions: strings.Repeat("a", 2000)}}
+		for _, total := range []int{len(ptr) + 200, len(ptr) + 2 + blockOverhead("alpha", 2000) + 1, len(ptr) + 3, len(ptr)} {
+			got := aggregateWithCodeModePointer(parts, InstructionCaps{Total: total}, []string{"codey"})
+			assert.LessOrEqual(t, len(got), total, "total %d", total)
+			assert.True(t, strings.HasSuffix(got, ptr), "the pointer stays whole at total %d: %q", total, got)
+		}
+		fits := aggregateWithCodeModePointer(parts, InstructionCaps{Total: len(ptr) + 200}, []string{"codey"})
+		assert.Contains(t, fits, `<mcp_server name="alpha">`, "the blocks get what the pointer leaves")
+
+		// Nothing left for the blocks: the pointer stands alone. Past that the pointer is cut at a character.
+		assert.Equal(t, ptr, aggregateWithCodeModePointer(parts, InstructionCaps{Total: len(ptr)}, []string{"codey"}))
+		assert.Equal(t, ptr, aggregateWithCodeModePointer(nil, InstructionCaps{Total: len(ptr)}, []string{"codey"}))
+		assert.Equal(t, ptr[:20], aggregateWithCodeModePointer(nil, InstructionCaps{Total: 20}, []string{"codey"}))
+		assert.Equal(t, ptr, aggregateWithCodeModePointer(nil, InstructionCaps{}, []string{"codey"}), "the default budget holds it")
+	})
+
 	t.Run("injected once into chat and responses requests", func(t *testing.T) {
 		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 		addCodeModeClient(t, m, "codey")

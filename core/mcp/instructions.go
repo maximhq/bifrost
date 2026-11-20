@@ -213,9 +213,9 @@ func (m *MCPManager) InstructionCaps() InstructionCaps {
 // codeModePointer), so the reader knows to look for them.
 func (m *MCPManager) GetAggregatedServerInstructions(ctx context.Context) string {
 	discovery := m.resolveCallerDiscovery(ctx, false, true)
-	instructions := AggregateServerInstructions(discovery.Instructions, m.toolsManager.instructionCaps())
+	var codeModeClients []string
 	if m.toolsManager.GetCodeMode() != nil {
-		instructions = withCodeModePointer(instructions, discovery.CodeModeClients)
+		codeModeClients = discovery.CodeModeClients
 	}
-	return instructions
+	return aggregateWithCodeModePointer(discovery.Instructions, m.toolsManager.instructionCaps(), codeModeClients)
 }

@@ -346995,9 +346995,10 @@
                   "    var stamp = parseInt(cfg.name.substring(cfg.name.lastIndexOf('_') + 1), 10);",
                   "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
                   "  }",
-                  "  pm.expect(mine.length, 'this run\\'s clients are not both listed, so the cleanup below cannot reclaim them: ' + pm.response.text()).to.equal(2);",
+                  "  // Queued before the assertion, so a run that set up only one client still has it cleaned up.",
                   "  // This run's clients first, so they are reclaimed even if the sweep cap is reached.",
                   "  pm.collectionVariables.set('codeModeCatalogueQueue', JSON.stringify(mine.concat(stale)));",
+                  "  pm.expect(mine.length, 'this run\\'s clients are not both listed (the ones that are still get cleaned up): ' + pm.response.text()).to.equal(2);",
                   "});"
                 ]
               }
