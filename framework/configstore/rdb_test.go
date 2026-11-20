@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -1648,6 +1649,34 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 	result, err := store.GetVirtualKeyByValue(ctx, "vk-unique-value-xyz")
 	require.NoError(t, err)
 	assert.Equal(t, "vk-lookup", result.ID)
+}
+
+func TestUpdateVirtualKeyDefaultsIsActive(t *testing.T) {
+	for _, stored := range []bool{true, false} {
+		for _, incoming := range []*bool{nil, schemas.Ptr(true), schemas.Ptr(false)} {
+			name := "omitted"
+			if incoming != nil {
+				name = fmt.Sprint(*incoming)
+			}
+			t.Run(fmt.Sprintf("stored=%t/incoming=%s", stored, name), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				ctx := context.Background()
+				vk := &tables.TableVirtualKey{
+					ID: "active-default", Name: "active-default",
+					Value: *schemas.NewSecretVar("bfvk-active-default"), IsActive: schemas.Ptr(stored),
+				}
+				require.NoError(t, store.CreateVirtualKey(ctx, vk))
+				vk.IsActive = incoming
+				vk.Description = "updated"
+				require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+				got, err := store.GetVirtualKey(ctx, vk.ID)
+				require.NoError(t, err)
+				want := incoming == nil || *incoming
+				assert.Equal(t, &want, got.IsActive)
+				assert.Equal(t, &want, vk.IsActive, "caller must see the persisted default")
+			})
+		}
+	}
 }
 
 func TestUpdateVirtualKey(t *testing.T) {
@@ -7578,4 +7607,99 @@ func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, moved.BusinessUnitID)
 	assert.Equal(t, other, *moved.BusinessUnitID)
+}
+
+// A failed legacy repair must not prevent the configuration store from opening.
+func TestVirtualKeyRepairDoesNotBlockStartup(t *testing.T) {
+	ctx := context.Background()
+	config := &SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}
+	first, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
+	require.NoError(t, err)
+	require.NoError(t, first.Close(ctx))
+	db, err := gorm.Open(sqlite.Open(config.Path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&tables.TableVirtualKey{ID: "legacy", Name: "legacy", Value: *schemas.NewSecretVar("vk_legacy"), IsActive: schemas.Ptr(true)}).Error)
+	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL, config_hash = 'original' WHERE id = 'legacy'").Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = 'normalize_virtual_key_is_active'").Error)
+	require.NoError(t, db.Exec(`CREATE TRIGGER reject_repair BEFORE UPDATE ON governance_virtual_keys WHEN NEW.id = 'legacy' BEGIN SELECT RAISE(ABORT, 'repair unavailable'); END`).Error)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	store, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
+	require.NoError(t, err, "legacy repair failures must not block startup")
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	key, err := store.GetVirtualKey(ctx, "legacy")
+	require.NoError(t, err)
+	require.Equal(t, schemas.Ptr(true), key.IsActive, "reads must normalize NULL while repair is pending")
+	require.Equal(t, "original", key.ConfigHash)
+	require.NoError(t, store.Close(ctx))
+
+	db, err = gorm.Open(sqlite.Open(config.Path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	var pending int64
+	require.NoError(t, db.Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&pending).Error)
+	require.Zero(t, pending, "failed or cancelled repairs must not be marked complete")
+	require.NoError(t, db.Exec("DROP TRIGGER reject_repair").Error)
+	sqlDB, err = db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	restarted, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
+	require.NoError(t, err)
+	defer restarted.Close(ctx)
+	require.Eventually(t, func() bool {
+		var count int64
+		err := restarted.(*RDBConfigStore).DB().Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&count).Error
+		return err == nil && count == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	var row struct {
+		IsActive   *bool
+		ConfigHash string
+	}
+	require.NoError(t, restarted.(*RDBConfigStore).DB().Table("governance_virtual_keys").Where("id = ?", "legacy").Take(&row).Error)
+	require.Equal(t, schemas.Ptr(true), row.IsActive)
+	require.Equal(t, "original", row.ConfigHash)
+}
+
+func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN)").Error)
+	require.NoError(t, migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = 'normalize_virtual_key_is_active'").Error)
+	require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('legacy', NULL)").Error)
+	entered := make(chan struct{})
+	var once sync.Once
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register("block_virtual_key_repair", func(tx *gorm.DB) {
+		if tx.Statement.Table == "governance_virtual_keys" {
+			once.Do(func() { close(entered) })
+			<-tx.Statement.Context.Done()
+			tx.AddError(tx.Statement.Context.Err())
+		}
+	}))
+	store := &RDBConfigStore{logger: testMigrationLogger}
+	store.db.Store(db)
+	store.startVirtualKeyRepair()
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("repair did not reach the blocked update")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- store.Close(context.Background()) }()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel the blocked repair")
+	}
+	select {
+	case <-store.virtualKeyRepairDone:
+	default:
+		t.Fatal("Close returned before the repair worker stopped")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.Error(t, sqlDB.Ping(), "Close must release the database after joining the worker")
 }

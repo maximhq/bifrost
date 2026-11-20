@@ -552,6 +552,11 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 // The reset path reads the stamped value; Update*InMemory paths re-stamp on
 // every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
+	// Older replicas can still write NULL after the repair migration during a
+	// rolling upgrade. Expose the same effective default as IsActiveValue.
+	if vk.IsActive == nil {
+		vk.IsActive = schemas.Ptr(true)
+	}
 	switch vk.EncryptionStatus {
 	case EncryptionStatusEncrypted:
 		if err := decryptSecretVar(&vk.Value); err != nil {

@@ -47,6 +47,7 @@
 
 ## 🐞 Fixed
 
+- **Virtual Key Active Defaults** - Omitted `is_active` stays active during config.json sync, legacy NULL states are repaired in the background, and reads remain consistent during rolling upgrades (thanks [@Constantine3](https://github.com/Constantine3)!)
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
 - **Vertex Prompt Cache Misses** - Vertex Claude request bodies always end with `tools`, `system`, `messages`, so turn-to-turn cache reads no longer miss when a client sends `messages` first
 - **Cached Tokens Counted Twice** - Anthropic streaming usage, on chat and Responses streams and on the passthrough route, counts each cached prompt token once, including upstreams such as kimi-code that report the cache split on `message_delta` (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)
@@ -109,6 +110,7 @@
 
 ## 🗄️ Database Migrations
 
+- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. The repair runs in a cancellable background task after store initialization, with one transaction per key and retries after failures. Completion is recorded only after all pages succeed; startup never waits for the backfill. The repair is non-rollbackable, and reads normalize NULL values while it is pending and for later writes from older replicas.
 <Warning>
 This release adds columns to the `logs` table (`logs_add_model_routing_columns`) and the `agent_logs` table (`agent_logs_add_caller_correlation_id_column`). Bifrost handles concurrent access on the application side, but on large log tables the change still takes locks and adds load. Deploy during a low-traffic window.
 </Warning>

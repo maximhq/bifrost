@@ -39,10 +39,12 @@ import (
 // can swap it out without tearing callers down. migrateOnFreshFn and refreshPoolFn
 // are backend-specific hooks installed by the constructor (postgres vs sqlite).
 type RDBConfigStore struct {
-	db               atomic.Pointer[gorm.DB]
-	logger           schemas.Logger
-	migrateOnFreshFn func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
-	refreshPoolFn    func(ctx context.Context) error
+	virtualKeyRepairCancel context.CancelFunc
+	virtualKeyRepairDone   chan struct{}
+	db                     atomic.Pointer[gorm.DB]
+	logger                 schemas.Logger
+	migrateOnFreshFn       func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
+	refreshPoolFn          func(ctx context.Context) error
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -4640,6 +4642,12 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		return s.parseGormError(err)
 	}
 
+	// Select(columns) below writes nil pointers as NULL instead of applying the
+	// create-time database default. Keep updates consistent with IsActiveValue.
+	if virtualKey.IsActive == nil {
+		virtualKey.IsActive = schemas.Ptr(true)
+	}
+
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
@@ -8137,8 +8145,39 @@ func (s *RDBConfigStore) removeDuplicateKeysAndNullKeys(ctx context.Context) err
 	return nil
 }
 
-// Close closes the SQLite config store.
+// startVirtualKeyRepair runs once per store after schema initialization. Failures
+// leave the ledger pending and retry on the current pool; reads already normalize
+// NULL while this repair runs. Close cancels and joins the worker before closing SQL.
+func (s *RDBConfigStore) startVirtualKeyRepair() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.virtualKeyRepairCancel = cancel
+	s.virtualKeyRepairDone = make(chan struct{})
+	go func() {
+		defer close(s.virtualKeyRepairDone)
+		defer cancel()
+		for ctx.Err() == nil {
+			if err := migrationNormalizeVirtualKeyIsActive(ctx, s.DB(), s.logger); err == nil {
+				return
+			} else if ctx.Err() == nil {
+				s.logger.Warn("configstore: virtual key active-state repair failed; retrying in one minute: %v", err)
+			}
+			timer := time.NewTimer(time.Minute)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	}()
+}
+
+// Close stops background repair and closes the configuration store.
 func (s *RDBConfigStore) Close(ctx context.Context) error {
+	if s.virtualKeyRepairCancel != nil {
+		s.virtualKeyRepairCancel()
+		<-s.virtualKeyRepairDone
+	}
 	sqlDB, err := s.DB().DB()
 	if err != nil {
 		return err
