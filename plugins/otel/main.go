@@ -433,7 +433,8 @@ type otelTarget struct {
 	serviceName                      string
 	url                              string
 	traceType                        TraceType
-	client                           OtelClient
+	client                           traceExporter
+	profileIndex                     int
 	metricsExporter                  *MetricsExporter
 	requestHeaders                   []string
 	disableContentLogging            bool
@@ -455,6 +456,9 @@ type otelTarget struct {
 	breakerOpenUntil    atomic.Int64 // UnixNano; exports are skipped until this instant
 	suppressedExports   atomic.Int64
 	failedExports       atomic.Int64
+	partialReplies      atomic.Int64
+	partialExports      atomic.Int64
+	rejectedSpans       atomic.Int64
 }
 
 // tripBreaker records a failed export and opens the circuit once the failure threshold
@@ -637,6 +641,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	target := &otelTarget{
+		profileIndex:                     index,
 		serviceName:                      serviceName,
 		traceType:                        profile.TraceType,
 		requestHeaders:                   slices.Clone(profile.RequestHeaders),
@@ -989,7 +994,8 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
 			defer cancel()
-			if err := t.client.Emit(emitCtx, []*ResourceSpan{resourceSpan}); err != nil {
+			result, err := t.client.emit(emitCtx, []*ResourceSpan{resourceSpan})
+			if err != nil {
 				t.tripBreaker()
 				if n := t.failedExports.Load(); n == 1 || n%exportLogThrottle == 0 {
 					logger.Error("failed to emit trace %s to %s: %v (%d failed exports so far)", trace.TraceID, t.url, err, n)
@@ -997,10 +1003,43 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				return
 			}
 			t.resetBreaker()
+			if result.partialSuccess != nil {
+				t.recordPartialSuccess(ctx, result)
+			}
 		}(t)
 	}
 	wg.Wait()
 	return nil
+}
+
+func (t *otelTarget) recordPartialSuccess(ctx context.Context, result traceExportResult) {
+	rejected := result.partialSuccess.GetRejectedSpans()
+	if rejected > 0 {
+		t.rejectedSpans.Add(rejected)
+		t.partialExports.Add(1)
+		if t.metricsExporter != nil {
+			t.metricsExporter.recordTraceRejection(ctx, rejected, t.profileIndex)
+		}
+	} else if result.partialSuccess.GetErrorMessage() == "" {
+		return
+	}
+
+	if n := t.partialReplies.Add(1); n == 1 || n%exportLogThrottle == 0 {
+		logger.Warn("[otel] trace collector for profile %d acknowledged an export with rejected_spans=%d, diagnostic=%q (%d partial acknowledgements so far)",
+			t.profileIndex, rejected, result.diagnostic(), n)
+	}
+}
+
+// ExportRejectionStats reports partial trace rejections by zero-based profile index.
+func (p *OtelPlugin) ExportRejectionStats() map[int]struct{ RejectedSpans, PartialExports int64 } {
+	stats := make(map[int]struct{ RejectedSpans, PartialExports int64 }, len(p.targets))
+	for _, t := range p.targets {
+		stats[t.profileIndex] = struct{ RejectedSpans, PartialExports int64 }{
+			RejectedSpans:  t.rejectedSpans.Load(),
+			PartialExports: t.partialExports.Load(),
+		}
+	}
+	return stats
 }
 
 // ExportStats reports per-target export health: how many exports failed and how many

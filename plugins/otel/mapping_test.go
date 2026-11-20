@@ -673,14 +673,16 @@ type stubOtelClient struct{}
 // captureOtelClient records what Emit would have shipped.
 type captureOtelClient struct{ emitted []*ResourceSpan }
 
-func (c *captureOtelClient) Emit(_ context.Context, rs []*ResourceSpan) error {
+func (c *captureOtelClient) emit(_ context.Context, rs []*ResourceSpan) (traceExportResult, error) {
 	c.emitted = append(c.emitted, rs...)
-	return nil
+	return traceExportResult{}, nil
 }
 func (c *captureOtelClient) Close() error { return nil }
 
-func (stubOtelClient) Emit(context.Context, []*ResourceSpan) error { return nil }
-func (stubOtelClient) Close() error                                { return nil }
+func (stubOtelClient) emit(context.Context, []*ResourceSpan) (traceExportResult, error) {
+	return traceExportResult{}, nil
+}
+func (stubOtelClient) Close() error { return nil }
 
 func TestOtelRawDemandRespectsContentLogging(t *testing.T) {
 	for _, tc := range []struct {
