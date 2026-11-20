@@ -399,6 +399,36 @@ func TestReportUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
 	assert.Equal(t, 12.0, f.budgetUsage("wildcard-budget"))
 }
 
+// A batch row ran the model as written, so settling it charges the budget on that name and never
+// the budget of the model a key alias would have stood for.
+func TestReportUsage_BatchModelUsageIsChargedWithoutAliasExpansion(t *testing.T) {
+	provider := "anthropic"
+	const aliased, target = "claude-opus-4-6", "claude-sonnet-4-6"
+	targetCfg := buildModelConfig("target-cfg", target, &provider, buildBudget("target-budget", 100.0, "1d"), nil)
+	aliasCfg := buildModelConfig("alias-cfg", aliased, &provider, buildBudget("alias-budget", 100.0, "1d"), nil)
+	store := modelKeyStore(t, targetCfg, aliasCfg)
+	store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{aliased: {ModelID: target}}}}},
+	}}
+	logger := NewMockLogger()
+	tracker := NewUsageTracker(context.Background(), store, NewBudgetResolver(store, nil, logger, nil), nil, logger)
+	t.Cleanup(func() { _ = tracker.Cleanup() })
+	plugin := &GovernancePlugin{store: store, tracker: tracker}
+	usage := func(id string) float64 {
+		return store.GetGovernanceData(context.Background()).Budgets[id].CurrentUsage
+	}
+
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+		RequestID:  "batch-cost:anthropic:batch-alias",
+		Provider:   schemas.Anthropic,
+		Cost:       7.0,
+		ModelUsage: []jobaccounting.ModelUsage{{Model: aliased, Cost: 7.0}},
+	}))
+
+	assert.Equal(t, 7.0, usage("alias-budget"), "the model the row ran is charged")
+	assert.Equal(t, 0.0, usage("target-budget"), "the alias target did not run, so its budget is not charged")
+}
+
 // The set a request is checked against, the set named on its log row, and the set its usage is counted
 // against are one list. This is what several independent walks over the holder's shape used to risk: a
 // limit enforced on a request and then not counted lets a caller spend past it forever, and one counted

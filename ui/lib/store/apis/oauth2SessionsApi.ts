@@ -18,6 +18,7 @@ export interface OAuth2GrantsListResponse {
 	total_count?: number; // total across all pages, after filters
 	limit?: number;
 	offset?: number;
+	access_token_ttl?: number; // configured access token lifetime, in seconds
 }
 
 export interface OAuth2GrantsQueryParams {

@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
-import { buildHaystack } from "./lib/haystack.mjs";
+import { buildHaystack, declaredProviderOf } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
@@ -161,6 +161,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  machgen: ["machgen", "machgen/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
@@ -303,6 +304,11 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
 // rather than the global is what keeps the planner's cells identical to the shards' own selection.
 const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (!provider) return true;
+  // A request that names a known provider in a "provider" form field belongs to that provider
+  // only. Its URL can match another provider's route keyword (an Azure upload posts to
+  // /openai/v1/files), and that keyword must not pull it into the other partition.
+  const declared = declaredProviderOf(item);
+  if (declared && Object.hasOwn(PROVIDER_KEYWORDS, declared)) return declared === provider;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
@@ -342,6 +348,13 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // MachGen model ids often carry the original vendor ("machgen/MiniMax-H3", "machgen/FLUX.2-dev"),
+  // so the minimax and replicate ("flux") partitions would claim them too. Route them exclusively
+  // to machgen, so those runs do not try to reach MachGen without its key.
+  const isMachGen = haystack.includes("machgen");
+  if (provider === "machgen") return isMachGen;
+  if (isMachGen) return false;
+
   // Soniox rows on the OpenAI drop-in routes carry the openai keywords in their URL, so route them exclusively to soniox.
   // A Soniox row is known by its model prefix, name, URL or folder; prose in a request body is not identity.
   const isSoniox =

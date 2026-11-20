@@ -2,8 +2,10 @@ package azure
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,5 +216,61 @@ func TestAzureServicePrincipalTokenGoesThroughProxyConfig(t *testing.T) {
 	}
 	if connectTargets[0] != "login.microsoftonline.com:443" {
 		t.Errorf("first CONNECT target = %q, want login.microsoftonline.com:443", connectTargets[0])
+	}
+}
+
+// closeTrackingSource is a BodySource whose readers record whether they were closed.
+type closeTrackingSource struct {
+	opened, closed int
+}
+
+func (s *closeTrackingSource) Size() int64 { return 4 }
+
+func (s *closeTrackingSource) Open() (io.ReadCloser, error) {
+	s.opened++
+	return &closeTrackingReader{Reader: strings.NewReader("data"), source: s}, nil
+}
+
+type closeTrackingReader struct {
+	io.Reader
+	source *closeTrackingSource
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.source.closed++
+	return nil
+}
+
+// TestAzureFileUploadClosesFileWhenAuthFails asserts a FileUpload whose authentication fails does
+// not leave the uploaded file open. The upload body was opened before authentication and only
+// attached to the request after it, so on an auth error nothing closed it, and a disk-backed upload
+// held its file descriptor until the garbage collector ran.
+func TestAzureFileUploadClosesFileWhenAuthFails(t *testing.T) {
+	provider, err := NewAzureProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+	}, &authTestLogger{})
+	if err != nil {
+		t.Fatalf("NewAzureProvider: %v", err)
+	}
+	// A malformed tenant ID makes the service-principal credential fail to build, with no network call.
+	key := schemas.Key{
+		Models: []string{"*"},
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint:     *schemas.NewSecretVar("https://example.openai.azure.com"),
+			ClientID:     schemas.NewSecretVar("client"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+			TenantID:     schemas.NewSecretVar("not a tenant/"),
+		},
+	}
+	source := &closeTrackingSource{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+		Provider: schemas.Azure, FileSource: source, Filename: "batch.jsonl", Purpose: "batch",
+	})
+	if bErr == nil {
+		t.Fatal("want an authentication error")
+	}
+	if source.opened != source.closed {
+		t.Errorf("auth failure left %d of %d opened upload readers unclosed (%s)", source.opened-source.closed, source.opened, bErr.Error.Message)
 	}
 }

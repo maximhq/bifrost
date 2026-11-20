@@ -22,6 +22,7 @@ const BUILT_IN_PASSTHROUGH_PREFIXES: Record<string, string> = {
 	azure: "/azure_passthrough",
 	gemini: GENAI_PASSTHROUGH_PREFIX,
 	vertex: GENAI_PASSTHROUGH_PREFIX,
+	elevenlabs: "/elevenlabs_passthrough",
 };
 
 // A custom provider is reached through its base provider's route.

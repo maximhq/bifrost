@@ -32,7 +32,11 @@ type elevenlabsSpeechCall struct {
 	voice         string
 	outputFormat  string
 	enableLogging *bool
+	stream        bool // the call is to the stream endpoint
 }
+
+// IsStreamingRequested makes the router serve the stream endpoint as a stream.
+func (c *elevenlabsSpeechCall) IsStreamingRequested() bool { return c.stream }
 
 // isElevenlabsCall reports whether a call goes to ElevenLabs: its model names the provider, or has no prefix and is
 // an ElevenLabs model by name, which is how the Anthropic route tells a Claude model before the catalog resolves it.
@@ -42,11 +46,13 @@ func isElevenlabsCall(provider schemas.ModelProvider, model string) bool {
 
 // elevenlabsRawPassthrough has the call and its answer cross between the client and ElevenLabs as they are, so every
 // field and option of ElevenLabs reaches it and comes back, while Bifrost still reads the typed request and response
-// for governance, logs and cost.
-func elevenlabsRawPassthrough(bifrostCtx *schemas.BifrostContext) {
+// for governance, logs and cost. A stream's answer is the audio its chunks already carry, so it keeps no raw copy.
+func elevenlabsRawPassthrough(bifrostCtx *schemas.BifrostContext, rawResponse bool) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
-	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	if rawResponse {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	}
 }
 
 // elevenlabsSpeechPreCallback reads the voice from the path and the options from the query, which are not in the body.
@@ -65,7 +71,7 @@ func elevenlabsSpeechPreCallback(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		call.enableLogging = &enable
 	}
 	if provider, model := schemas.ParseModelString(call.ModelID, ""); isElevenlabsCall(provider, model) {
-		elevenlabsRawPassthrough(bifrostCtx)
+		elevenlabsRawPassthrough(bifrostCtx, !call.stream)
 	}
 	return nil
 }
@@ -113,11 +119,31 @@ func elevenlabsSpeechRoute(pathPrefix, suffix string, withTimestamps bool) Route
 	return route
 }
 
+// elevenlabsSpeechStreamRoute is the text-to-speech endpoint that streams the audio as ElevenLabs makes it. The router
+// writes the chunks as the bytes themselves, which is what an ElevenLabs client reads, not as SSE events.
+func elevenlabsSpeechStreamRoute(pathPrefix string) RouteConfig {
+	route := elevenlabsSpeechRoute(pathPrefix, "/stream", false)
+	route.GetRequestTypeInstance = func(ctx context.Context) interface{} {
+		return &elevenlabsSpeechCall{stream: true}
+	}
+	route.StreamConfig = &StreamConfig{
+		RawAudio: true,
+		SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+			if len(resp.Audio) == 0 {
+				return "", nil, nil // the final chunk carries no audio
+			}
+			return "", resp.Audio, nil
+		},
+	}
+	return route
+}
+
 // CreateElevenlabsRouteConfigs creates the route configurations for the ElevenLabs endpoints Bifrost serves natively.
 func CreateElevenlabsRouteConfigs(pathPrefix string) []RouteConfig {
 	return []RouteConfig{
 		elevenlabsSpeechRoute(pathPrefix, "", false),
 		elevenlabsSpeechRoute(pathPrefix, "/with-timestamps", true),
+		elevenlabsSpeechStreamRoute(pathPrefix),
 		{
 			Type:   RouteConfigTypeElevenlabs,
 			Path:   pathPrefix + "/v1/models",

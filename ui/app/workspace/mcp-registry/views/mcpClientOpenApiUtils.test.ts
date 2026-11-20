@@ -11,9 +11,18 @@ import {
 	expandToolSelection,
 	formatBytes,
 	isSpecTooLarge,
+	OPENAPI_MAX_SPEC_BYTES,
+	openAPIMaxSpecBytes,
+	knownOpenAPIMaxSpecBytes,
+	knownOpenAPIUploadLimit,
+	OPENAPI_REQUEST_OVERHEAD_BYTES,
+	serializedSpecBytes,
+	uploadOverLimit,
 	mergePreviewRows,
 	pruneCredentials,
 	readUploadedSpec,
+	OPENAPI_MAX_SUPPORTED_SPEC_BYTES,
+	uploadSpecLimit,
 	replacePreviewRequest,
 	replacementAutoExecute,
 	replacementToolPricing,
@@ -297,8 +306,8 @@ describe("formatting helpers", () => {
 		expect(formatBytes(512)).toBe("512 B");
 		expect(formatBytes(12 * 1024 + 410)).toBe("12.4 KB");
 		expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MB");
-		expect(isSpecTooLarge(5 * 1024 * 1024)).toBe(false);
-		expect(isSpecTooLarge(5 * 1024 * 1024 + 1)).toBe(true);
+		expect(isSpecTooLarge(OPENAPI_MAX_SPEC_BYTES)).toBe(false);
+		expect(isSpecTooLarge(OPENAPI_MAX_SPEC_BYTES + 1)).toBe(true);
 	});
 	it("summarizes a stored openapi_config", () => {
 		expect(summarizeSpecSource({ spec_title: "Petstore", openapi_version: "3.0.3", spec_size: 12 * 1024 + 410, operation_count: 14 })).toBe(
@@ -358,18 +367,81 @@ describe("applyParsedPreview", () => {
 	});
 });
 
+describe("uploadSpecLimit", () => {
+	const mib = (n: number) => n * 1024 * 1024;
+	const never = async (): Promise<number | null> => {
+		throw new Error("must not refresh");
+	};
+	it("bounds an upload by the supported maximum while the limit is unknown", async () => {
+		expect(OPENAPI_MAX_SUPPORTED_SPEC_BYTES).toBe(mib(256));
+		expect(await uploadSpecLimit(mib(1), null, never)).toBe(mib(256));
+		expect(await uploadSpecLimit(mib(300), null, never)).toBe(mib(256));
+	});
+	it("keeps the cached limit for a file within it", async () => {
+		expect(await uploadSpecLimit(mib(10), mib(32), never)).toBe(mib(32));
+	});
+	it("re-reads the config before refusing a file over the cached limit", async () => {
+		let calls = 0;
+		const raised = async () => {
+			calls++;
+			return mib(64);
+		};
+		expect(await uploadSpecLimit(mib(40), mib(32), raised)).toBe(mib(64));
+		expect(calls).toBe(1);
+		// The refreshed limit still refuses a file that is over it too.
+		expect(await uploadSpecLimit(mib(100), mib(32), raised)).toBe(mib(64));
+	});
+	it("falls back to the supported maximum when the refresh fails or returns nothing", async () => {
+		expect(await uploadSpecLimit(mib(40), mib(32), async () => null)).toBe(mib(256));
+		expect(
+			await uploadSpecLimit(mib(40), mib(32), async () => {
+				throw new Error("offline");
+			}),
+		).toBe(mib(256));
+	});
+});
+
 describe("readUploadedSpec", () => {
 	const file = (size: number, text: () => Promise<string>) => ({ size, text });
+	it("uses the caller's message for a file over a request body limit", async () => {
+		const result = await readUploadedSpec(
+			file(11, async () => {
+				throw new Error("must not read");
+			}),
+			10,
+			"too big for the request body",
+		);
+		expect(result.error).toBe("too big for the request body");
+	});
 	it("reads a document", async () => {
 		expect(await readUploadedSpec(file(10, async () => "openapi: 3.0.0"))).toEqual({ text: "openapi: 3.0.0", error: null });
 	});
 	it("refuses an oversized file without reading it", async () => {
 		const result = await readUploadedSpec(
-			file(6 * 1024 * 1024, async () => {
+			file(OPENAPI_MAX_SPEC_BYTES + 1, async () => {
 				throw new Error("must not read");
 			}),
 		);
 		expect(result.error).toContain("exceeds");
+	});
+	it("applies the configured limit and names it", async () => {
+		const max = openAPIMaxSpecBytes(1);
+		const result = await readUploadedSpec(
+			file(max + 1, async () => {
+				throw new Error("must not read");
+			}),
+			max,
+		);
+		expect(result.error).toContain("1.0 MB");
+		expect(
+			await readUploadedSpec(
+				file(OPENAPI_MAX_SPEC_BYTES + 1, async () => "openapi: 3.0.0"),
+				openAPIMaxSpecBytes(64),
+			),
+		).toEqual({
+			text: "openapi: 3.0.0",
+			error: null,
+		});
 	});
 	it("says an empty file is empty, not too large", async () => {
 		const result = await readUploadedSpec(file(0, async () => ""));
@@ -721,5 +793,61 @@ describe("needsHeadersVerification", () => {
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "http" })).toBe(true);
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "openapi" })).toBe(false);
 		expect(needsHeadersVerification({ auth_type: "headers", connection_type: "http" })).toBe(false);
+	});
+});
+
+describe("openAPIMaxSpecBytes", () => {
+	it("reads client_config.mcp_openapi_max_spec_mb, 0 or unset being the default", () => {
+		expect(openAPIMaxSpecBytes(undefined)).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(openAPIMaxSpecBytes(0)).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(openAPIMaxSpecBytes(64)).toBe(64 * 1024 * 1024);
+	});
+});
+
+describe("knownOpenAPIMaxSpecBytes", () => {
+	it("is null until the config has loaded, so a pending or failed read never applies the default limit", () => {
+		expect(knownOpenAPIMaxSpecBytes(undefined)).toBeNull();
+		expect(knownOpenAPIMaxSpecBytes({})).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(knownOpenAPIMaxSpecBytes({ client_config: { mcp_openapi_max_spec_mb: 0 } })).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(knownOpenAPIMaxSpecBytes({ client_config: { mcp_openapi_max_spec_mb: 200 } })).toBe(200 * 1024 * 1024);
+	});
+});
+
+describe("knownOpenAPIUploadLimit", () => {
+	const mib = (n: number) => n * 1024 * 1024;
+	it("is null until the config has loaded", () => {
+		expect(knownOpenAPIUploadLimit(undefined)).toBeNull();
+	});
+	it("keeps the spec limit when the request body limit leaves room for it", () => {
+		const limit = knownOpenAPIUploadLimit({ client_config: { mcp_openapi_max_spec_mb: 32, max_request_body_size_mb: 100 } });
+		expect(limit).toEqual({ specBytes: mib(32), bodyBytes: mib(100), bytes: mib(32), bodyBound: false });
+	});
+	it("takes the request body limit, less the request overhead, when it is the smaller", () => {
+		const limit = knownOpenAPIUploadLimit({ client_config: { mcp_openapi_max_spec_mb: 256, max_request_body_size_mb: 100 } });
+		expect(limit).toEqual({ specBytes: mib(256), bodyBytes: mib(100), bytes: mib(100) - OPENAPI_REQUEST_OVERHEAD_BYTES, bodyBound: true });
+		// Equal limits still bind on the body: the document is not the only thing in the request.
+		expect(knownOpenAPIUploadLimit({ client_config: { mcp_openapi_max_spec_mb: 100, max_request_body_size_mb: 100 } })?.bodyBound).toBe(
+			true,
+		);
+	});
+});
+
+describe("uploadOverLimit", () => {
+	const mib = (n: number) => n * 1024 * 1024;
+	const limit = knownOpenAPIUploadLimit({ client_config: { mcp_openapi_max_spec_mb: 64, max_request_body_size_mb: 100 } })!;
+	it("measures the document as the escaped JSON string the request carries", () => {
+		expect(serializedSpecBytes('a"b\nc')).toBe(JSON.stringify('a"b\nc').length);
+		expect(serializedSpecBytes("é")).toBe(4);
+	});
+	it("refuses a document over the spec limit", () => {
+		expect(uploadOverLimit(mib(65), mib(65), limit)).toBe("spec");
+	});
+	it("refuses a document within the spec limit whose escaped form overflows the request body limit", () => {
+		expect(uploadOverLimit(mib(60), mib(120), limit)).toBe("body");
+		expect(uploadOverLimit(mib(60), mib(100) - OPENAPI_REQUEST_OVERHEAD_BYTES + 1, limit)).toBe("body");
+	});
+	it("accepts a document that fits both", () => {
+		expect(uploadOverLimit(mib(60), mib(100) - OPENAPI_REQUEST_OVERHEAD_BYTES, limit)).toBeNull();
+		expect(uploadOverLimit(mib(60), mib(500), { ...limit, bodyBytes: null })).toBeNull();
 	});
 });

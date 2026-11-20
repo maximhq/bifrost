@@ -542,6 +542,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v", err))
 		return
 	}
+	// The client prepares (and registers) a provider lazily, so a zero-key custom provider would
+	// not resolve by its "name/model" prefix until restart; startup registers every configured one.
+	schemas.RegisterKnownProvider(payload.Provider)
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
@@ -854,6 +857,8 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
 	} else {
+		// The client unregisters only providers it prepared; one never used is unregistered here.
+		schemas.UnregisterKnownProvider(provider)
 		lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
 	}
 

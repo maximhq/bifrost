@@ -1,3 +1,4 @@
+import WarpBifrostMCPNotice from "@/components/warp/warpBifrostMCPNotice";
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,13 @@ import {
 	useStartWarpBackfillMutation,
 	useUpdateWarpConfigMutation,
 } from "@/lib/store/apis/warpApi";
-import { WARP_MAX_TEMPERATURE, WARP_MIN_TEMPERATURE, WARP_REASONING_EFFORTS, type WarpConfigInput } from "@/lib/types/warp";
+import {
+	WARP_MAX_TEMPERATURE,
+	WARP_MIN_TEMPERATURE,
+	WARP_REASONING_EFFORTS,
+	type WarpConfigInput,
+	type WarpManagementWrite,
+} from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -38,12 +45,14 @@ import {
 	validateWarpEmbedding,
 	validateWarpModelRows,
 	WARP_MAX_ADDITIONAL_MODELS,
+	warpManagementWritesChanged,
 	warpModelRowsChanged,
 	warpModelRowsFromConfig,
 	warpModelsPayload,
 	type WarpEmbeddingFields,
 	type WarpModelRow,
 } from "./warpConfig.utils";
+import WarpManagementToolsSection from "./warpManagementToolsSection";
 import WarpTopicsSection from "./warpTopicsSection";
 import {
 	isFiniteNumber,
@@ -106,6 +115,8 @@ interface WarpFormState {
 	threshold: number;
 	searchLimit: number;
 	discoveryMinRequests: number;
+	// Kinds of configuration change Warp may offer; empty is reads only.
+	managementWrites: WarpManagementWrite[];
 }
 
 const EMPTY_FORM: WarpFormState = {
@@ -125,6 +136,7 @@ const EMPTY_FORM: WarpFormState = {
 	threshold: DEFAULT_SEARCH_THRESHOLD,
 	searchLimit: DEFAULT_SEARCH_LIMIT,
 	discoveryMinRequests: DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
+	managementWrites: [],
 };
 
 /**
@@ -355,6 +367,7 @@ export default function WarpView() {
 			threshold: config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD,
 			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
 			discoveryMinRequests: config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
+			managementWrites: config.management_writes ?? [],
 		});
 	}, [config]);
 
@@ -409,7 +422,8 @@ export default function WarpView() {
 			form.namespace !== (config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE) ||
 			form.threshold !== (config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD) ||
 			form.searchLimit !== (config.semantic_search_limit || DEFAULT_SEARCH_LIMIT) ||
-			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS));
+			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS) ||
+			warpManagementWritesChanged(form.managementWrites, config.management_writes));
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const defaultModel = form.models[0];
@@ -491,6 +505,7 @@ export default function WarpView() {
 			semantic_search_threshold: form.threshold,
 			semantic_search_limit: form.searchLimit,
 			topic_discovery_min_requests: form.discoveryMinRequests,
+			management_writes: form.managementWrites,
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
@@ -546,6 +561,11 @@ export default function WarpView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
+			<WarpBifrostMCPNotice
+				bifrostMCPEnabled={!!config?.bifrost_mcp_enabled}
+				warpEnabled={!!config?.enabled}
+				bifrostMCPAvailable={!!config?.bifrost_mcp_available}
+			/>
 			<form onSubmit={onSubmit} className="space-y-4">
 				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>
@@ -781,6 +801,19 @@ export default function WarpView() {
 								/>
 							</WarpField>
 						</WarpSection>
+
+						{/* Only while Warp uses the Bifrost MCP; decoupled, it has no management tools to choose. */}
+						{config?.bifrost_mcp_enabled && (
+							<WarpSection title={t("warp.managementTools.title")} description={t("warp.managementTools.description")}>
+								<WarpManagementToolsSection
+									writes={form.managementWrites}
+									onChange={(writes) => update("managementWrites", writes)}
+									sizes={config?.management_tool_sizes}
+									writesAvailable={!!config?.management_writes_available}
+									disabled={!hasWarpUpdateAccess}
+								/>
+							</WarpSection>
+						)}
 
 						<WarpSection
 							title={t("warp.conversationSearch")}

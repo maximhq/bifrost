@@ -44,6 +44,7 @@ type BedrockProvider struct {
 	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
+	runtimeHost           string                        // bedrock-runtime host from network_config.base_url; empty means the public regional host
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
 	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
@@ -151,6 +152,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		mantleClient:          mantleFasthttpClient,
 		mantleStreamingClient: mantleStreamingFasthttpClient,
 		networkConfig:         config.NetworkConfig,
+		runtimeHost:           schemas.NormalizeEndpointHost(&schemas.SecretVar{Val: config.NetworkConfig.BaseURL}),
 		customProviderConfig:  config.CustomProviderConfig,
 		sendBackRawRequest:    config.SendBackRawRequest,
 		sendBackRawResponse:   config.SendBackRawResponse,
@@ -209,6 +211,10 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 		}
 		transport.TLSClientConfig = tlsConfig
 	}
+
+	// Dial-time address policy, shared with the fasthttp Mantle clients (ConfigureDialer). It must
+	// be installed before the https-proxy hop dialer below, which dials proxies through it.
+	providerUtils.ConfigureNetHTTPDialer(transport, config.NetworkConfig.AllowPrivateNetwork)
 
 	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
 	// skip_tls_verify), separate from the target's, which net/http would otherwise share
@@ -379,7 +385,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -411,7 +417,31 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	if bErr != nil {
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+	}
 	return body, latency, providerResponseHeaders, bErr
+}
+
+// nativeSchemaRejections are the Converse 400s for a native structured-output schema Claude will
+// not compile (shape or grammar size); the same request succeeds on the synthetic tool.
+var nativeSchemaRejections = []string{"output_config.format.schema:", "compiled grammar is too large", "grammar compilation timed out", "schema is too complex"}
+
+// markNativeSchemaRejection flags a natively sent structured-output request whose schema was
+// rejected, so core re-sends it once with the synthetic tool.
+func markNativeSchemaRejection(ctx *schemas.BifrostContext, jsonData []byte, bErr *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool ||
+		bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest || bErr.Error == nil ||
+		!providerUtils.JSONFieldExists(jsonData, "outputConfig") {
+		return
+	}
+	message := strings.ToLower(bErr.Error.Message)
+	for _, limit := range nativeSchemaRejections {
+		if strings.Contains(message, limit) {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return
+		}
+	}
 }
 
 // newRequestError classifies a failed net/http request the way the shared fasthttp
@@ -550,7 +580,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
@@ -595,7 +625,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
+		bErr := parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
 	}
 
 	return resp, nil
@@ -1608,8 +1640,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput, sawCallerToolUse bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse, usedStructuredOutputTool bool
 		var structuredOutputBuilder strings.Builder
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of held text
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
 
@@ -1782,6 +1816,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							usedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
@@ -1827,13 +1869,33 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						continue
 					}
 
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output (mirrors ResponsesStreamRequest).
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					// Text is held, not dropped: see the matching block in ResponsesStream.
+					if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
 					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						if !usedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
+						continue
+					}
+					if len(heldSO) > 0 && !usedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -2068,6 +2130,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of heldText
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
@@ -2234,47 +2298,52 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
 						isAccumulatingStructuredOutput = false
 					}
 
-					// Check for tool use delta event
+					// The synthetic tool's input is the answer: send it as a text delta on the same
+					// content block so the converter opens and closes a regular text item around it.
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+						text := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &text}
+					} else if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					} else if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						// Prose beside the synthetic tool would corrupt the JSON, but an unpinned
+						// tool (thinking, Fable 5.1+) can be answered in plain text instead: hold
+						// it until the turn shows which one happened.
+						if !streamState.UsedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
 						continue
-					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					} else if len(heldSO) > 0 && !streamState.UsedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							// Anything after held text waits behind it, so blocks reach the client in order.
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -4698,7 +4767,7 @@ func invokeIngressThinkingNeedsInvokePath(ctx *schemas.BifrostContext, reasoning
 // the same region and model-path resolution as the Converse path.
 func (provider *BedrockProvider) invokeURL(ctx *schemas.BifrostContext, key schemas.Key, model, action string) (requestURL, region string) {
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
-	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	host := provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
 	return fmt.Sprintf("https://%s/model/%s", host, path), region
 }
 
@@ -4957,4 +5026,38 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
 	}
+}
+
+// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text delta, a
+// non-tool block start, or the stop of a block already in textBlocks.
+func isTextBlockEvent(ev *BedrockStreamEvent, textBlocks map[int]struct{}) bool {
+	if ev.Delta != nil {
+		return ev.Delta.Text != nil
+	}
+	if ev.Start != nil {
+		return ev.Start.ToolUse == nil
+	}
+	if ev.ContentBlockIndex != nil && ev.StopReason == nil && ev.Usage == nil {
+		_, ok := textBlocks[*ev.ContentBlockIndex]
+		return ok
+	}
+	return false
+}
+
+// heldConverseEvent is a Converse stream event held back on the synthetic structured-output path.
+type heldConverseEvent struct {
+	event   *BedrockStreamEvent
+	payload []byte // upstream payload, copied off the reused decoder buffer; nil when raw responses are off
+	text    bool   // part of a text block, dropped if bf_so_* turns out to carry the answer
+}
+
+// holdConverseEvent copies ev, and its payload when raw responses are on, so both outlive the
+// decoder's buffer reuse.
+func holdConverseEvent(ev *BedrockStreamEvent, payload []byte, sendRaw, text bool) heldConverseEvent {
+	h := heldConverseEvent{event: new(BedrockStreamEvent), text: text}
+	*h.event = *ev
+	if sendRaw && len(payload) > 0 {
+		h.payload = append([]byte(nil), payload...)
+	}
+	return h
 }
