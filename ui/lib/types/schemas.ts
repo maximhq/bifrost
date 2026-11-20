@@ -65,6 +65,14 @@ export const vectorRetentionDaysSchema = z
 	.min(0)
 	.max(MAX_VECTOR_RETENTION_DAYS, msg("validation.vectorRetentionDaysAtMost106751"));
 
+// vectorMaxSizeMBSchema checks client_config.vector_max_size_mb, where 0 (a
+// blank field) is no limit. A fraction is refused rather than read as 0, which
+// would turn the limit off without a word.
+export const vectorMaxSizeMBSchema = z
+	.number()
+	.int(msg("validation.vectorMaxSizeMustBeAWholeNumber"))
+	.min(0, msg("validation.vectorMaxSizeMustBeAWholeNumber"));
+
 export const knownProviderSchema = z.enum(KnownProvidersNames as unknown as [string, ...string[]]);
 
 // Custom provider name schema (branded type simulation)

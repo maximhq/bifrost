@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -226,4 +227,50 @@ func TestWarpSweepSurvivesARetentionTooLongForADuration(t *testing.T) {
 		require.Zero(t, swept, "days=%d", days)
 		require.ElementsMatch(t, []string{"fresh", "stale"}, retentionTestIDs(vectors), "days=%d keeps both", days)
 	}
+}
+
+// Warp offers its log index to the vector storage limit once it has one to offer:
+// with an embedding model, in the namespace and width it indexes with, and
+// only its own vectors.
+func TestWarpOffersItsLogIndexToTheVectorStorageLimit(t *testing.T) {
+	service, vectors := retentionTestService(t)
+	indexes := service.VectorStorageLimitIndexes(context.Background())
+	require.Len(t, indexes, 1)
+	require.Same(t, vectors, indexes[0].Store)
+	require.Equal(t, assignTestRow().LogVectorStoreNamespace, indexes[0].Namespace)
+	require.Equal(t, assignTestRow().EmbeddingDimension, indexes[0].Dimension)
+	require.Equal(t, "timestamp", indexes[0].TimestampField)
+
+	never := serviceForTest(t, nil, WithConfigStore(&recordingStore{}), WithVectorStore(newFakeWarpVectorStore()))
+	require.Empty(t, never.VectorStorageLimitIndexes(context.Background()), "nothing indexed without an embedding model")
+}
+
+// After a restart an embedded Chromem store cannot enumerate a namespace until
+// it is opened again. Warp opens its own before offering it to the vector
+// storage limit, with the width its configuration gives, so the limit can count it
+// rather than skip it until the next log is indexed.
+func TestWarpOpensItsLogIndexForTheVectorStorageLimitAfterARestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	row := assignTestRow()
+	open := func() vectorstore.VectorStore {
+		store, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{Path: dir}}, nil)
+		require.NoError(t, err)
+		return store
+	}
+	before := open()
+	require.NoError(t, before.CreateNamespace(ctx, row.LogVectorStoreNamespace, row.EmbeddingDimension, nil))
+	vector := make([]float32, row.EmbeddingDimension)
+	vector[0] = 1
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, before.Add(ctx, row.LogVectorStoreNamespace, id, vector, map[string]interface{}{"warp_log": true, "timestamp": int64(1)}))
+	}
+
+	after := open()
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: row}), WithVectorStore(after), WithEmbeddingExecutor(assignTestEmbedding))
+	indexes := service.VectorStorageLimitIndexes(ctx)
+	require.Len(t, indexes, 1)
+	count, err := indexes[0].Store.CountVectors(ctx, indexes[0].Namespace, indexes[0].Filter)
+	require.NoError(t, err, "the reopened namespace can be counted")
+	require.EqualValues(t, 3, count)
 }

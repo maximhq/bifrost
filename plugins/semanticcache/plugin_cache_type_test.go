@@ -373,6 +373,10 @@ func (s *directFastPathStore) DeleteAll(ctx context.Context, namespace string, q
 	return nil, vectorstore.ErrNotSupported
 }
 
+func (s *directFastPathStore) CountVectors(context.Context, string, []vectorstore.Query) (int64, error) {
+	return 0, vectorstore.ErrNotSupported
+}
+
 func (s *directFastPathStore) Close(ctx context.Context, namespace string) error { return nil }
 
 func newCrossProviderChatRequest(provider schemas.ModelProvider, model string, requestType schemas.RequestType, prompt string) *schemas.BifrostRequest {

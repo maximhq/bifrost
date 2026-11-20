@@ -89,6 +89,10 @@ func (s *observableStore) DeleteAll(ctx context.Context, ns string, queries []ve
 	s.mu.Unlock()
 	return results, err
 }
+
+func (s *observableStore) CountVectors(context.Context, string, []vectorstore.Query) (int64, error) {
+	return 0, vectorstore.ErrNotSupported
+}
 func (s *observableStore) Close(ctx context.Context, ns string) error { return nil }
 
 func newTestPlugin(t *testing.T, store vectorstore.VectorStore) *Plugin {

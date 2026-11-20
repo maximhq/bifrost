@@ -81,6 +81,10 @@ func (handlerVectorStore) Delete(context.Context, string, string) error { return
 func (handlerVectorStore) DeleteAll(context.Context, string, []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
 	return nil, nil
 }
+
+func (handlerVectorStore) CountVectors(context.Context, string, []vectorstore.Query) (int64, error) {
+	return 0, nil
+}
 func (handlerVectorStore) Close(context.Context, string) error { return nil }
 
 func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func()) {

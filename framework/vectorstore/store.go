@@ -4,6 +4,7 @@ package vectorstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -122,8 +123,35 @@ type VectorStore interface {
 	Delete(ctx context.Context, namespace string, id string) error
 	// DeleteAll deletes all vectors from the vector store.
 	DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error)
+	// CountVectors returns how many vectors in the namespace match every query
+	// (all of them, with none); 0 for a namespace that does not exist.
+	CountVectors(ctx context.Context, namespace string, queries []Query) (int64, error)
 	// Close closes the vector store.
 	Close(ctx context.Context, namespace string) error
+}
+
+// countByPaging counts the vectors matching queries by reading them, for a
+// backend with no filtered count of its own. It asks for the vectors: that is
+// the read every backend pages to the end (Pinecone's plain GetAll is one
+// capped query with no continuation), and it carries the filter across pages.
+func countByPaging(ctx context.Context, store VectorStore, namespace string, queries []Query) (int64, error) {
+	ctx = WithIncludeVectors(ctx)
+	var count int64
+	var cursor *string
+	for {
+		results, next, err := store.GetAll(ctx, namespace, queries, nil, cursor, 1000)
+		if errors.Is(err, ErrNotFound) && cursor == nil {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		count += int64(len(results))
+		if next == nil || *next == "" || len(results) == 0 {
+			return count, nil
+		}
+		cursor = next
+	}
 }
 
 // WithDisableScanFallback returns a derived context that tells vector stores not

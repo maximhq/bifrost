@@ -196,3 +196,36 @@ func (s *Service) sweepExpiredVectors(ctx context.Context, now time.Time) (int, 
 	})
 	return len(deleted), err
 }
+
+// VectorStorageLimitIndexes is Warp's log index, for the vector storage limit, which bounds
+// the space it takes together with the other log-derived indexes and deletes
+// their oldest vectors first. None without a vector store or an embedding
+// model (nothing was indexed), or while the configuration cannot be read.
+func (s *Service) VectorStorageLimitIndexes(ctx context.Context) []vectorstore.StorageLimitIndex {
+	s.mu.RLock()
+	vectors := s.vectorStore
+	s.mu.RUnlock()
+	if vectors == nil {
+		return nil
+	}
+	view, err := s.ConfigView(ctx)
+	if err != nil || view.EmbeddingModel == "" {
+		return nil
+	}
+	// Opened before it is counted, with the width the configuration gives: an
+	// embedded Chromem store cannot enumerate a namespace this process has not
+	// opened, and would otherwise drop out of the limit after a restart until
+	// the next log was indexed. The indexer opens it once per configuration. If
+	// opening fails, the index is still offered, and the limit reports it as
+	// skipped with the reason.
+	if s.indexer != nil {
+		if err := s.indexer.ensureNamespaceOnce(ctx, view.LogVectorStoreNamespace, view.EmbeddingDimension); err != nil {
+			s.warnf("failed to open Warp's log index for the vector storage limit: %v", err)
+		}
+	}
+	return []vectorstore.StorageLimitIndex{{
+		Name: "Warp's log index", Store: vectors, Namespace: view.LogVectorStoreNamespace,
+		Dimension: view.EmbeddingDimension, TimestampField: "timestamp",
+		Filter: []vectorstore.Query{{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true}},
+	}}
+}

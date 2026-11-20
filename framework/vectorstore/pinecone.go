@@ -136,6 +136,25 @@ func (s *PineconeStore) listNamespacesFromStats(ctx context.Context, prefix stri
 	return namespaces, nil
 }
 
+// Count returns how many vectors in the namespace match the queries. With no
+// queries it reads the index stats, which list only namespaces holding
+// vectors, so a missing one holds none. Pinecone has no filtered count, so a
+// filter pages through every matching vector, fetching each; it costs a read
+// of each, which is why the storage limit pass is slower on Pinecone.
+func (s *PineconeStore) CountVectors(ctx context.Context, namespace string, queries []Query) (int64, error) {
+	if len(queries) > 0 {
+		return countByPaging(ctx, s, namespace, queries)
+	}
+	stats, err := s.indexConn.DescribeIndexStats(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read index stats: %w", err)
+	}
+	if summary, ok := stats.Namespaces[namespace]; ok && summary != nil {
+		return int64(summary.VectorCount), nil
+	}
+	return 0, nil
+}
+
 // DeleteNamespace deletes a namespace from the Pinecone vector store.
 func (s *PineconeStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	idxConn, err := s.getNamespaceConnection(namespace)

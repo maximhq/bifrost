@@ -523,6 +523,10 @@ func (m *MockUnsupportedStore) DeleteAll(ctx context.Context, namespace string, 
 	return nil, vectorstore.ErrNotSupported
 }
 
+func (m *MockUnsupportedStore) CountVectors(ctx context.Context, namespace string, queries []vectorstore.Query) (int64, error) {
+	return 0, vectorstore.ErrNotSupported
+}
+
 func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	return nil, vectorstore.ErrNotSupported
 }

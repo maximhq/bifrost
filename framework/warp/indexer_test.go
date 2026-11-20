@@ -235,6 +235,18 @@ func (f *fakeWarpVectorStore) DeleteAll(_ context.Context, namespace string, que
 	return deleted, nil
 }
 
+func (f *fakeWarpVectorStore) CountVectors(_ context.Context, namespace string, queries []vectorstore.Query) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var count int64
+	for key, metadata := range f.adds {
+		if key.namespace == namespace && fakeMatchesAll(metadata, queries) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // fakeMatchesAll applies a delete's filter the way the real stores do: every
 // condition has to hold, and a condition on a property the entry does not
 // have does not hold.
