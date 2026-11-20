@@ -1,0 +1,141 @@
+---
+title: "Wally"
+description: "Wally API conversion guide - OpenAI-compatible chat, streaming, tool calling, reasoning, and vision for open-weight models"
+icon: "w"
+---
+
+## Overview
+
+[Wally](https://www.runwally.com) by RunAnywhere is an **OpenAI-compatible provider** serving open-weight models such as DeepSeek, GLM, Kimi and MiniMax. Bifrost delegates to the shared OpenAI-compatible request and response converters. Key characteristics:
+
+- **OpenAI-compatible chat** - Chat Completions use `/chat/completions`
+- **Streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Function tools are passed through using the OpenAI-compatible schema
+- **Reasoning support** - Reasoning models return reasoning via `reasoning_content`, and `reasoning_effort` controls thinking
+- **Vision** - Image input on the models whose catalog entry lists `image` in `input_modalities`
+- **Responses API** - Supported by converting Responses requests to Chat Completions internally
+- **Parameter filtering** - Removes unsupported OpenAI-specific fields
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Wally API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Create an API key in the [RunAnywhere console](https://console.runanywhere.ai). The default base URL is `https://inference.runanywhere.ai/v1`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Wally** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Wally**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.WALLY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "wally": {
+      "keys": [
+        {
+          "name": "wally-key-1",
+          "value": "env.WALLY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Wally:
+    return []schemas.Key{{
+        Name:   "wally-key-1",
+        Value:  *schemas.NewSecretVar("env.WALLY_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+The [Wally public API contract](https://docs.runanywhere.ai/wally-cloud/api#body-parameters) documents `model`, `messages`, `stream`, `temperature`, `max_tokens`, `tools`, `tool_choice`, and `stream_options`. Fields outside that contract may be rejected; support for the full OpenAI parameter set is not implied.
+
+Bifrost maps its output-token cap to Wally's documented `max_tokens` field, including `max_output_tokens` on Responses requests. This follows the documented contract; it does not establish whether Wally accepts other token-field aliases at runtime.
+
+Tool calling, reasoning controls, and image input depend on the selected model's capabilities. Check the current `/models` catalog before relying on them.
+
+For message format and Bifrost's conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Bifrost serves every model Wally exposes, for example `deepseek-v4.1-flash`, `glm-5.3-flash`, and `kimi-k3`. Call [List Models](#3-list-models) for the current catalog, or see [Wally pricing](https://www.runwally.com/pricing).
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "wally/deepseek-v4.1-flash",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Reasoning Parameter
+
+Reasoning models return reasoning content via `reasoning_content`. Each model lists its accepted `reasoning_effort` levels in the `/models` catalog; on models that allow it, `reasoning_effort: "none"` turns thinking off.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content). Streaming Responses requests are also routed through Chat Completions streaming.
+
+---
+
+# 3. List Models
+
+Lists available models from Wally through `/models`.

@@ -1,6 +1,7 @@
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
+- feat: wally - new provider for chat, chat streaming, Responses and list models (thanks [@sanchitmonga22](https://github.com/sanchitmonga22)!)
 - feat: soniox - new provider for async speech-to-text, text-to-speech with streaming, speech sessions and real-time transcription
 - feat: sarvam - chat and model listing move to Token Factory v2, and Sarvam Prism serves decisions (thanks [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)!)
   <Warning>

@@ -320310,6 +320310,426 @@
       ]
     },
     {
+      "name": "354. Wally provider (#9719 / PR #9720)",
+      "description": "Wally (RunAnywhere) serves open-weight models through an OpenAI-compatible chat API at https://inference.runanywhere.ai/v1. Bifrost reaches it through the shared OpenAI chat handlers, serves /v1/responses by converting to chat, and lists models from /models. Wally has no /completions, /embeddings or /responses endpoint, so text completion and embeddings are declared unsupported in provider-capabilities.json and covered by the shared documented-unsupported checks. Model ids name upstream vendors (deepseek-v4.1-flash, minimax-m3), so filter-collection.mjs routes these rows exclusively to the wally partition.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - answer served by wally with usage - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by wally with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.content).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('wally');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ],\n  \"max_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes with a finish_reason', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});",
+                  "pm.test('stream carries nonempty answer text', function () {",
+                  "  var answer = '';",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var event = JSON.parse(data);",
+                  "    (event.choices || []).forEach(function (choice) {",
+                  "      if (choice.delta && typeof choice.delta.content === 'string') { answer += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(answer.trim(), 'no answer text in stream: ' + pm.response.text().slice(0, 2000)).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort none turns thinking off - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('effort none is accepted and thinking is off', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.reasoning || '', 'thinking still ran with effort none').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"max_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - top_k dropped and small output cap kept - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('top_k is not forwarded and a cap below 16 is honored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('wally');",
+                  "  var msg = (((j.choices || [])[0]) || {}).message || {};",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage.completion_tokens, 'no tokens generated: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage.completion_tokens, 'cap not honored: ' + pm.response.text()).to.be.at.most(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 50.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"top_k\": 40,\n  \"max_completion_tokens\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tool call comes back in OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = (choice.message || {}).tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city).to.be.a('string');",
+                  "  pm.expect(choice.finish_reason).to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_weather\"\n    }\n  },\n  \"max_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - Responses shape via chat - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Name one primary color.\",\n  \"max_output_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/chat/completions - OpenAI drop-in route - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in reaches wally', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses stream - completed SSE response - wally/deepseek-v4.1-flash - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Wally Responses stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
+                  "  pm.expect(pm.response.text()).to.include('response.completed');",
+                  "});",
+                  "pm.test('Wally Responses stream carries nonempty answer text', function () {",
+                  "  var answer = '';",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var event = JSON.parse(data);",
+                  "    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') { answer += event.delta; }",
+                  "  });",
+                  "  pm.expect(answer.trim(), 'no output_text delta in stream: ' + pm.response.text().slice(0, 2000)).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models?provider=wally - lists Wally models - #9719",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Wally models are listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data).to.be.an('array').and.not.empty;",
+                  "  data.forEach(function (model) { pm.expect(model.id).to.be.a('string').and.not.empty; });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=wally",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "wally"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "345. Model routers: a router's routing takes requests by model name, and the llm classifier picks the tier's model (model router routing)",
       "description": "A model router owns the model each tier gets and its own routing: which requests it takes, after the routing rules. An app that wants a router asks for it by a model name the router's routing matches with `model == \"<name>\"`, and the router's model for the tier the classifier picks replaces that name.\n\nThe prerequest creates a temporary router whose classifier is the llm classifier on openai/gpt-4o-mini (a new router starts off, global, after the other global routers), gives each tier its own openai model (SIMPLE gpt-4o-mini, MEDIUM gpt-4.1-mini, COMPLEX gpt-4o) through PUT /api/routing/model-routers/{id}/targets, and turns its routing on for a unique model name through PUT /api/routing/model-routers/{id}/routing. The request asks for that name on /v1/chat/completions. The test pins that one of the router's tier models served it and, from the request's log, that it was the model of the tier the classifier picked and that the log records the router, the tier and the model-router engine; that saving the router's config through PUT /api/routing/model-routers/{id} leaves its routing and targets as stored; that a new router's defaults are served by GET /api/routing/model-routers/defaults; that /api/logs/rankings/by-dimension accepts dimension=model_router, and dimension=complexity_tier filtered to the router by model_router_ids; that the router list carries the router with its routing; the refusals for bad targets, for bad routing (an unknown scope, a missing or unknown scope_id, a condition that uses complexity_tier or does not compile, a negative priority, an unknown router, a global priority another router has) and for the llm classifier without an llm block; and that the deleted router is gone. The router's id is chosen before the create and registered for cleanup, so it is deleted on every path, including a create that stored it without answering 200. It makes one paid openai/gpt-4o-mini classification call and one paid completion capped at 32 tokens.",
       "item": [
