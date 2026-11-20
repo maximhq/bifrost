@@ -21,8 +21,10 @@ interface Props {
 // impact review. A decision model is asked about every request, so there is no
 // replay of the whole window: each staged group's examples are tried on that
 // group's own requests, asked of the router's decision model with its
-// examples as they are and with the staged ones added. Each test costs two
-// decision-model calls per request, so it runs only when asked to.
+// guidance as it is and with the staged examples added; a staged signal is
+// tried the same way, on the requests of the groups it was written from. Each
+// test costs two decision-model calls per request, so it runs only when asked
+// to.
 export default function SuggestionExamplesTestView({ routerId, staged, tierLabel, onBack }: Props) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions.examplesTest" });
 	return (
@@ -60,7 +62,8 @@ function StagedGroupTest({
 	const [runTest, { data, isLoading, error, reset }] = useTestComplexitySuggestionExamplesMutation();
 	const run = () => {
 		reset();
-		void runTest({ routerId, suggestionId: entry.id, examples: entry.phrases.map((text) => ({ tier: entry.tier, text })) });
+		const draft = entry.phrases.map((text) => ({ tier: entry.tier, text }));
+		void runTest({ routerId, suggestionId: entry.id, ...(entry.list === "signals" ? { signals: draft } : { examples: draft }) });
 	};
 	const money = (value: number) =>
 		new Intl.NumberFormat(getLocale(), { style: "currency", currency: "USD", maximumFractionDigits: value < 1 ? 4 : 2 }).format(value);
@@ -71,7 +74,11 @@ function StagedGroupTest({
 		<section className="rounded-sm border" data-testid={`complexity-suggestions-examples-test-group-${entry.id}`}>
 			<div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
 				<div className="min-w-0 space-y-1">
-					<p className="text-sm font-medium">{t("groupHeading", { tier: tierLabel(entry.tier) })}</p>
+					<p className="text-sm font-medium">
+						{entry.list === "signals"
+							? t("signalHeading", { tier: tierLabel(entry.tier) })
+							: t("groupHeading", { tier: tierLabel(entry.tier) })}
+					</p>
 					<ul className="text-muted-foreground list-disc space-y-0.5 pl-4 text-xs">
 						{entry.phrases.map((example) => (
 							<li key={example}>{example}</li>

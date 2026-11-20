@@ -599,8 +599,9 @@ export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 
 // Why a cluster of traffic needs a phrase: nothing matches it, it matches
 // weakly, it routes confidently to another tier, its routing is split, or it
-// is one prompt template sent with different fills.
-export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed", "template"] as const;
+// is one prompt template sent with different fills. A decision-model router's
+// "signal" is not a cluster: it is a tier signal written from several groups.
+export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed", "template", "signal"] as const;
 export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number];
 
 // An interval's units and how many of each the gateway accepts: hours up to
@@ -659,7 +660,7 @@ export interface Suggestion {
 // phrase matches.
 export const UNMATCHED_TIER = "none";
 
-export const SUGGESTION_RUN_STAGES = ["backfilling", "reading", "clustering", "suggesting", "saving"] as const;
+export const SUGGESTION_RUN_STAGES = ["backfilling", "reading", "clustering", "suggesting", "signals", "saving"] as const;
 export type SuggestionRunStage = (typeof SUGGESTION_RUN_STAGES)[number];
 
 export interface SuggestionRun {

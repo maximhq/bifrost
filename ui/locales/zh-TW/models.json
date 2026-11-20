@@ -2014,14 +2014,16 @@
 					"weak": "弱相符",
 					"misrouted": "不同層級",
 					"mixed": "混合層級",
-					"template": "提示詞範本"
+					"template": "提示詞範本",
+					"signal": "層級訊號"
 				},
 				"categoryDescription": {
 					"uncovered": "這些請求大多沒有足夠接近的短語，因此採用預設層級。",
 					"weak": "這些請求會到達建議的層級，但僅透過弱相符。",
 					"misrouted": "這些請求以較高置信度相符到與建議層級不同的層級的短語。",
 					"mixed": "目前相似的請求被分到了不同層級。",
-					"template": "這些請求是同一個提示詞範本，只是填入的內容不同，因此短語取自範本中固定的措辭。"
+					"template": "這些請求是同一個提示詞範本，只是填入的內容不同，因此短語取自範本中固定的措辭。",
+					"signal": "多個群組共有的特徵，寫成此層級的一則訊號。"
 				},
 				"loading": "正在載入建議…",
 				"loadFailed": "無法載入建議：{{error}}",
@@ -2168,7 +2170,8 @@
 					"clustering": "正在將相似的請求分組…",
 					"suggesting": "正在提議層級…",
 					"suggestingCount": "正在提議層級：{{total}} 個群組中已完成 {{done}} 個…",
-					"saving": "正在儲存建議…"
+					"saving": "正在儲存建議…",
+					"signals": "正在撰寫層級訊號…"
 				},
 				"emptyTitle": "尚無建議",
 				"emptyBody": "每次執行會讀取此路由器在你所選時間範圍內擷取的請求，找出分類較弱或不一致的群組，並為每個群組提議一個層級。由你決定要新增哪些內容。在你套用之前，不會有任何變更。",
@@ -2308,7 +2311,8 @@
 					"weak": "這些請求能抵達建議的層級，但不穩定。",
 					"misrouted": "決策模型將其中大多數請求送往與建議不同的層級。",
 					"mixed": "決策模型將相似的請求分散到不同層級。",
-					"template": "這些請求是以不同內容填入後送出的同一個提示範本，因此範例描述的是範本的任務。"
+					"template": "這些請求是以不同內容填入後送出的同一個提示範本，因此範例描述的是範本的任務。",
+					"signal": "屬於此層級的多個群組共有的特徵，寫成此層級的一則訊號。決策模型處理每個請求時都會讀取所有層級的訊號，因此一則訊號也可能移動這些群組以外的請求。"
 				},
 				"nearestExample": "最接近的範例：{{tier}} 中的「{{phrase}}」",
 				"proposalFromExamples": "層級模型將此群組的請求與你的層級範例對照閱讀後選擇了 {{tier}}。",
@@ -2344,10 +2348,19 @@
 					"summary_other": "{{count}} 個請求中有 {{changed}} 個改變層級，其中 {{toTier}} 個變為 {{tier}}。",
 					"cost": "本次測試花費 {{cost}}。",
 					"noTier": "無層級",
-					"notRun": "尚未測試。"
+					"notRun": "尚未測試。",
+					"signalHeading": "{{tier}} 的訊號"
 				},
 				"footerStagedExamples_one": "已暫存 {{count}} 個建議的範例。儲存後生效。",
-				"footerStagedExamples_other": "已暫存 {{count}} 個建議的範例。儲存後生效。"
+				"footerStagedExamples_other": "已暫存 {{count}} 個建議的範例。儲存後生效。",
+				"signalTag": "訊號",
+				"signalFor": "層級訊號",
+				"proposalSignal": "根據本次執行移入 {{tier}} 的群組為 {{tier}} 撰寫。接受後會新增到 {{tier}} 的訊號中。",
+				"signalAdded": "已新增訊號：",
+				"stagedSignalInputAria": "已暫存的訊號",
+				"alreadyInSignals": "該訊號已在層級訊號中。",
+				"footerStagedGuidance_one": "已暫存 {{count}} 個建議的範例和訊號。儲存後生效。",
+				"footerStagedGuidance_other": "已暫存 {{count}} 個建議的範例和訊號。儲存後生效。"
 			},
 			"routersNotice": {
 				"title": "複雜度路由器正在升級為路由器",

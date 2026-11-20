@@ -2016,14 +2016,16 @@
 					"weak": "Correspondência fraca",
 					"misrouted": "Nível diferente",
 					"mixed": "Níveis mistos",
-					"template": "Modelo de prompt"
+					"template": "Modelo de prompt",
+					"signal": "Sinal de nível"
 				},
 				"categoryDescription": {
 					"uncovered": "A maioria destes pedidos não corresponde suficientemente a nenhuma frase, pelo que recebe o nível predefinido.",
 					"weak": "Estes pedidos chegam ao nível sugerido, mas apenas através de correspondências fracas.",
 					"misrouted": "Estes pedidos correspondem claramente a frases de um nível diferente do sugerido.",
 					"mixed": "Atualmente, pedidos semelhantes dividem-se por vários níveis.",
-					"template": "Estes pedidos são um mesmo modelo de prompt enviado com conteúdos diferentes, por isso as frases são escritas a partir do texto fixo do modelo."
+					"template": "Estes pedidos são um mesmo modelo de prompt enviado com conteúdos diferentes, por isso as frases são escritas a partir do texto fixo do modelo.",
+					"signal": "Um traço comum a vários grupos, escrito como sinal deste nível."
 				},
 				"loading": "A carregar sugestões…",
 				"loadFailed": "Não foi possível carregar as sugestões: {{error}}",
@@ -2170,7 +2172,8 @@
 					"clustering": "Agrupando requisições semelhantes…",
 					"suggesting": "Propondo níveis…",
 					"suggestingCount": "Propondo níveis: {{done}} de {{total}} grupos…",
-					"saving": "Salvando sugestões…"
+					"saving": "Salvando sugestões…",
+					"signals": "Escrevendo sinais de nível…"
 				},
 				"emptyTitle": "Ainda não há sugestões",
 				"emptyBody": "Uma execução lê as requisições capturadas deste roteador no período que você escolher, encontra grupos que ele classifica de forma fraca ou inconsistente e propõe um nível para cada grupo. Você decide o que é adicionado. Nada muda até você aplicar.",
@@ -2310,7 +2313,8 @@
 					"weak": "Estas solicitações chegam ao nível sugerido, mas não de forma confiável.",
 					"misrouted": "O modelo de decisão envia a maioria destas solicitações para um nível diferente do sugerido.",
 					"mixed": "O modelo de decisão divide solicitações semelhantes entre níveis.",
-					"template": "Estas solicitações são um modelo de prompt enviado com conteúdos diferentes, por isso os exemplos descrevem a tarefa do modelo."
+					"template": "Estas solicitações são um modelo de prompt enviado com conteúdos diferentes, por isso os exemplos descrevem a tarefa do modelo.",
+					"signal": "Um traço comum a vários grupos que pertencem a este nível, escrito como um de seus sinais. O modelo de decisão lê os sinais de todos os níveis a cada solicitação, então um sinal pode mover solicitações além desses grupos."
 				},
 				"nearestExample": "Exemplo mais próximo: “{{phrase}}” em {{tier}}",
 				"proposalFromExamples": "O modelo de nível leu as solicitações deste grupo ao lado dos seus exemplos de nível e escolheu {{tier}}.",
@@ -2346,10 +2350,19 @@
 					"summary_other": "{{changed}} de {{count}} solicitações mudam de nível, {{toTier}} delas para {{tier}}.",
 					"cost": "O teste custou {{cost}}.",
 					"noTier": "Sem nível",
-					"notRun": "Ainda não testado."
+					"notRun": "Ainda não testado.",
+					"signalHeading": "Sinal para {{tier}}"
 				},
 				"footerStagedExamples_one": "{{count}} exemplo sugerido preparado. Salve para aplicá-lo.",
-				"footerStagedExamples_other": "{{count}} exemplos sugeridos preparados. Salve para aplicá-los."
+				"footerStagedExamples_other": "{{count}} exemplos sugeridos preparados. Salve para aplicá-los.",
+				"signalTag": "Sinal",
+				"signalFor": "Sinal de nível",
+				"proposalSignal": "Escrito para {{tier}} a partir dos grupos que a execução moveu para lá. Aceitar o adiciona aos sinais de {{tier}}.",
+				"signalAdded": "Sinal adicionado:",
+				"stagedSignalInputAria": "Sinal preparado",
+				"alreadyInSignals": "Esse sinal já está nos sinais do nível.",
+				"footerStagedGuidance_one": "{{count}} exemplo ou sinal sugerido preparado. Salve para aplicá-lo.",
+				"footerStagedGuidance_other": "{{count}} exemplos e sinais sugeridos preparados. Salve para aplicá-los."
 			},
 			"routersNotice": {
 				"title": "O roteador de complexidade está evoluindo para Roteadores",

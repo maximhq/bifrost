@@ -2016,14 +2016,16 @@
 					"weak": "Coincidencia débil",
 					"misrouted": "Otro nivel",
 					"mixed": "Niveles mixtos",
-					"template": "Plantilla de prompt"
+					"template": "Plantilla de prompt",
+					"signal": "Señal de nivel"
 				},
 				"categoryDescription": {
 					"uncovered": "La mayoría de estas solicitudes no coinciden lo suficiente con ninguna frase, así que reciben el nivel predeterminado.",
 					"weak": "Estas solicitudes llegan al nivel sugerido, pero solo mediante coincidencias débiles.",
 					"misrouted": "Estas solicitudes coinciden claramente con frases de un nivel distinto del sugerido.",
 					"mixed": "Actualmente, solicitudes similares se reparten entre varios niveles.",
-					"template": "Estas solicitudes son una misma plantilla de prompt con distinto contenido, así que las frases se redactan a partir del texto fijo de la plantilla."
+					"template": "Estas solicitudes son una misma plantilla de prompt con distinto contenido, así que las frases se redactan a partir del texto fijo de la plantilla.",
+					"signal": "Un rasgo que comparten varios grupos, redactado como señal de este nivel."
 				},
 				"loading": "Cargando sugerencias…",
 				"loadFailed": "No se pudieron cargar las sugerencias: {{error}}",
@@ -2170,7 +2172,8 @@
 					"clustering": "Agrupando solicitudes similares…",
 					"suggesting": "Proponiendo niveles…",
 					"suggestingCount": "Proponiendo niveles: {{done}} de {{total}} grupos…",
-					"saving": "Guardando sugerencias…"
+					"saving": "Guardando sugerencias…",
+					"signals": "Redactando señales de nivel…"
 				},
 				"emptyTitle": "Aún no hay sugerencias",
 				"emptyBody": "Una ejecución lee las solicitudes capturadas de este router durante el periodo que elijas, encuentra grupos que clasifica de forma débil o incoherente y propone un nivel para cada grupo. Tú decides qué se añade. Nada cambia hasta que apliques.",
@@ -2310,7 +2313,8 @@
 					"weak": "Estas solicitudes llegan al nivel sugerido, pero no de forma fiable.",
 					"misrouted": "El modelo de decisión envía la mayoría de estas solicitudes a un nivel distinto del sugerido.",
 					"mixed": "El modelo de decisión reparte solicitudes similares entre niveles.",
-					"template": "Estas solicitudes son una plantilla de prompt enviada con distintos rellenos, así que los ejemplos describen la tarea de la plantilla."
+					"template": "Estas solicitudes son una plantilla de prompt enviada con distintos rellenos, así que los ejemplos describen la tarea de la plantilla.",
+					"signal": "Un rasgo que comparten varios grupos que pertenecen a este nivel, redactado como una de sus señales. El modelo de decisión lee las señales de todos los niveles en cada solicitud, así que una señal puede mover solicitudes más allá de estos grupos."
 				},
 				"nearestExample": "Ejemplo más cercano: «{{phrase}}» en {{tier}}",
 				"proposalFromExamples": "El modelo de nivel leyó las solicitudes de este grupo junto a tus ejemplos de nivel y eligió {{tier}}.",
@@ -2346,10 +2350,19 @@
 					"summary_other": "{{changed}} de {{count}} solicitudes cambian de nivel, {{toTier}} de ellas a {{tier}}.",
 					"cost": "La prueba costó {{cost}}.",
 					"noTier": "Sin nivel",
-					"notRun": "Aún no probado."
+					"notRun": "Aún no probado.",
+					"signalHeading": "Señal para {{tier}}"
 				},
 				"footerStagedExamples_one": "{{count}} ejemplo sugerido preparado. Guarda para aplicarlo.",
-				"footerStagedExamples_other": "{{count}} ejemplos sugeridos preparados. Guarda para aplicarlos."
+				"footerStagedExamples_other": "{{count}} ejemplos sugeridos preparados. Guarda para aplicarlos.",
+				"signalTag": "Señal",
+				"signalFor": "Señal de nivel",
+				"proposalSignal": "Redactada para {{tier}} a partir de los grupos que la ejecución movió allí. Al aceptarla se añade a las señales de {{tier}}.",
+				"signalAdded": "Señal añadida:",
+				"stagedSignalInputAria": "Señal preparada",
+				"alreadyInSignals": "Esa señal ya está en las señales del nivel.",
+				"footerStagedGuidance_one": "{{count}} ejemplo o señal sugerido preparado. Guarda para aplicarlo.",
+				"footerStagedGuidance_other": "{{count}} ejemplos y señales sugeridos preparados. Guarda para aplicarlos."
 			},
 			"routersNotice": {
 				"title": "El enrutador de complejidad se está actualizando a Enrutadores",

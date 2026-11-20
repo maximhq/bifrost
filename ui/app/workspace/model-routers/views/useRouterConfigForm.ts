@@ -14,6 +14,7 @@ import {
 	DecisionTier,
 	EditableKeywordConfig,
 	MAX_DECISION_EXAMPLES,
+	MAX_DECISION_SIGNALS,
 	MAX_SEMANTIC_PHRASES,
 	ModelRouter,
 	Suggestion,
@@ -46,16 +47,19 @@ import {
 } from "@/app/workspace/complexity-router/formSchema";
 import {
 	addPhrases,
-	exampleLists,
+	criteriaLists,
+	isSignal,
 	newPhrases,
 	removePhrases,
 	replacePhrase,
 	StagedSuggestion,
 	stagedPhraseCount,
+	StagingList,
+	stagingListFor,
 	stagingRoom,
 	stillStaged,
 	SuggestionKind,
-	withExampleLists,
+	withCriteriaLists,
 } from "@/app/workspace/complexity-router/views/suggestions.utils";
 
 // Embedding-capable providers gate the semantic classifier, matching the local
@@ -267,23 +271,30 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	);
 
 	// What staging adds a suggestion to: a semantic router's phrase lists, or a
-	// decision-model router's tier examples, read as lists of the same shape.
+	// decision-model router's tier examples or tier signals (a signal
+	// suggestion's), read as lists of the same shape.
 	const stagingKind: SuggestionKind = liveClassifier === "decision" ? "examples" : "phrases";
-	const readStagingLists = (): EditableKeywordConfig =>
-		stagingKind === "examples" ? exampleLists(getValues("decision.criteria")) : getValues("keywords");
-	const writeStagingLists = (lists: EditableKeywordConfig, validate: boolean) => {
-		if (stagingKind === "examples") {
-			setValue("decision.criteria", withExampleLists(getValues("decision.criteria"), lists), {
-				shouldDirty: true,
-				shouldValidate: validate,
-			});
-		} else {
+	const readStagingLists = (list: StagingList): EditableKeywordConfig =>
+		list === "phrases" ? getValues("keywords") : criteriaLists(getValues("decision.criteria"), list);
+	const writeStagingLists = (list: StagingList, lists: EditableKeywordConfig, validate: boolean) => {
+		if (list === "phrases") {
 			setValue("keywords", lists, { shouldDirty: true, shouldValidate: validate });
+			return;
 		}
+		setValue("decision.criteria", withCriteriaLists(getValues("decision.criteria"), list, lists), {
+			shouldDirty: true,
+			shouldValidate: validate,
+		});
 	};
+	// The lists the tier counts read: phrases, or a decision router's examples.
 	const liveStagingLists = useMemo(
-		() => (stagingKind === "examples" ? (liveDecisionCriteria ? exampleLists(liveDecisionCriteria) : undefined) : liveKeywords),
+		() =>
+			stagingKind === "examples" ? (liveDecisionCriteria ? criteriaLists(liveDecisionCriteria, "examples") : undefined) : liveKeywords,
 		[stagingKind, liveDecisionCriteria, liveKeywords],
+	);
+	const liveSignalLists = useMemo(
+		() => (stagingKind === "examples" && liveDecisionCriteria ? criteriaLists(liveDecisionCriteria, "signals") : undefined),
+		[stagingKind, liveDecisionCriteria],
 	);
 	// A decision router's guidance is filled with its shipped examples once its
 	// status answers. Staged into before that, a save would send the staged
@@ -293,7 +304,10 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 
 	// A staged item removed from its list on the configuration tab means the
 	// suggestion is no longer being accepted, so staging follows the lists.
-	const activeStaged = useMemo(() => (liveStagingLists ? stillStaged(staged, liveStagingLists) : []), [staged, liveStagingLists]);
+	const activeStaged = useMemo(
+		() => stillStaged(staged, (list) => (list === "signals" ? liveSignalLists : liveStagingLists)),
+		[staged, liveStagingLists, liveSignalLists],
+	);
 	const pendingSuggestions = Math.max(0, (openSuggestions?.counts.open ?? 0) - activeStaged.length);
 
 	// stageSuggestion adds a suggestion's phrases to its tier's draft list and
@@ -301,25 +315,29 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	// Staging is closed while a save is in flight: the save sends the lists as
 	// they were when it started, and the reset after it would drop anything
 	// staged since.
-	const stageSuggestion = (suggestion: Suggestion, tier: DecisionTier, phrases: string[]): number => {
+	// A signal suggestion is written for its tier, so it is added there
+	// whatever tier it is dropped on or set to.
+	const stageSuggestion = (suggestion: Suggestion, chosenTier: DecisionTier, phrases: string[]): number => {
 		if (isSaving || !stagingReady) return 0;
+		const list = stagingListFor(stagingKind, suggestion);
+		const tier = isSignal(suggestion) ? suggestion.tier : chosenTier;
 		// Read from the form, not the render: a drop of several rows stages them
 		// one after another before the page renders again.
-		const lists = readStagingLists();
+		const lists = readStagingLists(list);
 		const room =
-			stagingKind === "phrases"
+			list === "phrases"
 				? Math.max(0, MAX_SEMANTIC_PHRASES - countCanonicalSemanticPhrases(lists).total)
-				: stagingRoom(stagingKind, lists, tier, MAX_SEMANTIC_PHRASES, MAX_DECISION_EXAMPLES);
+				: stagingRoom(list, lists, tier, MAX_SEMANTIC_PHRASES, list === "signals" ? MAX_DECISION_SIGNALS : MAX_DECISION_EXAMPLES);
 		const adding = newPhrases(lists, phrases).slice(0, room);
 		if (adding.length === 0) return 0;
-		writeStagingLists(addPhrases(lists, tier, adding), isSubmitted);
-		setStaged((current) => [...current.filter((entry) => entry.id !== suggestion.id), { id: suggestion.id, tier, phrases: adding }]);
+		writeStagingLists(list, addPhrases(lists, tier, adding), isSubmitted);
+		setStaged((current) => [...current.filter((entry) => entry.id !== suggestion.id), { id: suggestion.id, tier, list, phrases: adding }]);
 		return adding.length;
 	};
 	const unstageSuggestion = (id: string) => {
 		if (isSaving) return;
 		const entry = activeStaged.find((candidate) => candidate.id === id);
-		if (entry) writeStagingLists(removePhrases(readStagingLists(), entry.tier, entry.phrases), false);
+		if (entry) writeStagingLists(entry.list, removePhrases(readStagingLists(entry.list), entry.tier, entry.phrases), false);
 		setStaged((current) => current.filter((candidate) => candidate.id !== id));
 	};
 	// editStagedPhrase reports whether the edit was taken, so a refused one
@@ -327,16 +345,19 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const editStagedPhrase = (id: string, from: string, to: string): boolean => {
 		const entry = activeStaged.find((candidate) => candidate.id === id);
 		if (!entry || isSaving) return false;
-		const lists = readStagingLists();
+		const lists = readStagingLists(entry.list);
 		// An edit that collides with an item already in the lists is refused, as
 		// the gateway would refuse the duplicate on save.
 		if (newPhrases(removePhrases(lists, entry.tier, [from]), [to]).length === 0) {
-			toast.info(stagingKind === "examples" ? tcpx("suggestions.alreadyInExamples") : tcpx("suggestions.alreadyInBank"), {
-				position: "top-right",
-			});
+			const message = {
+				phrases: tcpx("suggestions.alreadyInBank"),
+				examples: tcpx("suggestions.alreadyInExamples"),
+				signals: tcpx("suggestions.alreadyInSignals"),
+			}[entry.list];
+			toast.info(message, { position: "top-right" });
 			return false;
 		}
-		writeStagingLists(replacePhrase(lists, entry.tier, from, to.trim()), false);
+		writeStagingLists(entry.list, replacePhrase(lists, entry.tier, from, to.trim()), false);
 		setStaged((current) =>
 			current.map((candidate) =>
 				candidate.id === id
@@ -351,9 +372,11 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	// lists, leaving the rest of the draft as it is.
 	const discardStaged = () => {
 		if (isSaving) return;
-		let lists = readStagingLists();
-		for (const entry of activeStaged) lists = removePhrases(lists, entry.tier, entry.phrases);
-		writeStagingLists(lists, isSubmitted);
+		for (const list of new Set(activeStaged.map((entry) => entry.list))) {
+			let lists = readStagingLists(list);
+			for (const entry of activeStaged) if (entry.list === list) lists = removePhrases(lists, entry.tier, entry.phrases);
+			writeStagingLists(list, lists, isSubmitted);
+		}
 		setStaged([]);
 		setSubmitError(null);
 		setInvalidFields(0);

@@ -19,7 +19,10 @@ import {
 	stagedPhraseCount,
 	stillStaged,
 	exampleLists,
-	withExampleLists,
+	withCriteriaLists,
+	criteriaLists,
+	isSignal,
+	stagingListFor,
 	stagingRoom,
 	examplesTestSummary,
 } from "./suggestions.utils";
@@ -70,11 +73,11 @@ describe("staging suggestions", () => {
 
 	test("forgets a staged suggestion whose phrases were removed from the list", () => {
 		const staged = [
-			{ id: "a", tier: "SIMPLE" as const, phrases: ["reset my password", "change my email"] },
-			{ id: "b", tier: "COMPLEX" as const, phrases: ["plan a migration"] },
+			{ id: "a", tier: "SIMPLE" as const, list: "phrases" as const, phrases: ["reset my password", "change my email"] },
+			{ id: "b", tier: "COMPLEX" as const, list: "phrases" as const, phrases: ["plan a migration"] },
 		];
 		const keywords = addPhrases(bank, "SIMPLE", ["reset my password"]);
-		expect(stillStaged(staged, keywords)).toEqual([{ id: "a", tier: "SIMPLE", phrases: ["reset my password"] }]);
+		expect(stillStaged(staged, () => keywords)).toEqual([{ id: "a", tier: "SIMPLE", list: "phrases", phrases: ["reset my password"] }]);
 		expect(stagedPhraseCount(staged)).toBe(3);
 	});
 });
@@ -91,7 +94,7 @@ describe("filtering suggestions", () => {
 		expect(filterSuggestions(list, { query: "REFUND", category: "all" }, new Set()).map((s) => s.id)).toEqual(["a"]);
 		expect(filterSuggestions(list, { query: "", category: "weak" }, new Set(["c"])).map((s) => s.id)).toEqual(["a"]);
 		expect(filterSuggestions(list, { query: "", category: "template" }, new Set()).map((s) => s.id)).toEqual(["d"]);
-		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 3, uncovered: 1, weak: 1, misrouted: 0, mixed: 0, template: 1 });
+		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 3, uncovered: 1, weak: 1, misrouted: 0, mixed: 0, template: 1, signal: 0 });
 	});
 });
 
@@ -169,6 +172,12 @@ describe("runs", () => {
 		expect(runProgress(run({ status: "running", stage: "reading" }))).toBeCloseTo(0.05);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 10, clusters_done: 5 }))).toBeCloseTo(0.6);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 0, clusters_done: 0 }))).toBeCloseTo(0.3);
+		expect(runProgress(run({ status: "running", stage: "signals" }))).toBeGreaterThan(
+			runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 10, clusters_done: 10 })),
+		);
+		expect(runProgress(run({ status: "running", stage: "signals" }))).toBeLessThan(
+			runProgress(run({ status: "running", stage: "saving" })),
+		);
 		expect(runProgress(run({ status: "running", stage: "saving" }))).toBeCloseTo(0.95);
 	});
 
@@ -211,9 +220,9 @@ describe("staged additions", () => {
 	test("the staged phrases by tier, trimmed, blanks left out", () => {
 		expect(
 			stagedAdditions([
-				{ id: "s1", tier: "SIMPLE", phrases: ["a", " "] },
-				{ id: "s2", tier: "COMPLEX", phrases: [" c "] },
-				{ id: "s3", tier: "SIMPLE", phrases: ["b"] },
+				{ id: "s1", tier: "SIMPLE", list: "phrases", phrases: ["a", " "] },
+				{ id: "s2", tier: "COMPLEX", list: "phrases", phrases: [" c "] },
+				{ id: "s3", tier: "SIMPLE", list: "phrases", phrases: ["b"] },
 			]),
 		).toEqual({ SIMPLE: ["a", "b"], COMPLEX: ["c"] });
 	});
@@ -229,10 +238,40 @@ describe("decision-router examples staging", () => {
 		const lists = exampleLists(criteria);
 		expect(lists).toEqual({ simple_keywords: ["Answer a direct question"], medium_keywords: [], complex_keywords: ["Design a system"] });
 		const staged = addPhrases(lists, "MEDIUM", ["Solve a routine word problem"]);
-		const written = withExampleLists(criteria, staged);
+		const written = withCriteriaLists(criteria, "examples", staged);
 		expect(written.MEDIUM).toEqual({ definition: "medium", signals: [], examples: ["Solve a routine word problem"] });
 		expect(written.SIMPLE.signals).toEqual(["one lookup"]);
 		expect(criteria.MEDIUM.examples, "the criteria given are not modified").toEqual([]);
+	});
+
+	test("signals are read and written the same way, as their own lists", () => {
+		const lists = criteriaLists(criteria, "signals");
+		expect(lists).toEqual({ simple_keywords: ["one lookup"], medium_keywords: [], complex_keywords: [] });
+		const written = withCriteriaLists(criteria, "signals", addPhrases(lists, "MEDIUM", ["Weigh a few dependent steps"]));
+		expect(written.MEDIUM).toEqual({ definition: "medium", signals: ["Weigh a few dependent steps"], examples: [] });
+		expect(written.SIMPLE.examples).toEqual(["Answer a direct question"]);
+		expect(newPhrases(lists, ["ONE lookup", "Recall one fact"]), "a signal is compared with the signals only").toEqual(["Recall one fact"]);
+	});
+
+	test("a signal suggestion is staged into the signals; a decision group into the examples; a semantic one into the phrases", () => {
+		expect(isSignal({ category: "signal" })).toBe(true);
+		expect(isSignal({ category: "misrouted" })).toBe(false);
+		expect(stagingListFor("examples", { category: "signal" })).toBe("signals");
+		expect(stagingListFor("examples", { category: "mixed" })).toBe("examples");
+		expect(stagingListFor("phrases", { category: "weak" })).toBe("phrases");
+	});
+
+	test("a staged signal follows the signal lists, a staged example the example lists", () => {
+		const staged = [
+			{ id: "e", tier: "SIMPLE" as const, list: "examples" as const, phrases: ["Answer a direct question"] },
+			{ id: "s", tier: "SIMPLE" as const, list: "signals" as const, phrases: ["one lookup", "gone"] },
+		];
+		const listsOf = (list: "phrases" | "examples" | "signals") => criteriaLists(criteria, list === "signals" ? "signals" : "examples");
+		expect(stillStaged(staged, listsOf)).toEqual([staged[0], { ...staged[1], phrases: ["one lookup"] }]);
+		expect(
+			stillStaged(staged, () => undefined),
+			"lists not known yet keep nothing staged",
+		).toEqual([]);
 	});
 
 	test("an example already in any tier is not staged again, whatever its case", () => {
@@ -245,6 +284,7 @@ describe("decision-router examples staging", () => {
 		expect(stagingRoom("examples", lists, "COMPLEX", 750, 3)).toBe(3);
 		expect(stagingRoom("examples", { ...lists, simple_keywords: ["a", "b", "c", "d"] }, "SIMPLE", 750, 3)).toBe(0);
 		expect(stagingRoom("phrases", lists, "COMPLEX", 5, 3)).toBe(2);
+		expect(stagingRoom("signals", lists, "MEDIUM", 750, 30), "signals take their own per-tier bound").toBe(29);
 	});
 
 	test("an examples test reports what changed, and what moved to the examples' tier", () => {

@@ -1228,6 +1228,22 @@ test.describe('Complexity Router', () => {
       created_at: '2026-11-19T03:00:00Z',
       updated_at: '2026-11-19T03:00:00Z',
     }
+    // A tier signal: one per row, written for its tier from several groups.
+    const SIGNAL = {
+      ...SUGGESTION,
+      id: 'sug-signal-medium',
+      tier: 'MEDIUM',
+      phrases: ['Weigh a few dependent steps before answering'],
+      category: 'signal',
+      reason: '',
+      confidence: '',
+      request_count: 27,
+      nearest_phrase: '',
+      nearest_tier: '',
+      nearest_similarity: 0,
+      example_log_ids: ['log-sig-1'],
+      current_routing: { SIMPLE: 20, MEDIUM: 7 },
+    }
     const RUN = {
       id: 'run-d1',
       router_id: 'default',
@@ -1316,8 +1332,8 @@ test.describe('Complexity Router', () => {
             json: {
               router_id: 'default',
               router_version: 'examples-v1',
-              suggestions: [SUGGESTION],
-              counts: { open: 1 },
+              suggestions: [SUGGESTION, SIGNAL],
+              counts: { open: 2 },
               enabled: true,
               last_run: RUN,
               next_run_at: '2026-11-20T03:00:00Z',
@@ -1402,6 +1418,39 @@ test.describe('Complexity Router', () => {
       // Suggestions stay on, with their embedding model.
       expect(saved[0].suggestions).toMatchObject({ enabled: true, embedding: { provider: 'openai', model: 'text-embedding-3-small' } })
       await expect.poll(() => statusCalls).toEqual([{ id: 'sug-code-errors', status: 'accepted' }])
+    })
+
+    test('should stage a tier signal into its own tier signals, test it, and save it', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      const row = page.getByTestId('complexity-suggestion-row-sug-signal-medium')
+      await expect(row).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestion-signal-sug-signal-medium')).toHaveText('Signal')
+      await expect(page.getByTestId('complexity-suggestion-proposal-sug-signal-medium')).toContainText('Medium')
+      await expect(page.getByTestId('complexity-suggestion-proposal-sug-signal-medium')).toContainText('Tier signal')
+      // A signal is written for its tier: no other tier to set, nothing to drag.
+      await expect(page.getByTestId('complexity-suggestion-set-tier-sug-signal-medium')).toHaveCount(0)
+      await expect(row).toHaveAttribute('draggable', 'false')
+
+      await page.getByTestId('complexity-suggestion-accept-sug-signal-medium').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-signal-medium')).toHaveText('Added · Medium')
+      await expect(page.getByTestId('complexity-suggestion-accepted-sug-signal-medium')).toContainText('Signal added:')
+      // The tier's zone counts it as one new addition.
+      await expect(page.getByTestId('complexity-suggestions-zone-new-medium')).toHaveText('+1 new')
+
+      await page.getByTestId('complexity-suggestions-draft-review').click()
+      await expect(page.getByTestId('complexity-suggestions-examples-test-group-sug-signal-medium')).toContainText('Signal for Medium')
+      await page.getByTestId('complexity-suggestions-examples-test-run-sug-signal-medium').click()
+      await expect.poll(() => tested).toEqual([
+        { signals: [{ tier: 'MEDIUM', text: 'Weigh a few dependent steps before answering' }], suggestion_id: 'sug-signal-medium' },
+      ])
+
+      await page.getByTestId('complexity-suggestions-draft-apply').click()
+      await expect.poll(() => saved.length).toBe(1)
+      const criteria = (saved[0].decision as { criteria: Record<string, { signals: string[]; examples: string[] }> }).criteria
+      // Added after the tier's shipped signals, which stay; its examples are untouched.
+      expect(criteria.MEDIUM.signals).toEqual(['a draft', 'Weigh a few dependent steps before answering'])
+      expect(criteria.MEDIUM.examples).toEqual(['Solve a routine word problem'])
+      await expect.poll(() => statusCalls).toEqual([{ id: 'sug-signal-medium', status: 'accepted' }])
     })
 
     test('should ask for the embedding model in the suggestion settings', async ({ page }) => {

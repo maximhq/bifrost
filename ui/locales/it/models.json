@@ -2016,14 +2016,16 @@
 					"weak": "Corrispondenza debole",
 					"misrouted": "Livello diverso",
 					"mixed": "Livelli misti",
-					"template": "Modello di prompt"
+					"template": "Modello di prompt",
+					"signal": "Segnale di livello"
 				},
 				"categoryDescription": {
 					"uncovered": "La maggior parte di queste richieste non corrisponde abbastanza ad alcuna frase, quindi riceve il livello predefinito.",
 					"weak": "Queste richieste raggiungono il livello suggerito, ma solo tramite corrispondenze deboli.",
 					"misrouted": "Queste richieste corrispondono nettamente a frasi di un livello diverso da quello suggerito.",
 					"mixed": "Richieste simili sono attualmente suddivise tra più livelli.",
-					"template": "Queste richieste sono un unico modello di prompt inviato con contenuti diversi, quindi le frasi sono scritte a partire dal testo fisso del modello."
+					"template": "Queste richieste sono un unico modello di prompt inviato con contenuti diversi, quindi le frasi sono scritte a partire dal testo fisso del modello.",
+					"signal": "Un tratto comune a più gruppi, scritto come segnale di questo livello."
 				},
 				"loading": "Caricamento dei suggerimenti…",
 				"loadFailed": "Impossibile caricare i suggerimenti: {{error}}",
@@ -2170,7 +2172,8 @@
 					"clustering": "Raggruppamento delle richieste simili…",
 					"suggesting": "Proposta dei livelli…",
 					"suggestingCount": "Proposta dei livelli: {{done}} di {{total}} gruppi…",
-					"saving": "Salvataggio dei suggerimenti…"
+					"saving": "Salvataggio dei suggerimenti…",
+					"signals": "Scrittura dei segnali di livello…"
 				},
 				"emptyTitle": "Nessun suggerimento per ora",
 				"emptyBody": "Un’esecuzione legge le richieste acquisite da questo router nel periodo che scegli, trova i gruppi che classifica in modo debole o incoerente e propone un livello per ciascun gruppo. Decidi tu cosa aggiungere. Nulla cambia finché non applichi.",
@@ -2310,7 +2313,8 @@
 					"weak": "Queste richieste raggiungono il livello suggerito, ma non in modo affidabile.",
 					"misrouted": "Il modello decisionale invia la maggior parte di queste richieste a un livello diverso da quello suggerito.",
 					"mixed": "Il modello decisionale distribuisce richieste simili su livelli diversi.",
-					"template": "Queste richieste sono un unico modello di prompt inviato con contenuti diversi, quindi gli esempi descrivono il compito del modello."
+					"template": "Queste richieste sono un unico modello di prompt inviato con contenuti diversi, quindi gli esempi descrivono il compito del modello.",
+					"signal": "Un tratto comune a più gruppi che appartengono a questo livello, scritto come uno dei suoi segnali. Il modello decisionale legge i segnali di tutti i livelli a ogni richiesta, quindi un segnale può spostare richieste anche oltre questi gruppi."
 				},
 				"nearestExample": "Esempio più vicino: «{{phrase}}» in {{tier}}",
 				"proposalFromExamples": "Il modello di livello ha letto le richieste di questo gruppo accanto ai tuoi esempi di livello e ha scelto {{tier}}.",
@@ -2346,10 +2350,19 @@
 					"summary_other": "{{changed}} richieste su {{count}} cambiano livello, di cui {{toTier}} verso {{tier}}.",
 					"cost": "Il test è costato {{cost}}.",
 					"noTier": "Nessun livello",
-					"notRun": "Non ancora provato."
+					"notRun": "Non ancora provato.",
+					"signalHeading": "Segnale per {{tier}}"
 				},
 				"footerStagedExamples_one": "{{count}} esempio suggerito in preparazione. Salva per applicarlo.",
-				"footerStagedExamples_other": "{{count}} esempi suggeriti in preparazione. Salva per applicarli."
+				"footerStagedExamples_other": "{{count}} esempi suggeriti in preparazione. Salva per applicarli.",
+				"signalTag": "Segnale",
+				"signalFor": "Segnale di livello",
+				"proposalSignal": "Scritto per {{tier}} dai gruppi che l’esecuzione ha spostato lì. Accettarlo lo aggiunge ai segnali di {{tier}}.",
+				"signalAdded": "Segnale aggiunto:",
+				"stagedSignalInputAria": "Segnale in preparazione",
+				"alreadyInSignals": "Quel segnale è già tra i segnali del livello.",
+				"footerStagedGuidance_one": "{{count}} esempio o segnale suggerito in preparazione. Salva per applicarlo.",
+				"footerStagedGuidance_other": "{{count}} esempi e segnali suggeriti in preparazione. Salva per applicarli."
 			},
 			"routersNotice": {
 				"title": "Il router di complessità sta diventando Router",
