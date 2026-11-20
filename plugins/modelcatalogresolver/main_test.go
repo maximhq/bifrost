@@ -287,6 +287,90 @@ func TestPreRequestHook(t *testing.T) {
 	}
 }
 
+// TestPreRequestHookDecisionWithSeveralProviders pins that a decision model named without a provider
+// is not sent to the alphabetically first of several providers serving it: the provider stays unset
+// and the reason core returns names every candidate. One candidate, or an integration route whose
+// own provider is a candidate, resolves as for any other request; a chat request with the same
+// candidates keeps the alphabetical pick (TestPreRequestHook).
+func TestPreRequestHookDecisionWithSeveralProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		model        string
+		integration  string
+		alsoServedBy schemas.ModelProvider // also serves shared-model, beyond testCatalog
+		allowed      []schemas.ModelProvider
+		wantProvider schemas.ModelProvider
+		wantReason   string
+	}{
+		{
+			name:       "two candidates after the allowlist are refused with both named",
+			model:      "shared-model",
+			allowed:    []schemas.ModelProvider{schemas.OpenAI, schemas.Azure},
+			wantReason: "decision model shared-model is served by more than one provider (azure, openai); send it as provider/model, for example azure/shared-model, or add a routing rule that sets the provider",
+		},
+		{
+			name:         "an allowlist that leaves one candidate resolves to it",
+			model:        "shared-model",
+			allowed:      []schemas.ModelProvider{schemas.Azure},
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:         "a model one provider serves resolves to it",
+			model:        "solo-model",
+			wantProvider: schemas.OpenAI,
+		},
+		{
+			name:         "the openai route still resolves to openai",
+			model:        "shared-model",
+			integration:  "openai",
+			wantProvider: schemas.OpenAI,
+		},
+		{
+			name:         "the typesafe route resolves to typesafe",
+			model:        "shared-model",
+			integration:  "typesafe",
+			alsoServedBy: schemas.Typesafe,
+			wantProvider: schemas.Typesafe,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := testCatalog()
+			if tc.alsoServedBy != "" {
+				catalog.UpsertLive(tc.alsoServedBy, string(tc.alsoServedBy)+"-key", false, []string{"shared-model"})
+			}
+			plugin, err := Init(catalog, nil)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			ctx := newTestContext()
+			if tc.allowed != nil {
+				ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, tc.allowed)
+			}
+			if tc.integration != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+			}
+			req := &schemas.BifrostRequest{
+				RequestType:     schemas.DecisionRequest,
+				DecisionRequest: &schemas.BifrostDecisionRequest{Model: tc.model},
+			}
+			if err := plugin.PreRequestHook(ctx, req); err != nil {
+				t.Fatalf("PreRequestHook: %v", err)
+			}
+			provider, _, fallbacks := req.GetRequestFields()
+			if provider != tc.wantProvider {
+				t.Fatalf("provider %q, want %q", provider, tc.wantProvider)
+			}
+			reason, _ := ctx.Value(schemas.BifrostContextKeyProviderResolutionError).(string)
+			if reason != tc.wantReason {
+				t.Fatalf("resolution error %q, want %q", reason, tc.wantReason)
+			}
+			if tc.wantReason != "" && len(fallbacks) != 0 {
+				t.Fatalf("an unresolved decision request got fallbacks %v", fallbacks)
+			}
+		})
+	}
+}
+
 // TestKeySelectionBypass pins the resolution of a request that skips key selection (Claude Code
 // OAuth passthrough, issue #5792). Such a request is pinned to the provider of the route it came in
 // on only when the catalog cannot resolve the model, because a zero-key passthrough provider never

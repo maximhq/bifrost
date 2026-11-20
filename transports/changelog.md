@@ -102,6 +102,7 @@
   The allowlist is empty by default, so no plugin URL is fetched until its host is listed. Set `BIFROST_PLUGIN_URL_ALLOWLIST` (comma-separated hosts, `*.example.com` or `*`) before upgrading if you load plugins from a URL.
   </Warning>
 - **Dashboard** - Log headers and the date picker fit on mobile, the upgrading screen appears only when the server confirms a chunk is gone, and the datasheet editor hides entries without a provider
+- **Ambiguous Bare Decision Models** - A `/v1/decisions` request with a bare model id that more than one configured provider serves, after the virtual key's allowed providers, and that no routing rule gives a provider, returns a 400 naming those providers instead of going to the alphabetically first one. Send `provider/model` or add a routing rule that sets the provider. `/typesafe/v1/systemone` sends a bare model to `typesafe` when it serves the model and the virtual key allows it, as `/openai/v1/decisions` does for `openai`
 
 ## 🔧 Maintenance
 

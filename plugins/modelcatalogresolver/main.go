@@ -29,6 +29,7 @@ var integrationTypeToDefaultProvider = map[string]schemas.ModelProvider{
 	"bedrock":   schemas.Bedrock,
 	"cohere":    schemas.Cohere,
 	"azure":     schemas.Azure,
+	"typesafe":  schemas.Typesafe,
 }
 
 // Plugin resolves the default provider for unprefixed model strings using the model catalog.
@@ -58,7 +59,9 @@ func (p *Plugin) Cleanup() error { return nil }
 //
 // When the catalog returns multiple providers for an unprefixed model, the resolver prefers the
 // integration's canonical provider (looked up from BifrostContextKeyIntegrationType set by the
-// integration router) if it's in the candidate list. Otherwise it picks the first candidate.
+// integration router) if it's in the candidate list. Otherwise it picks the first candidate, except
+// for a decision request, which it leaves unresolved with BifrostContextKeyProviderResolutionError
+// set so core answers 400 naming the candidates.
 //
 // If the catalog returns zero providers, the resolver leaves req.Provider empty — the
 // empty-provider validation in handleRequest/handleStreamRequest then returns a clear error.
@@ -86,6 +89,29 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 		))
 		return nil
 	}
+
+	candidateStrs := make([]string, len(candidates))
+	for i, prov := range candidates {
+		candidateStrs[i] = string(prov)
+	}
+
+	// The same decision model id can name a different model on each provider that serves it, and a
+	// caller-fault error on the alphabetical pick never reaches the inferred fallbacks. Unless the route the request came in on names its provider, a decision
+	// request is left unresolved with a reason core returns as the 400, rather than sent to one of
+	// the candidates the caller did not choose. A routing rule that sets the provider runs before
+	// this resolver, so it still serves as an alias for the bare id.
+	if req.RequestType == schemas.DecisionRequest && len(candidates) > 1 && integrationPreferredProvider(ctx, candidates) == "" {
+		reason := fmt.Sprintf(
+			"decision model %s is served by more than one provider (%s); send it as provider/model, for example %s/%s, or add a routing rule that sets the provider",
+			model, strings.Join(candidateStrs, ", "), candidates[0], model,
+		)
+		ctx.SetValue(schemas.BifrostContextKeyProviderResolutionError, reason)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelWarn, fmt.Sprintf(
+			"No provider specified for decision model %s and the model catalog has %d options: [%s]; leaving req.Provider empty",
+			model, len(candidates), strings.Join(candidateStrs, ", "),
+		))
+		return nil
+	}
 	req.SetProvider(selected)
 
 	// The catalog had no usable provider and key selection is bypassed: the selection is the
@@ -99,10 +125,6 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 		return nil
 	}
 
-	candidateStrs := make([]string, len(candidates))
-	for i, prov := range candidates {
-		candidateStrs[i] = string(prov)
-	}
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
 		"No provider specified for model %s, found %d options in model catalog: [%s], selected: %s",
 		model, len(candidates), strings.Join(candidateStrs, ", "), selected,
@@ -237,13 +259,9 @@ func resolveFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.Model
 		return strings.Compare(string(a), string(b))
 	})
 
-	var integrationType string
-	var isAzureUser bool
 	var allowed []schemas.ModelProvider
 	allowlistSet := false
 	if ctx != nil {
-		integrationType, _ = ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
-		isAzureUser, _ = ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool)
 		allowed, allowlistSet = ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	}
 
@@ -299,19 +317,31 @@ func resolveFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.Model
 		}
 	}
 
-	selected := providers[0]
-	if integrationType != "" {
-		if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
-			preferred := integrationDefault
-			if integrationType == "openai" && isAzureUser {
-				preferred = schemas.Azure
-			}
-			if slices.Contains(providers, preferred) {
-				selected = preferred
-			}
-		}
+	if preferred := integrationPreferredProvider(ctx, providers); preferred != "" {
+		return preferred, providers
 	}
-	return selected, providers
+	return providers[0], providers
+}
+
+// integrationPreferredProvider returns the canonical provider of the integration route the request
+// came in on (azure for an Azure OpenAI SDK on the openai route) when it is among providers, and ""
+// when there is no route hint or the hinted provider is not a candidate.
+func integrationPreferredProvider(ctx *schemas.BifrostContext, providers []schemas.ModelProvider) schemas.ModelProvider {
+	if ctx == nil {
+		return ""
+	}
+	integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	preferred := integrationTypeToDefaultProvider[integrationType]
+	if preferred == "" {
+		return ""
+	}
+	if isAzureUser, _ := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); integrationType == "openai" && isAzureUser {
+		preferred = schemas.Azure
+	}
+	if !slices.Contains(providers, preferred) {
+		return ""
+	}
+	return preferred
 }
 
 // PreLLMHook implements schemas.LLMPlugin (no-op).
