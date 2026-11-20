@@ -22,6 +22,8 @@ var _ jobaccounting.RelayUsageReporter = (*GovernancePlugin)(nil)
 // itself, which the access decides: a key holding no grant for it is refused before any upstream
 // effect. A request carrying no access is unrestricted, as it is for MCP tools.
 func (p *GovernancePlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	// Before any settlement can run, so both terminal paths of a call dedup on one record.
+	ensureBillingClaims(ctx)
 	if req == nil {
 		return req, nil, nil
 	}
@@ -91,6 +93,7 @@ func (p *GovernancePlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *sche
 		Cost:             cost,
 		RequestID:        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID),
 		BillingNonce:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce),
+		claims:           billingClaimsOf(ctx),
 		IsFinalChunk:     true,
 		HasUsageData:     cost > 0,
 		Budgets:          budgets,

@@ -529,6 +529,62 @@ func TestUsageTracker_Idempotency_ConcurrentForgedRequestIDsAllBilled(t *testing
 		"All concurrent physical calls sharing a forged RequestID must bill")
 }
 
+// TestBillingClaimsDedupOnTheRequest: the success and cancellation terminal settlements of one
+// physical call carry the request's record, bill once, and leave the process-wide set empty.
+func TestBillingClaimsDedupOnTheRequest(t *testing.T) {
+	f := newAccountingFixture(t)
+	claims := &billingClaims{}
+	success := acctUpdate("req-race", 0, true, 10.0, 100)
+	cancel := acctUpdate("req-race", 0, false, 10.0, 100)
+	success.claims, cancel.claims = claims, claims
+	f.apply(success, cancel)
+
+	assert.Equal(t, 10.0, f.cost(), "same physical call bills exactly once")
+	assert.Equal(t, int64(1), f.requests(), "request counted once")
+	assert.Equal(t, int64(100), f.tokens(), "tokens counted once")
+	f.tracker.billedMu.Lock()
+	defer f.tracker.billedMu.Unlock()
+	assert.Empty(t, f.tracker.billed, "a request with its own record leaves the process-wide set alone")
+}
+
+// TestBillingClaimsKeepDistinctAttempts: retries and fallbacks of one request share its record
+// and still each bill, as they did against the process-wide set.
+func TestBillingClaimsKeepDistinctAttempts(t *testing.T) {
+	f := newAccountingFixture(t)
+	claims := &billingClaims{}
+	first := acctUpdate("req-retry", 0, false, 5.0, 50)
+	retry := acctUpdate("req-retry", 1, true, 5.0, 50)
+	fallback := acctUpdate("req-retry", 0, true, 5.0, 50)
+	fallback.FallbackIndex = 1
+	for _, u := range []*UsageUpdate{first, retry, fallback} {
+		u.claims = claims
+	}
+	f.apply(first, retry, fallback)
+
+	assert.Equal(t, 15.0, f.cost(), "each physical call bills")
+	assert.Equal(t, int64(150), f.tokens())
+}
+
+// TestEnsureBillingClaimsIsSharedAndKept: the record a pre-hook puts on a request is the one every
+// context of the request reads, and a second pre-hook run keeps it.
+func TestEnsureBillingClaimsIsSharedAndKept(t *testing.T) {
+	root := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ensureBillingClaims(root)
+	first := billingClaimsOf(root)
+	require.NotNil(t, first)
+
+	ensureBillingClaims(root)
+	assert.Same(t, first, billingClaimsOf(root), "a second pre-hook run keeps the first record")
+
+	derived := schemas.NewBifrostContext(root, time.Time{})
+	assert.Same(t, first, billingClaimsOf(derived), "a context derived from the request reads the same record")
+	ensureBillingClaims(derived)
+	assert.Same(t, first, billingClaimsOf(derived))
+
+	assert.Nil(t, billingClaimsOf(schemas.NewBifrostContext(context.Background(), time.Time{})),
+		"a request no pre-hook saw has no record and uses the process-wide set")
+}
+
 // TestUsageTracker_Cleanup tests cleanup of the usage tracker
 func TestUsageTracker_Cleanup(t *testing.T) {
 	logger := NewMockLogger()

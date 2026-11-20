@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -26,9 +27,14 @@ func newPluginForEndpoints(t testing.TB, endpoints ...string) (*GovernancePlugin
 // cases that check they never reach a relay call.
 func newPluginForEndpointsWith(t testing.TB, modelConfigs []configstoreTables.TableModelConfig, endpoints ...string) (*GovernancePlugin, *LocalGovernanceStore) {
 	t.Helper()
+	return newPluginForEndpointsLimited(t, buildBudgetWithUsage("pte-budget", 100.0, 0.0, "1d"), buildRateLimit("pte-rl", 1_000_000, 1_000), modelConfigs, endpoints...)
+}
+
+// newPluginForEndpointsLimited is newPluginForEndpointsWith with the key's own budget and rate limit
+// given, for a caller that needs limits other than the defaults.
+func newPluginForEndpointsLimited(t testing.TB, budget *configstoreTables.TableBudget, rl *configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, endpoints ...string) (*GovernancePlugin, *LocalGovernanceStore) {
+	t.Helper()
 	logger := NewMockLogger()
-	budget := buildBudgetWithUsage("pte-budget", 100.0, 0.0, "1d")
-	rl := buildRateLimit("pte-rl", 1_000_000, 1_000)
 	vk := buildVirtualKeyWithBudget("vk-pte", pteTestVKValue, "pte-vk", budget)
 	vk.RateLimit = rl
 	vk.RateLimitID = &rl.ID
@@ -88,16 +94,22 @@ func TestRelayCallsAnswerToMigratedKeyLimitsOnly(t *testing.T) {
 }
 
 // BenchmarkRelayHooks measures the governance cost of one relay call on the request path: the
-// pre-hook (identity, limits, grant check) and the post-hook (the usage update it queues).
+// pre-hook (identity, limits, grant check) and the post-hook (the usage update it queues). Each
+// iteration is a request of its own, with its own request ID, so each one bills; the key's limits
+// are high enough that no number of iterations exhausts them.
 func BenchmarkRelayHooks(b *testing.B) {
-	p, _ := newPluginForEndpoints(b, "tavily")
+	p, _ := newPluginForEndpointsLimited(b, buildBudgetWithUsage("pte-budget", 1e12, 0.0, "1d"), buildRateLimit("pte-rl", 1<<50, 1<<50), nil, "tavily")
 	req := endpointReq("tavily")
 	resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Usage: &schemas.RelayUsage{Cost: 0.001}}
+	requestIDs := make([]string, b.N)
+	for i := range requestIDs {
+		requestIDs[i] = "bench-" + strconv.Itoa(i)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ctx := a2aVKCtx(pteTestVKValue)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "bench")
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestIDs[i])
 		if _, short, err := p.PreRelayHook(ctx, req); err != nil || short != nil {
 			b.Fatalf("pre-hook: %v %v", err, short)
 		}
