@@ -71,3 +71,44 @@ func BenchmarkOpenAIFileUpload(b *testing.B) {
 		}
 	}
 }
+
+// OpenAI reports expires_at on a file uploaded with expires_after, and on retrieve and list. The
+// provider's file response type had no such field, so every Files API response dropped it.
+func TestOpenAIFileResponsesCarryExpiresAt(t *testing.T) {
+	const fileJSON = `{"id":"file-abc","object":"file","bytes":1,"created_at":1700000000,"expires_at":1700003600,"filename":"doc.pdf","purpose":"user_data","status":"processed"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/files" {
+			_, _ = w.Write([]byte(`{"object":"list","data":[` + fileJSON + `],"has_more":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(fileJSON))
+	}))
+	t.Cleanup(upstream.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, DefaultRequestTimeoutInSeconds: 30, AllowPrivateNetwork: true},
+	}, nil)
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test"), Models: []string{"*"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	uploaded, bErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+		Provider: schemas.OpenAI, File: []byte("%PDF"), Filename: "doc.pdf", Purpose: "user_data",
+		ExpiresAfter: &schemas.FileExpiresAfter{Anchor: "created_at", Seconds: 3600},
+	})
+	require.Nil(t, bErr)
+	require.NotNil(t, uploaded.ExpiresAt, "upload response dropped expires_at")
+	assert.Equal(t, int64(1700003600), *uploaded.ExpiresAt)
+
+	retrieved, bErr := provider.FileRetrieve(ctx, []schemas.Key{key}, &schemas.BifrostFileRetrieveRequest{Provider: schemas.OpenAI, FileID: "file-abc"})
+	require.Nil(t, bErr)
+	require.NotNil(t, retrieved.ExpiresAt, "retrieve response dropped expires_at")
+	assert.Equal(t, int64(1700003600), *retrieved.ExpiresAt)
+
+	listed, bErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{Provider: schemas.OpenAI})
+	require.Nil(t, bErr)
+	require.Len(t, listed.Data, 1)
+	require.NotNil(t, listed.Data[0].ExpiresAt, "list entry dropped expires_at")
+	assert.Equal(t, int64(1700003600), *listed.Data[0].ExpiresAt)
+}

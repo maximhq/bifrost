@@ -2009,17 +2009,17 @@ func trimUserTurnTail(msgs []AnthropicMessage) {
 
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5) and
-// Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Haiku 5.5
+// and Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
 // Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
-// supports_mid_conversation_system_messages wins when set.
+// supports_native_mid_conversation_system wins when set (midConversationSystemSupported).
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
 	m := strings.ToLower(model)
 	switch provider {
 	case schemas.Anthropic:
-		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) {
 			return true
 		}
 		return strings.Contains(m, "opus") &&
@@ -2029,6 +2029,15 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
 	return false
+}
+
+// midConversationSystemSupported resolves whether a mid-conversation system message may be
+// emitted as role:"system": the datasheet's supports_native_mid_conversation_system, then
+// DefaultSupportsMidConversationSystem. The older key is not read here: gateways without
+// enforceMidConversationSystemPlacement (core <= v1.15.2) read it and flip a tail reminder
+// between native and wrapped across turns, so it is held false for them; they ignore this key.
+func midConversationSystemSupported(caps schemas.ModelCaps) bool {
+	return caps.SupportsNativeMidConversationSystem(DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair

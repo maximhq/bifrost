@@ -38,7 +38,7 @@
 		"asyncJobTtl": "비동기 작업 결과 TTL(초)",
 		"asyncJobTtlHelp": "비동기 작업의 기본 수명은 초 단위이에요. 결과는 만료 후 자동으로 정리돼요.",
 		"bifrostUrl": "Bifrost URL",
-		"bifrostUrlHelp": "클라이언트가 이 게이트웨이에 접속하는 URL이며 기본 경로를 포함합니다. <code0>/v1/mcp</code0>와 Warp의 구성 도구에 필요해요. 이들의 호출은 여기로 들어온 것처럼 처리되므로 결과의 링크가 이 URL을 가리킵니다. 비워 두면 둘 다 비활성화되며, 요청이 보낸 Host 헤더를 대신 사용하지 않아요.",
+		"bifrostUrlHelp": "클라이언트가 이 게이트웨이에 접속하는 URL이며 기본 경로를 포함합니다. <code0>/v1/mcp</code0>에 필요해요. 도구 호출은 여기로 들어온 것처럼 처리되므로 결과의 링크가 이 URL을 가리킵니다. 비워 두면 비활성화되며, 요청이 보낸 Host 헤더를 대신 사용하지 않아요.",
 		"bifrostUrlPlaceholder": "https://bifrost.example.com",
 		"openapiUrl": "OpenAPI URL",
 		"openapiUrlHelp": "<code0>/v1/mcp</code0>가 도구를 생성하는 OpenAPI 스펙입니다. http(s) URL 또는 폐쇄망 설치를 위한 앱 디렉터리 기준 상대 경로를 지정합니다. 비워 두면 이 빌드의 게시된 스펙을 읽습니다.",
