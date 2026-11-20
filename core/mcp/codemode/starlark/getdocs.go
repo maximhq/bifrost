@@ -66,6 +66,11 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
+	// A discovered tool may itself be named like a path ("report.py") or carry its
+	// server's name ("codey.add"), so the supplied name is tried before the
+	// server prefix and the ".py" suffix are stripped from it.
+	serverName, toolCandidates := normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
+
 	// Find matching client
 	var matchedClientName string
 	var matchedTool *schemas.ChatTool
@@ -86,12 +91,9 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			matchedClientName = clientName
 
 			// Find the specific tool
-			for i, tool := range tools {
-				if tool.Function != nil {
-					if matchesToolReference(toolName, clientName, tool.Function.Name) {
-						matchedTool = &tools[i]
-						break
-					}
+			for _, candidate := range toolCandidates {
+				if matchedTool = findToolReference(tools, clientName, candidate); matchedTool != nil {
+					break
 				}
 			}
 			break
@@ -134,6 +136,57 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
+}
+
+// findToolReference returns the tool in tools that toolName refers to, or nil.
+func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *schemas.ChatTool {
+	for i, tool := range tools {
+		if tool.Function != nil && matchesToolReference(toolName, clientName, tool.Function.Name) {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+// normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
+// "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
+// "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
+// toolCandidates lists the tool names to try in order: a bare name as supplied, with only
+// "()" dropped, so a tool named "report.pyi" keeps its suffix, then the name with its
+// directory and ".pyi" extension dropped, then without a "<server>." prefix, then without
+// a ".py" suffix too. A name with a directory is a stub path, so its ".pyi" is an extension.
+func normalizeDocsArgs(server, tool string, servers []string) (parsedServer string, toolCandidates []string) {
+	parsedServer, _, _ = parseVFSFilePath(server, servers)
+	if parsedServer == "" {
+		parsedServer = strings.TrimSpace(server)
+	}
+	exactTool, _ := trimVFSPath(tool, nil)
+	exactTool = dropVFSDir(exactTool)
+	toolCandidates = []string{
+		exactTool,
+		stripServerPrefix(exactTool, parsedServer),
+		stripServerPrefix(dropVFSDir(normalizeVFSPath(tool, nil)), parsedServer),
+	}
+	if literal := strings.TrimSuffix(strings.TrimSpace(tool), "()"); !strings.Contains(literal, "/") {
+		toolCandidates = append([]string{literal, stripServerPrefix(literal, parsedServer)}, toolCandidates...)
+	}
+	return parsedServer, toolCandidates
+}
+
+// dropVFSDir drops a directory from a normalized tool path.
+func dropVFSDir(tool string) string {
+	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
+		return tool[i+1:]
+	}
+	return tool
+}
+
+// stripServerPrefix drops a "<server>." prefix from a tool name.
+func stripServerPrefix(tool, server string) string {
+	if len(tool) > len(server)+1 && tool[len(server)] == '.' && strings.EqualFold(tool[:len(server)], server) {
+		return tool[len(server)+1:]
+	}
+	return tool
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
