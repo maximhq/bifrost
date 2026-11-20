@@ -93,11 +93,12 @@ jobs:
             echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
-  # Phone gate. Parks the run on the release-run-approval environment, whose only
-  # protection rule is the bifrost-release-gate GitHub App. The service behind that
-  # App pushes an Approve/Reject prompt to the admin's phone and calls back GitHub
-  # with the answer. Nothing below runs - no provider quota, no runner minutes -
-  # until the tap arrives. Version-bump pushes carry --skip-ci and never reach this
+  # Phone gate. Parks the run on the release-run-approval environment, which needs
+  # two approvals: the bifrost-release-gate GitHub App rule and a required reviewer.
+  # The service behind that App (approve.getbifrost.dev) pushes an Approve/Reject
+  # prompt to the admin's phone and calls back GitHub with the answer; the reviewer
+  # approves separately on the run page. Nothing below runs - no provider quota, no
+  # runner minutes - until both arrive. Version-bump pushes carry --skip-ci and never reach this
   # job. The job holds no secrets, checks out nothing and allows no egress: it is a
   # named point in the graph for the environment rule to hold, nothing more.
   approve-run:
@@ -176,7 +177,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Detect what needs release
         id: detect
@@ -264,7 +265,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -391,6 +392,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -412,6 +414,7 @@ jobs:
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
 
@@ -424,7 +427,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -517,6 +520,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
@@ -643,6 +647,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -666,6 +671,7 @@ jobs:
             www.getbifrost.ai:443
             api.runware.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.typesafe.ai:443
             ai.google.dev:443
             code.claude.com:443
@@ -704,7 +710,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -798,6 +804,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/test-proxy-e2e.sh
 
@@ -897,7 +904,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -988,6 +995,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
@@ -1009,7 +1017,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1125,7 +1133,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Run memory regression tests
         run: |
@@ -1370,7 +1378,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1441,6 +1449,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1528,7 +1537,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Create vLLM pods on RunPod
         env:
@@ -1608,7 +1617,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Docker Compose
         run: |
@@ -1674,6 +1683,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
@@ -1749,7 +1759,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Docker Compose
         run: |
@@ -1815,6 +1825,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
@@ -1873,7 +1884,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Run bifrost-http unit tests
         env:
@@ -1923,7 +1934,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # The suite's OpenAI Python SDK leg runs through uv; without it those cases skip.
       - name: Install uv
@@ -2026,7 +2037,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2110,7 +2121,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Download prebuilt bifrost-http binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -2226,7 +2237,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2325,6 +2336,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -2388,7 +2400,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2510,7 +2522,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # This job still builds the mocker/hitter binaries from
       # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
@@ -2611,7 +2623,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
       # is present, so this download is all that is needed here.
@@ -2733,7 +2745,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2798,6 +2810,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -2904,7 +2917,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2969,6 +2982,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64
@@ -3036,7 +3050,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3100,6 +3114,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
@@ -3158,7 +3173,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Configure Git
         run: |
@@ -3229,6 +3244,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
@@ -3301,7 +3317,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3377,6 +3393,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
@@ -3443,7 +3460,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3507,7 +3524,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3583,7 +3600,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

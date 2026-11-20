@@ -20,6 +20,11 @@
 # while the run goes on. A test that changes it resets the library server, which
 # restores this catalog.
 #
+# bifrost_url is the server's own address: the Bifrost MCP on /v1/mcp (and Warp's
+# management tools, which reach it in process) take their host from it and do not run without it.
+# The vector store is chromem in memory, in process: Warp cannot be configured without one, and the
+# WMG tests configure it.
+#
 # The openai, anthropic and gemini providers point at the fleet's LLM surface
 # (server llm), which answers model requests with replies each test scripts and
 # records what it was sent, and the pricing and model-parameter datasheets come
@@ -74,6 +79,7 @@ CHAOS_PORT="8494"
 CHAOS_TLS_PORT=""
 INPUT_PORT="8496"
 APPS_PORT="8497"
+PROXY_PORT="8498"
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -91,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
         --input-port) INPUT_PORT="$2"; shift 2 ;;
         --apps-port) APPS_PORT="$2"; shift 2 ;;
+        --proxy-port) PROXY_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -106,6 +113,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --chaos-tls-port <p>  HTTPS fleet port (default: fleet port + 1)"
             echo "  --input-port <p>  Port for the input-required MCP server (default: 8496)"
             echo "  --apps-port <p>   Port for the MCP Apps server (default: 8497)"
+            echo "  --proxy-port <p>  Port for the mcpchaos forward proxy (default: 8498)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -188,12 +196,20 @@ if port_in_use "$CHAOS_TLS_PORT"; then
     echo "Error: TLS port $CHAOS_TLS_PORT is already in use; pass --chaos-tls-port"
     exit 1
 fi
-if [[ "$INPUT_PORT" == "$CHAOS_PORT" || "$INPUT_PORT" == "$CHAOS_TLS_PORT" ]]; then
-    echo -e "${RED}Error: --input-port $INPUT_PORT is also an mcpchaos fleet port; pass another${NC}"
+if [[ "$INPUT_PORT" == "$CHAOS_PORT" || "$INPUT_PORT" == "$CHAOS_TLS_PORT" || "$INPUT_PORT" == "$PORT" ]]; then
+    echo -e "${RED}Error: --input-port $INPUT_PORT is also an mcpchaos fleet port or the gateway port; pass another${NC}"
     exit 1
 fi
-if [[ "$APPS_PORT" == "$CHAOS_PORT" || "$APPS_PORT" == "$CHAOS_TLS_PORT" || "$APPS_PORT" == "$INPUT_PORT" ]]; then
+if [[ "$APPS_PORT" == "$CHAOS_PORT" || "$APPS_PORT" == "$CHAOS_TLS_PORT" || "$APPS_PORT" == "$INPUT_PORT" || "$APPS_PORT" == "$PORT" ]]; then
     echo -e "${RED}Error: --apps-port $APPS_PORT is already another server's port; pass another${NC}"
+    exit 1
+fi
+if port_in_use "$PROXY_PORT"; then
+    echo -e "${RED}Error: port $PROXY_PORT is already in use; pass --proxy-port to use another${NC}"
+    exit 1
+fi
+if [[ "$PROXY_PORT" == "$CHAOS_PORT" || "$PROXY_PORT" == "$CHAOS_TLS_PORT" || "$PROXY_PORT" == "$INPUT_PORT" || "$PROXY_PORT" == "$APPS_PORT" || "$PROXY_PORT" == "$PORT" ]]; then
+    echo -e "${RED}Error: --proxy-port $PROXY_PORT is already another server's port; pass another${NC}"
     exit 1
 fi
 
@@ -237,17 +253,17 @@ start_chaos() {
         echo -e "${RED}Error: failed to build mcpchaos${NC}"; exit 1; }
     local log="$API_DIR/$REPORT_DIR/mcpchaos.log"
     write_chaos_seed "$CHAOS_DIR/seed.json"
-    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" -tls-addr "127.0.0.1:$CHAOS_TLS_PORT" > "$log" 2>&1 &
+    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" -tls-addr "127.0.0.1:$CHAOS_TLS_PORT" -proxy-addr "127.0.0.1:$PROXY_PORT" > "$log" 2>&1 &
     CHAOS_PID=$!
     local waited=0
     while [ $waited -lt 40 ]; do
-        port_in_use "$CHAOS_PORT" && port_in_use "$CHAOS_TLS_PORT" && break
+        port_in_use "$CHAOS_PORT" && port_in_use "$CHAOS_TLS_PORT" && port_in_use "$PROXY_PORT" && break
         if ! kill -0 "$CHAOS_PID" 2>/dev/null; then
             echo -e "${RED}mcpchaos exited during startup${NC}"; cat "$log"; exit 1
         fi
         sleep 0.5; waited=$((waited + 1))
     done
-    if ! port_in_use "$CHAOS_PORT" || ! port_in_use "$CHAOS_TLS_PORT"; then
+    if ! port_in_use "$CHAOS_PORT" || ! port_in_use "$CHAOS_TLS_PORT" || ! port_in_use "$PROXY_PORT"; then
         echo -e "${RED}mcpchaos did not become ready${NC}"; cat "$log"; exit 1
     fi
     echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
@@ -289,10 +305,12 @@ write_config() {
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
-    "max_request_body_size_mb": 100
+    "max_request_body_size_mb": 100,
+    "bifrost_url": "http://127.0.0.1:$PORT"
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
+  "vector_store": { "enabled": true, "type": "chromem", "config": {} },
   "mcp": { "client_configs": [
     { "client_id": "adm30-p", "name": "adm30_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm30/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
     { "client_id": "adm35-p", "name": "adm35_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm35/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },

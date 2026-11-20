@@ -1,10 +1,10 @@
 module github.com/maximhq/bifrost/plugins/prompts
 
-go 1.27.3
+go 1.27.4
 
 require (
-	github.com/maximhq/bifrost/core v1.15.1
-	github.com/maximhq/bifrost/framework v1.12.1
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
 	github.com/stretchr/testify v1.12.1
 )
 
@@ -74,6 +74,8 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gorm.io/gorm v1.31.1 // indirect
 )
 

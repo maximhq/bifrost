@@ -115,6 +115,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		var fullContent strings.Builder
 		var responseCount int
 		var lastResponse *schemas.BifrostStreamChunk
+		var perplexityDoneSeen bool
 
 		// Chunk timing tracking for batch detection
 		var chunkTimings []chunkTiming
@@ -169,8 +170,29 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					// upstream provider natively emits it (OpenAI family) or bifrost
 					// synthesizes it during translation (e.g., Anthropic's type-keyed events).
 					// A missing/wrong Object here indicates a provider translation regression.
-					if response.BifrostChatResponse.Object != "chat.completion.chunk" {
+					// Exception: Perplexity's terminal "chat.completion.done" event (usage plus final
+					// search results) is passed through unchanged, because Perplexity-aware clients
+					// use that object value to detect the end of the stream.
+					perplexityDone := testConfig.Provider == schemas.Perplexity && response.BifrostChatResponse.Object == "chat.completion.done"
+					if response.BifrostChatResponse.Object != "chat.completion.chunk" && !perplexityDone {
 						t.Errorf("Chunk %d: Object field must be 'chat.completion.chunk', got %q", responseCount+1, response.BifrostChatResponse.Object)
+					}
+					// The done event must be terminal for content: clients that stop at it would miss
+					// anything after it. Bifrost's own synthesized end chunk (empty delta, usage and
+					// finish_reason) still follows it, so only content-carrying deltas fail here.
+					if perplexityDoneSeen {
+						for _, choice := range response.BifrostChatResponse.Choices {
+							if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+								continue
+							}
+							delta := choice.ChatStreamResponseChoice.Delta
+							if (delta.Content != nil && *delta.Content != "") || (delta.Reasoning != nil && *delta.Reasoning != "") || len(delta.ToolCalls) > 0 {
+								t.Errorf("Chunk %d: content arrived after Perplexity's terminal chat.completion.done event", responseCount+1)
+							}
+						}
+					}
+					if perplexityDone {
+						perplexityDoneSeen = true
 					}
 
 					// Log latency for each chunk (can be 0 for inter-chunks)

@@ -35,6 +35,7 @@ const METHOD_OPTIONS = PASSTHROUGH_METHODS.map((method) => ({ label: method, val
 const PATH_PLACEHOLDERS: Record<string, string> = {
 	"/azure_passthrough": "/openai/**",
 	"/bedrock_passthrough": "/knowledgebases/*/retrieve",
+	"/elevenlabs_passthrough": "/v1/text-to-speech/**",
 	[GENAI_PASSTHROUGH_PREFIX]: "/v1beta/**",
 };
 

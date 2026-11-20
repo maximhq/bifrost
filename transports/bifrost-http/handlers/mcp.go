@@ -2700,7 +2700,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -2907,6 +2907,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		message := fmt.Sprintf("MCP client registered. %d tools discovered. Each user will submit their own headers on first tool use.", len(discovery.Tools))
 		if perUserDiscoveryOn(schemasConfig) {
@@ -3070,6 +3071,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		// Retain the admin credential for the periodic tool syncer and the
 		// refresh worker, mirroring the per-user OAuth promotion and the
@@ -3338,6 +3340,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
+	h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 	lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 	SendJSON(ctx, map[string]any{
@@ -3624,7 +3627,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// later connects from the document fresh.
 		rebuildOpenAPIServer = !disabled && req.OpenAPIConfig == nil && existingConfig.OpenAPIConfig != nil &&
 			strings.TrimSpace(existingConfig.OpenAPIConfig.Spec) == "" && existingConfig.OpenAPIConfig.SpecURL != nil
-		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -5141,6 +5144,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 				return
 			}
+			h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 		}
 
 		// Set discovered tools on the client
@@ -5291,6 +5295,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 	}
 
 	// Clear pending MCP client config from oauth_config (cleanup)
@@ -5613,4 +5618,59 @@ func (h *MCPHandler) recordMCPClientOAuthCompletion(ctx *fasthttp.RequestCtx, cf
 	if !isUpdateFlow {
 		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", cfg.ID, cfg.Name, nil, auditMCPClient(h.store, cfg))
 	}
+}
+
+// relinkConfigVirtualMCPs links a newly registered MCP client into the config.json Virtual MCP
+// declarations that name it, so a Virtual MCP loaded while the client was missing, or while it
+// was registered under a since-deleted id, picks the client up without a restart. Each rewritten
+// Virtual MCP is reloaded through the governance manager, like any other Virtual MCP write. Best effort:
+// a failure is logged and never fails the client registration. A failed reload is retried here,
+// since the row is already rewritten and no later reconcile would report it again.
+func (h *MCPHandler) relinkConfigVirtualMCPs(ctx context.Context, clientName string) {
+	if h.store == nil {
+		return
+	}
+	ids, err := h.store.ReconcileFileVirtualMCPsForClient(ctx, clientName)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("failed to link MCP client %q into config.json virtual MCPs: %v", clientName, err))
+		return
+	}
+	if h.governanceManager == nil {
+		return
+	}
+	for _, id := range ids {
+		if err := h.reloadVirtualMCPWithRetry(ctx, id); err != nil {
+			logger.Error(fmt.Sprintf("failed to reload virtual MCP %d after linking MCP client %q; its cache keeps the previous tools until it is next saved or Bifrost restarts: %v", id, clientName, err))
+		}
+	}
+}
+
+// relinkReloadAttempts and relinkReloadBackoff bound the retries of a Virtual MCP cache reload
+// after a registration re-links it: a few attempts, doubling from the backoff.
+const (
+	relinkReloadAttempts = 3
+	relinkReloadBackoff  = 100 * time.Millisecond
+)
+
+// reloadVirtualMCPWithRetry reloads one Virtual MCP into the cache, retrying a failure with a
+// doubling backoff, and returns the last error once the attempts run out or ctx ends.
+func (h *MCPHandler) reloadVirtualMCPWithRetry(ctx context.Context, id uint) error {
+	backoff := relinkReloadBackoff
+	var err error
+	for attempt := 1; attempt <= relinkReloadAttempts; attempt++ {
+		if _, err = h.governanceManager.ReloadVirtualMCP(ctx, id); err == nil {
+			return nil
+		}
+		if attempt == relinkReloadAttempts {
+			break
+		}
+		logger.Warn(fmt.Sprintf("failed to reload virtual MCP %d (attempt %d of %d), retrying: %v", id, attempt, relinkReloadAttempts, err))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }

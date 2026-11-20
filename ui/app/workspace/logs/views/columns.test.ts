@@ -171,6 +171,169 @@ describe("getMessage", () => {
 
 		expect(getMessage(log)).toBe('User: show me a pastel palette\nAssistant Tool Call: display_color_palette({"theme":"pastel"})');
 	});
+
+	it("shows the tool calls when the last input is an assistant tool call", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [
+				{ role: "system", content: "You are an agent." },
+				{
+					role: "assistant",
+					tool_calls: [{ function: { name: "AskUserQuestion", arguments: '{"q":"amend?"}' } }],
+				},
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe('AskUserQuestion({"q":"amend?"})');
+	});
+
+	it("falls back to the content summary when the last input has no text", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [{ role: "assistant", content: [{ type: "image_url", image_url: { url: "x" } }] }],
+			content_summary: "25\nexit=0",
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("25\nexit=0");
+	});
+
+	it("shows a responses function_call as name(args)", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [{ type: "function_call", call_id: "c1", name: "Bash", arguments: '{"cmd":"ls"}' }],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe('Bash({"cmd":"ls"})');
+	});
+
+	it("shows a responses function_call with empty string content as name(args)", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [{ type: "function_call", call_id: "c1", content: "", name: "Bash", arguments: "{}" }],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("Bash({})");
+	});
+
+	it("falls back to the content summary when a responses item has empty string content", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [{ type: "message", role: "user", content: "" }],
+			content_summary: "latest tool result",
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("latest tool result");
+	});
+
+	it("falls back to the content summary when a function_call_output array has no text", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [
+				{ type: "function_call_output", call_id: "c1", output: [{ type: "input_image", image_url: "data:image/png;base64,AA" }] },
+			],
+			content_summary: "screenshot taken",
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("screenshot taken");
+	});
+
+	// The cases below pin the same precedence as BuildInputContentSummary in
+	// framework/logstore/payload.go: last user text, then the latest tool result
+	// or tool call, so full-history rows match hybrid content_summary rows.
+	it("prefers the last user text over a trailing assistant tool call", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [
+				{ role: "user", content: "what's the weather?" },
+				{ role: "assistant", tool_calls: [{ function: { name: "get_weather", arguments: '{"city":"Paris"}' } }] },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("what's the weather?");
+	});
+
+	it("prefers the last user text over a trailing tool result", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [
+				{ role: "user", content: "add 12 and 13" },
+				{ role: "assistant", tool_calls: [{ function: { name: "add", arguments: '{"a":12,"b":13}' } }] },
+				{ role: "tool", content: "25" },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("add 12 and 13");
+	});
+
+	it("prefers the last user text over a trailing assistant reply", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [
+				{ role: "user", content: "first question" },
+				{ role: "assistant", content: "first answer" },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("first question");
+	});
+
+	it("shows the latest tool result when the chat history has no user text", () => {
+		const log = {
+			object: "chat.completion",
+			input_history: [
+				{ role: "system", content: "You are an agent." },
+				{ role: "assistant", tool_calls: [{ function: { name: "add", arguments: '{"a":12,"b":13}' } }] },
+				{ role: "tool", content: "25" },
+				{ role: "assistant", content: [{ type: "image_url", image_url: { url: "x" } }] },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("25");
+	});
+
+	it("prefers the last responses user text over a trailing function_call", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "list files" }] },
+				{ type: "function_call", call_id: "c1", name: "Bash", arguments: '{"cmd":"ls"}' },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("list files");
+	});
+
+	it("prefers the last responses user text over a trailing function_call_output", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [
+				{ type: "message", role: "user", content: "list files" },
+				{ type: "function_call", call_id: "c1", name: "Bash", arguments: '{"cmd":"ls"}' },
+				{ type: "function_call_output", call_id: "c1", output: "a.txt" },
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("list files");
+	});
+
+	it("shows the last text part of a mixed function_call_output array", () => {
+		const log = {
+			object: "response",
+			responses_input_history: [
+				{
+					type: "function_call_output",
+					call_id: "c1",
+					output: [
+						{ type: "input_text", text: "before" },
+						{ type: "input_image", image_url: "data:image/png;base64,AA" },
+						{ type: "input_text", text: "after" },
+					],
+				},
+			],
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("after");
+	});
 });
 
 describe("createColumns translations", () => {

@@ -205,10 +205,18 @@ Every event Bifrost records by name, grouped by area. Events marked "System even
 | `routing_rule.created`                | A routing rule is created.                                                          |
 | `routing_rule.updated`                | A routing rule changes.                                                             |
 | `routing_rule.deleted`                | A routing rule is deleted.                                                          |
-| `complexity_analyzer_config.updated`  | The complexity analyzer used for complexity-based routing is reconfigured.          |
-| `complexity_analyzer_config.reset`    | The complexity analyzer goes back to its default configuration.                    |
-| `complexity_analyzer.warmup_retried`  | A failed semantic warmup of the complexity analyzer is started again.               |
-| `complexity_generation.deleted`       | A stored complexity analyzer generation that is no longer serving is deleted.       |
+| `model_router.created`                | A router is created.                                                                |
+| `model_router.updated`                | A router's name, description, or classifier settings change.                        |
+| `model_router.deleted`                | A router is deleted, with its models and routing.                                   |
+| `model_router.reset`                  | A router's reference phrases go back to the built-in defaults.                      |
+| `model_router.targets_updated`        | The models a router sends each tier to change.                                      |
+| `model_router.routing_updated`        | A router is turned on or off, or its scope, priority, or condition changes.         |
+| `model_router.phrases_added`          | Reference phrases are added to a router.                                            |
+| `model_router.warmup_retried`         | A failed semantic warmup of a router is started again.                              |
+| `complexity_analyzer_config.updated`  | The deprecated Complexity Router is reconfigured.                                   |
+| `complexity_analyzer_config.reset`    | The deprecated Complexity Router goes back to its default reference phrases.        |
+| `complexity_analyzer.warmup_retried`  | A failed semantic warmup of the deprecated Complexity Router is started again.      |
+| `complexity_generation.deleted`       | A stored phrase-vector generation that is no longer serving is deleted.             |
 | `adaptive_routing_config.updated`     | Adaptive load balancing settings change.                                            |
 | `adaptive_routing.conditions_cleared` | The conditions adaptive routing learned are cleared, so it starts fresh.            |
 | `circuit_breaker_policy.created`      | A circuit breaker policy is created.                                                |
@@ -255,6 +263,7 @@ Every event Bifrost records by name, grouped by area. Events marked "System even
 | `user.access_profile_detached`       | An access profile is detached from a user.                                                        |
 | `user.budget_override_updated`       | A budget override is set on a user's copy of an access profile.                                   |
 | `user.budget_override_removed`       | A user's budget override is cleared.                                                              |
+| `user.view_as_started`              | An admin starts viewing the dashboard as this user. See [View as User](/enterprise/view-as-user). |
 | `user.role_synced`                   | System event. A user's role is updated from the identity provider's claims. Severity `high`.      |
 | `user.status_reconciled`             | System event. Users no longer active in the identity provider are deprovisioned. Severity `high`. |
 | `role.created`                       | A custom role is created.                                                                         |
