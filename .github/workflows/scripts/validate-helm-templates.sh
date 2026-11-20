@@ -1514,6 +1514,126 @@ expect_render_failure "gateways: enabled telemetry needs a destination" "destina
   --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
   --set "$GW.gateways.claudeCode.telemetry.enabled=true"
 
+# NetworkPolicy: off by default. When enabled, the bundled stores admit only the Bifrost pods,
+# the API port is open unless allowExternal is false, and egress is restricted only when
+# egress.enabled is set, then allowing DNS, egress.ports, the bundled stores, cluster peers and
+# the ports of the external stores configured in the values.
+NP='nps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "NetworkPolicy"}
+server = {"app.kubernetes.io/name": "bifrost", "app.kubernetes.io/instance": "bifrost", "app.kubernetes.io/component": "server"}
+egress_ports = lambda np: sorted(p["port"] for rule in np["spec"].get("egress", []) for p in rule.get("ports", []))
+'
+NP_BUNDLED=(--set networkPolicy.enabled=true --set storage.mode=postgres --set postgresql.enabled=true "${REDIS_BUNDLED[@]}")
+check_workload "networkPolicy: omitted by default" \
+  'assert not any(d.get("kind") == "NetworkPolicy" for d in docs), "NetworkPolicy rendered without being enabled"'
+check_workload "networkPolicy: API open to all, bundled stores only from Bifrost, egress left alone" \
+  "$NP"'
+assert sorted(nps) == ["bifrost", "bifrost-database", "bifrost-redis"], "unexpected policies: %r" % sorted(nps)
+spec = nps["bifrost"]["spec"]
+assert spec["policyTypes"] == ["Ingress"], "egress restricted by default: %r" % spec["policyTypes"]
+assert spec["ingress"] == [{"ports": [{"port": 8080, "protocol": "TCP"}]}], "API rule: %r" % spec["ingress"]
+for name, ports in (("bifrost-database", [5432]), ("bifrost-redis", [6379])):
+    rule = nps[name]["spec"]["ingress"][0]
+    assert rule["from"] == [{"podSelector": {"matchLabels": server}}], "%s admits more than Bifrost: %r" % (name, rule)
+    assert [p["port"] for p in rule["ports"]] == ports, "%s ports: %r" % (name, rule["ports"])' \
+  "${NP_BUNDLED[@]}"
+check_workload "networkPolicy: allowExternal false admits only ingressFrom to the API port" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-nginx"}}}], "ingressFrom not applied"' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
+  --set-json 'networkPolicy.ingressFrom=[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}}}]'
+check_workload "networkPolicy: allowExternal false with no ingressFrom admits nobody, not everybody" \
+  "$NP"'
+assert "ingress" not in nps["bifrost"]["spec"], "an API rule rendered: %r" % nps["bifrost"]["spec"].get("ingress")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[]'
+# Kubernetes rejects a peer that names nothing, and an ipBlock together with a selector.
+expect_render_failure "networkPolicy: schema rejects an empty ingressFrom peer" \
+  "/networkPolicy/ingressFrom/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{}]'
+expect_render_failure "networkPolicy: schema rejects a null selector as a peer" \
+  "/networkPolicy/ingressFrom/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"podSelector":null}]'
+expect_render_failure "networkPolicy: schema rejects an egress.to ipBlock without cidr" \
+  "/networkPolicy/egress/to/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.to=[{"ipBlock":{}}]'
+expect_render_failure "networkPolicy: schema rejects a malformed ipBlock cidr" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"not-a-cidr"}}]'
+expect_render_failure "networkPolicy: schema rejects a cidr with an out-of-range prefix" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"10.0.0.0/33"}}]'
+expect_render_failure "networkPolicy: schema rejects a malformed ipBlock except entry" \
+  "/networkPolicy/egress/to/0/ipBlock/except/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set-json 'networkPolicy.egress.to=[{"ipBlock":{"cidr":"10.0.0.0/8","except":["10.1.0.0"]}}]'
+check_workload "networkPolicy: IPv4 and IPv6 ipBlocks with except are accepted" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"ipBlock": {"cidr": "10.0.0.0/8", "except": ["10.1.0.0/16"]}}, {"ipBlock": {"cidr": "2001:db8::/32"}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
+  --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"10.0.0.0/8","except":["10.1.0.0/16"]}},{"ipBlock":{"cidr":"2001:db8::/32"}}]'
+check_workload "networkPolicy: IPv6 CIDRs with a dotted-decimal tail are accepted in cidr and except" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"ipBlock": {"cidr": "2001:db8::192.0.2.0/120", "except": ["2001:db8::192.0.2.128/121"]}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false \
+  --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"2001:db8::192.0.2.0/120","except":["2001:db8::192.0.2.128/121"]}}]'
+expect_render_failure "networkPolicy: schema rejects a dotted-decimal IPv6 tail with an octet over 255" \
+  "/networkPolicy/ingressFrom/0/ipBlock/cidr" \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"ipBlock":{"cidr":"2001:db8::192.0.2.256/120"}}]'
+check_workload "networkPolicy: an empty selector is a valid peer (all pods in the namespace)" \
+  "$NP"'
+assert nps["bifrost"]["spec"]["ingress"][0]["from"] == [{"podSelector": {}}], "from: %r" % nps["bifrost"]["spec"]["ingress"][0].get("from")' \
+  --set networkPolicy.enabled=true --set networkPolicy.allowExternal=false --set-json 'networkPolicy.ingressFrom=[{"podSelector":{}}]'
+expect_render_failure "networkPolicy: schema rejects an egress.to peer with ipBlock and a selector" \
+  "/networkPolicy/egress/to/0" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set-json 'networkPolicy.egress.to=[{"ipBlock":{"cidr":"10.0.0.0/8"},"namespaceSelector":{}}]'
+expect_render_failure "networkPolicy: ingressFrom while allowExternal is true fails instead of being ignored" \
+  "networkPolicy.ingressFrom is set while networkPolicy.allowExternal is true" \
+  --set networkPolicy.enabled=true \
+  --set-json 'networkPolicy.ingressFrom=[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}}}]'
+expect_render_failure "networkPolicy: schema rejects an unknown key" \
+  "additional properties 'ingressFromm' not allowed" \
+  --set networkPolicy.enabled=true --set-json 'networkPolicy.ingressFromm=[]'
+expect_render_failure "networkPolicy: schema rejects an unknown egress key" \
+  "additional properties 'allowDNS' not allowed" \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.allowDNS=true
+check_workload "networkPolicy: egress allows DNS, egress.ports and the bundled stores" \
+  "$NP"'
+spec = nps["bifrost"]["spec"]
+assert spec["policyTypes"] == ["Ingress", "Egress"], "egress not restricted"
+assert egress_ports(nps["bifrost"]) == [53, 53, 443, 5432, 6379], "egress ports: %r" % egress_ports(nps["bifrost"])
+stores = [r for r in spec["egress"] if "to" in r]
+assert all(r["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] in ("database", "redis") for r in stores), "bundled store egress not limited to the store pods"' \
+  "${NP_BUNDLED[@]}" --set networkPolicy.egress.enabled=true
+check_workload "networkPolicy: an empty egress.ports adds no rule that would allow every port" \
+  "$NP"'
+assert all(r.get("ports") for r in nps["bifrost"]["spec"]["egress"]), "an egress rule without ports allows all: %r" % nps["bifrost"]["spec"]["egress"]
+assert egress_ports(nps["bifrost"]) == [53, 53, 5432, 6379], "egress ports: %r" % egress_ports(nps["bifrost"])' \
+  "${NP_BUNDLED[@]}" --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.ports=[]'
+check_workload "networkPolicy: external PostgreSQL and Redis ports are allowed to any destination" \
+  "$NP"'
+assert sorted(nps) == ["bifrost"], "store policies rendered for external stores: %r" % sorted(nps)
+external = [r for r in nps["bifrost"]["spec"]["egress"] if "to" not in r and r["ports"][0]["port"] != 53]
+assert [p["port"] for r in external for p in r["ports"]] == [443, 15432, 16379], "external ports: %r" % external' \
+  "${NP_BUNDLED[@]}" --set networkPolicy.egress.enabled=true \
+  --set postgresql.external.enabled=true --set postgresql.external.host=db.example.com --set postgresql.external.port=15432 \
+  --set vectorStore.redis.external.enabled=true --set vectorStore.redis.external.host=redis.example.com --set vectorStore.redis.external.port=16379
+check_workload "networkPolicy: ClickHouse logs store uses the native TLS port by default" \
+  "$NP"'
+assert 9440 in egress_ports(nps["bifrost"]), "egress ports: %r" % egress_ports(nps["bifrost"])' \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set storage.logsStore.type=clickhouse --set storage.logsStore.clickhouse.host=ch.example.com --set storage.logsStore.clickhouse.secure=true
+check_workload "networkPolicy: Weaviate port comes only from a host:port suffix" \
+  "$NP"'
+assert egress_ports(nps["bifrost"]) == [53, 53, 80, 443], "egress ports: %r" % egress_ports(nps["bifrost"])' \
+  --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true \
+  --set vectorStore.enabled=true --set vectorStore.type=weaviate \
+  --set vectorStore.weaviate.external.enabled=true --set vectorStore.weaviate.external.host=weaviate-0
+check_workload "networkPolicy: cluster gossip and gRPC only between Bifrost pods" \
+  "$NP"'
+peers = [r for r in nps["bifrost"]["spec"]["ingress"] if "from" in r]
+assert peers == [{"from": [{"podSelector": {"matchLabels": server}}], "ports": [{"port": 7946, "protocol": "TCP"}, {"port": 7946, "protocol": "UDP"}, {"port": 10102, "protocol": "TCP"}]}], "cluster rule: %r" % peers' \
+  --set networkPolicy.enabled=true --set bifrost.cluster.enabled=true
+
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 
