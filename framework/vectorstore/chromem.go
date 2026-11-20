@@ -174,6 +174,32 @@ func (s *ChromemStore) ListNamespaces(ctx context.Context, prefix string) ([]str
 	return namespaces, nil
 }
 
+// Count returns how many documents in the collection match the queries; a
+// missing one holds none. A filter is applied in memory, as GetAll does.
+func (s *ChromemStore) Count(ctx context.Context, namespace string, queries []Query) (int64, error) {
+	if s.db == nil {
+		return 0, fmt.Errorf("chromem db is not initialized")
+	}
+	col := s.db.GetCollection(namespace, chromemStubEmbeddingFunc)
+	if col == nil {
+		return 0, nil
+	}
+	if len(queries) == 0 {
+		return int64(col.Count()), nil
+	}
+	docs, err := s.enumerateAll(ctx, namespace)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, doc := range docs {
+		if matchesChromemQueries(decodeChromemMetadata(doc.Metadata), queries) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // DeleteNamespace removes a collection. Idempotent: deleting a missing
 // namespace is not an error.
 func (s *ChromemStore) DeleteNamespace(ctx context.Context, namespace string) error {

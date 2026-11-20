@@ -3159,6 +3159,13 @@ func TestVectorRetentionDaysSchemaMaximumMatchesTheCode(t *testing.T) {
 	require.Equal(t, configstore.MaxVectorRetentionDays, schema.Properties.Client.Properties.VectorRetentionDays.Maximum)
 }
 
+func TestValidateClientConfig_VectorMaxSizeMB(t *testing.T) {
+	for _, mb := range []int{0, 1, 2048} {
+		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: mb}), "mb=%d", mb)
+	}
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: -1}), "vector_max_size_mb")
+}
+
 // TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
 // mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
 // 1 GiB spec through (or a negative value fall back silently).
@@ -3194,6 +3201,26 @@ func TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot(t *testing.T) 
 		second.Close(ctx)
 	}
 	require.ErrorContains(t, err, "vector_retention_days")
+}
+
+// TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot: a file that
+// changes vector_max_size_mb from 0 to a negative value between restarts is
+// refused, not hashed like 0 and passed over in favour of the stored row.
+func TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: 0}})
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: -5}})
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "vector_max_size_mb")
 }
 
 // TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an

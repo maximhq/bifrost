@@ -205,6 +205,12 @@
           "default": 0,
           "description": "Days to keep vector store entries tied to logs (Warp's log index and the complexity router's captured requests). 0 keeps them as long as the logs. Never longer than log_retention_days: a larger value is capped at it. Takes effect at the next hourly sweep, without a restart."
         },
+        "vector_max_size_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Size budget, in MB, for every vector built from logs together: Warp's log index and all complexity routers' captured requests. The size is estimated from counts (each vector's embedding plus 1 KB for its metadata and index), not read from the store. Once the total passes 80% of the budget, the hourly sweep deletes the oldest vectors first across all of them, down to 65%, so the budget itself is rarely reached. 0 sets no budget. Works alongside vector_retention_days: whichever removes a vector first applies."
+        },
         "enforce_governance_header": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"

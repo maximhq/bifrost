@@ -105,6 +105,20 @@ ClientConfig:
         retention applies (logs kept forever, with no log store or cleaner), a
         positive value applies on its own. null on PUT resets it to 0; omitted
         on PUT keeps the stored value.
+    vector_max_size_mb:
+      type: [integer, 'null']
+      minimum: 0
+      default: 0
+      description: >
+        Size budget, in MB, for every vector built from logs together: Warp's
+        log index and all complexity routers' captured requests. The size is
+        estimated from counts (each vector's embedding plus 1 KB for its
+        metadata and index), not read from the store. Once the total passes
+        80% of the budget, the hourly sweep deletes the oldest vectors first
+        across all of them, down to 65%, so it can go over the budget between
+        sweeps. 0 sets no budget. Works alongside vector_retention_days:
+        whichever removes a vector first applies. null on PUT resets it to 0
+        (no budget); omitted on PUT keeps the stored value.
     delete_expired_virtual_keys:
       type: boolean
       default: false

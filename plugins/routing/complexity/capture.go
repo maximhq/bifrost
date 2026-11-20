@@ -820,6 +820,16 @@ func (c *RequestCapture) Sweep(ctx context.Context, store vectorstore.VectorStor
 	return SweepCaptureNamespaces(ctx, store, namespaces, cutoff)
 }
 
+// CaptureBudgetIndex is one capture namespace as the vector budget sees it:
+// only captured requests, by their capture time. The width is left for the
+// budget to read off a stored vector, since the namespace name hashes it.
+func CaptureBudgetIndex(store vectorstore.VectorStore, namespace string) vectorstore.BudgetIndex {
+	return vectorstore.BudgetIndex{
+		Name: namespace, Store: store, Namespace: namespace, TimestampField: captureMetadataTimestamp,
+		Filter: []vectorstore.Query{{Field: captureMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: captureMetadataKindValue}},
+	}
+}
+
 // SweepCaptureNamespaces deletes captured vectors older than cutoff in the
 // given namespaces, for an upkeep that keeps each router's captures for its
 // own lookback. A namespace that is gone is skipped.
