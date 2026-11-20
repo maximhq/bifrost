@@ -418,6 +418,26 @@ func isPermanentConnectError(err error) bool {
 	return false
 }
 
+// isClosedTransportError reports an operation on a client whose transport has
+// closed, for example a STDIO child that exited: mcp-go fails every request on
+// it at once with ErrTransportClosed, and no retry on the same client can
+// succeed. Only a reconnect with a fresh transport (respawning a STDIO child)
+// repairs it, so retrying just delays the connection checker reaching that
+// reconnect by the whole retry schedule.
+func isClosedTransportError(err error) bool {
+	return errors.Is(err, transport.ErrTransportClosed)
+}
+
+// listToolsOnceKey marks a context whose tools/list must be a single attempt,
+// because its caller (the connection checker's probe) owns the retries.
+type listToolsOnceKey struct{}
+
+// withSingleListAttempt returns ctx marked so retrieveExternalToolsDetailed
+// sends one tools/list instead of running its own retry schedule.
+func withSingleListAttempt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, listToolsOnceKey{}, true)
+}
+
 // validateMCPTLSConfig refuses a ca_cert_pem that does not parse, the check
 // every dial makes, so the client is refused when it is added or edited
 // instead of failing each connection afterwards. The certificate is ignored
@@ -476,7 +496,7 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
-	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) || isClosedTransportError(err) {
 		return false
 	}
 
@@ -1217,7 +1237,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) || isPermanentConnectError(err) || isClosedTransportError(err) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
@@ -1370,6 +1390,9 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 
 	var toolsResponse *mcp.ListToolsResult
 	retryConfig := ConnectRetryConfig
+	if once, _ := ctx.Value(listToolsOnceKey{}).(bool); once {
+		retryConfig.MaxRetries = 0
+	}
 	err := ExecuteWithRetry(
 		ctx,
 		func() error {
@@ -1381,7 +1404,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		logger,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %v", err)
+		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
 
 	if toolsResponse == nil {

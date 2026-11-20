@@ -446,7 +446,10 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 		defer cancel()
 		var err error
-		newTools, err = c.manager.runListToolsWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
+		// One tools/list per probe attempt: ProbeRetryConfig owns the retries
+		// here. Without this, the list's own connect-grade retry schedule ran
+		// inside every probe attempt, each bounded only by c.timeout.
+		newTools, err = c.manager.runListToolsWithHooks(c.markAsCheck(withSingleListAttempt(attemptCtx)), conn, clientName)
 		return err
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
@@ -476,7 +479,7 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 		defer cancel()
 		var innerErr error
-		discovery, innerErr = c.manager.performAdminToolDiscovery(attemptCtx, config, c.timeout)
+		discovery, innerErr = c.manager.performAdminToolDiscovery(withSingleListAttempt(attemptCtx), config, c.timeout)
 		return innerErr
 	}, ProbeRetryConfig, c.logger)
 	if err != nil {

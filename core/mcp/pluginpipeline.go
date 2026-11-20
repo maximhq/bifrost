@@ -497,7 +497,7 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	})
 
 	if bErr != nil {
-		return nil, fmt.Errorf("failed to list tools: %s", bErr.GetErrorString())
+		return nil, gateOpError("failed to list tools", bErr)
 	}
 	if resp == nil || resp.BifrostMCPListToolsResponse == nil {
 		// Defensive: response somehow lost its list_tools payload (e.g. PostHook nilled it).
@@ -533,10 +533,34 @@ func (m *MCPManager) runPingWithHooks(ctx context.Context, conn *client.Client, 
 		}, nil
 	})
 	if bErr != nil {
-		return fmt.Errorf("ping failed: %s", bErr.GetErrorString())
+		return gateOpError("ping failed", bErr)
 	}
 	return nil
 }
+
+// gateOpError is the error runListToolsWithHooks and runPingWithHooks return for a failed gate:
+// the gate's final message (a PostMCPHook may have rewritten it) under prefix, still unwrapping to
+// the op's own error so the retry classifiers can match typed errors such as
+// transport.ErrTransportClosed instead of only the text.
+func gateOpError(prefix string, bErr *schemas.BifrostError) error {
+	msg := prefix + ": " + bErr.GetErrorString()
+	if bErr.Error == nil || bErr.Error.Error == nil {
+		return errors.New(msg)
+	}
+	return &gateError{msg: msg, err: bErr.Error.Error}
+}
+
+// gateError carries a gate's final message while unwrapping to the op's error.
+type gateError struct {
+	msg string
+	err error
+}
+
+// Error returns the gate's final message.
+func (e *gateError) Error() string { return e.msg }
+
+// Unwrap exposes the op's error to errors.Is and errors.As.
+func (e *gateError) Unwrap() error { return e.err }
 
 // connectionTypeForClientName resolves a client's transport by name. Returns "" when no
 // live client matches (per-user/ephemeral connections), so callers omit the attribute.
