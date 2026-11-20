@@ -20244,10 +20244,6 @@ var excludedGoFields = map[string]map[string]bool{
 		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
 		"mcp_max_protocol_version":        true,
 		"mcp_server_max_protocol_version": true,
-		// The Bifrost MCP server (/v1/mcp) is not released yet: config.json still reads
-		// these, but the schema leaves them out so they are not advertised.
-		"bifrost_url":              true,
-		"bifrost_mcp_allow_writes": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// Phrase suggestions are a model router's: the type is shared with
@@ -20354,7 +20350,7 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	"schemas.PluginConfig":            {},
 	"framework.FrameworkConfig":       {},
-	"modelcatalog.Config":             {"openapi_url": true}, // the Bifrost MCP's spec; unreleased, so left out of the schema
+	"modelcatalog.Config":             {},
 	"tables.GlobalHeaderFilterConfig": {},
 	"configstore.AuthConfig":          {},
 	"schemas.MCPStdioConfig":          {},
@@ -25046,6 +25042,141 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.Equal(t, "Dup", vmcps[0].Name)
 }
 
+// TestReconcileVirtualMCPsConfig_PartialApplyAndRelink covers a declaration naming an MCP client
+// that is not registered yet: the Virtual MCP is still created with the specs that resolve, the
+// missing client is recorded as a config issue, and registering the client later links it in and
+// clears the issue without a restart.
+func TestReconcileVirtualMCPsConfig_PartialApplyAndRelink(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name: "Team Tools",
+		Tools: []schemas.MCPToolSpecConfig{
+			{MCPClientName: "github", ToolNames: []string{"*"}},
+			{MCPClientName: "jira", ToolNames: []string{"create_issue"}},
+		},
+	}}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	created, err := store.GetVirtualMCPByName(ctx, "Team Tools")
+	require.NoError(t, err)
+	require.Len(t, created.ParsedTools, 1, "the resolved spec is applied")
+	assert.Equal(t, "client-github", created.ParsedTools[0].MCPClientID)
+	require.NotNil(t, created.ConfigIssues, "the missing client is recorded")
+	assert.Contains(t, *created.ConfigIssues, `"jira"`)
+
+	// A dashboard save neither clears nor rewrites the issues.
+	created.Description = schemas.Ptr("edited")
+	created.ConfigIssues = nil
+	require.NoError(t, store.UpdateVirtualMCP(ctx, created))
+	afterEdit, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterEdit.ConfigIssues)
+
+	// A client the declarations don't name changes nothing.
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "slack")
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err = cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{created.ID}, ids)
+
+	linked, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Len(t, linked.ParsedTools, 2, "the newly registered client is linked in")
+	assert.Nil(t, linked.ConfigIssues, "the issue clears once the declaration applies in full")
+
+	// The next boot finds a matching hash and leaves the row alone.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	rebooted, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, linked.ConfigHash, rebooted.ConfigHash)
+	assert.Nil(t, rebooted.ConfigIssues)
+}
+
+// TestReconcileFileVirtualMCPsForClient_ReRegisteredClient covers a client deleted and registered
+// again under the same name: the Virtual MCP moves to the new client_id straight away, instead of
+// pointing at the deleted one until the next restart.
+func TestReconcileFileVirtualMCPsForClient_ReRegisteredClient(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-old", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name:  "Jira Tools",
+		Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}},
+	}}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	require.NoError(t, store.DeleteMCPClientConfig(ctx, "client-old"))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-new", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	vmcp, err := store.GetVirtualMCPByID(ctx, ids[0])
+	require.NoError(t, err)
+	require.Len(t, vmcp.ParsedTools, 1)
+	assert.Equal(t, "client-new", vmcp.ParsedTools[0].MCPClientID)
+}
+
+// TestReconcileVirtualMCPsConfig_HashMatchClearsStaleIssues verifies issues are kept accurate even
+// when the declaration's hash matches the stored row and nothing else is written.
+func TestReconcileVirtualMCPsConfig_HashMatchClearsStaleIssues(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name:  "Tools",
+		Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}},
+	}}
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	vmcp, err := store.GetVirtualMCPByName(ctx, "Tools")
+	require.NoError(t, err)
+	require.NoError(t, store.SetVirtualMCPConfigIssues(ctx, vmcp.ID, schemas.Ptr("stale")))
+
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	after, err := store.GetVirtualMCPByID(ctx, vmcp.ID)
+	require.NoError(t, err)
+	assert.Equal(t, vmcp.ConfigHash, after.ConfigHash)
+	assert.Nil(t, after.ConfigIssues)
+}
+
+// TestReconcileVirtualMCPsConfig_MalformedSpecStillSkips verifies a tool spec naming no client at
+// all is still a malformed declaration that skips the whole entry, unlike a client that is merely
+// not registered yet.
+func TestReconcileVirtualMCPsConfig_MalformedSpecStillSkips(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{{
+		Name:  "Broken",
+		Tools: []schemas.MCPToolSpecConfig{{ToolNames: []string{"*"}}},
+	}}, false))
+	_, err := store.GetVirtualMCPByName(ctx, "Broken")
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
 // lockableLogStore records the locker a ClickHouse-backed store would receive.
 type lockableLogStore struct {
 	logstore.LogStore
@@ -27982,4 +28113,40 @@ func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
 
 	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
 	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
+}
+
+// TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate verifies that registering a client
+// named only by a later duplicate declaration leaves the first declaration in place, as the load
+// did, while a unique declaration naming the client still re-links.
+func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}}},
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+		{Name: "Jira Only", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+	}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+
+	shared, err := store.GetVirtualMCPByName(ctx, "Shared")
+	require.NoError(t, err)
+	require.Len(t, shared.ParsedTools, 1)
+	assert.Equal(t, "client-github", shared.ParsedTools[0].MCPClientID, "the skipped duplicate must not overwrite the first declaration")
+	jiraOnly, err := store.GetVirtualMCPByName(ctx, "Jira Only")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{jiraOnly.ID}, ids, "the unique declaration still re-links")
+	require.Len(t, jiraOnly.ParsedTools, 1)
+	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
 }

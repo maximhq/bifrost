@@ -478,6 +478,8 @@ bifrost:
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
     # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
+    # bifrostUrl: "https://bifrost.example.com/bifrost" # Gateway's public base URL as clients reach it, including server.basePath. Required for /v1/mcp; unset, /v1/mcp answers 503. Supports env.VAR_NAME and vault references
+    # bifrostMcpAllowWrites: true            # Whether /v1/mcp serves non-GET /api operations (configuration changes) as tools; inference, batch and file routes are served either way
     # mcpOpenapiMaxSpecMb: 32                # Size limit in MiB on an openapi MCP client's spec (inline, specFile or fetched from specUrl); 0 = built-in default (32), max 256. Parsing holds several times the spec's size in memory
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
@@ -538,6 +540,7 @@ bifrost:
       # mcpLibraryUrl: ""
       # mcpLibrarySyncInterval: 86400   # MCP catalog sync in seconds (default 24h, min 3600; 0 disables)
       # liveModelsSyncInterval: 3600    # Provider model-list refresh in seconds (default 1h, min 60; 0 disables)
+      # openapiUrl: ""                  # OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs (empty = the published spec)
 
   # Provider configurations (add your provider keys here). Passed through to config.json as-is.
   # Use direct values or env.VAR_NAME syntax (required when keys come from providerSecrets).
