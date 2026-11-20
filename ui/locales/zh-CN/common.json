@@ -304,6 +304,11 @@
 	"configSyncAlert": {
 		"message": "此配置已从 <code0>config.json</code0> 同步。今后对 config.json 的任何更新都会覆盖在界面中所做的更改。如果你只是用 config.json 引导初始配置，可以忽略此提示。"
 	},
+	"configIssuesAlert": {
+		"title": "config.json 声明的部分内容未被应用",
+		"badge": "配置问题",
+		"hint": "声明的其余部分已应用。上面的每一项会在其引用的对象存在后自动消失，例如注册缺失的 MCP 客户端之后。"
+	},
 	"breadcrumb": {
 		"label": "面包屑导航",
 		"more": "更多"
