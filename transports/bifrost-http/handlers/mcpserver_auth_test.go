@@ -63,7 +63,7 @@ func stringFromCtx(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) s
 func restrictedAccess(client string, tools ...string) schemas.Access {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-1", "Caller Key", true, false, nil,
 		[]schemas.MCPPermit{{Client: client + "-id", ClientName: client, Tools: tools}})
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // TestGetVKFromRequest verifies the VK value is extracted from each supported

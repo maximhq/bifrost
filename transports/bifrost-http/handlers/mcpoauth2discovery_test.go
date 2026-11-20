@@ -69,6 +69,16 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	assert.Equal(t, true, doc["authorization_response_iss_parameter_supported"])
 	// MCP 2025-11-25+: clients may use a Client ID Metadata Document URL as client_id.
 	assert.Equal(t, true, doc["client_id_metadata_document_supported"])
+
+	// Capping /mcp below 2025-11-25 stops advertising them; dynamic registration stays.
+	h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+	ctx = &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	doc = nil
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.NotContains(t, doc, "client_id_metadata_document_supported")
+	assert.Equal(t, testIssuer+"/oauth2/register", doc["registration_endpoint"])
 }
 
 // TestDiscovery_IssuerWithTrailingSlash pins that an issuer_url ending in "/" is

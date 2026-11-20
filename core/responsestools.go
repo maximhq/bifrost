@@ -181,6 +181,13 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 			functions[*tool.Name] = true
 		case schemas.ResponsesToolTypeNamespace:
 			namespaces[*tool.Name] = i
+			if *tool.Name == providerUtils.DefaultToolNamespace && tool.ResponsesToolNamespace != nil {
+				for _, member := range tool.ResponsesToolNamespace.Tools {
+					if member.Name != nil {
+						functions[*member.Name] = true
+					}
+				}
+			}
 		}
 	}
 	for _, tool := range loaded {
@@ -188,7 +195,7 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 			continue
 		}
 		switch tool.Type {
-		case schemas.ResponsesToolTypeFunction:
+		case schemas.ResponsesToolTypeFunction, schemas.ResponsesToolTypeCustom:
 			// A tool found by several searches, or already declared, is declared once.
 			if functions[*tool.Name] {
 				continue
@@ -205,11 +212,18 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 			if seen && merged[idx].ResponsesToolNamespace != nil {
 				members = slices.Clone(merged[idx].ResponsesToolNamespace.Tools)
 			}
+			defaultNamespace := *tool.Name == providerUtils.DefaultToolNamespace
 			for _, member := range tool.ResponsesToolNamespace.Tools {
 				if member.Name == nil || slices.ContainsFunc(members, func(m schemas.ResponsesTool) bool {
 					return m.Name != nil && *m.Name == *member.Name
 				}) {
 					continue
+				}
+				if defaultNamespace {
+					if functions[*member.Name] {
+						continue
+					}
+					functions[*member.Name] = true
 				}
 				member.DeferLoading = schemas.Ptr(true)
 				members = append(members, member)

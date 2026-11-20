@@ -76,12 +76,12 @@ func (m *mockRotateConfigStore) ExecuteTransaction(_ context.Context, fn func(tx
 	return fn(nil)
 }
 
-func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) error {
+func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) (int64, error) {
 	if m.revokeErr != nil {
-		return m.revokeErr
+		return 0, m.revokeErr
 	}
 	m.revokedGrants = append(m.revokedGrants, bfMode+":"+bfSub)
-	return nil
+	return 1, nil
 }
 
 func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
@@ -281,6 +281,61 @@ func TestClassifyAgentGrantReplacementError(t *testing.T) {
 		require.ErrorIs(t, classified, err)
 		require.NotErrorAs(t, classified, &badReqErr)
 	}
+}
+
+// A virtual key holds one config per provider, so create and update refuse provider_configs that name
+// a provider twice, before anything is written.
+func TestVirtualKeyProviderConfigsHoldOneConfigPerProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	// Configured, so the only thing wrong with each request below is the repeated provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	duplicates := []string{
+		`"provider_configs":[{"provider":"openai","allowed_models":["gpt-4o-mini"]},{"provider":"openai","allowed_models":["gpt-4.1-mini"]}]`,
+		`"provider_configs":[{"provider":"openai","allowed_models":["*"]},{"provider":" openai ","allowed_models":["*"]}]`,
+	}
+
+	for _, configs := range duplicates {
+		createCtx := newTestRequestCtx(`{"name":"two-openai",` + configs + `}`)
+		handler.createVirtualKey(createCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+		assert.Contains(t, string(createCtx.Response.Body()), `provider_configs names provider \"openai\" more than once`)
+	}
+	keys, err := store.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a refused create writes nothing")
+
+	createCtx := newTestRequestCtx(`{"name":"no-providers","description":"original"}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+
+	for _, configs := range duplicates {
+		updateCtx := newTestRequestCtx(`{"description":"changed",` + configs + `}`)
+		updateCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(updateCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+	}
+	persisted, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", persisted.Description, "a refused update changes nothing")
+	assert.Empty(t, persisted.ProviderConfigs)
+}
+
+func TestValidateVirtualKeyProviders(t *testing.T) {
+	assert.NoError(t, validateVirtualKeyProviders(nil))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"openai", "anthropic"}))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"", " "}), "blank names are the provider check's to refuse")
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", "anthropic", "openai"}), `"openai"`)
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", " openai"}), `"openai"`, "compared as stored, trimmed")
 }
 
 func TestVirtualKeyAgentAssignmentsHTTPContract(t *testing.T) {
@@ -4323,6 +4378,55 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	}
 }
 
+// TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON is a regression test for
+// updating the budget of a VK provisioned from config.json. Such a VK carries its
+// budget as a standalone row (TableBudget.VirtualKeyID set, no model config), and the
+// first update adopts that row into a new VK-scoped model config. The adoption only
+// moves the row to its new owner; it must not run TableBudget's BeforeSave hook,
+// which validates a zero-value model and rejects it with
+// "invalid reset duration format: ".
+func TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	const vkID = "vk-from-config"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "svc-from-config",
+		Value:    *schemas.NewSecretVar("sk-bf-config-json-secret"),
+		IsActive: &active,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	// The shape config.json provisioning writes: a budget owned directly by the VK.
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{
+		ID:            "bud-from-config",
+		MaxLimit:      100,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr(vkID),
+	}))
+
+	updateCtx := newTestRequestCtx(`{"budgets":[{"max_limit":250,"reset_duration":"1M"}]}`)
+	updateCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(updateCtx)
+	require.Equal(t, fasthttp.StatusOK, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+
+	persisted, err := store.GetVirtualKey(ctx, vkID)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-bf-config-json-secret", persisted.Value.GetValue(), "the key value must not change")
+
+	budgets, err := store.GetBudgets(ctx)
+	require.NoError(t, err)
+	var limits []float64
+	for _, budget := range budgets {
+		assert.Nil(t, budget.VirtualKeyID, "no budget is left owned directly by the VK after adoption: %+v", budget)
+		limits = append(limits, budget.MaxLimit)
+	}
+	assert.Equal(t, []float64{250}, limits, "the VK keeps exactly one budget, at the new limit")
+}
+
 // TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
 // existing overlay path: when a VK-scoped model config owns the governance
 // (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
@@ -5143,6 +5247,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
 	ctx := context.Background()
 	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{}))
 
 	create := func(t *testing.T, name, weight string) *fasthttp.RequestCtx {
 		t.Helper()
@@ -5182,7 +5287,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"an existing config to a negative weight": fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":-0.5}]}`, pcID),
-		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"openai","allowed_models":["*"],"weight":-1}]}`, pcID),
+		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"anthropic","allowed_models":["*"],"weight":-1}]}`, pcID),
 	} {
 		put := newTestRequestCtx(body)
 		put.SetUserValue("vk_id", created.VirtualKey.ID)
