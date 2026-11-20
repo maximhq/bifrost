@@ -131,15 +131,12 @@ func aggregateWithCodeModePointer(parts []schemas.MCPServerInstructions, caps In
 	if len(parts) == 0 {
 		return pointer
 	}
-	const separator = len("\n\n")
-	total := caps.Total
-	caps.Total -= len(pointer) + separator
+	caps.Total -= len(pointer) + len("\n\n")
 	if caps.Total <= 0 {
 		return pointer
 	}
 	blocks := AggregateServerInstructions(parts, caps)
-	// The omitted-servers notice is written even when no budget is left, so check the sum.
-	if blocks == "" || len(blocks)+separator+len(pointer) > total {
+	if blocks == "" {
 		return pointer
 	}
 	return blocks + "\n\n" + pointer

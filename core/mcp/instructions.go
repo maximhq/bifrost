@@ -71,19 +71,24 @@ func AggregateServerInstructions(parts []schemas.MCPServerInstructions, caps Ins
 		if part.MaxLength > 0 {
 			limit = part.MaxLength
 		}
-		if avail := remaining - separator - blockOverhead(part.ClientName, len(body)); avail < limit {
+		// Keep room for the notice that names the servers after this one should they not fit, so
+		// the notice stays inside the total instead of pushing the aggregate past it.
+		reserve := 0
+		if rest := len(parts) - i - 1; rest > 0 {
+			reserve = len(omittedServersNotice(rest))
+		}
+		if avail := remaining - separator - reserve - blockOverhead(part.ClientName, len(body)); avail < limit {
 			limit = avail
 		}
-		if limit <= 0 {
-			b.WriteString(fmt.Sprintf("\n[%d more server(s) omitted: instruction size limit reached]", len(parts)-i))
-			break
-		}
-		text, omitted := truncateInstructions(body, limit)
+		text, omitted := truncateInstructions(body, max(limit, 0))
 		block := instructionBlock(part.ClientName, text, omitted)
-		if separator+len(block) > remaining {
-			// Out of budget: name what was dropped rather than trailing off silently,
-			// so a truncated aggregate never reads like a complete one.
-			b.WriteString(fmt.Sprintf("\n[%d more server(s) omitted: instruction size limit reached]", len(parts)-i))
+		if limit <= 0 || separator+len(block)+reserve > remaining {
+			// Out of budget: name what was dropped rather than trailing off silently, so a
+			// truncated aggregate never reads like a complete one. The previous block reserved
+			// room for this notice; only a budget too small for the first block leaves none.
+			if notice := omittedServersNotice(len(parts) - i); len(notice) <= remaining {
+				b.WriteString(notice)
+			}
 			break
 		}
 		if separator > 0 {
@@ -94,6 +99,11 @@ func AggregateServerInstructions(parts []schemas.MCPServerInstructions, caps Ins
 		written++
 	}
 	return b.String()
+}
+
+// omittedServersNotice names how many servers the total cap left out.
+func omittedServersNotice(count int) string {
+	return fmt.Sprintf("\n[%d more server(s) omitted: instruction size limit reached]", count)
 }
 
 // instructionBlock wraps one upstream's text in its tagged block. The client name is attribute

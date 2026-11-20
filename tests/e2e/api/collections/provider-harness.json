@@ -346511,7 +346511,7 @@
     },
     {
       "name": "372. Code mode catalogue names the code mode servers a caller can reach (code mode catalogue) [SERIAL]",
-      "description": "Code mode keeps every upstream tool out of the tool list, so a model learned that a code mode server existed only by calling listToolFiles, which it had no reason to do until a user told it to look there; the server instructions said nothing either, because code mode clients are excluded from the aggregate (folder 210). These cases pin the catalogue that now tells the model up front: the listToolFiles description ends with \"Servers available through code mode:\" and one line per reachable server (\"- <name>: <description>\", or \"- <name> (N tools: a, b, ...)\" for a client with no description), and the injected server instructions end with one pointer line, \"MCP servers available through code mode (start with listToolFiles to use them): <names>.\". Both are built per caller, so a server outside the caller's reach (x-bf-mcp-include-clients here) is never named.\n\nRoutes: /v1/chat/completions (pointer as the leading system message) and /v1/responses (pointer in instructions), both observed through extra_fields.raw_request with tool_choice none so the single upstream turn is the one asserted, as folder 225 does; the gateway /mcp initialize result (pointer in instructions) and tools/list (catalogue in the listToolFiles description, plus the step labels the four code mode tool descriptions now open with).\n\nSerial, and it provisions its own two clients on the SSE fixture (examples/mcps/remote-test-server, the same upstream as sse_mcp) for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists. One carries a description and one does not, so both catalogue forms are covered, and narrowing the model routes to the described one shows the other is not named; the queue and sweep at the end reclaim both, plus any harness_cmcat_ leftover older than an hour.",
+      "description": "Code mode keeps every upstream tool out of the tool list, so a model learned that a code mode server existed only by calling listToolFiles, which it had no reason to do until a user told it to look there; the server instructions said nothing either, because code mode clients are excluded from the aggregate (folder 210). These cases pin the catalogue that now tells the model up front: the listToolFiles description ends with \"Servers available through code mode:\" and one line per reachable server (\"- <name>: <description>\", or \"- <name> (N tools: a, b, ...)\" for a client with no description), and the injected server instructions end with one pointer line, \"MCP servers available through code mode (start with listToolFiles to use them): <names>.\". Both are built per caller, so a server outside the caller's reach is never named: x-bf-mcp-include-clients narrows the model routes to the described client, and a virtual key granted only the bare client sees only that one even when the request asks for both.\n\nRoutes: /v1/chat/completions (pointer as the leading system message) and /v1/responses (pointer in instructions), both observed through extra_fields.raw_request with tool_choice none so the single upstream turn is the one asserted, as folder 225 does; the gateway /mcp initialize result (pointer in instructions) and tools/list (catalogue in the listToolFiles description, plus the step labels the four code mode tool descriptions now open with).\n\nSerial, and it provisions its own two clients on the SSE fixture (examples/mcps/remote-test-server, the same upstream as sse_mcp) for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists. One carries a description and one does not, so both catalogue forms are covered, and narrowing the model routes to the described one shows the other is not named; the queue and sweep at the end reclaim both, plus any harness_cmcat_ leftover older than an hour.",
       "item": [
         {
           "name": "[EXPECT-200] openai code-mode-catalogue provision a described code-mode client on the SSE fixture",
@@ -346802,6 +346802,220 @@
                   "language": "json"
                 }
               }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue create a virtual key granted only the code-mode client with no description",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A key an interrupted run failed to delete is retained; delete it before this run replaces it.",
+                  "// Its id is the only reference to it, so it is cleared only once the delete is confirmed.",
+                  "var staleVkId = pm.collectionVariables.get('codeModeCatalogueVkId');",
+                  "pm.collectionVariables.unset('codeModeCatalogueVkValue');",
+                  "pm.collectionVariables.set('codeModeCatalogueVkName', 'harness-cmcat-vk-' + Date.now());",
+                  "if (staleVkId) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE' }, function (err, res) {",
+                  "    if (!err && res && (res.code === 200 || res.code === 404)) { pm.collectionVariables.unset('codeModeCatalogueVkId'); }",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-catalogue: virtual key granted only the bare client created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('code-mode-catalogue: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('codeModeCatalogueVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('codeModeCatalogueVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeCatalogueVkName}}\",\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"key_ids\": [\n        \"*\"\n      ],\n      \"weight\": 1\n    }\n  ],\n  \"mcp_configs\": [\n    {\n      \"mcp_client_name\": \"{{codeModeCatalogueBareClient}}\",\n      \"tools_to_execute\": [\n        \"*\"\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini /v1/chat/completions code-mode-catalogue: a virtual key granted one code mode server sees only that server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// raw_request is the body Bifrost sent upstream; it may come back as an object or as a JSON string.",
+                  "function upstreamBody(body) {",
+                  "  var r = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof r === 'string') { try { r = JSON.parse(r); } catch (e) { throw new Error('raw_request is not JSON: ' + r.slice(0, 400)); } }",
+                  "  return r;",
+                  "}",
+                  "function toolDescription(upstream, name) {",
+                  "  var tools = (upstream && upstream.tools) || [];",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    var fn = (tools[i] || {}).function || tools[i] || {};",
+                  "    if (fn.name === name) { return String(fn.description || ''); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function textOf(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (p) { return (p && (p.text || p.content)) || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "var POINTER = 'MCP servers available through code mode (start with listToolFiles to use them): ';",
+                  "var CATALOGUE = '\\n\\nServers available through code mode:';",
+                  "function lineFrom(text, marker) {",
+                  "  var i = String(text || '').indexOf(marker);",
+                  "  return i === -1 ? null : text.slice(i).split('\\n')[0];",
+                  "}",
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "// The request asks for both clients; the virtual key grants only the bare one. Governance narrows",
+                  "// the request before the catalogue is built, so the described client must not be named anywhere.",
+                  "pm.test('virtual key: the listToolFiles catalogue names only the server the key was granted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  pm.expect(upstream, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  var list = toolDescription(upstream, 'listToolFiles');",
+                  "  pm.expect(list, 'listToolFiles was not declared upstream: ' + JSON.stringify(upstream.tools || null).slice(0, 2000)).to.be.a('string');",
+                  "  pm.expect(list, 'no catalogue block: ' + list).to.include(CATALOGUE);",
+                  "  pm.expect(list, 'granted client tool-name line missing: ' + list).to.include('\\n- ' + bare + ' (3 tools: ');",
+                  "  pm.expect(list, 'a server the virtual key was not granted was named: ' + list).to.not.include(described);",
+                  "});",
+                  "pm.test('virtual key: the system message points only at the server the key was granted', function () {",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  var first = ((upstream && upstream.messages) || [])[0] || {};",
+                  "  pm.expect(first.role, 'the gateway did not prepend a system message: ' + JSON.stringify((upstream || {}).messages || null).slice(0, 2000)).to.equal('system');",
+                  "  var text = textOf(first.content);",
+                  "  pm.expect(lineFrom(text, POINTER), 'pointer did not name exactly the granted server: ' + text).to.equal(POINTER + bare + '.');",
+                  "  pm.expect(text, 'a server the virtual key was not granted was named: ' + text).to.not.include(described);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{codeModeCatalogueVkValue}}"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "{{codeModeCatalogueClient}},{{codeModeCatalogueBareClient}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('codeModeCatalogueVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-catalogue: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run's setup retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('codeModeCatalogueVkId');",
+                  "  pm.collectionVariables.unset('codeModeCatalogueVkValue');",
+                  "  pm.collectionVariables.unset('codeModeCatalogueVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{codeModeCatalogueVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{codeModeCatalogueVkId}}"
+              ]
             }
           }
         },

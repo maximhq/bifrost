@@ -136,7 +136,7 @@ func TestAggregateServerInstructionsStopsAtTotalCapAndSaysSo(t *testing.T) {
 
 	got := AggregateServerInstructions(parts, InstructionCaps{})
 
-	assert.LessOrEqual(t, len(got), schemas.DefaultMaxInstructionsTotal+120)
+	assert.LessOrEqual(t, len(got), schemas.DefaultMaxInstructionsTotal, "the omitted notice is inside the total")
 	// A truncated aggregate must never read like a complete one.
 	assert.Contains(t, got, "more server(s) omitted: instruction size limit reached")
 	assert.Contains(t, got, `<mcp_server name="client-00">`)

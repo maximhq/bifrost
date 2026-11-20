@@ -204,6 +204,16 @@ func TestCodeModePointer(t *testing.T) {
 		assert.Equal(t, ptr, aggregateWithCodeModePointer(nil, InstructionCaps{Total: len(ptr)}, []string{"codey"}))
 		assert.Equal(t, ptr[:20], aggregateWithCodeModePointer(nil, InstructionCaps{Total: 20}, []string{"codey"}))
 		assert.Equal(t, ptr, aggregateWithCodeModePointer(nil, InstructionCaps{}, []string{"codey"}), "the default budget holds it")
+
+		// A later server that does not fit is named as omitted, and the block that did fit stays.
+		two := append(parts, schemas.MCPServerInstructions{ClientName: "beta", Instructions: strings.Repeat("b", 2000)})
+		total := len(ptr) + 2 + blockOverhead("alpha", 2000) + 200
+		got := aggregateWithCodeModePointer(two, InstructionCaps{Total: total}, []string{"codey"})
+		assert.LessOrEqual(t, len(got), total)
+		assert.Contains(t, got, `<mcp_server name="alpha">`+"\n"+strings.Repeat("a", 100), "the truncated alpha block is kept")
+		assert.Contains(t, got, "[1 more server(s) omitted: instruction size limit reached]")
+		assert.NotContains(t, got, `<mcp_server name="beta">`)
+		assert.True(t, strings.HasSuffix(got, "\n\n"+ptr), got)
 	})
 
 	t.Run("injected once into chat and responses requests", func(t *testing.T) {
