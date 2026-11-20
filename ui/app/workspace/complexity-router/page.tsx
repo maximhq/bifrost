@@ -35,7 +35,7 @@ import { toast } from "sonner";
 import { useTranslation, Trans } from "react-i18next";
 import {
 	AnalyzerFormValues,
-	analyzerConfigSchema,
+	complexityConfigSchema,
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
 	getDecisionProviderState,
@@ -153,7 +153,7 @@ export default function ComplexityRouterPage() {
 		getValues,
 		formState: { errors, dirtyFields, isDirty, isSubmitted },
 	} = useForm<AnalyzerFormValues>({
-		resolver: zodResolver(analyzerConfigSchema),
+		resolver: zodResolver(complexityConfigSchema),
 		defaultValues: DEFAULT_FORM_VALUES,
 		mode: "onSubmit",
 		reValidateMode: "onChange",
@@ -529,6 +529,8 @@ export default function ComplexityRouterPage() {
 			defaults={decisionDefaults}
 			defaultsLoading={statusLoading || statusFetching}
 			variant={variant}
+			// Earlier gateways read this config whole and accept 12 signals and examples per tier.
+			released
 		/>
 	);
 

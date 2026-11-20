@@ -7,6 +7,7 @@ import {
 	DecisionTier,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_EXAMPLES,
+	MAX_DECISION_RELEASED_ITEMS,
 	MAX_DECISION_SIGNALS,
 	maxDecisionListItems,
 	MAX_DECISION_DEFINITION_CHARACTERS,
@@ -304,13 +305,15 @@ const suggestionsSchema = z
 				}
 				for (const field of ["signals", "examples"] as const) {
 					const list = criteria[field];
-					if (list.length > maxDecisionListItems(field)) {
+					// A judge's criteria are stored where earlier gateways read
+					// them, so they keep those gateways' examples bound.
+					if (list.length > maxDecisionListItems(field, true)) {
 						ctx.addIssue({
 							code: "custom",
 							message:
 								field === "signals"
-									? complexityT("criteriaSignalMax", { count: MAX_DECISION_SIGNALS })
-									: complexityT("criteriaExampleMax", { count: MAX_DECISION_EXAMPLES }),
+									? complexityT("criteriaSignalMax", { count: MAX_DECISION_RELEASED_ITEMS })
+									: complexityT("criteriaExampleMax", { count: MAX_DECISION_RELEASED_ITEMS }),
 							path: ["tier_criteria", tier, field],
 						});
 					} else if (list.some((item) => item.length > MAX_DECISION_CRITERIA_ITEM_CHARACTERS)) {
@@ -579,6 +582,25 @@ export const analyzerConfigSchema = z
 			}
 		}
 	});
+
+// complexityConfigSchema is analyzerConfigSchema for the Complexity Router
+// page's config, which earlier gateways read whole: its decision guidance
+// holds at most MAX_DECISION_RELEASED_ITEMS signals and examples per tier,
+// where a model router takes MAX_DECISION_SIGNALS and MAX_DECISION_EXAMPLES.
+export const complexityConfigSchema = analyzerConfigSchema.superRefine((data, ctx) => {
+	if (!usesDecision(data)) return;
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		for (const field of ["signals", "examples"] as const) {
+			if (data.decision.criteria[tier][field].length > MAX_DECISION_RELEASED_ITEMS) {
+				ctx.addIssue({
+					code: "custom",
+					message: complexityT(field === "signals" ? "criteriaSignalMax" : "criteriaExampleMax", { count: MAX_DECISION_RELEASED_ITEMS }),
+					path: ["decision", "criteria", tier, field],
+				});
+			}
+		}
+	}
+});
 
 // The form is stricter than the wire type: the API omits semantic fields left at
 // their zero value (Go `omitempty`), but every control here is controlled and

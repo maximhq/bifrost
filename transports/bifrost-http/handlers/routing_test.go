@@ -319,6 +319,17 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 	}
 	tooManyPhrases.Keywords.MediumKeywords = []string{"medium"}
 	tooManyPhrases.Keywords.ComplexKeywords = []string{"complex"}
+	// Released gateways decode this config whole and accept 12 examples per
+	// tier; a model router takes more.
+	tooManyExamples := valid
+	tooManyExamples.Classifier = complexity.ClassifierDecision
+	thirteen := make([]string, configstore.MaxComplexityDecisionReleasedItems+1)
+	for index := range thirteen {
+		thirteen[index] = fmt.Sprintf("example %d", index)
+	}
+	tooManyExamples.Decision = &complexity.DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		"SIMPLE": {Examples: thirteen},
+	}}
 
 	tests := []struct {
 		name string
@@ -330,6 +341,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "more decision examples than released gateways read", body: testComplexityAnalyzerPayload(t, tooManyExamples), want: "at most 12 per tier, got 13"},
 		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 

@@ -1592,7 +1592,8 @@ func TestComplexitySuggestionsTierSettings(t *testing.T) {
 	assert.Empty(t, n.Suggestions.Tier.Prompt, "a blank prompt is generated, not sent blank")
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"definiton":"x"}}}}`), &cfg), "definiton")
 
-	tooMany := make([]string, MaxComplexityDecisionExamples+1)
+	// A judge's criteria keep the bound released gateways read them with.
+	tooMany := make([]string, MaxComplexityDecisionReleasedItems+1)
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("example %d", i)
 	}
@@ -1601,6 +1602,7 @@ func TestComplexitySuggestionsTierSettings(t *testing.T) {
 		"criteria for an unknown tier":  {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"HARD": {Definition: "x"}}},
 		"criteria without a definition": {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Examples: []string{"hi"}}}},
 		"too many examples":             {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "x", Examples: tooMany}}},
+		"too many signals":              {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "x", Signals: tooMany}}},
 		"unknown classifier":            {Classifier: "lexical"},
 		"provider without model":        {Classifier: "llm", Provider: "openai"},
 		"model without provider":        {Classifier: "decision", Model: "gpt-5"},
@@ -1742,4 +1744,38 @@ func TestRDBConfigStore_ComplexitySuggestionsPersistenceAndReset(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, restored.Suggestions)
 	assert.True(t, restored.Suggestions.Enabled)
+}
+
+// The Complexity Router page's config is one record released gateways decode
+// whole, so it keeps their bound of 12 examples per tier, in validation and in
+// the store; a model router takes up to 60, the rest stored apart.
+func TestComplexityConfigKeepsTheReleasedExampleBound(t *testing.T) {
+	examples := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("example %d", i)
+		}
+		return out
+	}
+	withExamples := func(n int) *ComplexityAnalyzerConfig {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Decision = &ComplexityDecisionConfig{Criteria: map[string]ComplexityDecisionTierCriteria{
+			complexityDecisionTierMedium: {Examples: examples(n)},
+		}}
+		return cfg
+	}
+	require.NoError(t, withExamples(MaxComplexityDecisionReleasedItems).ValidateAsComplexityConfig())
+	routerConfig := withExamples(MaxComplexityDecisionExamples).Normalized()
+	require.NoError(t, routerConfig.Validate(), "a model router's bound")
+	assert.ErrorContains(t, withExamples(MaxComplexityDecisionReleasedItems+1).ValidateAsComplexityConfig(), "MEDIUM examples: the complexity analyzer config holds at most 12 per tier, got 13")
+	signals := testSemanticAnalyzerConfig()
+	signals.Decision = &ComplexityDecisionConfig{Criteria: map[string]ComplexityDecisionTierCriteria{
+		complexityDecisionTierComplex: {Signals: examples(MaxComplexityDecisionReleasedItems + 1)},
+	}}
+	assert.ErrorContains(t, signals.ValidateAsComplexityConfig(), "COMPLEX signals: the complexity analyzer config holds at most 12 per tier, got 13; a model router takes up to 30")
+
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, withExamples(MaxComplexityDecisionReleasedItems)))
+	assert.ErrorContains(t, store.UpdateComplexityAnalyzerConfig(ctx, withExamples(MaxComplexityDecisionReleasedItems+1)), "at most 12 per tier")
 }

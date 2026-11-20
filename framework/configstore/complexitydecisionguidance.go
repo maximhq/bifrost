@@ -19,16 +19,56 @@ const (
 
 // Bounds on the administrator's decision-model guidance. Every value is sent with each
 // classification, so these cap the per-request token cost as much as they
-// guard input size. Examples get a far larger bound than signals: a tier is
-// taught mostly by examples drawn from real traffic, and a full list (60 per
-// tier, 180 in all, of up to 300 characters each) is the per-request cost an administrator
-// opts into by writing them.
+// guard input size. A tier is taught mostly by examples drawn from real
+// traffic, and by the traits its requests share, which suggestion runs
+// propose from that traffic too: full lists (60 examples and 30 signals per
+// tier, of up to 300 characters each) are the per-request cost an
+// administrator opts into by writing them.
 const (
 	MaxComplexityDecisionDefinitionCharacters   = 500
-	MaxComplexityDecisionSignals                = 12
+	MaxComplexityDecisionSignals                = 30
 	MaxComplexityDecisionExamples               = 60
 	MaxComplexityDecisionCriteriaItemCharacters = 300
 )
+
+// MaxComplexityDecisionReleasedItems is the per-tier bound on signals and on
+// examples of the gateways released before they were raised to 30 and 60
+// (framework v1.13 and earlier).
+// They validate stored config as they read it, and a config past the bound
+// reads as unreadable: a model router stops being served, and the Complexity
+// Router page's config falls back to the built-in one. So stored config stays
+// within it wherever one of those gateways would read it after a rollback: a
+// model router keeps its first examples in the criteria they read and the rest
+// in a column they do not know, and likewise its signals (see
+// splitReleasedDecisionCriteria), and the Complexity
+// Router page's config, one record decoded whole, and a suggestion judge's
+// criteria are held to it.
+const MaxComplexityDecisionReleasedItems = 12
+
+// ValidateAsComplexityConfig is what the Complexity Router page's config is
+// held to beyond Validate: it is one stored record that released gateways
+// decode whole, so a tier holds no more signals or examples than they accept.
+// Model routers store their extra ones apart and take up to
+// MaxComplexityDecisionSignals and MaxComplexityDecisionExamples.
+func (c *ComplexityAnalyzerConfig) ValidateAsComplexityConfig() error {
+	if c == nil || c.Decision == nil {
+		return nil
+	}
+	for _, tier := range []string{complexityDecisionTierSimple, complexityDecisionTierMedium, complexityDecisionTierComplex} {
+		criteria := c.Decision.Criteria[tier]
+		for _, list := range []struct {
+			name   string
+			items  []string
+			router int
+		}{{"signals", criteria.Signals, MaxComplexityDecisionSignals}, {"examples", criteria.Examples, MaxComplexityDecisionExamples}} {
+			if n := len(list.items); n > MaxComplexityDecisionReleasedItems {
+				return fmt.Errorf("decision criteria %s %s: the complexity analyzer config holds at most %d per tier, got %d; a model router takes up to %d",
+					tier, list.name, MaxComplexityDecisionReleasedItems, n, list.router)
+			}
+		}
+	}
+	return nil
+}
 
 // ComplexityDecisionTierCriteria is one tier's editable decision-model criteria. An empty
 // definition or nil list means the shipped default for that field is sent.

@@ -536,6 +536,8 @@ export default function SuggestionSettingsSheet({
 													canUpdate={canUpdate}
 													defaults={tierDefaults.criteria[tier]}
 													allowEmptyLists
+													// A judge's criteria are stored where earlier gateways read them.
+													released
 												/>
 											))}
 										</div>

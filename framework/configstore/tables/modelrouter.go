@@ -48,7 +48,8 @@ type TableModelRouter struct {
 	DecisionPreviousMessageCount *int     `json:"-"` // NULL and 0 differ: NULL takes the default history
 	DecisionTimeoutNS            *int64   `gorm:"column:decision_timeout_ns" json:"-"`
 	DecisionMinConfidence        *float64 `json:"-"`
-	DecisionCriteriaJSON         *string  `gorm:"column:decision_criteria_json;type:text" json:"-"` // JSON map[tier]criteria
+	DecisionCriteriaJSON         *string  `gorm:"column:decision_criteria_json;type:text" json:"-"`       // JSON map[tier]criteria, at most the released signals and examples per tier
+	DecisionExtraCriteriaJSON    *string  `gorm:"column:decision_extra_criteria_json;type:text" json:"-"` // JSON map[tier]criteria: the signals and examples past those; see splitReleasedDecisionCriteria
 
 	LLMProvider            *string `gorm:"column:llm_provider;type:varchar(255)" json:"-"` // anchor: NULL means no llm block
 	LLMModel               *string `gorm:"column:llm_model;type:varchar(255)" json:"-"`
@@ -77,6 +78,7 @@ type TableModelRouter struct {
 	SuggestionsTierCriteriaJSON     *string    `gorm:"column:suggestions_tier_criteria_json;type:text" json:"-"` // JSON map[tier]criteria
 	SuggestionsEmbeddingProvider    *string    `gorm:"type:varchar(255)" json:"-"`                               // anchor: NULL means no embedding block
 	SuggestionsEmbeddingModel       *string    `gorm:"type:varchar(255)" json:"-"`
+	SuggestionsExamplesEnabled      *bool      `json:"-"` // a decision-model router's on switch; suggestions_enabled stays false for it, see modelRouterToTable
 
 	ConfigHashesJSON string `gorm:"column:config_hashes_json;type:text" json:"-"` // per-section hashes of the config.json entry last applied
 	ConfigHash       string `gorm:"type:varchar(255)" json:"-"`                   // hash of that entry's name and description

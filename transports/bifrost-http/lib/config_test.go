@@ -2284,6 +2284,35 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
 }
 
+// A config.json complexity analyzer config past the decision example bound
+// released gateways read is an invalid section: reported and left out, as any
+// other invalid section is, rather than stored where a rolled-back gateway
+// could not read it.
+func TestMergeGovernanceConfig_SkipsComplexityAnalyzerConfigPastReleasedExamples(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	dbGovernance := &configstore.GovernanceConfig{}
+	config := &Config{ConfigStore: store, GovernanceConfig: dbGovernance}
+	examples := make([]string, configstore.MaxComplexityDecisionReleasedItems+1)
+	for i := range examples {
+		examples[i] = fmt.Sprintf("example %d", i)
+	}
+	fileConfig := &configstore.ComplexityAnalyzerConfig{
+		Classifier: configstore.ComplexityClassifierDecision,
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			SimpleKeywords: []string{"hello"}, MediumKeywords: []string{"summarize"}, ComplexKeywords: []string{"tradeoffs"},
+		},
+		Decision: &configstore.ComplexityDecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+			"SIMPLE": {Examples: examples},
+		}},
+	}
+	mergeGovernanceConfig(context.Background(), config, &ConfigData{Governance: &configstore.GovernanceConfig{ComplexityAnalyzerConfig: fileConfig}}, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, stored, "nothing is stored from an invalid section")
+}
+
 func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty(t *testing.T) {
 	initTestLogger()
 
