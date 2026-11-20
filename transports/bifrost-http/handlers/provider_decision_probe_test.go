@@ -365,16 +365,36 @@ func TestDecisionProbeErrorFrom_RedactsOverlappingCredentialsInAnyOrder(t *testi
 }
 
 // TestDecisionProbeErrorFrom_RedactsUnparseableURLs pins that a URL url.Parse
-// rejects still has its whole userinfo, through the last '@' before the host,
-// and every query value masked in the message, type, and code.
+// rejects still has its whole userinfo and every query value masked in the
+// message, type, and code, while its host and path, including an '@' in the
+// path, are kept. A password may hold '@' or '/'.
 func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
-	text := "see https://user:pa@ss%zz@host.example/path?sig=query-secret&x=1#top now"
-	want := "see https://redacted:redacted@host.example/path?sig=redacted&x=redacted#top now"
-	got := decisionProbeErrorFrom(&schemas.BifrostError{
-		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
-		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
-	}, nil)
-	if got.Message != want || got.Type == nil || *got.Type != want || got.Code == nil || *got.Code != want {
-		t.Fatalf("message %q, type %v, code %v; want %q in each", got.Message, got.Type, got.Code, want)
+	cases := []struct{ name, text, want string }{
+		{
+			name: "@ in the password",
+			text: "see https://user:pa@ss%zz@host.example/path?sig=query-secret&x=1#top now",
+			want: "see https://redacted:redacted@host.example/path?sig=redacted&x=redacted#top now",
+		},
+		{
+			name: "@ in the path",
+			text: "see https://user:pa@ss%zz@host.example/a@b?sig=query-secret now",
+			want: "see https://redacted:redacted@host.example/a@b?sig=redacted now",
+		},
+		{
+			name: "/ in the password",
+			text: "see https://user:p%zz/ss@host.example/a?sig=q now",
+			want: "see https://redacted:redacted@host.example/a?sig=redacted now",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decisionProbeErrorFrom(&schemas.BifrostError{
+				StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+				Error:      &schemas.ErrorField{Message: tc.text, Type: schemas.Ptr(tc.text), Code: schemas.Ptr(tc.text)},
+			}, nil)
+			if got.Message != tc.want || got.Type == nil || *got.Type != tc.want || got.Code == nil || *got.Code != tc.want {
+				t.Fatalf("message %q, type %v, code %v; want %q in each", got.Message, got.Type, got.Code, tc.want)
+			}
+		})
 	}
 }
