@@ -46,6 +46,10 @@ The Bifrost integration tests use a centralized configuration system that routes
   - Google: `http://localhost:8080/genai`
   - LiteLLM: `http://localhost:8080/litellm`
 
+The shared `config.json` trusts `localhost:8080` for generated SDK upload URLs. If you change the SDK endpoint, update `server.trusted_forwarded_host` to the same hostname and port. The provider-harness CI runner adjusts its copy to the selected port.
+
+Synthetic-authority discovery tests use the separate `tests/integrations/forwarded-host/config.json` profile. Run that server separately from the ordinary SDK integration server; its `public.example.test:8443` authority is deliberately not the local SDK endpoint.
+
 ## 🚀 Features
 
 - **🌉 Bifrost Gateway Integration**: All integrations route through Bifrost proxy
