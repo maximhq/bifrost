@@ -104,7 +104,9 @@ func TestListToolFilesWithoutQueryKeepsCompleteListing(t *testing.T) {
 		want := *complete.Content.ContentStr
 		for _, args := range []string{"", "{}", "null", `{"query":""}`, `{"query":"   "}`, `{"limit":3}`, `{"query":null}`,
 			// limit is ignored, not validated, without a query.
-			`{"limit":0}`, `{"limit":99}`, `{"limit":"x"}`, `{"query":"","limit":0}`, `{"query":" ","limit":2.5}`} {
+			`{"limit":0}`, `{"limit":99}`, `{"limit":"x"}`, `{"query":"","limit":0}`, `{"query":" ","limit":2.5}`,
+			// A blank query over the length cap is still blank.
+			`{"query":"` + strings.Repeat(" ", discoveryMaxQueryRunes+1) + `","limit":0}`} {
 			if got := listToolFiles(t, mode, args); got != want {
 				t.Fatalf("%s binding, args %q: listing changed\nwant:\n%s\ngot:\n%s", level, args, want, got)
 			}
@@ -164,6 +166,49 @@ func TestListToolFilesLexicalRanking(t *testing.T) {
 	out = listToolFiles(t, mode, `{"query":"zzz qqq"}`)
 	if len(shortlistPaths(out)) != 0 || !strings.Contains(out, "No tool names or descriptions matched") {
 		t.Fatalf("expected no match message:\n%s", out)
+	}
+}
+
+func TestListToolFilesExplicitReferenceNeedsNameBoundary(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.tools["slack"] = append(manager.tools["slack"], discoveryTestTool("search", ""), discoveryTestTool("search_a", ""))
+	out := listToolFiles(t, mode, `{"query":"use slack.search_a","limit":1}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/slack/search_a.pyi" {
+		t.Fatalf("expected the tool named in full, got %v\n%s", paths, out)
+	}
+	out = listToolFiles(t, mode, `{"query":"use slack.search, then reply","limit":1}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/slack/search.pyi" {
+		t.Fatalf("expected the shorter tool when it is the one named, got %v\n%s", paths, out)
+	}
+}
+
+// A server that runs in code mode only on its own /mcp/<slug> is ranked there,
+// as the complete listing shows it there.
+func TestListToolFilesRankedFollowsServerTypeOnSlug(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+	}
+	manager.tools["direct"] = []schemas.ChatTool{discoveryTestTool("ping_host", "Ping a host")}
+	list := func(ctx context.Context) string {
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"query":"ping host"}`},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *msg.Content.ContentStr
+	}
+	onSlug := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPGatewayClient, "direct")
+	if out := list(onSlug); !strings.Contains(out, "servers/direct/ping_host.pyi") {
+		t.Fatalf("expected the slug's own code mode server to be ranked:\n%s", out)
+	}
+	if out := list(context.Background()); strings.Contains(out, "servers/direct/") {
+		t.Fatalf("a direct server must not be ranked on /mcp:\n%s", out)
 	}
 }
 
@@ -276,6 +321,18 @@ func useRanker(t *testing.T, mode *StarlarkCodeMode, ranker schemas.MCPCodeModeD
 	}
 }
 
+// nextRankRequest waits a bounded time for the ranker to receive a request.
+func nextRankRequest(t *testing.T, rs *rankerServer, query, out string) discoveryRankRequest {
+	t.Helper()
+	select {
+	case req := <-rs.requests:
+		return req
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ranker received no request for query %q; listToolFiles returned:\n%s", query, out)
+		return discoveryRankRequest{}
+	}
+}
+
 func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("secret-token\n"), 0o600); err != nil {
@@ -313,7 +370,7 @@ func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 		t.Fatalf("expected bearer token from file, got %v", got)
 	}
 
-	req := <-rs.requests
+	req := nextRankRequest(t, rs, "tell the team the deploy finished", out)
 	if req.Version != 1 || req.Query != "tell the team the deploy finished" || req.Revision == "" {
 		t.Fatalf("unexpected request %+v", req)
 	}
@@ -332,14 +389,14 @@ func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	}
 
 	// Same catalogue, same revision; a changed tool changes it.
-	listToolFiles(t, mode, `{"query":"tell the team"}`)
-	again := <-rs.requests
+	out = listToolFiles(t, mode, `{"query":"tell the team"}`)
+	again := nextRankRequest(t, rs, "tell the team", out)
 	if again.Revision != req.Revision {
 		t.Fatalf("revision changed without a catalogue change")
 	}
 	mode.clientManager.(*testClientManager).tools["jira"][0] = discoveryTestTool("create_issue", "Create a ticket", "project")
-	listToolFiles(t, mode, `{"query":"tell the team"}`)
-	if changed := <-rs.requests; changed.Revision == req.Revision {
+	out = listToolFiles(t, mode, `{"query":"tell the team"}`)
+	if changed := nextRankRequest(t, rs, "tell the team", out); changed.Revision == req.Revision {
 		t.Fatalf("revision did not change with the catalogue")
 	}
 
@@ -371,6 +428,26 @@ func TestListToolFilesExternalRankerInsufficientHint(t *testing.T) {
 	}
 	if !strings.Contains(out, "may not cover the request") {
 		t.Fatalf("expected a hint to widen the search:\n%s", out)
+	}
+}
+
+// A binding level change during the ranker call applies to the next request:
+// this one is rendered at the level its revision was computed for.
+func TestListToolFilesExternalRankerKeepsBindingLevelForTheCall(t *testing.T) {
+	var mode *StarlarkCodeMode
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelServer})
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+			{"id": "servers/slack/send_message.pyi", "relevance": 0.9},
+			{"id": "servers/slack/search_messages.pyi", "relevance": 0.8},
+		}})
+	})
+	mode = newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+	out := listToolFiles(t, mode, `{"query":"tell the team"}`)
+	want := []string{"servers/slack/send_message.pyi", "servers/slack/search_messages.pyi"}
+	if paths := shortlistPaths(out); len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("expected tool binding files %v, got %v\n%s", want, paths, out)
 	}
 }
 
@@ -413,9 +490,6 @@ func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {
 		"not json": func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {
 			_, _ = w.Write([]byte("<html>"))
 		},
-		"redirect": func(w http.ResponseWriter, r *http.Request, _ discoveryRankRequest) {
-			http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
-		},
 		"unknown id": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
 			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
 				{"id": "servers/billing/create_invoice.pyi", "relevance": 0.9},
@@ -453,6 +527,27 @@ func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {
 			assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
 		})
 	}
+
+	t.Run("redirect is not followed", func(t *testing.T) {
+		var destinationCalls atomic.Int32
+		destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			destinationCalls.Add(1)
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": "any", "candidates": []map[string]interface{}{}})
+		}))
+		t.Cleanup(destination.Close)
+		rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, _ discoveryRankRequest) {
+			http.Redirect(w, r, destination.URL+"/rank", http.StatusTemporaryRedirect)
+		})
+		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+		useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+		assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+		if got := rs.calls.Load(); got != 1 {
+			t.Fatalf("expected one request to the configured endpoint, got %d", got)
+		}
+		if got := destinationCalls.Load(); got != 0 {
+			t.Fatalf("the redirect destination was contacted %d times", got)
+		}
+	})
 
 	t.Run("unreadable token file", func(t *testing.T) {
 		rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {

@@ -117,10 +117,10 @@ func parseListToolFilesArgs(raw string) (string, int, error) {
 		if !isString {
 			return "", limit, fmt.Errorf("query must be a string")
 		}
-		if utf8.RuneCountInString(text) > discoveryMaxQueryRunes {
+		query = strings.TrimSpace(text)
+		if query != "" && utf8.RuneCountInString(text) > discoveryMaxQueryRunes {
 			return "", limit, fmt.Errorf("query must be at most %d characters", discoveryMaxQueryRunes)
 		}
-		query = strings.TrimSpace(text)
 	}
 	if query == "" {
 		return "", limit, nil
@@ -138,7 +138,7 @@ func parseListToolFilesArgs(raw string) (string, int, error) {
 // discoveryCatalogue collects the code mode tools visible to this caller, the
 // same set the complete listing shows, sorted by ID. The revision changes when
 // any visible tool's definition or the binding level changes.
-func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryTool, string) {
+func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel schemas.CodeModeBindingLevel) ([]discoveryTool, string) {
 	toolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 	type entry struct {
 		tool       discoveryTool
@@ -147,7 +147,7 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryT
 	entries := make([]entry, 0)
 	for clientName, tools := range toolsPerClient {
 		client := s.clientManager.GetClientByName(clientName)
-		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.IsCodeModeClient {
+		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		for _, tool := range tools {
@@ -191,7 +191,7 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryT
 	sort.Slice(entries, func(i, j int) bool { return entries[i].tool.candidate.ID < entries[j].tool.candidate.ID })
 
 	hash := sha256.New()
-	hash.Write([]byte(s.GetBindingLevel()))
+	hash.Write([]byte(bindingLevel))
 	items := make([]discoveryTool, len(entries))
 	for i, e := range entries {
 		items[i] = e.tool
@@ -210,6 +210,32 @@ func boundedDiscoveryText(text string, limit int) string {
 		return clean
 	}
 	return string([]rune(clean)[:limit])
+}
+
+// containsDiscoveryReference reports whether text holds ref as a whole
+// reference: the characters on either side of it are not part of a name, so
+// "slack.search" does not match inside "slack.search_a".
+func containsDiscoveryReference(text, ref string) bool {
+	for start := 0; start <= len(text)-len(ref); {
+		i := strings.Index(text[start:], ref)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(ref)
+		before, _ := utf8.DecodeLastRuneInString(text[:i])
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		if (i == 0 || !isDiscoveryNameRune(before)) && (end == len(text) || !isDiscoveryNameRune(after)) {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[i:])
+		start = i + size
+	}
+	return false
+}
+
+func isDiscoveryNameRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
 }
 
 // discoveryWords splits text into lowercase letter/digit words.
@@ -254,8 +280,8 @@ func scoreDiscovery(items []discoveryTool, query string) []discoveryTool {
 				score += discoveryDescriptionWeight
 			}
 		}
-		explicit := strings.Contains(lowerQuery, strings.ToLower(c.ID)) ||
-			strings.Contains(lowerQuery, strings.ToLower(c.Server+"."+c.Name))
+		explicit := containsDiscoveryReference(lowerQuery, strings.ToLower(c.ID)) ||
+			containsDiscoveryReference(lowerQuery, strings.ToLower(c.Server+"."+c.Name))
 		if explicit {
 			score += discoveryExplicitWeight
 		}
@@ -341,7 +367,10 @@ func validDiscoveryProbability(n float64) bool {
 
 // handleRankedToolFiles answers listToolFiles(query=...).
 func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall, query string, limit int) (*schemas.ChatMessage, error) {
-	catalogue, revision := s.discoveryCatalogue(ctx)
+	// One binding level for the whole call: the revision sent to the ranker
+	// and the shortlist layout must agree even if the config changes meanwhile.
+	bindingLevel := s.GetBindingLevel()
+	catalogue, revision := s.discoveryCatalogue(ctx, bindingLevel)
 	if len(catalogue) == 0 {
 		// Nothing to rank: the complete listing explains why.
 		return s.handleCompleteToolFiles(ctx, toolCall)
@@ -351,7 +380,7 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 	for _, item := range catalogue {
 		c := item.candidate
 		if strings.EqualFold(query, c.ID) || strings.EqualFold(query, c.Server+"."+c.Name) {
-			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, []discoveryTool{item}, nil, limit,
+			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, []discoveryTool{item}, nil, limit,
 				fmt.Sprintf("# Exact match for this query: 1 of %d tools visible to this caller.", len(catalogue))), false), nil
 		}
 	}
@@ -374,7 +403,7 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 		if reason != "" {
 			header += "\n# The discovery ranker was not used (" + reason + ")."
 		}
-		return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, matched, nil, limit, header), false)
+		return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, matched, nil, limit, header), false)
 	}
 
 	ranker := s.discoveryRanker.Load()
@@ -425,14 +454,13 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 	if resp.Sufficient != nil && *resp.Sufficient < discoveryInsufficientBelow {
 		header += "\n# The ranker reports these tools may not cover the request; call listToolFiles without query for the complete listing."
 	}
-	return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, selected, scores, limit, header), false), nil
+	return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, selected, scores, limit, header), false), nil
 }
 
 // discoveryShortlist renders up to limit tool files in rank order. At server
 // binding several tools share one file, which is listed once with the matching
 // tool names. scores, when set, annotates each file with its best relevance.
-func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, items []discoveryTool, scores map[string]float64, limit int, header string) string {
-	bindingLevel := s.GetBindingLevel()
+func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, bindingLevel schemas.CodeModeBindingLevel, items []discoveryTool, scores map[string]float64, limit int, header string) string {
 	type file struct {
 		path      string
 		server    string
@@ -593,8 +621,16 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 }
 
 // readDiscoveryToken reads the bearer token on every call, so a rotated token
-// is picked up without a restart.
+// is picked up without a restart. Only a regular file is opened: opening a
+// named pipe with no writer would block past the request deadline.
 func readDiscoveryToken(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("read token file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("token file must be a regular file")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)
