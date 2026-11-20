@@ -54,6 +54,9 @@ type BifrostResponsesRequest struct {
 	// restore function_call items. Never serialized; the shared request never has it.
 	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
 
+	// CustomToolNames holds custom tools sent as function tools, for restoring their calls.
+	CustomToolNames map[string]struct{} `json:"-"`
+
 	// Removed at Messages ingress, before Input is shared. Shallow fallback copies
 	// retain this private metadata; only Anthropic attempts restore it.
 	anthropicBillingHeader *anthropicBillingHeader
@@ -1338,6 +1341,7 @@ type ResponsesStopDetails struct {
 }
 
 type ResponsesResponseUsage struct {
+	Estimation          *TokenUsageEstimation          `json:"estimation,omitempty"`
 	Type                *string                        `json:"type,omitempty"`          // type field is sent by anthropic
 	Model               *string                        `json:"model,omitempty"`         // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
 	InputTokens         int                            `json:"input_tokens"`            // Number of input tokens (prompt tokens + cached tokens)

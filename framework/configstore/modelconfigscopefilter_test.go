@@ -89,6 +89,18 @@ func TestGetModelConfigsPaginatedScopesFilter(t *testing.T) {
 		require.Contains(t, []string{"mc-1", "mc-3"}, rows[0].ID)
 	})
 
+	// The single-row read follows the same scope, so an id the caller may not see reads as missing.
+	t.Run("context query scope hides a row from GetModelConfigByID", func(t *testing.T) {
+		scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+			return db.Where("scope = ? OR scope_id = ?", "global", "vk1")
+		})
+		_, err := store.GetModelConfigByID(scoped, "mc-2")
+		require.ErrorIs(t, err, ErrNotFound)
+		row, err := store.GetModelConfigByID(scoped, "mc-1")
+		require.NoError(t, err)
+		require.Equal(t, "gpt-4o", row.ModelName)
+	})
+
 	t.Run("deprecated Scope is OR-ed with Scopes", func(t *testing.T) {
 		got := modelsForParams(t, ModelConfigsQueryParams{Scope: "global", Scopes: []string{"virtual_key"}})
 		require.ElementsMatch(t, []string{"gemini", "gpt-4o", "claude"}, got)

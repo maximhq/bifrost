@@ -193,3 +193,16 @@ export async function screenshotOnError(
     throw error
   }
 }
+
+/**
+ * Opens the ⌘K palette, pressing again until it shows: right after a navigation the
+ * shortcut listener may not be attached yet, so a single keypress can be lost.
+ */
+export async function openCommandPalette(page: Page) {
+  const palette = page.getByTestId('command-palette')
+  await expect(async () => {
+    if (!(await palette.isVisible())) await page.keyboard.press('ControlOrMeta+k')
+    await expect(palette).toBeVisible({ timeout: 1000 })
+  }).toPass({ timeout: 15000 })
+  return page.getByTestId('command-palette-input')
+}

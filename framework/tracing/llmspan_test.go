@@ -1156,3 +1156,24 @@ func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
 		t.Errorf("%s present with no tools configured", schemas.AttrTools)
 	}
 }
+
+// TestPopulateFileUploadRequestAttributesReportsUploadedSize asserts the traced upload size is the
+// size of what is uploaded: FileSource is used instead of File, as the providers send it, so a
+// request carrying both reports the source's size; File alone is reported by its length.
+func TestPopulateFileUploadRequestAttributesReportsUploadedSize(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostFileUploadRequest
+		want int
+	}{
+		{"both set: source wins", &schemas.BifrostFileUploadRequest{File: []byte("old"), FileSource: schemas.NewBytesBodySource(make([]byte, 100))}, 100},
+		{"file only", &schemas.BifrostFileUploadRequest{File: []byte("abc")}, 3},
+		{"source only", &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource(make([]byte, 42))}, 42},
+	} {
+		attrs := map[string]any{}
+		PopulateFileUploadRequestAttributes(tc.req, attrs)
+		if got := attrs[schemas.AttrFileBytes]; got != tc.want {
+			t.Errorf("%s: %s = %v, want %d", tc.name, schemas.AttrFileBytes, got, tc.want)
+		}
+	}
+}

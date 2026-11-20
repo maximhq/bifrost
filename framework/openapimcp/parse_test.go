@@ -476,3 +476,26 @@ func TestParse_LiteralRefInInstanceDataIsNotAReference(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, findOp(t, doc, "POST", "/s").Unsupported)
 }
+
+// Vendor extensions on an operation are kept, in both spec families, so a
+// caller can act on markers such as x-bifrost-destructive.
+func TestParse_OperationExtensions(t *testing.T) {
+	v3 := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"paths":{
+"/a":{"post":{"operationId":"a","x-bifrost-destructive":true,"x-note":{"k":"v"},"responses":{"200":{"description":"ok"}}},
+"get":{"operationId":"b","responses":{"200":{"description":"ok"}}}}}}`
+	doc, err := Parse([]byte(v3), ParseOptions{})
+	require.NoError(t, err)
+	byID := map[string]Operation{}
+	for _, op := range doc.Operations {
+		byID[op.ID] = op
+	}
+	assert.Equal(t, map[string]any{"x-bifrost-destructive": true, "x-note": map[string]any{"k": "v"}}, byID["a"].Extensions)
+	assert.Nil(t, byID["b"].Extensions)
+
+	v2 := `{"swagger":"2.0","info":{"title":"t","version":"1"},"host":"api.example","paths":{
+"/a":{"delete":{"operationId":"a","x-bifrost-destructive":false,"responses":{"200":{"description":"ok"}}}}}}`
+	doc, err = Parse([]byte(v2), ParseOptions{})
+	require.NoError(t, err)
+	require.Len(t, doc.Operations, 1)
+	assert.Equal(t, map[string]any{"x-bifrost-destructive": false}, doc.Operations[0].Extensions)
+}

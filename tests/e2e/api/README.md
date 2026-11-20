@@ -261,6 +261,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.

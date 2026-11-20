@@ -4,8 +4,11 @@ import {
 	decisionQuestions,
 	extractProviderErrorMessage,
 	findLastPendingClientCallIndex,
+	formatGuardrailUsageUnits,
+	getExternalGuardrailCost,
 	hasNoToolArguments,
 	isClientToolCallItem,
+	isExternalGuardrailCall,
 	isParsedPassthroughLog,
 	isPassthroughLog,
 	passthroughLogParams,
@@ -420,5 +423,55 @@ describe("passthrough tagging", () => {
 				responses_output: [{ type: "message" }] as any,
 			}),
 		).toBe(true);
+	});
+});
+describe("getExternalGuardrailCost", () => {
+	it("sums only the estimated cost of external guardrail calls", () => {
+		expect(
+			getExternalGuardrailCost([
+				{ judge_model: "gpt-4o-mini", total_tokens: 25 },
+				{ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 }, estimated_cost: 0.00015 },
+				{ guardrail_provider: "vendor", usage_units: { topic_policy_units: 2 }, estimated_cost: 0.0003 },
+			]),
+		).toBeCloseTo(0.00045, 12);
+	});
+
+	it("is zero when there are no calls or only judge calls", () => {
+		expect(getExternalGuardrailCost(undefined)).toBe(0);
+		expect(getExternalGuardrailCost([])).toBe(0);
+		expect(getExternalGuardrailCost([{ judge_model: "gpt-4o-mini", total_tokens: 25 }])).toBe(0);
+	});
+
+	it("ignores an estimate on a judge call, whose cost is already in the stored guardrail cost", () => {
+		expect(
+			getExternalGuardrailCost([
+				{ judge_model: "gpt-4o-mini", total_tokens: 25, estimated_cost: 0.1 },
+				{ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 }, estimated_cost: 0.00015 },
+			]),
+		).toBeCloseTo(0.00015, 12);
+	});
+
+	it("adds nothing for external usage without an estimate", () => {
+		expect(getExternalGuardrailCost([{ guardrail_provider: "vendor", usage_units: { word_policy_units: 2 } }])).toBe(0);
+	});
+});
+
+describe("isExternalGuardrailCall", () => {
+	it("is true only for calls that report usage units", () => {
+		expect(isExternalGuardrailCall({ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 } })).toBe(true);
+		expect(isExternalGuardrailCall({ guardrail_provider: "vendor", usage_units: {} })).toBe(false);
+		expect(isExternalGuardrailCall({ judge_model: "gpt-4o-mini", total_tokens: 25, estimated_cost: 0.1 })).toBe(false);
+	});
+});
+
+describe("formatGuardrailUsageUnits", () => {
+	it("lists units sorted by name", () => {
+		expect(formatGuardrailUsageUnits({ topic_policy_units: 1, content_policy_units: 2 })).toBe(
+			"content_policy_units: 2 · topic_policy_units: 1",
+		);
+	});
+
+	it("is empty for no units", () => {
+		expect(formatGuardrailUsageUnits({})).toBe("");
 	});
 });

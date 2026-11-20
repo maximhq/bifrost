@@ -36,10 +36,14 @@ export const KnownProvidersNames = [
 	"wafer",
 	"minimax",
 	"byteplus",
+	"machgen",
+	"baseten",
+	"kimchi",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
 	"typesafe",
+	"soniox",
 	"subq",
 ] as const;
 
@@ -78,6 +82,8 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"databricks",
 	"cloudflare",
 	"byteplus",
+	"baseten",
+	"kimchi",
 	"github-copilot",
 ] as const;
 
@@ -106,6 +112,7 @@ export const RequestTypes = [
 	"decisions",
 	"speech",
 	"speech_stream",
+	"speech.session",
 	"transcription",
 	"transcription_stream",
 	"image_generation",
@@ -195,10 +202,14 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	minimax: "MiniMax",
 	byteplus: "BytePlus",
+	machgen: "MachGen",
+	baseten: "Baseten",
+	kimchi: "Kimchi",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
+	soniox: "Soniox",
 	subq: "Subq",
 } as const;
 
@@ -343,6 +354,7 @@ export const RequestTypeLabels = {
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
+	"speech.session": "Speech Session",
 
 	transcription: "Transcription",
 	transcription_stream: "Transcription Stream",
@@ -443,6 +455,7 @@ export const RequestTypeColors = {
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",
+	"speech.session": "bg-sky-100 text-sky-800",
 
 	transcription: "bg-orange-100 text-orange-800",
 	transcription_stream: "bg-lime-100 text-lime-800",

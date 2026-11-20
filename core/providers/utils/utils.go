@@ -289,6 +289,41 @@ func GetJSONSubtree(data []byte, path string) []byte {
 	return out
 }
 
+// MergeJSONObjects lays patch over base the way OpenAI applies a session.update: a key the patch leaves
+// out keeps its value, an object is merged key by key, and anything else, an array or a null included,
+// replaces the value, since a null can be a setting. An empty patch returns base and an empty base
+// returns patch, both as they came; a merge returns its keys sorted. The error is the decoder's, for the
+// caller to name the document it was reading.
+func MergeJSONObjects(base, patch []byte) ([]byte, error) {
+	if len(patch) == 0 {
+		return base, nil
+	}
+	if len(base) == 0 {
+		return patch, nil
+	}
+	var merged, overlay map[string]json.RawMessage
+	if err := schemas.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	if err := schemas.Unmarshal(patch, &overlay); err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = make(map[string]json.RawMessage, len(overlay))
+	}
+	for key, value := range overlay {
+		if previous, ok := merged[key]; ok && gjson.ParseBytes(previous).IsObject() && gjson.ParseBytes(value).IsObject() {
+			nested, err := MergeJSONObjects(previous, value)
+			if err != nil {
+				return nil, err
+			}
+			value = nested
+		}
+		merged[key] = value
+	}
+	return MarshalSorted(merged)
+}
+
 // UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
 // of the source document. Use this in preference to sonic.Unmarshal into a map[string]any
 // whenever the caller cares about field order (e.g., LLM prompt-cache keying or property
@@ -598,6 +633,158 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		return client
 	}
 
+	return configureDialer(client, allowPrivateNetwork, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, network, host)
+	}, (*net.Dialer).Dial)
+}
+
+// Reasons a DialBlockedError carries.
+const (
+	DialBlockedUnspecified = "unspecified"
+	DialBlockedLinkLocal   = "link-local"
+	DialBlockedPrivate     = "private"
+)
+
+// DialBlockedError reports a resolved address the provider network policy refused to dial.
+// Its message names the fix, and NewBifrostUpstreamConnectionError surfaces it to the client.
+type DialBlockedError struct {
+	IP     net.IP
+	Reason string // DialBlockedUnspecified, DialBlockedLinkLocal or DialBlockedPrivate
+}
+
+func (e *DialBlockedError) Error() string {
+	switch e.Reason {
+	case DialBlockedPrivate:
+		return fmt.Sprintf("connection to private IP %s is not allowed: set network_config.allow_private_network to true on this provider to reach private endpoints (VPC/PrivateLink endpoints, private DNS, internal gateways)", e.IP)
+	case DialBlockedLinkLocal:
+		return fmt.Sprintf("connection to link-local IP %s is not allowed: link-local and cloud metadata addresses are always blocked", e.IP)
+	default:
+		return fmt.Sprintf("connection to unspecified IP %s is not allowed", e.IP)
+	}
+}
+
+// checkDialIP applies the provider network policy to one resolved address. Unspecified
+// (0.0.0.0, ::) and link-local (169.254.x.x, fe80::, which includes cloud metadata) addresses
+// are always refused; loopback is always allowed; RFC 1918 and other private addresses are
+// refused unless the operator set allow_private_network.
+func checkDialIP(ip net.IP, allowPrivateNetwork bool) error {
+	if ip.IsUnspecified() {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedUnspecified}
+	}
+	if network.IsLinkLocal(ip) {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedLinkLocal}
+	}
+	if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedPrivate}
+	}
+	return nil
+}
+
+// ConfigureNetHTTPDialer applies ConfigureDialer's address policy to a net/http transport, for
+// providers whose inference client is net/http (Bedrock's HTTP/2 runtime client). Call it after
+// transport.Proxy is set and before network.DialHTTPSProxyWithHopTLS, which dials https proxies
+// through the DialContext installed here.
+//
+// A direct connection resolves the host once, refuses it if any resolved address fails
+// checkDialIP, and dials the checked IP literal, so a second DNS answer cannot swap in another
+// address (DNS rebinding). IPv4 addresses are tried before IPv6 ones because dialing literals
+// gives up net.Dialer's dual-stack racing. TLS still verifies and sends SNI for the request's
+// hostname. A connection to a proxy picked by transport.Proxy is dialed as is, matching
+// ConfigureDialer, which skips its checks when a proxy dialer is configured: the proxy is
+// operator configuration, and it is the proxy that connects to the target.
+func ConfigureNetHTTPDialer(transport *http.Transport, allowPrivateNetwork bool) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	configureNetHTTPDialer(transport, allowPrivateNetwork, net.DefaultResolver.LookupIP, dialer.DialContext)
+}
+
+// configureNetHTTPDialer is ConfigureNetHTTPDialer with injectable DNS resolution and dialing.
+func configureNetHTTPDialer(
+	transport *http.Transport,
+	allowPrivateNetwork bool,
+	lookupIP func(ctx context.Context, network, host string) ([]net.IP, error),
+	dial func(ctx context.Context, network, addr string) (net.Conn, error),
+) {
+	// Proxy host:port values transport.Proxy has returned. Bounded by the configured proxy and
+	// the environment proxies, so it stays a handful of entries for the transport's lifetime.
+	var proxyAddrs sync.Map
+	if proxy := transport.Proxy; proxy != nil {
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			proxyURL, err := proxy(req)
+			if err == nil && proxyURL != nil {
+				addr := netHTTPProxyAddr(proxyURL)
+				if _, seen := proxyAddrs.Load(addr); !seen {
+					proxyAddrs.Store(addr, struct{}{})
+				}
+			}
+			return proxyURL, err
+		}
+	}
+	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if _, isProxy := proxyAddrs.Load(addr); isProxy {
+			return dial(ctx, netw, addr)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := lookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no usable address resolved for %s", host)
+		}
+		for _, ip := range ips {
+			if blockErr := checkDialIP(ip, allowPrivateNetwork); blockErr != nil {
+				return nil, blockErr
+			}
+		}
+		ordered := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			if ip.To4() != nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		for _, ip := range ips {
+			if ip.To4() == nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		var lastErr error
+		for _, ip := range ordered {
+			conn, dialErr := dial(ctx, netw, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
+	}
+}
+
+// netHTTPProxyAddr is the host:port net/http dials for proxyURL, with the scheme's default port.
+func netHTTPProxyAddr(proxyURL *url.URL) string {
+	if proxyURL.Port() != "" {
+		return proxyURL.Host
+	}
+	port := "80"
+	switch proxyURL.Scheme {
+	case "https":
+		port = "443"
+	case "socks5", "socks5h":
+		port = "1080"
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
+}
+
+// configureDialer allows tests to control DNS resolution and TCP dialing without
+// changing global network state. The dial callback receives the configured dialer.
+func configureDialer(
+	client *fasthttp.Client,
+	allowPrivateNetwork bool,
+	lookupIP func(context.Context, string, string) ([]net.IP, error),
+	dial func(*net.Dialer, string, string) (net.Conn, error),
+) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -655,7 +842,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
 				defer cancel()
 			}
-			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			ips, resolveErr := lookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -665,18 +852,10 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			var lastErr error
 			for _, ip := range ips {
-				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
-				if ip.IsUnspecified() {
-					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+				if blockErr := checkDialIP(ip, allowPrivateNetwork); blockErr != nil {
+					return nil, blockErr
 				}
-				if network.IsLinkLocal(ip) {
-					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
-				}
-				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
-				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
-				}
-				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				conn, err = dial(dialer, "tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					break
 				}
@@ -3457,6 +3636,12 @@ func IsInvalidRequestError(err error) bool {
 // client-side bad-request errors. Mirrors NewBifrostTimeoutError; IsBifrostError
 // is false because the upstream provider is the cause.
 func NewBifrostUpstreamConnectionError(message string, err error) *schemas.BifrostError {
+	// A dial the network policy refused is a configuration problem the operator can fix, so
+	// its message (which names the setting) replaces the generic one.
+	var blocked *DialBlockedError
+	if errors.As(err, &blocked) {
+		message = blocked.Error()
+	}
 	statusCode := 502
 	errorType := schemas.ProviderConnectionFailed
 	return &schemas.BifrostError{
@@ -4445,6 +4630,11 @@ func ProcessAndSendError(
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			// A classified reader error (a Bedrock InvokeModel exception frame) bills
+			// the reported usage too; usage it already carries is kept.
+			if typed.ExtraFields.BilledUsage == nil {
+				attachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -4457,6 +4647,9 @@ func ProcessAndSendError(
 			Error:   err,
 		},
 	}
+	// A read error (an idle timeout, a dropped connection) ends the stream like a
+	// cancel does, so it bills the usage the provider already reported.
+	attachBilledUsageFromContext(ctx, bifrostError)
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {

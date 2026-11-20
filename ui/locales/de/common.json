@@ -77,7 +77,8 @@
 		"modelLimits": "Modelllimits",
 		"agent": "Agent",
 		"relay": "Relay",
-		"relays": "Relays"
+		"relays": "Relays",
+		"modelRouters": "Router"
 	},
 	"aboutField": "über {{field}}",
 	"thisField": "Dieses Feld",
@@ -121,7 +122,8 @@
 		"searching": "Suche…",
 		"loadingMore": "Weitere werden geladen…",
 		"useModel": "<name>{{name}}</name> verwenden",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert",
+		"templateUnknownGroup": "Verweist auf die Erfassungsgruppe {{group}}, die das Muster nicht definiert"
 	},
 	"providerSelect": {
 		"select": "Anbieter auswählen",
@@ -261,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Budgetnutzung",
 		"override": "Überschreibung",
-		"baseTooltip": "Basis {{base}} + Überschreibung {{override}}"
+		"baseTooltip": "Basis {{base}} + Überschreibung {{override}}",
+		"sharedTag": "geteilt"
 	},
 	"rateLimit": {
 		"tokens": "Tokens",
@@ -300,6 +303,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Diese Konfiguration wird aus <code0>config.json</code0> synchronisiert. Künftige Änderungen an config.json überschreiben Änderungen in der Oberfläche. Wenn Du config.json nur zum Bootstrappen der Anfangskonfiguration verwendest, kannst Du diesen Hinweis ignorieren."
+	},
+	"configIssuesAlert": {
+		"title": "Ein Teil der config.json-Deklaration wurde nicht angewendet",
+		"badge": "Konfigurationsprobleme",
+		"hint": "Der Rest der Deklaration ist angewendet. Jeder Eintrag oben verschwindet von selbst, sobald das Genannte existiert, zum Beispiel wenn der fehlende MCP-Client registriert wird."
 	},
 	"breadcrumb": {
 		"label": "Brotkrümelnavigation",
@@ -344,6 +352,10 @@
 		"removeAria": "{{label}} entfernen"
 	},
 	"validation": {
+		"modeIsRequired": "Modus ist erforderlich",
+		"valueMustBeAPositiveWholeNumber": "Muss eine positive ganze Zahl sein",
+		"mustBeAJsonObject": "Muss ein JSON-Objekt sein",
+		"providerCannotBePatched": "provider kann nicht gepatcht werden; er identifiziert den Eintrag",
 		"customProviderNameIsRequired": "Name des benutzerdefinierten Anbieters ist erforderlich",
 		"endpointIsRequired": "Endpunkt ist erforderlich",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Client-ID, Client-Secret und Tenant-ID sind für die Entra-ID-Authentifizierung erforderlich",
@@ -503,10 +515,14 @@
 		"maxNumber": "Darf höchstens {{maximum}} betragen",
 		"maxChars": "Darf höchstens {{maximum}} Zeichen lang sein",
 		"validUrl": "Muss eine gültige URL sein",
+		"publicUrlNoUserinfoQueryOrFragment": "Darf keine Benutzerinformationen, keine Query und kein Fragment enthalten",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Muss eine http(s)-URL oder ein Pfad relativ zum App-Verzeichnis sein",
+		"openapiUrlMustStayInAppDir": "Muss ein Pfad relativ zum App-Verzeichnis sein, der darin bleibt",
 		"validEmail": "Muss eine gültige E-Mail-Adresse sein",
 		"grpcHostPortFormat": "Muss für gRPC im Format <host>:<port> vorliegen (z. B. {{example}})",
 		"invalidInput": "Ungültige Eingabe",
 		"vertexEndpointId": "Gib eine Vertex-Endpunkt-ID ein oder füge eine unterstützte Endpunkt-URL ein",
+		"basetenDeploymentUrl": "Die Deployment-URL muss eine absolute https-URL ohne Anmeldedaten, Query oder Fragment sein",
 		"mcp": {
 			"privateKeyRequired": "Für private_key_jwt ist ein privater Schlüssel erforderlich",
 			"secretRequiredForMethod": "Für die Wahl der Übertragungsart ist ein Client-Secret erforderlich",
@@ -576,7 +592,8 @@
 		"baseUrlIsRequiredForThisProvider": "Für diesen Anbieter ist eine Basis-URL erforderlich",
 		"baseUrlMustStartWithHttpOrHttps": "Die Basis-URL muss mit http:// oder https:// beginnen",
 		"atLeastOneApiKeyIsRequired": "Mindestens ein API-Schlüssel ist erforderlich",
-		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein"
+		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein",
+		"deploymentPatternInvalid": "Ein Deployment-Muster ist ungültig oder seine Modell-ID nutzt eine Erfassungsgruppe, die das Muster nicht definiert"
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",

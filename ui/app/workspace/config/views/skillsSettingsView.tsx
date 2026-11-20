@@ -53,7 +53,7 @@ export default function SkillsSettingsView() {
 
 	if (configError && !bifrostConfig) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="skills-settings-load-error">
+			<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="skills-settings-load-error">
 				<PageTitle title={tShell("nav.skillsSettings")}>{t("skillsSettings.description")}</PageTitle>
 				<div className="border-destructive/30 bg-destructive/5 space-y-3 rounded-sm border p-4">
 					<p className="text-destructive text-sm font-medium">{t("skillsSettings.loadFailed")}</p>
@@ -67,7 +67,7 @@ export default function SkillsSettingsView() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="skills-settings-view">
+		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="skills-settings-view">
 			<PageTitle title={tShell("nav.skillsSettings")}>{t("skillsSettings.description")}</PageTitle>
 			<div className="space-y-2 rounded-sm border p-4">
 				<label htmlFor="skills-external-client-url" className="text-sm font-medium">
@@ -87,7 +87,7 @@ export default function SkillsSettingsView() {
 					disabled={!config || !hasSettingsUpdateAccess}
 				/>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button data-testid="skills-settings-save-btn" onClick={handleSave} disabled={!hasChanges || isSaving || !hasSettingsUpdateAccess}>
 					{isSaving ? t("saving") : t("saveChanges")}
 				</Button>

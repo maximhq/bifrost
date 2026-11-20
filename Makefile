@@ -445,7 +445,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
+				golang:1.27.4-alpine3.24@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -463,7 +463,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
+				golang:1.27.4-alpine3.24@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -1996,6 +1996,10 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 	@$(ECHO) ""
 	@$(ECHO) "$(GREEN)✓ go mod tidy complete$(NC)"
 
+.PHONY: test-cli-integration
+test-cli-integration: ## Build the CLI and test configuration and management commands (Python 3.11+)
+	@cd cli && python3 scripts/testconfigure.py -v
+
 test-cli: install-gotestsum ## Run CLI tests
 	@$(ECHO) "$(GREEN)Running CLI tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
@@ -2066,7 +2070,7 @@ test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on t
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 	exit $$STATUS
 
-test-realtime: install-gotestsum
+test-realtime: install-gotestsum ## Run the Realtime API e2e tests against a running gateway (Usage: make test-realtime [TESTCASE=TestName|PATTERN=substring] [REALTIME_UPSTREAM=real|fake] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/realtime/fake)
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running Realtime API e2e tests...$(NC)"; \
 	mkdir -p $(TEST_REPORTS_DIR); \
@@ -2080,6 +2084,22 @@ test-realtime: install-gotestsum
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -count 1 -timeout 600s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-realtime-long: install-gotestsum ## Run the long Gemini and Vertex Live sessions against the real providers: 11 minutes, across Google's connection limit (Usage: make test-realtime-long [TESTCASE=TestName] [BIFROST_BASE_URL=http://localhost:8080]; start the gateway with APP_DIR=$$(pwd)/tests/realtime)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running long Gemini and Vertex Live sessions (real providers)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	RUN_FLAG="-run Long"; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime-long.xml"; \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 REALTIME_UPSTREAM=real REALTIME_LONG=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -count 1 -timeout 40m $$RUN_FLAG; \
 	STATUS=$$?; \
 	cd ../..; \
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -2178,7 +2198,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek baseten
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its

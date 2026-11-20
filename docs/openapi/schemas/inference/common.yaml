@@ -41,6 +41,10 @@ ModelProvider:
     - subq
     - minimax
     - byteplus
+    - machgen
+    - baseten
+    - kimchi
+    - soniox
 
 Fallback:
   type: object

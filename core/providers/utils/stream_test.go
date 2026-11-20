@@ -586,6 +586,94 @@ func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	}
 }
 
+// A stream read error (an idle timeout, a dropped connection) ends the stream as
+// a cancel does, so the error the post-hooks see bills the usage the provider
+// already reported through its accumulated handle; with nothing accumulated it
+// bills nothing.
+func TestProcessAndSendError_BillsAccumulatedUsage(t *testing.T) {
+	for name, tc := range map[string]struct {
+		handle *schemas.BifrostLLMUsage
+		want   *schemas.BifrostLLMUsage
+	}{
+		"reported usage": {handle: &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132},
+			want: &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132}},
+		"nothing accumulated": {handle: &schemas.BifrostLLMUsage{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, tc.handle)
+			var seen *schemas.BifrostError
+			hook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				seen = err
+				return resp, err
+			}
+			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+			ProcessAndSendError(ctx, hook, ErrStreamIdleTimeout, responseChan, nil, nil)
+			if seen == nil {
+				t.Fatal("the post-hook saw no error")
+			}
+			got := seen.ExtraFields.BilledUsage
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("billed %+v with nothing accumulated", got)
+				}
+				return
+			}
+			if got == nil || got.PromptTokens != tc.want.PromptTokens || got.CompletionTokens != tc.want.CompletionTokens || got.TotalTokens != tc.want.TotalTokens {
+				t.Fatalf("read error billed %+v, want %+v", got, tc.want)
+			}
+			if got == tc.handle {
+				t.Fatal("billed usage aliases the provider's live handle")
+			}
+		})
+	}
+}
+
+// carriedStreamError is a reader error that already carries a classified
+// BifrostError, as Bedrock's InvokeModel exception frames do.
+type carriedStreamError struct{ err *schemas.BifrostError }
+
+func (e *carriedStreamError) Error() string                       { return e.err.Error.Message }
+func (e *carriedStreamError) BifrostError() *schemas.BifrostError { return e.err }
+
+// A pre-classified stream error (a throttling exception after usage was reported)
+// bills the accumulated usage too, keeps its own classification, and keeps any
+// billed usage it already carries.
+func TestProcessAndSendError_CarriedErrorBillsAccumulatedUsage(t *testing.T) {
+	throttled := func(billed *schemas.BifrostLLMUsage) *schemas.BifrostError {
+		return &schemas.BifrostError{IsBifrostError: false, StatusCode: schemas.Ptr(429),
+			Error:       &schemas.ErrorField{Message: "throttlingException: rate exceeded"},
+			ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed}}
+	}
+	for name, tc := range map[string]struct {
+		carried *schemas.BifrostError
+		want    int
+	}{
+		"no billed usage":   {carried: throttled(nil), want: 125},
+		"billed usage kept": {carried: throttled(&schemas.BifrostLLMUsage{PromptTokens: 9, TotalTokens: 9}), want: 9},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132})
+			var seen *schemas.BifrostError
+			hook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				seen = err
+				return resp, err
+			}
+			ProcessAndSendError(ctx, hook, &carriedStreamError{err: tc.carried}, make(chan *schemas.BifrostStreamChunk, 1), nil, nil)
+			if seen == nil {
+				t.Fatal("the post-hook saw no error")
+			}
+			if seen.IsBifrostError || seen.StatusCode == nil || *seen.StatusCode != 429 {
+				t.Fatalf("carried classification changed: IsBifrostError=%v status=%v", seen.IsBifrostError, seen.StatusCode)
+			}
+			if got := seen.ExtraFields.BilledUsage; got == nil || got.PromptTokens != tc.want {
+				t.Fatalf("carried error billed %+v, want prompt %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	// Error with code but no message should be treated as an error
 	stream := make(chan *schemas.BifrostStreamChunk, 2)
