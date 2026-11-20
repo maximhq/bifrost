@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/mcp"
@@ -766,5 +767,29 @@ func AssertToolsExecutedInParallelResponses(t *testing.T, mocker *DynamicLLMMock
 	for _, toolName := range expectedTools {
 		found := HasToolCallInResponsesHistory(turnHistory, toolName)
 		assert.True(t, found, "Tool %s should be called in parallel in turn %d", toolName, turn)
+	}
+}
+
+// injectToolsAsGatewayDoes runs the step the gateway runs before it sends a request to the model:
+// the manager adds its tools to the request and records on ctx what it added.
+//
+// Agent mode only auto-executes a code mode meta-tool (listToolFiles, readToolFile, getToolDocs,
+// executeToolCode) that Bifrost itself added to the request, so a test that hands the agent loop a
+// response calling one has to start from a context that went through the same step. The request
+// here is a throwaway that declares no tools of its own, so nothing the caller declared stands in
+// the way of Bifrost's own copy.
+//
+// It fails the test if executeToolCode was not recorded. That happens when the code mode client did
+// not connect, and a test that goes on would only see its tool calls handed back to the caller:
+// assertions that check for no error and a non-nil result would pass without code mode ever running.
+func injectToolsAsGatewayDoes(t *testing.T, ctx *schemas.BifrostContext, manager *mcp.MCPManager) {
+	t.Helper()
+	manager.AddToolsToRequest(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4"},
+	})
+	added, _ := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string)
+	if !slices.Contains(added, mcp.ToolTypeExecuteToolCode) {
+		t.Fatalf("injection did not add %s (added: %v): the code mode client is not connected, so this test would not exercise code mode", mcp.ToolTypeExecuteToolCode, added)
 	}
 }

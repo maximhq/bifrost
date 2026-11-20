@@ -284,13 +284,15 @@ func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
 }
 
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
-	tools, _ := m.availableTools(ctx, m.clientManager.GetCallerDiscovery(ctx, false))
+	tools, _, _ := m.availableTools(ctx, m.clientManager.GetCallerDiscovery(ctx, false))
 	return tools
 }
 
 // availableTools is GetAvailableTools over the caller's discovery, also naming which
-// of the tools are connect tools; nil when none is.
-func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscovery CallerDiscovery) ([]schemas.ChatTool, map[string]struct{}) {
+// of the tools are connect tools and which are code-mode meta-tools; each is nil when
+// there is none. Neither set is recorded on the context here: a tool counts as added
+// only once ParseAndAddToolsToRequest has put it in the request.
+func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscovery CallerDiscovery) ([]schemas.ChatTool, map[string]struct{}, map[string]struct{}) {
 	availableToolsPerClient := callerDiscovery.ToolsPerClient
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -347,7 +349,11 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 		availableTools = append(availableTools, tool)
 	}
 
-	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
+	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation.
+	// They are named here but not recorded on BifrostContextKeyMCPAddedTools: whether Bifrost's copy
+	// goes into the request is decided by the caller's own tools, so the record is made at the
+	// point of insertion (see recordAdded in ParseAndAddToolsToRequest).
+	var codeModeNames map[string]struct{}
 	if includeCodeModeTools && m.codeMode != nil {
 		codeModeTools := m.codeMode.GetTools()
 		// Add code mode tools, checking for duplicates
@@ -356,12 +362,16 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 				if !seenToolNames[tool.Function.Name] {
 					availableTools = append(availableTools, tool)
 					seenToolNames[tool.Function.Name] = true
+					if codeModeNames == nil {
+						codeModeNames = make(map[string]struct{})
+					}
+					codeModeNames[tool.Function.Name] = struct{}{}
 				}
 			}
 		}
 	}
 
-	return availableTools, connectNames
+	return availableTools, connectNames, codeModeNames
 }
 
 // buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates
@@ -558,13 +568,22 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 	// One CallerDiscovery gives the request its tools, its connect tools and, on the turn
 	// that has not added them yet, its server instructions.
 	callerDiscovery := m.clientManager.GetCallerDiscovery(ctx, !serverInstructionsInjected(ctx))
-	availableTools, connectNames := m.availableTools(ctx, callerDiscovery)
+	availableTools, connectNames, codeModeNames := m.availableTools(ctx, callerDiscovery)
 	dropStaleConnectTools(ctx, req, connectNames)
 	// A connect tool counts as added only once it is in the request, so a
 	// caller's own tool of the same name is never taken back.
+	//
+	// A code-mode meta-tool is recorded on BifrostContextKeyMCPAddedTools on the same
+	// terms. When the caller declared a tool of the same name, the merge loops below
+	// skip Bifrost's copy and keep the caller's, so recording the name anyway would
+	// let that caller-declared tool pass the check that agent-mode auto-execution
+	// makes against this list.
 	recordAdded := func(toolName string) {
 		if _, ok := connectNames[toolName]; ok {
 			schemas.AppendToContextList(ctx, addedConnectToolsKey, toolName)
+		}
+		if _, ok := codeModeNames[toolName]; ok {
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, toolName)
 		}
 	}
 

@@ -1933,7 +1933,9 @@ func TestCodeMode_STDIO_UnattendedCallEnforcesAutoExecuteList(t *testing.T) {
 				},
 			}
 
-			result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(createTestContext(), originalReq, initialResponse, mockLLM.MakeChatRequest)
+			ctx := createTestContext()
+			injectToolsAsGatewayDoes(t, ctx, manager)
+			result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx, originalReq, initialResponse, mockLLM.MakeChatRequest)
 			require.Nil(t, bifrostErr)
 			require.NotNil(t, result)
 			require.Equal(t, 2, mockLLM.chatCallCount, "executeToolCode must have been auto-executed and the loop continued")

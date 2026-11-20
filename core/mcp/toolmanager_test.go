@@ -1930,3 +1930,144 @@ func TestGetToolPerClient_AppOnlyToolsOfPerUserClients(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only callable from an MCP App")
 }
+
+// =============================================================================
+// Code-mode meta-tools on BifrostContextKeyMCPAddedTools
+//
+// A meta-tool counts as added only when Bifrost's copy actually goes into the
+// request. When the caller already declared a tool of the same name the merge
+// loops keep the caller's tool, and agent-mode auto-execution trusts this list,
+// so the name must stay off it. See #9714.
+// =============================================================================
+
+// codeModeToolClientManager is the shared fake with its one client marked as a
+// code mode client, which is what makes availableTools offer the meta-tools.
+type codeModeToolClientManager struct{ *mockToolClientManager }
+
+func (m *codeModeToolClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	if clientName != "test-client" {
+		return nil
+	}
+	return &schemas.MCPClientState{
+		Name: "test-client",
+		ExecutionConfig: &schemas.MCPClientConfig{
+			ID:               "test-client",
+			Name:             "test-client",
+			IsCodeModeClient: true,
+			ToolsToExecute:   []string{"*"},
+		},
+	}
+}
+
+// metaToolCodeMode offers the four code mode meta-tools and nothing else.
+type metaToolCodeMode struct{ CodeMode }
+
+func (metaToolCodeMode) GetTools() []schemas.ChatTool {
+	return []schemas.ChatTool{
+		makeTool(ToolTypeListToolFiles),
+		makeTool(ToolTypeReadToolFile),
+		makeTool(ToolTypeGetToolDocs),
+		makeTool(ToolTypeExecuteToolCode),
+	}
+}
+
+func newCodeModeToolsManagerForTest() *ToolsManager {
+	tm := newToolsManagerForTest(&codeModeToolClientManager{&mockToolClientManager{}})
+	tm.SetCodeMode(metaToolCodeMode{})
+	return tm
+}
+
+func addedToolNames(ctx *schemas.BifrostContext) []string {
+	added, _ := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string)
+	return added
+}
+
+func TestParseAndAddToolsToRequest_CodeModeTools_RecordedWhenInjected(t *testing.T) {
+	t.Parallel()
+
+	tm := newCodeModeToolsManagerForTest()
+	req := buildChatRequest()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	names := toolNamesFromChatRequest(result)
+	added := addedToolNames(ctx)
+	for _, name := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs, ToolTypeExecuteToolCode} {
+		if countOccurrences(names, name) != 1 {
+			t.Errorf("expected %q injected exactly once, got %d (names: %v)", name, countOccurrences(names, name), names)
+		}
+		if countOccurrences(added, name) != 1 {
+			t.Errorf("expected %q recorded exactly once as added, got %d (added: %v)", name, countOccurrences(added, name), added)
+		}
+	}
+}
+
+func TestParseAndAddToolsToRequest_CodeModeTools_CallerDeclaredNotRecorded(t *testing.T) {
+	t.Parallel()
+
+	tm := newCodeModeToolsManagerForTest()
+	// The caller declared executeToolCode themselves; Bifrost keeps theirs and
+	// does not add its own copy.
+	req := buildChatRequest(ToolTypeExecuteToolCode)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	names := toolNamesFromChatRequest(result)
+	if countOccurrences(names, ToolTypeExecuteToolCode) != 1 {
+		t.Fatalf("expected the caller's executeToolCode to remain exactly once, got %d (names: %v)", countOccurrences(names, ToolTypeExecuteToolCode), names)
+	}
+	added := addedToolNames(ctx)
+	if countOccurrences(added, ToolTypeExecuteToolCode) != 0 {
+		t.Errorf("a caller-declared executeToolCode must not be recorded as added by Bifrost (added: %v)", added)
+	}
+	// The meta-tools Bifrost did insert are still recorded.
+	for _, name := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs} {
+		if countOccurrences(added, name) != 1 {
+			t.Errorf("expected injected %q to be recorded exactly once, got %d (added: %v)", name, countOccurrences(added, name), added)
+		}
+	}
+}
+
+func TestParseAndAddToolsToRequest_ResponsesAPI_CodeModeTools_CallerDeclaredNotRecorded(t *testing.T) {
+	t.Parallel()
+
+	tm := newCodeModeToolsManagerForTest()
+	req := buildResponsesRequest(ToolTypeListToolFiles)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	names := toolNamesFromResponsesRequest(result)
+	if countOccurrences(names, ToolTypeListToolFiles) != 1 {
+		t.Fatalf("expected the caller's listToolFiles to remain exactly once, got %d (names: %v)", countOccurrences(names, ToolTypeListToolFiles), names)
+	}
+	added := addedToolNames(ctx)
+	if countOccurrences(added, ToolTypeListToolFiles) != 0 {
+		t.Errorf("a caller-declared listToolFiles must not be recorded as added by Bifrost (added: %v)", added)
+	}
+	for _, name := range []string{ToolTypeReadToolFile, ToolTypeGetToolDocs, ToolTypeExecuteToolCode} {
+		if countOccurrences(added, name) != 1 {
+			t.Errorf("expected injected %q to be recorded exactly once, got %d (added: %v)", name, countOccurrences(added, name), added)
+		}
+	}
+}
+
+// Listing the tools Bifrost would offer is not offering them: nothing has been
+// put into a request, so nothing may be recorded as added to one.
+func TestGetAvailableTools_DoesNotRecordCodeModeToolsAsAdded(t *testing.T) {
+	t.Parallel()
+
+	tm := newCodeModeToolsManagerForTest()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	tools := tm.GetAvailableTools(ctx)
+
+	if len(tools) == 0 {
+		t.Fatal("expected the code mode meta-tools to be listed as available")
+	}
+	if added := addedToolNames(ctx); len(added) != 0 {
+		t.Errorf("listing available tools must not record anything as added to a request, got %v", added)
+	}
+}
