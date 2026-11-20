@@ -353294,6 +353294,511 @@
           }
         }
       ]
+    },
+    {
+      "name": "383. Signed thinking with omitted text replays unchanged (omitted thinking replay)",
+      "description": "On Claude Opus 4.7+ and Claude 5.x, thinking.display defaults to \"omitted\": Anthropic returns thinking blocks with \"thinking\": \"\" and the reasoning encrypted in \"signature\", and expects them replayed unchanged on later turns.\n\nStripEmptyThinkingBlocks (core/providers/anthropic/utils.go) used to drop every thinking block with empty text, including signed blocks. It now keeps signed blocks whose thinking value is a string. A chat reasoning detail with a signature and no text is sent as \"thinking\": \"\".\n\nEach chain asks a multi-step question with display omitted (native thinking.display, chat reasoning.display, Responses reasoning.summary \"none\"), captures the signed block with empty text (on a chat stream: a reasoning detail that carries only the signature, merged by index as clients do), replays it with x-bf-send-back-raw-request, and asserts the request Bifrost sent to Anthropic still carries that block with the same signature. The Claude Code passthrough case verifies that a block with a signature and \"thinking\": null is removed before sending the request upstream.",
+      "item": [
+        {
+          "name": "claude-opus-4-7 /anthropic/v1/messages Claude Code passthrough strips null thinking - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Claude Code passthrough filters the malformed thinking block', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, 'expected a native Anthropic message').to.equal('message');",
+                  "  pm.expect(body.extra_fields, 'expected a raw Claude Code passthrough response').to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"What is two plus two?\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":null,\"signature\":\"invalid-fixture-signature\"},{\"type\":\"text\",\"text\":\"Four.\"}]},{\"role\":\"user\",\"content\":\"Now double it. Reply with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "claude-opus-4-7 /anthropic/v1/messages turn 1: signed thinking block with omitted text captured - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('omittedThinkingNativeSignature');",
+                  "pm.collectionVariables.unset('omittedThinkingNativeTurn2Messages');",
+                  "pm.test('turn 1 returns a signed thinking block with its text omitted', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var t = (j.content || []).filter(function (b) { return b.type === 'thinking'; });",
+                  "  pm.expect(t, 'no thinking block came back, so turn 2 has nothing to replay: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "  pm.expect(t[0].thinking, 'display omitted was not honored, so this chain would not exercise an empty-text block').to.equal('');",
+                  "  pm.expect(t[0].signature, 'the thinking block has no signature to replay').to.be.a('string').that.is.not.empty;",
+                  "  pm.collectionVariables.set('omittedThinkingNativeSignature', t[0].signature);",
+                  "  pm.collectionVariables.set('omittedThinkingNativeTurn2Messages', JSON.stringify([{ role: 'user', content: \"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\" }, { role: 'assistant', content: j.content }, { role: 'user', content: \"Now give the arrival time if the wait had been 41 minutes instead. Reply with just the time.\" }]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"adaptive\",\"display\":\"omitted\"},\"output_config\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "claude-opus-4-7 /anthropic/v1/messages turn 2: signed thinking block with omitted text reaches Anthropic - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var sig = pm.collectionVariables.get('omittedThinkingNativeSignature');",
+                  "pm.test('turn 2 sends the signed thinking block to Anthropic unchanged', function () {",
+                  "  pm.expect(pm.response.code, 'turn 2 failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant turn in the request sent to Anthropic: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var blocks = Array.isArray(assistant.content) ? assistant.content : [];",
+                  "  var thinking = blocks.filter(function (b) { return b.type === 'thinking'; });",
+                  "  pm.expect(thinking.length, 'the signed thinking block with omitted text was stripped before reaching Anthropic: ' + JSON.stringify(assistant).slice(0, 400)).to.equal(1);",
+                  "  pm.expect(thinking[0].signature, 'the replayed signature differs from the one turn 1 returned').to.equal(sig);",
+                  "  pm.expect(thinking[0].thinking, 'the omitted thinking text was rewritten').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"adaptive\",\"display\":\"omitted\"},\"output_config\":{\"effort\":\"high\"},\"messages\":{{omittedThinkingNativeTurn2Messages}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 1: signed reasoning detail with omitted text captured - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('omittedThinkingChatSignature');",
+                  "pm.collectionVariables.unset('omittedThinkingChatTurn2Messages');",
+                  "pm.test('turn 1 returns a signed reasoning detail with its text omitted', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  var d = (msg.reasoning_details || []).filter(function (r) { return r.signature; });",
+                  "  pm.expect(d, 'no signed reasoning detail came back, so turn 2 has nothing to replay: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "  pm.expect(d[0].text || '', 'display omitted was not honored, so this chain would not exercise an empty-text block').to.equal('');",
+                  "  pm.collectionVariables.set('omittedThinkingChatSignature', d[0].signature);",
+                  "  pm.collectionVariables.set('omittedThinkingChatTurn2Messages', JSON.stringify([{ role: 'user', content: \"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\" }, msg, { role: 'user', content: \"Now give the arrival time if the wait had been 41 minutes instead. Reply with just the time.\" }]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"display\":\"omitted\"},\"messages\":[{\"role\":\"user\",\"content\":\"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 2: signed reasoning detail with omitted text reaches Anthropic - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var sig = pm.collectionVariables.get('omittedThinkingChatSignature');",
+                  "pm.test('turn 2 sends the signed thinking block to Anthropic unchanged', function () {",
+                  "  pm.expect(pm.response.code, 'turn 2 failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant turn in the request sent to Anthropic: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var blocks = Array.isArray(assistant.content) ? assistant.content : [];",
+                  "  var thinking = blocks.filter(function (b) { return b.type === 'thinking'; });",
+                  "  pm.expect(thinking.length, 'the signed thinking block with omitted text was stripped before reaching Anthropic: ' + JSON.stringify(assistant).slice(0, 400)).to.equal(1);",
+                  "  pm.expect(thinking[0].signature, 'the replayed signature differs from the one turn 1 returned').to.equal(sig);",
+                  "  pm.expect(thinking[0].thinking, 'the omitted thinking text was rewritten').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"display\":\"omitted\"},\"messages\":{{omittedThinkingChatTurn2Messages}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions streaming turn 1: signature-only reasoning detail captured - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('omittedThinkingChatStreamSignature');",
+                  "pm.collectionVariables.unset('omittedThinkingChatStreamTurn2Messages');",
+                  "pm.test('turn 1 streams a signature with no thinking text', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  // Merge reasoning_details by index, as streaming clients do: text deltas concatenate, the signature arrives in its own delta.",
+                  "  var merged = {}, order = [], content = '';",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var ev; try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "    (ev.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      content += d.content || '';",
+                  "      (d.reasoning_details || []).forEach(function (rd) {",
+                  "        var k = rd.index || 0;",
+                  "        if (!merged[k]) { merged[k] = { index: k, type: rd.type }; order.push(k); }",
+                  "        if (rd.text) { merged[k].text = (merged[k].text || '') + rd.text; }",
+                  "        if (rd.signature) { merged[k].signature = rd.signature; }",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  var details = order.map(function (k) { return merged[k]; });",
+                  "  var signed = details.filter(function (d) { return d.signature; });",
+                  "  pm.expect(signed, 'no signed reasoning detail was streamed, so turn 2 has nothing to replay: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "  pm.expect(signed[0].text, 'display omitted was not honored, so this chain would not exercise a signature-only detail').to.equal(undefined);",
+                  "  pm.collectionVariables.set('omittedThinkingChatStreamSignature', signed[0].signature);",
+                  "  pm.collectionVariables.set('omittedThinkingChatStreamTurn2Messages', JSON.stringify([{ role: 'user', content: \"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\" }, { role: 'assistant', content: content, reasoning_details: details }, { role: 'user', content: \"Now give the arrival time if the wait had been 41 minutes instead. Reply with just the time.\" }]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"display\":\"omitted\"},\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions streaming turn 2: signature-only reasoning detail reaches Anthropic - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var sig = pm.collectionVariables.get('omittedThinkingChatStreamSignature');",
+                  "pm.test('turn 2 sends the signed thinking block to Anthropic unchanged', function () {",
+                  "  pm.expect(pm.response.code, 'turn 2 failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant turn in the request sent to Anthropic: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var blocks = Array.isArray(assistant.content) ? assistant.content : [];",
+                  "  var thinking = blocks.filter(function (b) { return b.type === 'thinking'; });",
+                  "  pm.expect(thinking.length, 'the signed thinking block with omitted text was stripped before reaching Anthropic: ' + JSON.stringify(assistant).slice(0, 400)).to.equal(1);",
+                  "  pm.expect(thinking[0].signature, 'the replayed signature differs from the one turn 1 returned').to.equal(sig);",
+                  "  pm.expect(thinking[0].thinking, 'the omitted thinking text was rewritten').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"display\":\"omitted\"},\"messages\":{{omittedThinkingChatStreamTurn2Messages}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/responses turn 1: signed reasoning item with omitted text captured - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('omittedThinkingResponsesSignature');",
+                  "pm.collectionVariables.unset('omittedThinkingResponsesTurn2Input');",
+                  "pm.test('turn 1 returns a signed reasoning item with its text omitted', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var parts = [];",
+                  "  (j.output || []).forEach(function (o) {",
+                  "    if (o.type === 'reasoning') { ((o.content || [])).forEach(function (c) { if (c.signature) { parts.push(c); } }); }",
+                  "  });",
+                  "  pm.expect(parts, 'no signed reasoning content came back, so turn 2 has nothing to replay: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "  pm.expect(parts[0].text || '', 'summary none was not mapped to display omitted, so this chain would not exercise an empty-text block').to.equal('');",
+                  "  pm.collectionVariables.set('omittedThinkingResponsesSignature', parts[0].signature);",
+                  "  pm.collectionVariables.set('omittedThinkingResponsesTurn2Input', JSON.stringify([{ role: 'user', content: \"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\" }].concat(j.output).concat([{ role: 'user', content: \"Now give the arrival time if the wait had been 41 minutes instead. Reply with just the time.\" }])));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"summary\":\"none\"},\"input\":[{\"role\":\"user\",\"content\":\"A train leaves at 09:47 and travels 287 km at 82 km/h, waits 13 minutes, then travels 154 km at 77 km/h. At what time does it arrive? Work it out carefully, then reply with just the time.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/responses turn 2: signed reasoning item with omitted text reaches Anthropic - omitted thinking replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var sig = pm.collectionVariables.get('omittedThinkingResponsesSignature');",
+                  "pm.test('turn 2 sends the signed thinking block to Anthropic unchanged', function () {",
+                  "  pm.expect(pm.response.code, 'turn 2 failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant turn in the request sent to Anthropic: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var blocks = Array.isArray(assistant.content) ? assistant.content : [];",
+                  "  var thinking = blocks.filter(function (b) { return b.type === 'thinking'; });",
+                  "  pm.expect(thinking.length, 'the signed thinking block with omitted text was stripped before reaching Anthropic: ' + JSON.stringify(assistant).slice(0, 400)).to.equal(1);",
+                  "  pm.expect(thinking[0].signature, 'the replayed signature differs from the one turn 1 returned').to.equal(sig);",
+                  "  pm.expect(thinking[0].thinking, 'the omitted thinking text was rewritten').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"high\",\"summary\":\"none\"},\"input\":{{omittedThinkingResponsesTurn2Input}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

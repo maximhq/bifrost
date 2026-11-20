@@ -4492,6 +4492,7 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         string
+		keepUnsigned  bool
 		wantUnchanged bool
 		wantMsgConts  []int // expected content-array length per message; -1 = string content, skip
 	}{
@@ -4511,10 +4512,56 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 			wantMsgConts: []int{1},
 		},
 		{
-			// Blocks where thinking="" are also stripped — Anthropic rejects them with
-			// "each thinking block must contain thinking", even if the signature is valid.
-			name:         "strips block with empty thinking even if signature is non-empty",
-			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			// thinking.display "omitted" (default on Opus 4.7+ and Claude 5.x) returns signed blocks with empty text.
+			name:          "keeps signed block with empty thinking (display omitted)",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name: "keeps signed omitted block across a multi-turn replay",
+			input: `{"messages":[` +
+				`{"role":"user","content":"What is 27 * 453?"},` +
+				`{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"EpYBCkYIBxgCKkD..."},{"type":"text","text":"12231"}]},` +
+				`{"role":"user","content":"Now divide that by 9."}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{-1, 2, -1},
+		},
+		{
+			// Anthropic never omits the field; a signed block without it is a converter artifact (Gemini thought signature).
+			name:         "strips signed block with no thinking field",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","signature":"gemini-thought-sig"},{"type":"text","text":"hi"}]}]}`,
+			wantMsgConts: []int{1},
+		},
+		{
+			name:         "strips signed block with null thinking",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":null,"signature":"abc123"}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "keepUnsigned: strips signed block with no thinking field",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","signature":"gemini-thought-sig"}]}]}`,
+			keepUnsigned: true,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:          "keepUnsigned: keeps signed block with empty thinking",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:          "keepUnsigned: keeps unsigned block with thinking text",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"reasoning","signature":""}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:         "keepUnsigned: still strips unsigned block with empty thinking",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}]}]}`,
+			keepUnsigned: true,
 			wantMsgConts: []int{0},
 		},
 		{
@@ -4556,7 +4603,7 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := StripEmptyThinkingBlocks([]byte(tt.input), false)
+			out, err := StripEmptyThinkingBlocks([]byte(tt.input), tt.keepUnsigned)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -4589,6 +4636,25 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 				if len(blocks) != wantLen {
 					t.Errorf("messages[%d] content block count: got %d, want %d\noutput: %s",
 						mi, len(blocks), wantLen, string(out))
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkStripEmptyThinkingBlocks(b *testing.B) {
+	for _, bc := range []struct {
+		name string
+		body []byte
+	}{
+		{"no thinking", []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)},
+		{"signed omitted thinking", []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"},{"type":"text","text":"hi"}]}]}`)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := StripEmptyThinkingBlocks(bc.body, false); err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
