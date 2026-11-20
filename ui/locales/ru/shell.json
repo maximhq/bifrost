@@ -23,6 +23,11 @@
 		"circuitBreaker": "Автоматический переключатель",
 		"pricingOverrides": "Переопределения цен",
 		"modelSettings": "Настройки моделей",
+		"finops": "FinOps",
+		"finopsOverview": "Обзор",
+		"finopsConnections": "Подключения",
+		"finopsExplorer": "Анализ затрат",
+		"finopsForecast": "Прогнозы и аномалии",
 		"mcpGateway": "Серверы MCP",
 		"mcpCatalog": "Каталог MCP",
 		"mcpLibrary": "Библиотека MCP",
@@ -67,6 +72,7 @@
 		"caching": "Кэширование",
 		"security": "Безопасность",
 		"warp": "Warp",
+		"gateways": "Шлюзы",
 		"proxy": "Прокси",
 		"apiKeys": "API-ключи",
 		"performanceTuning": "Настройка производительности",
@@ -106,6 +112,7 @@
 		"circuitBreaker": "Автоматический переход при сбое основных конечных точек",
 		"pricingOverrides": "Переопределения цен по области",
 		"modelSettings": "Конфигурация моделей и маршрутизации",
+		"finops": "Расходы на ИИ по всем аккаунтам провайдеров",
 		"mcpGateway": "Конфигурация MCP",
 		"mcpCatalog": "Каталог инструментов MCP",
 		"mcpLibrary": "Установка подобранных MCP-серверов",
@@ -150,6 +157,7 @@
 		"caching": "Конфигурация кэширования",
 		"security": "Настройки безопасности",
 		"warp": "Настройка агента Warp",
+		"gateways": "Вход для клиентов разработки",
 		"proxy": "Конфигурация прокси",
 		"apiKeys": "Управление API-ключами",
 		"performanceTuning": "Настройки производительности",
@@ -434,6 +442,10 @@
 			"indexStatusUnavailable": "Статус индекса недоступен",
 			"askAdminTurnOn": "Попросите администратора включить Warp.",
 			"askAdminSetUp": "Попросите администратора настроить Warp.",
+			"needsBifrostMCP": "Warp нужен Bifrost MCP",
+			"needsBifrostMCPHint": "Укажите URL Bifrost, чтобы Warp мог читать конфигурацию этого развертывания.",
+			"setUpBifrostMCP": "Настроить",
+			"askAdminBifrostMCP": "Попросите администратора настроить Bifrost MCP для Warp.",
 			"sendsWhenFinished": "Отправляется после завершения ответа",
 			"remove": "Удалить"
 		},
@@ -457,7 +469,15 @@
 			"label": "Вопрос",
 			"skip": "Пропустить",
 			"orType": "Или введите свой ответ ниже.",
-			"skipAnswer": "Действуй на своё усмотрение и скажи, что ты предположил."
+			"skipAnswer": "Действуй на своё усмотрение и скажи, что ты предположил.",
+			"confirm": {
+				"subtitle": "Warp внесёт это изменение после вашего подтверждения.",
+				"destructiveSubtitle": "Warp внесёт это изменение после вашего подтверждения. Проверьте его внимательно.",
+				"cannotUndo": "Это действие нельзя отменить.",
+				"noArguments": "Нет аргументов.",
+				"cancel": "Отмена",
+				"confirm": "Подтвердить"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Что здесь охвачено",
@@ -548,6 +568,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp не настроен в этом развертывании.",
+				"cause": "Warp нужен Bifrost MCP, чтобы читать конфигурацию этого развертывания, а он не загружен.",
+				"suggestions": ["Попросите администратора указать URL Bifrost в настройках клиента."]
+			},
 			"not_configured": {
 				"summary": "Warp ещё не настроен.",
 				"cause": "Не заданы провайдер и модель, либо Warp выключен в настройках.",

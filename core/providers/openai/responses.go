@@ -782,6 +782,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
 			message.ID = nil
 		}
+		// A custom_tool_call id must begin with "ctc".
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "ctc") {
+			message.ID = nil
+		}
 
 		// OpenAI accepts role only on message input items.
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||

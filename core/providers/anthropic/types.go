@@ -121,6 +121,9 @@ const (
 	AnthropicThinkingDisplayUpdatesBetaHeader = "thinking-display-updates-2026-08-18"
 	// AnthropicThinkingDisplayUpdates is the thinking.display value that needs that beta.
 	AnthropicThinkingDisplayUpdates = "updates"
+	// AnthropicThinkingBindingControlsBetaHeader gates thinking.block_binding (and the
+	// response's input_transformations). Without it the field is a 400.
+	AnthropicThinkingBindingControlsBetaHeader = "thinking-binding-controls-2026-08-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -155,6 +158,7 @@ const (
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
 	AnthropicInlineToolsBetaHeaderPrefix                 = "inline-tools-"
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix      = "thinking-display-updates-"
+	AnthropicThinkingBindingControlsBetaHeaderPrefix     = "thinking-binding-controls-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -227,6 +231,7 @@ type ProviderFeatureSupport struct {
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01 (+ inline-tools-2026-09-15). Model gate enforced upstream; Bedrock carries them on InvokeModel only.
 	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
 	ThinkingDisplayUpdates bool // thinking.display:"updates" — thinking-display-updates-2026-08-18. Surface-level; SupportsThinkingDisplayUpdates adds the per-model gate.
+	ThinkingBinding        bool // thinking.block_binding — thinking-binding-controls-2026-08-01. Claude API only until another host is verified; stripped elsewhere.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -253,6 +258,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MidConvOutputConfig: true, // mid-conversation-output-config-2026-07-01.
 
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18.
+		ThinkingBinding:        true, // thinking-binding-controls-2026-08-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -782,6 +788,14 @@ type AnthropicThinking struct {
 	Type         string  `json:"type"`                    // "enabled", "disabled", "adaptive", or "between_tools"
 	BudgetTokens *int    `json:"budget_tokens,omitempty"` // Only for type "enabled" (not supported on Opus 4.7+)
 	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" | "updates" (beta) — controls whether thinking content appears in the response (Opus 4.7+)
+
+	BlockBinding *AnthropicThinkingBlockBinding `json:"block_binding,omitempty"` // thinking-binding-controls beta; adaptive/enabled only
+}
+
+// AnthropicThinkingBlockBinding is thinking.block_binding: what the API does with a
+// thinking block whose signature fails the conversation prefix check.
+type AnthropicThinkingBlockBinding struct {
+	PrefixMismatchBehavior *string `json:"prefix_mismatch_behavior,omitempty"` // "error" | "drop_block"; nil = model default
 }
 
 type ContextManagementEditType string
@@ -2166,6 +2180,20 @@ const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
 // AnthropicUsageIterationTypeCompaction marks the usage.iterations entry for the
 // compaction summarization pass when context_management compaction fires.
 const AnthropicUsageIterationTypeCompaction = "compaction"
+
+// anthropicCacheCreationTotal returns the cache-write tokens a usage object bills. cache_creation is
+// the 5m/1h split OF cache_creation_input_tokens, a breakdown and not an addend, so it stands in for
+// the total only when the top-level counter is absent. Every Anthropic usage converter goes through
+// this, so the same usage object bills the same on each route.
+func anthropicCacheCreationTotal(u *AnthropicUsage) int {
+	if u == nil {
+		return 0
+	}
+	if u.CacheCreationInputTokens != 0 {
+		return u.CacheCreationInputTokens
+	}
+	return u.CacheCreation.Ephemeral5mInputTokens + u.CacheCreation.Ephemeral1hInputTokens
+}
 
 // billableAnthropicUsage returns the usage Anthropic actually charges for billing.
 // Top-level input/output/cache fields mirror the reply (message) pass only; the

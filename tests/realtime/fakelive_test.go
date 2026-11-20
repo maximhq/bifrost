@@ -221,6 +221,7 @@ type liveUpstream struct {
 	handleSeq   int
 	gen         *liveGeneration
 	toolWait    *liveToolWait
+	function    string // the declared function the model calls, which a context update can replace
 }
 
 type liveGeneration struct {
@@ -346,6 +347,7 @@ func (u *liveUpstream) run() {
 		return
 	}
 	u.manual = u.setup.Get("realtimeInputConfig.automaticActivityDetection.disabled").Bool()
+	u.function = u.setup.Get("tools.0.functionDeclarations.0.name").Str
 	if resumption := u.setup.Get("sessionResumption"); resumption.Exists() {
 		u.resumable = true
 		u.fake.mu.Lock()
@@ -419,6 +421,10 @@ func (u *liveUpstream) onFrame(frame gjson.Result) {
 	switch {
 	case frame.Get("toolResponse").Exists():
 		u.onToolResponse(frame.Get("toolResponse"))
+	case frame.Get("contextUpdate").Exists():
+		if tools := frame.Get("contextUpdate.tools.tools"); tools.Exists() {
+			u.function = tools.Get("0.functionDeclarations.0.name").Str
+		}
 	case frame.Get("clientContent").Exists():
 		var text []string
 		for _, turn := range frame.Get("clientContent.turns").Array() {
@@ -502,7 +508,7 @@ func (u *liveUpstream) startTurn(rawPrompt string, audio bool) {
 		return
 	}
 	in := liveInput{prompt: prompt, audio: audio, slow: slow}
-	if function := u.setup.Get("tools.0.functionDeclarations.0.name").Str; function != "" && strings.Contains(strings.ToLower(prompt), "weather") {
+	if function := u.function; function != "" && strings.Contains(strings.ToLower(prompt), strings.TrimPrefix(function, "get_")) {
 		u.toolWait = &liveToolWait{prompt: prompt, slow: slow}
 		_ = u.write(map[string]any{"toolCall": map[string]any{"functionCalls": []any{
 			map[string]any{"id": "call-" + u.id, "name": function, "args": map[string]any{"city": "Paris"}},

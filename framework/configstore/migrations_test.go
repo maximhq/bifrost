@@ -4955,6 +4955,29 @@ func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns
 	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigEntityAccessProfileModeColumn pins that the migration adds the
+// entity access profile mode column, that existing rows read back as union so an upgrade keeps entity access
+// profiles adding to a caller's access, and that a re-run is harmless.
+func TestMigrationAddClientConfigEntityAccessProfileModeColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Equal(t, tables.EntityAccessProfileModeUnion, cfg.EntityAccessProfileMode)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_entity_access_profile_mode_column").Error)
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -4975,6 +4998,78 @@ func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	// Idempotent: a re-run with the column already present must not fail.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_enforce_vk_object_ownership_column").Error)
 	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	// Existing rows read back as 0: the built-in limit.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Zero(t, cfg.MCPOpenAPIMaxSpecMB)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_mcp_openapi_max_spec_mb_column").Error)
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddClientConfigBifrostURLAndBifrostMCPColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	columns := []string{"bifrost_url", "bifrost_mcp_allow_writes"}
+	mg := db.Migrator()
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+	}
+
+	require.NoError(t, migrationAddClientConfigBifrostURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	// Existing rows read back unset: no Bifrost URL, writes on.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Empty(t, cfg.BifrostURL)
+	assert.Nil(t, cfg.BifrostMCPAllowWrites)
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_bifrost_url_and_bifrost_mcp_columns").Error)
+	require.NoError(t, migrationAddClientConfigBifrostURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddFrameworkConfigOpenAPIURLColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableFrameworkConfig{}))
+	require.NoError(t, db.Create(&tables.TableFrameworkConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+	require.False(t, mg.HasColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+
+	require.NoError(t, migrationAddFrameworkConfigOpenAPIURLColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+
+	// Existing rows read back unset: the build's default spec.
+	var cfg tables.TableFrameworkConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Nil(t, cfg.OpenAPIURL)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_framework_config_openapi_url_column").Error)
+	require.NoError(t, migrationAddFrameworkConfigOpenAPIURLColumn(ctx, db, testMigrationLogger))
 }
 
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
