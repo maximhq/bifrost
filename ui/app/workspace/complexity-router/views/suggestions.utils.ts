@@ -22,6 +22,9 @@ import {
 export interface StagedSuggestion {
 	id: string;
 	tier: DecisionTier;
+	// The draft list it was added to: a semantic router's phrases, or a
+	// decision-model router's tier examples or tier signals.
+	list: StagingList;
 	// The phrases as they now stand in the draft, edits included.
 	phrases: string[];
 }
@@ -77,41 +80,61 @@ export function replacePhrase(keywords: EditableKeywordConfig, tier: DecisionTie
 	return { ...keywords, [key]: keywords[key].map((phrase) => (phrase === from ? to : phrase)) };
 }
 
-// A decision-model router's suggestions are examples for its decision
-// guidance. Staging edits them through the same helpers as phrases, with each
-// tier's examples standing in for that tier's phrase list: exampleLists reads
-// them that way and withExampleLists writes them back.
+// A decision-model router's suggestions are examples and signals for its
+// decision guidance. Staging edits them through the same helpers as phrases,
+// with each tier's examples (or signals) standing in for that tier's phrase
+// list: criteriaLists reads them that way and withCriteriaLists writes them
+// back.
 export type SuggestionKind = "phrases" | "examples";
+export type StagingList = "phrases" | "examples" | "signals";
+type CriteriaList = Exclude<StagingList, "phrases">;
 
 type TierCriteria = Record<DecisionTier, { definition: string; signals: string[]; examples: string[] }>;
 
-export function exampleLists(criteria: TierCriteria): EditableKeywordConfig {
+export function criteriaLists(criteria: TierCriteria, list: CriteriaList): EditableKeywordConfig {
 	return {
-		simple_keywords: criteria.SIMPLE.examples,
-		medium_keywords: criteria.MEDIUM.examples,
-		complex_keywords: criteria.COMPLEX.examples,
+		simple_keywords: criteria.SIMPLE[list],
+		medium_keywords: criteria.MEDIUM[list],
+		complex_keywords: criteria.COMPLEX[list],
 	};
 }
 
-export function withExampleLists<T extends TierCriteria>(criteria: T, lists: EditableKeywordConfig): T {
+export function withCriteriaLists<T extends TierCriteria>(criteria: T, list: CriteriaList, lists: EditableKeywordConfig): T {
 	return {
 		...criteria,
-		SIMPLE: { ...criteria.SIMPLE, examples: lists.simple_keywords },
-		MEDIUM: { ...criteria.MEDIUM, examples: lists.medium_keywords },
-		COMPLEX: { ...criteria.COMPLEX, examples: lists.complex_keywords },
+		SIMPLE: { ...criteria.SIMPLE, [list]: lists.simple_keywords },
+		MEDIUM: { ...criteria.MEDIUM, [list]: lists.medium_keywords },
+		COMPLEX: { ...criteria.COMPLEX, [list]: lists.complex_keywords },
 	};
+}
+
+export function exampleLists(criteria: TierCriteria): EditableKeywordConfig {
+	return criteriaLists(criteria, "examples");
+}
+
+// isSignal reports whether a suggestion is a decision-model router's tier
+// signal: one per row, written for its tier from several groups.
+export function isSignal(suggestion: Pick<Suggestion, "category">): boolean {
+	return suggestion.category === "signal";
+}
+
+// stagingListFor is the draft list a suggestion is added to.
+export function stagingListFor(kind: SuggestionKind, suggestion: Pick<Suggestion, "category">): StagingList {
+	if (kind === "phrases") return "phrases";
+	return isSignal(suggestion) ? "signals" : "examples";
 }
 
 // stagingRoom is how many more items a tier's list can take: phrases share
-// one bank-wide cap, while each decision tier holds its own count of examples.
+// one bank-wide cap, while each decision tier holds its own count of examples
+// and of signals (perTier, the bound of the list given).
 export function stagingRoom(
-	kind: SuggestionKind,
+	list: StagingList,
 	lists: EditableKeywordConfig,
 	tier: DecisionTier,
 	phraseCap: number,
-	examplesPerTier: number,
+	perTier: number,
 ): number {
-	if (kind === "examples") return Math.max(0, examplesPerTier - lists[TIER_LIST_KEYS[tier]].length);
+	if (list !== "phrases") return Math.max(0, perTier - lists[TIER_LIST_KEYS[tier]].length);
 	const total = lists.simple_keywords.length + lists.medium_keywords.length + lists.complex_keywords.length;
 	return Math.max(0, phraseCap - total);
 }
@@ -140,11 +163,16 @@ export function stagedPhraseCount(staged: StagedSuggestion[]): number {
 
 // stillStaged drops staged entries whose phrases are no longer in the draft,
 // which happens when a phrase is removed from the list on the configuration
-// tab: the suggestion is then no longer being accepted.
-export function stillStaged(staged: StagedSuggestion[], keywords: EditableKeywordConfig): StagedSuggestion[] {
+// tab: the suggestion is then no longer being accepted. listsOf gives the
+// draft lists of each staging list, undefined while they are unknown.
+export function stillStaged(
+	staged: StagedSuggestion[],
+	listsOf: (list: StagingList) => EditableKeywordConfig | undefined,
+): StagedSuggestion[] {
 	return staged
 		.map((entry) => {
-			const list = new Set(keywords[TIER_LIST_KEYS[entry.tier]]);
+			const lists = listsOf(entry.list);
+			const list = new Set(lists ? lists[TIER_LIST_KEYS[entry.tier]] : []);
 			return { ...entry, phrases: entry.phrases.filter((phrase) => list.has(phrase)) };
 		})
 		.filter((entry) => entry.phrases.length > 0);
@@ -171,7 +199,15 @@ export function filterSuggestions(suggestions: Suggestion[], { query, category }
 
 // categoryCounts counts suggestions per category, for the filter menu.
 export function categoryCounts(suggestions: Suggestion[], hidden: Set<string>): Record<SuggestionCategory | "all", number> {
-	const counts: Record<SuggestionCategory | "all", number> = { all: 0, uncovered: 0, weak: 0, misrouted: 0, mixed: 0, template: 0 };
+	const counts: Record<SuggestionCategory | "all", number> = {
+		all: 0,
+		uncovered: 0,
+		weak: 0,
+		misrouted: 0,
+		mixed: 0,
+		template: 0,
+		signal: 0,
+	};
 	for (const suggestion of suggestions) {
 		if (hidden.has(suggestion.id)) continue;
 		counts.all += 1;
@@ -237,6 +273,8 @@ export function runProgress(run: Pick<SuggestionRun, "status" | "stage" | "clust
 			return 0.2;
 		case "suggesting":
 			return 0.3 + (run.clusters_asked > 0 ? 0.6 * Math.min(1, run.clusters_done / run.clusters_asked) : 0);
+		case "signals":
+			return 0.92;
 		case "saving":
 			return 0.95;
 		default:

@@ -34,7 +34,9 @@ export function ConfigurationTab({ config }: { config: RouterConfigForm }) {
 			: tcpx("footerDecisionNeedsProvider")
 		: staging.count > 0
 			? staging.kind === "examples"
-				? tcpx("suggestions.footerStagedExamples", { count: staging.count })
+				? staging.active.some((entry) => entry.list === "signals")
+					? tcpx("suggestions.footerStagedGuidance", { count: staging.count })
+					: tcpx("suggestions.footerStagedExamples", { count: staging.count })
 				: tcpx("suggestions.footerStaged", { count: staging.count })
 			: classifier !== savedClassifier
 				? // Suggestions run on the semantic and decision classifiers, so

@@ -2016,14 +2016,16 @@
 					"weak": "Weak match",
 					"misrouted": "Different tier",
 					"mixed": "Mixed tiers",
-					"template": "Prompt template"
+					"template": "Prompt template",
+					"signal": "Tier signal"
 				},
 				"categoryDescription": {
 					"uncovered": "Most of these requests match no phrase closely enough, so they take the default tier.",
 					"weak": "These requests reach the suggested tier, but only through weak matches.",
 					"misrouted": "These requests confidently match phrases of a different tier than the one suggested.",
 					"mixed": "Similar requests are split across tiers today.",
-					"template": "These requests are one prompt template sent with different fills, so the phrases are written from the template's fixed wording."
+					"template": "These requests are one prompt template sent with different fills, so the phrases are written from the template's fixed wording.",
+					"signal": "A trait several groups share, written as a signal for this tier."
 				},
 				"loading": "Loading suggestions…",
 				"loadFailed": "Could not load suggestions: {{error}}",
@@ -2170,7 +2172,8 @@
 					"clustering": "Grouping similar requests…",
 					"suggesting": "Proposing tiers…",
 					"suggestingCount": "Proposing tiers: {{done}} of {{total}} groups…",
-					"saving": "Saving suggestions…"
+					"saving": "Saving suggestions…",
+					"signals": "Writing tier signals…"
 				},
 				"emptyTitle": "No suggestions yet",
 				"emptyBody": "A run reads this router's captured requests for a window you pick, finds groups it classifies weakly or inconsistently, and proposes a tier for each group. You decide what is added. Nothing changes until you apply.",
@@ -2310,7 +2313,8 @@
 					"weak": "These requests reach the suggested tier, but not reliably.",
 					"misrouted": "The decision model sends most of these requests to a different tier than the one suggested.",
 					"mixed": "The decision model splits similar requests across tiers.",
-					"template": "These requests are one prompt template sent with different fills, so the examples describe the template's task."
+					"template": "These requests are one prompt template sent with different fills, so the examples describe the template's task.",
+					"signal": "A trait shared by several groups that belong in this tier, written as one of its signals. The decision model reads every tier's signals with each request, so a signal can move requests beyond these groups."
 				},
 				"nearestExample": "Nearest example: “{{phrase}}” in {{tier}}",
 				"proposalFromExamples": "The tier model read this group's requests next to your tier examples and chose {{tier}}.",
@@ -2346,10 +2350,19 @@
 					"summary_other": "{{changed}} of {{count}} requests change tier, {{toTier}} of them to {{tier}}.",
 					"cost": "The test cost {{cost}}.",
 					"noTier": "No tier",
-					"notRun": "Not tested yet."
+					"notRun": "Not tested yet.",
+					"signalHeading": "Signal for {{tier}}"
 				},
 				"footerStagedExamples_one": "{{count}} suggested example staged. Save to apply it.",
-				"footerStagedExamples_other": "{{count}} suggested examples staged. Save to apply them."
+				"footerStagedExamples_other": "{{count}} suggested examples staged. Save to apply them.",
+				"signalTag": "Signal",
+				"signalFor": "Tier signal",
+				"proposalSignal": "Written for {{tier}} from the groups the run moved there. Accepting adds it to the {{tier}} signals.",
+				"signalAdded": "Signal added:",
+				"stagedSignalInputAria": "Staged signal",
+				"alreadyInSignals": "That signal is already in the tier signals.",
+				"footerStagedGuidance_one": "{{count}} suggested example or signal staged. Save to apply it.",
+				"footerStagedGuidance_other": "{{count}} suggested examples and signals staged. Save to apply them."
 			},
 			"routersNotice": {
 				"title": "Complexity Router is being upgraded to Routers",

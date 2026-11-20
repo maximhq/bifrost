@@ -1070,12 +1070,17 @@ export const governanceApi = baseApi.injectEndpoints({
 		// requests with its decision model; nothing is saved.
 		testComplexitySuggestionExamples: builder.mutation<
 			ExampleTest,
-			{ routerId: string; suggestionId: string; examples: { tier: DecisionTier; text: string }[] }
+			{
+				routerId: string;
+				suggestionId: string;
+				examples?: { tier: DecisionTier; text: string }[];
+				signals?: { tier: DecisionTier; text: string }[];
+			}
 		>({
-			query: ({ routerId, suggestionId, examples }) => ({
+			query: ({ routerId, suggestionId, examples, signals }) => ({
 				url: suggestionsUrl(routerId, "/test-examples"),
 				method: "POST",
-				body: { examples, suggestion_id: suggestionId },
+				body: { ...(examples ? { examples } : {}), ...(signals ? { signals } : {}), suggestion_id: suggestionId },
 			}),
 		}),
 	}),

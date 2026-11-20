@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, History, LoaderCircle, X } from "lucide-react";
 import { DragEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { proposedTier, routingSplit, StagedSuggestion, SuggestionKind } from "./suggestions.utils";
+import { isSignal, proposedTier, routingSplit, StagedSuggestion, StagingList, SuggestionKind } from "./suggestions.utils";
 
 export type GroupList = "pending" | "dismissed";
 
@@ -54,7 +54,9 @@ const GRID =
 // SuggestionGroupsTable lists a run's groups of similar requests with the
 // tier proposed for each. Accepting a group stages its phrases in the draft
 // phrase lists, from a row, the bulk bar, or by dragging rows onto a tier;
-// the draft is applied with the page's Save.
+// the draft is applied with the page's Save. A decision-model router's tier
+// signals are listed beside its groups: each is written for one tier, so it
+// is accepted there and has no tier to set or drag.
 export default function SuggestionGroupsTable({
 	list,
 	onListChange,
@@ -406,7 +408,8 @@ function GroupRow({
 		confidence === "medium" ? t("confidence.medium") : confidence === "high" ? t("confidence.high") : (group.confidence ?? "");
 	const accepted = staged !== undefined;
 	const examples = kind === "examples";
-	const draggable = canUpdate && !stagingLocked && !dismissed && !accepted;
+	const signal = isSignal(group);
+	const draggable = canUpdate && !stagingLocked && !dismissed && !accepted && !signal;
 	const split = routingSplit(group.current_routing);
 	const splitLine = split
 		.map((share) =>
@@ -448,6 +451,15 @@ function GroupRow({
 				</div>
 				<div className="min-w-0 space-y-1">
 					<p className="text-sm break-words">
+						{signal && (
+							<Badge
+								variant="outline"
+								className="mr-1.5 h-5 px-1.5 align-middle text-[10px]"
+								data-testid={`complexity-suggestion-signal-${id}`}
+							>
+								{t("signalTag")}
+							</Badge>
+						)}
 						{group.phrases.map((phrase, index) => (
 							<span key={phrase}>
 								{index > 0 && <span className="text-muted-foreground px-1.5">/</span>}“{phrase}”
@@ -489,8 +501,8 @@ function GroupRow({
 					)}
 				</div>
 				<div className="min-w-0 space-y-0.5" data-testid={`complexity-suggestion-proposal-${id}`}>
-					<p className="text-sm font-medium">{proposal ? tierLabel(proposal) : t("youDecide")}</p>
-					<p className="text-muted-foreground text-xs">{proposal ? confidenceLabel : t("lowConfidence")}</p>
+					<p className="text-sm font-medium">{signal ? tierLabel(group.tier) : proposal ? tierLabel(proposal) : t("youDecide")}</p>
+					<p className="text-muted-foreground text-xs">{signal ? t("signalFor") : proposal ? confidenceLabel : t("lowConfidence")}</p>
 				</div>
 				<div className="flex flex-nowrap items-center justify-end gap-1.5">
 					{accepted && staged ? (
@@ -528,46 +540,48 @@ function GroupRow({
 					) : (
 						canUpdate && (
 							<>
-								{proposal && (
+								{(signal || proposal) && (
 									<Button
 										type="button"
 										size="sm"
 										className="h-7"
 										disabled={stagingLocked}
-										onClick={() => onAccept(proposal)}
+										onClick={() => onAccept(signal ? group.tier : (proposal as DecisionTier))}
 										data-testid={`complexity-suggestion-accept-${id}`}
 									>
 										{t("accept")}
 									</Button>
 								)}
-								<DropdownMenu>
-									<DropdownMenuTrigger asChild>
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											className="h-7"
-											disabled={stagingLocked}
-											data-testid={`complexity-suggestion-set-tier-${id}`}
-										>
-											{t("setTier")}
-											<ChevronDown className="size-3" />
-										</Button>
-									</DropdownMenuTrigger>
-									<DropdownMenuContent align="end">
-										<DropdownMenuLabel className="text-muted-foreground text-xs font-normal">{t("addGroupTo")}</DropdownMenuLabel>
-										{COMPLEXITY_TIER_VALUES.map((tier) => (
-											<DropdownMenuItem
-												key={tier}
-												onSelect={() => onAccept(tier)}
-												data-testid={`complexity-suggestion-set-tier-${id}-${tier.toLowerCase()}`}
+								{!signal && (
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="h-7"
+												disabled={stagingLocked}
+												data-testid={`complexity-suggestion-set-tier-${id}`}
 											>
-												{tierLabel(tier)}
-												{tier === proposal && <span className="text-muted-foreground ml-auto pl-4 text-xs">{t("proposed")}</span>}
-											</DropdownMenuItem>
-										))}
-									</DropdownMenuContent>
-								</DropdownMenu>
+												{t("setTier")}
+												<ChevronDown className="size-3" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent align="end">
+											<DropdownMenuLabel className="text-muted-foreground text-xs font-normal">{t("addGroupTo")}</DropdownMenuLabel>
+											{COMPLEXITY_TIER_VALUES.map((tier) => (
+												<DropdownMenuItem
+													key={tier}
+													onSelect={() => onAccept(tier)}
+													data-testid={`complexity-suggestion-set-tier-${id}-${tier.toLowerCase()}`}
+												>
+													{tierLabel(tier)}
+													{tier === proposal && <span className="text-muted-foreground ml-auto pl-4 text-xs">{t("proposed")}</span>}
+												</DropdownMenuItem>
+											))}
+										</DropdownMenuContent>
+									</DropdownMenu>
+								)}
 								<Button
 									type="button"
 									variant="ghost"
@@ -587,7 +601,7 @@ function GroupRow({
 			</div>
 
 			{accepted && staged && (
-				<AcceptedDetails group={group} staged={staged} kind={kind} canUpdate={canUpdate && !stagingLocked} onEdit={onEditStaged} />
+				<AcceptedDetails group={group} staged={staged} canUpdate={canUpdate && !stagingLocked} onEdit={onEditStaged} />
 			)}
 
 			{expanded && (
@@ -615,11 +629,13 @@ function GroupRow({
 						<div className="space-y-1">
 							<h4 className="font-medium">{t("proposalHeading")}</h4>
 							<p className="text-muted-foreground leading-relaxed">
-								{proposal
-									? examples
-										? t("proposalFromExamples", { tier: tierLabel(proposal) })
-										: t("proposalFrom", { tier: tierLabel(proposal) })
-									: t("proposalNone", { tier: tierLabel(group.tier) })}
+								{signal
+									? t("proposalSignal", { tier: tierLabel(group.tier) })
+									: proposal
+										? examples
+											? t("proposalFromExamples", { tier: tierLabel(proposal) })
+											: t("proposalFrom", { tier: tierLabel(proposal) })
+										: t("proposalNone", { tier: tierLabel(group.tier) })}
 							</p>
 							{group.reason && <p className="text-muted-foreground leading-relaxed italic">“{group.reason}”</p>}
 						</div>
@@ -639,13 +655,11 @@ function GroupRow({
 function AcceptedDetails({
 	group,
 	staged,
-	kind,
 	canUpdate,
 	onEdit,
 }: {
 	group: Suggestion;
 	staged: StagedSuggestion;
-	kind: SuggestionKind;
 	canUpdate: boolean;
 	onEdit: (from: string, to: string) => boolean;
 }) {
@@ -655,7 +669,7 @@ function AcceptedDetails({
 				<StagedPhraseInput
 					key={phrase}
 					phrase={phrase}
-					kind={kind}
+					list={staged.list}
 					disabled={!canUpdate}
 					onCommit={(next) => onEdit(phrase, next)}
 					testId={`complexity-suggestion-phrase-input-${group.id}`}
@@ -669,13 +683,13 @@ function AcceptedDetails({
 // putting the text back on Escape.
 function StagedPhraseInput({
 	phrase,
-	kind,
+	list,
 	disabled,
 	onCommit,
 	testId,
 }: {
 	phrase: string;
-	kind: SuggestionKind;
+	list: StagingList;
 	disabled: boolean;
 	// Reports whether the edit was taken; a refused one puts the phrase back.
 	onCommit: (next: string) => boolean;
@@ -697,7 +711,9 @@ function StagedPhraseInput({
 			<span className="shrink-0 rounded-[3px] bg-emerald-500/15 px-1 font-mono text-[9px] font-semibold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
 				{t("newTag")}
 			</span>
-			<span className="text-muted-foreground shrink-0">{kind === "examples" ? t("exampleAdded") : t("phraseAdded")}</span>
+			<span className="text-muted-foreground shrink-0">
+				{{ phrases: t("phraseAdded"), examples: t("exampleAdded"), signals: t("signalAdded") }[list]}
+			</span>
 			<Input
 				value={draft}
 				disabled={disabled}
@@ -713,7 +729,7 @@ function StagedPhraseInput({
 						setDraft(phrase);
 					}
 				}}
-				aria-label={kind === "examples" ? t("stagedExampleInputAria") : t("stagedInputAria")}
+				aria-label={{ phrases: t("stagedInputAria"), examples: t("stagedExampleInputAria"), signals: t("stagedSignalInputAria") }[list]}
 				className="h-7 max-w-md text-xs"
 				data-testid={testId}
 			/>

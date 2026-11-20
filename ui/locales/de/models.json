@@ -2016,14 +2016,16 @@
 					"weak": "Schwache Übereinstimmung",
 					"misrouted": "Andere Stufe",
 					"mixed": "Gemischte Stufen",
-					"template": "Prompt-Vorlage"
+					"template": "Prompt-Vorlage",
+					"signal": "Stufensignal"
 				},
 				"categoryDescription": {
 					"uncovered": "Die meisten dieser Anfragen passen zu keiner Phrase gut genug und erhalten daher die Standardstufe.",
 					"weak": "Diese Anfragen erreichen die vorgeschlagene Stufe, aber nur über schwache Übereinstimmungen.",
 					"misrouted": "Diese Anfragen passen eindeutig zu Phrasen einer anderen Stufe als der vorgeschlagenen.",
 					"mixed": "Ähnliche Anfragen verteilen sich derzeit auf mehrere Stufen.",
-					"template": "Diese Anfragen sind eine Prompt-Vorlage mit wechselndem Inhalt, daher sind die Phrasen aus dem festen Wortlaut der Vorlage formuliert."
+					"template": "Diese Anfragen sind eine Prompt-Vorlage mit wechselndem Inhalt, daher sind die Phrasen aus dem festen Wortlaut der Vorlage formuliert.",
+					"signal": "Ein Merkmal, das mehrere Gruppen teilen, als Signal für diese Stufe formuliert."
 				},
 				"loading": "Vorschläge werden geladen…",
 				"loadFailed": "Vorschläge konnten nicht geladen werden: {{error}}",
@@ -2170,7 +2172,8 @@
 					"clustering": "Ähnliche Anfragen werden gruppiert…",
 					"suggesting": "Stufen werden vorgeschlagen…",
 					"suggestingCount": "Stufen werden vorgeschlagen: {{done}} von {{total}} Gruppen…",
-					"saving": "Vorschläge werden gespeichert…"
+					"saving": "Vorschläge werden gespeichert…",
+					"signals": "Stufensignale werden formuliert…"
 				},
 				"emptyTitle": "Noch keine Vorschläge",
 				"emptyBody": "Ein Lauf liest die erfassten Anfragen dieses Routers für einen von Ihnen gewählten Zeitraum, findet Gruppen, die er schwach oder uneinheitlich klassifiziert, und schlägt für jede Gruppe eine Stufe vor. Sie entscheiden, was hinzugefügt wird. Nichts ändert sich, bevor Sie anwenden.",
@@ -2310,7 +2313,8 @@
 					"weak": "Diese Anfragen erreichen die vorgeschlagene Stufe, aber nicht zuverlässig.",
 					"misrouted": "Das Entscheidungsmodell schickt die meisten dieser Anfragen an eine andere Stufe als die vorgeschlagene.",
 					"mixed": "Das Entscheidungsmodell verteilt ähnliche Anfragen auf verschiedene Stufen.",
-					"template": "Diese Anfragen sind eine Prompt-Vorlage mit unterschiedlichen Füllungen, daher beschreiben die Beispiele die Aufgabe der Vorlage."
+					"template": "Diese Anfragen sind eine Prompt-Vorlage mit unterschiedlichen Füllungen, daher beschreiben die Beispiele die Aufgabe der Vorlage.",
+					"signal": "Ein Merkmal mehrerer Gruppen, die in diese Stufe gehören, als eines ihrer Signale formuliert. Das Entscheidungsmodell liest bei jeder Anfrage die Signale aller Stufen, daher kann ein Signal auch Anfragen außerhalb dieser Gruppen verschieben."
 				},
 				"nearestExample": "Nächstes Beispiel: „{{phrase}}“ in {{tier}}",
 				"proposalFromExamples": "Das Stufenmodell hat die Anfragen dieser Gruppe neben Ihren Stufenbeispielen gelesen und {{tier}} gewählt.",
@@ -2346,10 +2350,19 @@
 					"summary_other": "{{changed}} von {{count}} Anfragen ändern die Stufe, {{toTier}} davon zu {{tier}}.",
 					"cost": "Der Test hat {{cost}} gekostet.",
 					"noTier": "Keine Stufe",
-					"notRun": "Noch nicht getestet."
+					"notRun": "Noch nicht getestet.",
+					"signalHeading": "Signal für {{tier}}"
 				},
 				"footerStagedExamples_one": "{{count}} vorgeschlagenes Beispiel vorgemerkt. Speichern Sie, um es zu übernehmen.",
-				"footerStagedExamples_other": "{{count}} vorgeschlagene Beispiele vorgemerkt. Speichern Sie, um sie zu übernehmen."
+				"footerStagedExamples_other": "{{count}} vorgeschlagene Beispiele vorgemerkt. Speichern Sie, um sie zu übernehmen.",
+				"signalTag": "Signal",
+				"signalFor": "Stufensignal",
+				"proposalSignal": "Für {{tier}} aus den Gruppen formuliert, die der Lauf dorthin verschoben hat. Beim Übernehmen wird es zu den Signalen von {{tier}} hinzugefügt.",
+				"signalAdded": "Signal hinzugefügt:",
+				"stagedSignalInputAria": "Vorgemerktes Signal",
+				"alreadyInSignals": "Dieses Signal ist bereits in den Stufensignalen.",
+				"footerStagedGuidance_one": "{{count}} vorgeschlagenes Beispiel oder Signal vorgemerkt. Speichern Sie, um es zu übernehmen.",
+				"footerStagedGuidance_other": "{{count}} vorgeschlagene Beispiele und Signale vorgemerkt. Speichern Sie, um sie zu übernehmen."
 			},
 			"routersNotice": {
 				"title": "Der Komplexitäts-Router wird zu Routern weiterentwickelt",

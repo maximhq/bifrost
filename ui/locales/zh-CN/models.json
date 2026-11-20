@@ -2014,14 +2014,16 @@
 					"weak": "弱匹配",
 					"misrouted": "不同层级",
 					"mixed": "混合层级",
-					"template": "提示词模板"
+					"template": "提示词模板",
+					"signal": "层级信号"
 				},
 				"categoryDescription": {
 					"uncovered": "这些请求大多没有足够接近的短语，因此采用默认层级。",
 					"weak": "这些请求会到达建议的层级，但仅通过弱匹配。",
 					"misrouted": "这些请求以较高置信度匹配到与建议层级不同的层级的短语。",
 					"mixed": "目前相似的请求被分到了不同层级。",
-					"template": "这些请求是同一个提示词模板，只是填入的内容不同，因此短语取自模板中固定的措辞。"
+					"template": "这些请求是同一个提示词模板，只是填入的内容不同，因此短语取自模板中固定的措辞。",
+					"signal": "多个分组共有的特征，写成此层级的一条信号。"
 				},
 				"loading": "正在加载建议…",
 				"loadFailed": "无法加载建议：{{error}}",
@@ -2168,7 +2170,8 @@
 					"clustering": "正在对相似请求分组…",
 					"suggesting": "正在提议层级…",
 					"suggestingCount": "正在提议层级：{{total}} 个分组中已完成 {{done}} 个…",
-					"saving": "正在保存建议…"
+					"saving": "正在保存建议…",
+					"signals": "正在编写层级信号…"
 				},
 				"emptyTitle": "暂无建议",
 				"emptyBody": "每次运行会读取此路由器在你所选时间窗口内捕获的请求，找出分类较弱或不一致的分组，并为每个分组提议一个层级。由你决定添加哪些内容。在你应用之前，不会有任何更改。",
@@ -2308,7 +2311,8 @@
 					"weak": "这些请求能到达建议的层级，但不稳定。",
 					"misrouted": "决策模型把其中大多数请求发送到与建议不同的层级。",
 					"mixed": "决策模型把相似的请求分散到不同层级。",
-					"template": "这些请求是以不同内容填充发送的同一个提示模板，因此示例描述的是模板的任务。"
+					"template": "这些请求是以不同内容填充发送的同一个提示模板，因此示例描述的是模板的任务。",
+					"signal": "属于此层级的多个分组共有的特征，写成此层级的一条信号。决策模型处理每个请求时都会读取所有层级的信号，因此一条信号也可能移动这些分组以外的请求。"
 				},
 				"nearestExample": "最近的示例：{{tier}} 中的“{{phrase}}”",
 				"proposalFromExamples": "层级模型将此分组的请求与你的层级示例对照阅读后选择了 {{tier}}。",
@@ -2344,10 +2348,19 @@
 					"summary_other": "{{count}} 个请求中有 {{changed}} 个改变层级，其中 {{toTier}} 个变为 {{tier}}。",
 					"cost": "本次测试花费 {{cost}}。",
 					"noTier": "无层级",
-					"notRun": "尚未测试。"
+					"notRun": "尚未测试。",
+					"signalHeading": "{{tier}} 的信号"
 				},
 				"footerStagedExamples_one": "已暂存 {{count}} 个建议的示例。保存后生效。",
-				"footerStagedExamples_other": "已暂存 {{count}} 个建议的示例。保存后生效。"
+				"footerStagedExamples_other": "已暂存 {{count}} 个建议的示例。保存后生效。",
+				"signalTag": "信号",
+				"signalFor": "层级信号",
+				"proposalSignal": "根据本次运行移入 {{tier}} 的分组为 {{tier}} 编写。接受后会添加到 {{tier}} 的信号中。",
+				"signalAdded": "已添加信号：",
+				"stagedSignalInputAria": "已暂存的信号",
+				"alreadyInSignals": "该信号已在层级信号中。",
+				"footerStagedGuidance_one": "已暂存 {{count}} 个建议的示例和信号。保存后生效。",
+				"footerStagedGuidance_other": "已暂存 {{count}} 个建议的示例和信号。保存后生效。"
 			},
 			"routersNotice": {
 				"title": "复杂度路由器正在升级为路由器",
