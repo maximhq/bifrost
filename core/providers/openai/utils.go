@@ -333,6 +333,10 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 // unknown message parameters never see it.
 // The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
+	return convertBifrostMessagesToOpenAIMessages(messages, false)
+}
+
+func convertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage, supportsStructuredToolOutputs bool) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
 		openaiMessages[i] = OpenAIMessage{
@@ -341,9 +345,15 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
-		// A tool message takes text only on the OpenAI wire.
+		// Tool results are text-only by default. When a custom provider opts in to
+		// structured output, preserve image blocks only when they have a usable URL;
+		// file-ID-only Responses images have no Chat Completions image source.
 		if message.Role == schemas.ChatMessageRoleTool {
-			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+			keep := func(block schemas.ChatContentBlock) bool {
+				return supportsStructuredToolOutputs && block.Type == schemas.ChatContentBlockTypeImage &&
+					block.ImageURLStruct != nil && block.ImageURLStruct.URL != ""
+			}
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, keep)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it

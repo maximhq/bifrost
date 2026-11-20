@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/base64"
 	"testing"
 
@@ -224,6 +225,31 @@ func TestResolveChatFileURLs_ReportsFetchFailure(t *testing.T) {
 		"the error should name the document that could not be fetched")
 	assert.Contains(t, err.Error(), "messages[0].content[0]",
 		"and locate it in the request, since a message can carry several documents")
+}
+
+func TestResolveChatFileURLs_DoesNotMutateCallerOnPartialFailure(t *testing.T) {
+	firstURL := "https://example.com/first.pdf"
+	secondURL := "https://example.com/second.pdf"
+	content := &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: schemas.Ptr(firstURL)}},
+		{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: schemas.Ptr(secondURL)}},
+	}}
+	req := &OpenAIChatRequest{Messages: []OpenAIMessage{{Role: schemas.ChatMessageRoleUser, Content: content}}}
+
+	err := resolveChatFileURLs(nil, schemas.OpenAI, req, func(_ context.Context, rawURL string) (string, string, error) {
+		if rawURL == firstURL {
+			return "application/pdf", "QUJD", nil
+		}
+		return "", "", assert.AnError
+	})
+	require.Error(t, err)
+	assert.NotSame(t, content, req.Messages[0].Content, "converted request should use a copied content value")
+	for i, wantURL := range []string{firstURL, secondURL} {
+		file := content.ContentBlocks[i].File
+		require.NotNil(t, file)
+		assert.Equal(t, wantURL, *file.FileURL, "caller URL should remain unchanged after partial resolution")
+		assert.Nil(t, file.FileData, "caller file data should remain unchanged after partial resolution")
+	}
 }
 
 // TestResolveChatFileURLsForwardsUnfetchableSchemes: bifrost inlines only what it can

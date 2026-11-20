@@ -55,6 +55,123 @@ func TestToolResultIsErrorStrippedFromOpenAIWire(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_CustomProviderCanKeepStructuredToolOutputMedia(t *testing.T) {
+	data := schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")
+	request := structuredToolOutputChatRequest(data)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	provider := &OpenAIProvider{customProviderConfig: &schemas.CustomProviderConfig{
+		SupportsStructuredToolOutputs: true,
+	}}
+	provider.setStructuredToolOutputsContext(ctx)
+
+	converted := ToOpenAIChatRequest(ctx, request)
+	if converted.Messages[0].Content == nil || len(converted.Messages[0].Content.ContentBlocks) != 1 {
+		t.Fatalf("structured tool output media should stay as a content block: %#v", converted.Messages[0].Content)
+	}
+	if converted.Messages[0].Content.ContentBlocks[0].Type != schemas.ChatContentBlockTypeImage {
+		t.Fatalf("expected image block to survive, got %q", converted.Messages[0].Content.ContentBlocks[0].Type)
+	}
+
+	wire, err := schemas.MarshalSorted(converted)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if !strings.Contains(string(wire), `"image_url"`) || !strings.Contains(string(wire), *data) {
+		t.Fatalf("serialized request must preserve the tool-result image block, got: %s", wire)
+	}
+}
+
+func TestConvertBifrostMessagesToOpenAIMessages_ReplacesImagesWithoutURLWhenOptedIn(t *testing.T) {
+	imageURL := "https://example.com/image.png"
+	typ := schemas.ResponsesMessageTypeFunctionCallOutput
+	responsesMessage := schemas.ResponsesMessage{
+		Type: &typ,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+					FileID:                                 schemas.Ptr("file_image_1"),
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{},
+				},
+				{
+					Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+				},
+			}},
+		},
+	}
+	chatMessages := schemas.ToChatMessages([]schemas.ResponsesMessage{responsesMessage}, nil)
+	converted := convertBifrostMessagesToOpenAIMessages(chatMessages, true)
+
+	if len(converted) != 1 || converted[0].Content == nil || len(converted[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("expected one placeholder and one URL-backed image, got %#v", converted)
+	}
+	placeholder := converted[0].Content.ContentBlocks[0]
+	if placeholder.Type != schemas.ChatContentBlockTypeText || placeholder.Text == nil || !strings.Contains(*placeholder.Text, "image") {
+		t.Fatalf("file-ID-only image should become a text placeholder, got %#v", placeholder)
+	}
+	image := converted[0].Content.ContentBlocks[1]
+	if image.Type != schemas.ChatContentBlockTypeImage || image.ImageURLStruct == nil || image.ImageURLStruct.URL != imageURL {
+		t.Fatalf("URL-backed image should be preserved, got %#v", image)
+	}
+}
+
+func TestToOpenAIChatRequest_CustomProviderDefaultsToFlattenedToolOutputMedia(t *testing.T) {
+	data := schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")
+	request := structuredToolOutputChatRequest(data)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySupportsStructuredToolOutputs, true)
+	provider := &OpenAIProvider{customProviderConfig: &schemas.CustomProviderConfig{}}
+	provider.setStructuredToolOutputsContext(ctx)
+
+	converted := ToOpenAIChatRequest(ctx, request)
+	if converted.Messages[0].Content == nil || converted.Messages[0].Content.ContentStr == nil {
+		t.Fatalf("tool output media should be flattened to the default text placeholder: %#v", converted.Messages[0].Content)
+	}
+	if !strings.Contains(*converted.Messages[0].Content.ContentStr, "image/png") {
+		t.Fatalf("expected image placeholder in flattened tool output, got %q", *converted.Messages[0].Content.ContentStr)
+	}
+	if strings.Contains(*converted.Messages[0].Content.ContentStr, *data) {
+		t.Fatal("flattened tool output must not include the image data URL")
+	}
+}
+
+func structuredToolOutputChatRequest(data *string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("my_custom_provider"),
+		Model:    "vision-model",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+				Type:           schemas.ChatContentBlockTypeImage,
+				ImageURLStruct: &schemas.ChatInputImage{URL: *data},
+			}}},
+		}},
+	}
+}
+
+func BenchmarkToOpenAIChatRequest_StructuredToolOutput(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "default"
+		if enabled {
+			name = "opted_in"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			provider := &OpenAIProvider{customProviderConfig: &schemas.CustomProviderConfig{SupportsStructuredToolOutputs: enabled}}
+			request := structuredToolOutputChatRequest(schemas.Ptr("data:image/png;base64,iVBORw0KGgo="))
+			b.ReportAllocs()
+			for b.Loop() {
+				provider.setStructuredToolOutputsContext(ctx)
+				if converted := ToOpenAIChatRequest(ctx, request); converted == nil {
+					b.Fatal("nil OpenAI request")
+				}
+			}
+		})
+	}
+}
+
 // TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip walks a
 // tool_result flagged is_error through the whole /anthropic/v1/messages ->
 // /v1/responses path. The Anthropic converter carries the flag as

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -115,6 +116,15 @@ func extensionMatchesMediaType(ext, mediaType string) bool {
 // NewBifrostOperationError(ErrRequestBodyConversion, err). Building the structured error here would
 // duplicate that and then be discarded.
 func ResolveChatFileURLs(ctx *schemas.BifrostContext, provider schemas.ModelProvider, req *OpenAIChatRequest) error {
+	return resolveChatFileURLs(ctx, provider, req, providerUtils.FetchAndEncodeURL)
+}
+
+func resolveChatFileURLs(
+	ctx *schemas.BifrostContext,
+	provider schemas.ModelProvider,
+	req *OpenAIChatRequest,
+	fetchURL func(context.Context, string) (string, string, error),
+) error {
 	if req == nil || (provider != schemas.OpenAI && provider != schemas.Azure) {
 		return nil
 	}
@@ -130,6 +140,11 @@ func ResolveChatFileURLs(ctx *schemas.BifrostContext, provider schemas.ModelProv
 		if msg.Content == nil || msg.Content.ContentBlocks == nil {
 			continue
 		}
+		// The converted content shares pointers with the caller's input. Clone before
+		// rewriting so retries and fallbacks see the original request, even on error.
+		contentCopy := *msg.Content
+		contentCopy.ContentBlocks = slices.Clone(msg.Content.ContentBlocks)
+		msg.Content = &contentCopy
 		for j := range msg.Content.ContentBlocks {
 			file := msg.Content.ContentBlocks[j].File
 			if file == nil || file.FileURL == nil || *file.FileURL == "" {
@@ -151,7 +166,7 @@ func ResolveChatFileURLs(ctx *schemas.BifrostContext, provider schemas.ModelProv
 				continue
 			}
 
-			mediaType, encoded, err := providerUtils.FetchAndEncodeURL(fetchCtx, *file.FileURL)
+			mediaType, encoded, err := fetchURL(fetchCtx, *file.FileURL)
 			if err != nil {
 				return fmt.Errorf("failed to fetch document at %s for messages[%d].content[%d]: %w",
 					*file.FileURL, i, j, err)

@@ -8703,6 +8703,10 @@
             "base_provider_type": {
               "type": "string"
             },
+            "supports_structured_tool_outputs": {
+              "type": "boolean",
+              "description": "Preserve image blocks with nonempty URLs in chat tool results for custom OpenAI-compatible providers. Audio and file blocks remain text placeholders; without this setting, images also become placeholders."
+            },
             "allowed_requests": {
               "type": "object",
               "additionalProperties": {

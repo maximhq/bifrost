@@ -42,9 +42,13 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 
+	supportsStructuredToolOutputs := false
+	if ctx != nil {
+		supportsStructuredToolOutputs, _ = ctx.Value(schemas.BifrostContextKeySupportsStructuredToolOutputs).(bool)
+	}
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
-		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
+		Messages: convertBifrostMessagesToOpenAIMessages(bifrostReq.Input, supportsStructuredToolOutputs),
 		Provider: bifrostReq.Provider,
 	}
 

@@ -15213,6 +15213,10 @@
           "type": "boolean",
           "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost. An upstream that then goes silent ends on network_config.stream_idle_timeout_in_seconds"
         },
+        "supports_structured_tool_outputs": {
+          "type": "boolean",
+          "description": "Whether the custom provider accepts image blocks with nonempty URLs in chat tool results. Audio and file blocks remain text placeholders. When omitted or disabled, image blocks also become text placeholders during conversion to chat completions"
+        },
         "base_provider_type": {
           "type": "string",
           "enum": [

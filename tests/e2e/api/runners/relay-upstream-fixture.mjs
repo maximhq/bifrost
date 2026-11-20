@@ -82,6 +82,26 @@ const server = http.createServer(async (req, res) => {
 		case "POST /v1/fail":
 			send(res, 500, { error: { message: "upstream failure" }, usage: { credits: 5 } });
 			return;
+		case "POST /v1/chat/completions": {
+			const tool = (body.messages || []).find((message) => message.role === "tool");
+			const imageURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==";
+			const hasExpectedImage = Array.isArray(tool?.content) && tool.content.some(
+				(part) => part.type === "image_url" && part.image_url?.url === imageURL,
+			);
+			if (!hasExpectedImage) {
+				send(res, 400, { error: { message: "expected URL-backed image in tool result" } });
+				return;
+			}
+			send(res, 200, {
+				id: "chatcmpl-structured-tool-output-fixture",
+				object: "chat.completion",
+				created: 0,
+				model: body.model || "fixture-model",
+				choices: [{ index: 0, message: { role: "assistant", content: "fixture accepted structured image" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+			});
+			return;
+		}
 		case "POST /v1/stream":
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			res.write(`data: ${JSON.stringify({ delta: "a", usage: { credits: 1 } })}\n\n`);

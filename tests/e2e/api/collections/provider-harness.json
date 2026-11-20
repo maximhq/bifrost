@@ -346506,6 +346506,141 @@
           }
         }
       ]
+    },
+    {
+      "name": "392. Custom OpenAI structured tool output via Responses fallback (#9456 / PR #9509)",
+      "description": "Regression tests for Issue #9456 in PR #9509: when Responses input falls back to Chat Completions, the opt-in profile preserves URL-backed tool-result images and the default profile flattens them to a text placeholder.",
+      "item": [
+        {
+          "name": "openai_structured_tool_outputs gpt-4o-mini Responses fallback preserves image_url - #9456",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai_structured_tool_outputs: Responses fallback accepted', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var response = pm.response.json() || {};",
+                  "var outputText = '';",
+                  "(response.output || []).forEach(function (item) { (item.content || []).forEach(function (part) { if (part.type === 'output_text' && typeof part.text === 'string') { outputText += part.text; } }); });",
+                  "pm.test('openai_structured_tool_outputs: Responses result returned', function () { pm.expect(outputText).to.include('fixture accepted structured image'); });",
+                  "var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('openai_structured_tool_outputs: fallback emitted a chat-completions request', function () { pm.expect(raw, 'raw_request missing: ' + text.slice(0, 300)).to.be.an('object'); pm.expect(raw.messages, 'chat messages missing').to.be.an('array'); });",
+                  "if (!raw || !Array.isArray(raw.messages)) { return; }",
+                  "var tool = raw.messages.filter(function (m) { return m.role === 'tool'; })[0];",
+                  "pm.test('openai_structured_tool_outputs: tool output preserves image_url', function () {",
+                  "  pm.expect(tool, 'tool result missing: ' + JSON.stringify(raw.messages)).to.be.an('object');",
+                  "  pm.expect(tool.content, 'structured tool result should be an array').to.be.an('array');",
+                  "  var imagePart = tool.content.filter(function (part) { return part.type === 'image_url'; })[0];",
+                  "  pm.expect(imagePart, 'tool result should contain an image part').to.be.an('object');",
+                  "  pm.expect(imagePart.image_url.url).to.equal('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_structured_tool_outputs/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_screenshot\",\n      \"description\": \"Returns a screenshot\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_screenshot and say what is in the screenshot.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_screenshot_1\",\n      \"name\": \"get_screenshot\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_screenshot_1\",\n      \"output\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai_default_tool_outputs gpt-4o-mini Responses fallback uses default text placeholder - #9456",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai_default_tool_outputs: Responses fallback accepted', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var response = pm.response.json() || {};",
+                  "var outputText = '';",
+                  "(response.output || []).forEach(function (item) { (item.content || []).forEach(function (part) { if (part.type === 'output_text' && typeof part.text === 'string') { outputText += part.text; } }); });",
+                  "pm.test('openai_default_tool_outputs: Responses result returned', function () { pm.expect(outputText, 'expected a non-empty Responses output').to.be.a('string').and.not.empty; });",
+                  "var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('openai_default_tool_outputs: fallback emitted a chat-completions request', function () { pm.expect(raw, 'raw_request missing: ' + text.slice(0, 300)).to.be.an('object'); pm.expect(raw.messages, 'chat messages missing').to.be.an('array'); });",
+                  "if (!raw || !Array.isArray(raw.messages)) { return; }",
+                  "var tool = raw.messages.filter(function (m) { return m.role === 'tool'; })[0];",
+                  "pm.test('openai_default_tool_outputs: tool output uses default text placeholder', function () {",
+                  "  pm.expect(tool, 'tool result missing: ' + JSON.stringify(raw.messages)).to.be.an('object');",
+                  "  pm.expect(tool.content, 'default tool result should be flattened').to.be.a('string');",
+                  "  pm.expect(tool.content).to.match(/\\[image\\/png, .* returned by the tool, not shown\\]/);",
+                  "  pm.expect(tool.content).to.not.include('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_default_tool_outputs/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_screenshot\",\n      \"description\": \"Returns a screenshot\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_screenshot and say what is in the screenshot.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_screenshot_1\",\n      \"name\": \"get_screenshot\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_screenshot_1\",\n      \"output\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
