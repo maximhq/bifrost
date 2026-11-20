@@ -44,6 +44,7 @@
 - **Databricks Scoped OAuth Secrets** - Databricks service principals whose OAuth secret is limited to specific scopes work without configuration: Bifrost retries the token request with the scopes its routes need, and a scope 403 is reported as the provider's own message
 - **Virtual MCPs on Virtual Keys** - The virtual key details sheet lists the Virtual MCPs assigned to the key
 - **FIPS-Approved Key Derivation** - In FIPS 140-3 mode, the encryption data key is derived with PBKDF2-HMAC-SHA-256 and passwords are hashed with PBKDF2-HMAC-SHA-256. Standard builds keep writing the earlier formats, and both formats stay readable, so a rolling deploy is safe
+- **Enforced Limit in Virtual Key Quota** - Each budget in `GET /api/governance/virtual-keys/quota` carries `effective_max_limit`, the limit the gateway enforces once an active override is added, so a self-service client no longer has to rebuild it from `max_limit` and the override fields
 
 ## 🐞 Fixed
 
