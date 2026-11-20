@@ -3,10 +3,15 @@ package integrations
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -1019,4 +1024,93 @@ func TestAnthropicMessagesStreamDeclaresItsCleanup(t *testing.T) {
 			"route %s: a stream that closes without a terminal frame has no other release point", route.Path)
 	}
 	require.NotZero(t, streaming, "expected at least one streaming Anthropic messages route")
+}
+
+// anthropicRootAliasAccount serves one Anthropic key at a fake Anthropic API.
+type anthropicRootAliasAccount struct{ baseURL string }
+
+// GetConfiguredProviders reports Anthropic as the only provider.
+func (anthropicRootAliasAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic}, nil
+}
+
+// GetKeysForProvider returns one wildcard Anthropic key.
+func (anthropicRootAliasAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.Anthropic {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "anthropic-root-alias-key", Value: *schemas.NewSecretVar("sk-ant-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+// GetConfigForProvider points the Anthropic provider at the fake API.
+func (a anthropicRootAliasAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.Anthropic {
+		return nil, errors.New("unsupported provider " + string(p))
+	}
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// TestAnthropicRouterServesMessagesAtRootAndPrefix dispatches real requests through the registered
+// routes: a client whose base URL is the bare gateway (ANTHROPIC_BASE_URL=https://host) reaches
+// /v1/messages and /v1/messages/count_tokens exactly as it does under /anthropic, and the root
+// /v1/models is not claimed by the Anthropic router.
+func TestAnthropicRouterServesMessagesAtRootAndPrefix(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamPaths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		upstreamPaths = append(upstreamPaths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			_, _ = w.Write([]byte(`{"input_tokens":7}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: anthropicRootAliasAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	post := func(uri string) (int, string) {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.Header.Set("x-api-key", "sk-ant-test")
+		ctx.Request.Header.Set("anthropic-version", "2023-06-01")
+		ctx.Request.SetBodyString(`{"model":"anthropic/claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+		r.Handler(&ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	for _, endpoint := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		t.Run(endpoint, func(t *testing.T) {
+			rootStatus, rootBody := post(endpoint)
+			prefixedStatus, prefixedBody := post("/anthropic" + endpoint)
+			require.Equal(t, fasthttp.StatusOK, rootStatus, "body: %s", rootBody)
+			require.Equal(t, fasthttp.StatusOK, prefixedStatus, "body: %s", prefixedBody)
+			require.Equal(t, gjson.Get(prefixedBody, "type").String(), gjson.Get(rootBody, "type").String())
+			require.Equal(t, gjson.Get(prefixedBody, "input_tokens").Int(), gjson.Get(rootBody, "input_tokens").Int())
+		})
+	}
+	mu.Lock()
+	require.Equal(t, []string{"/v1/messages", "/v1/messages", "/v1/messages/count_tokens", "/v1/messages/count_tokens"}, upstreamPaths)
+	mu.Unlock()
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/v1/models")
+	r.Handler(&ctx)
+	require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "root /v1/models must stay Bifrost's own listing, not an Anthropic route")
 }

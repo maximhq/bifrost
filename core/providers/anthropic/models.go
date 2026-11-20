@@ -68,6 +68,8 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 	return bifrostResponse
 }
 
+// ToAnthropicListModelsResponse converts a Bifrost list-models response to the Anthropic Models API shape.
+// max_input_tokens falls back to context_length for providers that only report the latter.
 func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) *AnthropicListModelsResponse {
 	if response == nil {
 		return nil
@@ -94,6 +96,12 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 			MaxInputTokens: model.MaxInputTokens,
 			MaxTokens:      model.MaxOutputTokens,
 			Capabilities:   model.ProviderExtra,
+		}
+		// Many providers only report ContextLength; clients such as Claude Code read
+		// max_input_tokens to size the context window, so fall back to it (the OpenAI
+		// converter does the same in the other direction).
+		if anthropicModel.MaxInputTokens == nil && model.ContextLength != nil {
+			anthropicModel.MaxInputTokens = model.ContextLength
 		}
 		if model.Name != nil {
 			anthropicModel.DisplayName = *model.Name
