@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -718,6 +719,12 @@ type Config struct {
 	muEnabledAgents sync.RWMutex
 	client          *bifrost.Bifrost
 
+	// fileVirtualMCPs are the mcp.virtual_mcps declarations from the last config.json load, kept so a
+	// client registered later can be linked into the declarations that name it. Guarded by
+	// muFileVirtualMCPs, which also serializes those late reconciles.
+	fileVirtualMCPs   []schemas.VirtualMCPConfig
+	muFileVirtualMCPs sync.Mutex
+
 	configPath string
 
 	// GovernanceFileSync is what the last LoadConfig wrote from config.json's teams and customers.
@@ -1253,6 +1260,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := loadClientConfig(ctx, config, &configData); err != nil {
 		return nil, err
 	}
+	dropDuplicateTelemetryDestinations(config.ClientConfig)
 	// Reject an out-of-range client config (e.g. auth_code_ttl above the cap)
 	// loudly at startup instead of silently correcting it, so in-memory, core,
 	// and DB state cannot diverge.
@@ -1308,6 +1316,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 11. Skills registry (after plugins, before framework)
 	loadSkillsRegistry(ctx, config, &configData)
 	// 12. Framework config and pricing manager
+	// PUT /api/config refuses an openapi_url outside the app directory; config.json
+	// gets the same rule. An env reference is checked once resolved, in
+	// ResolveFrameworkPricingConfig.
+	if fc := configData.FrameworkConfig; fc != nil && fc.Pricing != nil && fc.Pricing.OpenAPIURL != nil && !strings.HasPrefix(strings.TrimSpace(*fc.Pricing.OpenAPIURL), "env.") {
+		if err := configstore.ValidateOpenAPIURL(*fc.Pricing.OpenAPIURL); err != nil {
+			return nil, fmt.Errorf("openapi_url %w", err)
+		}
+	}
 	initFrameworkConfig(ctx, config, &configData)
 	// 13. Encryption sync
 	syncEncryption(ctx, config)
@@ -1619,6 +1635,14 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// /.well-known/ routes. Same fail-fast-at-load philosophy as the auth_code_ttl
 	// check above: a config.json or pre-existing DB row that predates this
 	// requirement must not silently run with a Host-derived issuer.
+	// Client gateways issue the same URLs and tokens from the same issuer, so
+	// they need one pinned whatever the MCP auth mode.
+	if oc := cc.OAuth2ServerConfig; oc.AnyClientGatewayEnabled() && (!oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "") {
+		return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
+	}
+	if err := cc.OAuth2ServerConfig.ValidateClientGateways(); err != nil {
+		return err
+	}
 	if cc.IsMCPOAuthDiscoveryEnabled() {
 		oc := cc.OAuth2ServerConfig
 		// A reference ("env.X") counts as set even when it resolves to nothing,
@@ -1635,6 +1659,15 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 				return fmt.Errorf(`oauth2_server_config.allowed_redirect_uris supports only a bare "*" wildcard`)
 			}
 		}
+	}
+	if err := redirectURIControlCharError(cc.OAuth2ServerConfig); err != nil {
+		return err
+	}
+	// PUT /api/config bounds the OpenAPI spec limit; config.json and older DB
+	// rows reach here, and a larger value would let one spec's parse hold
+	// several GiB.
+	if mb := cc.MCPOpenAPIMaxSpecMB; mb < 0 || mb > configstore.MaxMCPOpenAPISpecMB {
+		return fmt.Errorf("mcp_openapi_max_spec_mb %d must be between 0 (the default, 32) and %d", mb, configstore.MaxMCPOpenAPISpecMB)
 	}
 	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather
 	// than leave an entry that silently matches nothing.
@@ -1692,6 +1725,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
 	}
+	if err := configstore.ValidatePublicBaseURL(client.BifrostURL.GetValue()); err != nil {
+		logger.Warn("bifrost_url %v; it will be ignored and self URLs will follow the request", err)
+		client.BifrostURL = nil
+	}
 }
 
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation.
@@ -1734,7 +1771,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		}
 		// Check hashability before saving client settings. loadAuthConfig accepts
 		// this prepared hash, so initial setup does not hash the password twice.
-		if firstAdmin && !isBcryptHash(fileAuth.AdminPassword.GetValue()) {
+		if firstAdmin && !isPasswordHash(fileAuth.AdminPassword.GetValue()) {
 			hashed, hashErr := encrypt.Hash(fileAuth.AdminPassword.GetValue())
 			if hashErr != nil {
 				return fmt.Errorf("invalid initial admin password: %w", hashErr)
@@ -1757,6 +1794,11 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	// even though both decode to the same boolean. Preserve legacy hashes on upgrade.
 	var fileHash, baseHash string
 	if configData.Client != nil {
+		// Checked before hashing: a file URI imitating the gateway block's NUL framing must
+		// fail here, not match a stored row's hash and be silently ignored.
+		if err := redirectURIControlCharError(configData.Client.OAuth2ServerConfig); err != nil {
+			return err
+		}
 		fileHash, err = configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
 		if err != nil {
 			return fmt.Errorf("failed to hash client config: %w", err)
@@ -1870,6 +1912,9 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		if config.ClientConfig.MCPMaxProtocolVersion == "" {
 			config.ClientConfig.MCPMaxProtocolVersion = clientConfig.MCPMaxProtocolVersion
 		}
+		if config.ClientConfig.MCPServerMaxProtocolVersion == "" {
+			config.ClientConfig.MCPServerMaxProtocolVersion = clientConfig.MCPServerMaxProtocolVersion
+		}
 		applyClientConfigDefaults(config.ClientConfig)
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		if err = persistReconciledClientConfig(ctx, config); err != nil {
@@ -1879,11 +1924,47 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	return nil
 }
 
+// redirectURIControlCharError refuses a redirect URI holding a control character, as the
+// config API does. No working callback has one, and the config hash relies on it: the client
+// gateway block is framed by a NUL no redirect URI may reach.
+func redirectURIControlCharError(oc *configstoreTables.OAuth2ServerConfig) error {
+	if oc == nil {
+		return nil
+	}
+	for _, uri := range oc.AllowedRedirectURIs {
+		if strings.ContainsFunc(uri, unicode.IsControl) {
+			return fmt.Errorf("oauth2_server_config.allowed_redirect_uris entry %q contains a control character", uri)
+		}
+	}
+	return nil
+}
+
+// dropDuplicateTelemetryDestinations skips every Claude Code telemetry collector listed more than
+// once, with a warning, so startup neither fails nor persists them; forwarding is paused when no
+// collector is left. PUT /api/config still refuses them.
+func dropDuplicateTelemetryDestinations(cc *configstore.ClientConfig) {
+	if cc == nil {
+		return
+	}
+	gw := cc.OAuth2ServerConfig.ClaudeCodeGateway()
+	if gw == nil || gw.Telemetry == nil {
+		return
+	}
+	for _, i := range gw.Telemetry.DropDuplicateDestinations() {
+		logger.Warn("skipping oauth2_server_config.gateways.claude_code.telemetry.destinations[%d]: its endpoint is listed more than once, so every entry for it is skipped; list each collector once", i)
+	}
+	if gw.Telemetry.Enabled && len(gw.Telemetry.Destinations) == 0 {
+		gw.Telemetry.Enabled = false
+		logger.Warn("pausing oauth2_server_config.gateways.claude_code.telemetry: no collector is left after skipping repeated ones")
+	}
+}
+
 // persistReconciledClientConfig validates the client config loadClientConfig
 // settled on, then writes it to the store. LoadConfig validates it again once
 // loading finishes; checking first as well keeps a value startup would reject
 // out of the store, so correcting config.json is enough to recover.
 func persistReconciledClientConfig(ctx context.Context, config *Config) error {
+	dropDuplicateTelemetryDestinations(config.ClientConfig)
 	if err := validateClientConfig(config.ClientConfig); err != nil {
 		return err
 	}
@@ -2361,7 +2442,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 // row carries the document and never depends on the file staying in place, and
 // the server-computed metadata is filled from a parse so the stored row matches
 // an API-created one. A spec_url is left to be fetched at connect time.
-func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) error {
+func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string, maxSpecBytes int) error {
 	if c.OpenAPIConfig == nil {
 		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
 	}
@@ -2372,7 +2453,7 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 	}
 	oc := c.OpenAPIConfig
 	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
-		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir)
+		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir, maxSpecBytes)
 		if err != nil {
 			return fmt.Errorf("openapi_config.spec_file: %w", err)
 		}
@@ -2383,7 +2464,7 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 		if oc.SpecURL != nil {
 			specURL = *oc.SpecURL
 		}
-		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
+		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
 		if err != nil {
 			return fmt.Errorf("openapi_config.spec: %w", err)
 		}
@@ -2492,7 +2573,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			// keeps its own record instead (see pinMCPClientImmutableFields).
 			c.PendingVerification = mcpClientStartsPendingVerification(c)
 			if c.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
-				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir()); err != nil {
+				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir(), mcpOpenAPIMaxSpecBytes(config.ClientConfig)); err != nil {
 					logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
 					if configData.rejectedMCPClients == nil {
 						configData.rejectedMCPClients = map[string]bool{}
@@ -2549,6 +2630,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 	// config.json authoritative for the virtual_mcps subsection.
 	if configData.MCP != nil {
 		forceFileSync := configData.isConfigJSONSourceOfTruth() && configData.mcpSectionPresent("virtual_mcps")
+		config.rememberFileVirtualMCPs(configData.MCP.VirtualMCPs)
 		if err := reconcileVirtualMCPsConfig(ctx, config.ConfigStore, configData.MCP.VirtualMCPs, forceFileSync); err != nil {
 			logger.Warn("failed to reconcile virtual MCPs from config.json: %v", err)
 		}
@@ -3296,22 +3378,33 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	}
 }
 
-// applyMCPMaxProtocolVersion reconciles mcp.max_protocol_version into the stored client config and
-// hands the result to core. An absent value keeps the stored one even when the file is the source
-// of truth, so an upgrade never lifts the cap the migration set. Reports whether the stored value
-// changed.
+// applyMCPMaxProtocolVersion reconciles mcp.max_protocol_version and mcp.server_max_protocol_version
+// into the stored client config and hands the result on. An absent value keeps the stored one even
+// when the file is the source of truth, so an upgrade never lifts the cap the migration set. Reports
+// whether a stored value changed.
 func applyMCPMaxProtocolVersion(cc *configstore.ClientConfig, mcpCfg *schemas.MCPConfig) bool {
-	changed := false
-	if v := mcpCfg.MaxProtocolVersion; v != "" {
-		if err := schemas.ValidateMCPMaxProtocolVersion("mcp.max_protocol_version", v); err != nil {
-			logger.Warn("ignoring %v", err)
-		} else if v != cc.MCPMaxProtocolVersion {
-			cc.MCPMaxProtocolVersion = v
-			changed = true
-		}
-	}
+	upstream := reconcileMCPProtocolCap("mcp.max_protocol_version", mcpCfg.MaxProtocolVersion, &cc.MCPMaxProtocolVersion)
+	gateway := reconcileMCPProtocolCap("mcp.server_max_protocol_version", mcpCfg.ServerMaxProtocolVersion, &cc.MCPServerMaxProtocolVersion)
 	mcpCfg.MaxProtocolVersion = cc.MCPMaxProtocolVersion
-	return changed
+	mcpCfg.ServerMaxProtocolVersion = cc.MCPServerMaxProtocolVersion
+	return upstream || gateway
+}
+
+// reconcileMCPProtocolCap stores a declared cap in stored and reports whether it changed. An absent
+// or invalid declaration keeps the stored value.
+func reconcileMCPProtocolCap(field, declared string, stored *string) bool {
+	if declared == "" {
+		return false
+	}
+	if err := schemas.ValidateMCPMaxProtocolVersion(field, declared); err != nil {
+		logger.Warn("ignoring %v", err)
+		return false
+	}
+	if declared == *stored {
+		return false
+	}
+	*stored = declared
+	return true
 }
 
 func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreTables.TableMCPClient, error) {
@@ -6580,11 +6673,10 @@ func validateRateLimitLinkOwnership(tx *gorm.DB, rateLimitID *string, ownerType,
 	return nil
 }
 
-// isBcryptHash checks if a string looks like a bcrypt hash
-func isBcryptHash(s string) bool {
-	return strings.HasPrefix(s, "$2a$") ||
-		strings.HasPrefix(s, "$2b$") ||
-		strings.HasPrefix(s, "$2y$")
+// isPasswordHash checks if a string is already a password hash (PBKDF2 or bcrypt)
+// rather than a plaintext password.
+func isPasswordHash(s string) bool {
+	return encrypt.IsPasswordHash(s)
 }
 
 // preserveSecretVar returns a new SecretVar with the given value but preserving
@@ -6661,7 +6753,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		var passwordMatch bool
 		if filePassword == "" {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == ""
-		} else if isBcryptHash(filePassword) {
+		} else if isPasswordHash(filePassword) {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == filePassword
 		} else {
 			passwordMatch, _ = encrypt.CompareHash(dbAuthConfig.AdminPassword.GetValue(), filePassword)
@@ -6682,9 +6774,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 			}
 		}
 	}
-	// Hash password if it's plaintext (not already a bcrypt hash)
+	// Hash password if it is plaintext (not already a PBKDF2 or bcrypt hash)
 	hashedPassword := filePassword
-	if hashedPassword != "" && !isBcryptHash(hashedPassword) {
+	if hashedPassword != "" && !isPasswordHash(hashedPassword) {
 		var err error
 		hashedPassword, err = encrypt.Hash(hashedPassword)
 		if err != nil {
@@ -7059,6 +7151,7 @@ func ResolveFrameworkPricingConfig(
 	fileMCPLibraryURL := (*string)(nil)
 	fileMCPLibrarySyncSeconds := (*int64)(nil)
 	fileLiveModelsSyncSeconds := (*int64)(nil)
+	fileOpenAPIURL := (*string)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	skipMCPLibraryURLBackfill := false
@@ -7150,6 +7243,30 @@ func ResolveFrameworkPricingConfig(
 				fileMCPLibrarySyncSeconds = &val
 			}
 		}
+		// openapi_url has no default to backfill: unset reads the build's spec. An env
+		// reference that does not resolve, or a value outside the app directory, is
+		// ignored with a warning. An explicit "" is kept: it chooses the build's spec,
+		// so it enters the hash and, once the file changes, clears a stored override.
+		if fileConfig.Pricing.OpenAPIURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.OpenAPIURL)
+			unresolved := false
+			if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("openapi_url: env variable not found (%v); using the build's default spec", err)
+					unresolved = true
+				} else {
+					raw = strings.TrimSpace(resolvedURL)
+				}
+			}
+			if !unresolved {
+				if err := configstore.ValidateOpenAPIURL(raw); err != nil {
+					logger.Warn("openapi_url %v; using the build's default spec", err)
+				} else {
+					fileOpenAPIURL = &raw
+				}
+			}
+		}
 		if fileConfig.Pricing.LiveModelsSyncInterval != nil {
 			val := *fileConfig.Pricing.LiveModelsSyncInterval
 			switch {
@@ -7181,6 +7298,7 @@ func ResolveFrameworkPricingConfig(
 	resolvedMCPLibraryURL := &defaultMCPLibraryURL
 	resolvedMCPLibrarySyncInterval := &defaultMCPLibrarySyncSeconds
 	resolvedLiveModelsSyncInterval := &defaultLiveModelsSyncSeconds
+	resolvedOpenAPIURL := nonEmptyOpenAPIURL(fileOpenAPIURL)
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
@@ -7219,7 +7337,7 @@ func ResolveFrameworkPricingConfig(
 	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
 	// Folded into the same predicate so a config.json edit that touches only
 	// live_models_sync_interval still registers as a file change.
-	fileHasHashableOptionalConfig := fileHasHashableMCPConfig || fileLiveModelsSyncSeconds != nil
+	fileHasHashableOptionalConfig := fileHasHashableMCPConfig || fileLiveModelsSyncSeconds != nil || fileOpenAPIURL != nil
 	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableOptionalConfig) {
 		var h string
 		var err error
@@ -7232,6 +7350,7 @@ func ResolveFrameworkPricingConfig(
 				MCPLibraryURL:          mcpHashURL,
 				MCPLibrarySyncInterval: fileMCPLibrarySyncSeconds,
 				LiveModelsSyncInterval: fileLiveModelsSyncSeconds,
+				OpenAPIURL:             fileOpenAPIURL,
 			})
 		} else {
 			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
@@ -7380,6 +7499,20 @@ func ResolveFrameworkPricingConfig(
 		} else {
 			needsDBUpdate = true
 		}
+
+		// openapi_url: the stored value (empty included, the build's default) wins
+		// while the file is unchanged; a changed file that sets it wins and is saved.
+		resolvedOpenAPIURL = nil
+		if dbConfig.OpenAPIURL != nil {
+			if trimmed := strings.TrimSpace(*dbConfig.OpenAPIURL); trimmed != "" {
+				resolvedOpenAPIURL = &trimmed
+			}
+		}
+		if fileChanged && fileOpenAPIURL != nil {
+			logger.Info("openapi_url from config.json overrides DB (file hash changed) — updating DB")
+			resolvedOpenAPIURL = nonEmptyOpenAPIURL(fileOpenAPIURL)
+			needsDBUpdate = true
+		}
 	}
 
 	// --- Phase 4: nil guard ---
@@ -7423,6 +7556,7 @@ func ResolveFrameworkPricingConfig(
 		MCPLibraryURL:          resolvedMCPLibraryURL,
 		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		OpenAPIURL:             resolvedOpenAPIURL,
 		ConfigHash:             persistedHash,
 	}, &modelcatalog.Config{
 		PricingURL:             resolvedPricingURL,
@@ -7431,7 +7565,17 @@ func ResolveFrameworkPricingConfig(
 		MCPLibraryURL:          resolvedMCPLibraryURL,
 		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		OpenAPIURL:             resolvedOpenAPIURL,
 	}, needsDBUpdate
+}
+
+// nonEmptyOpenAPIURL is the stored form of an openapi_url: nil for the build's
+// default, which an explicit "" in config.json also chooses.
+func nonEmptyOpenAPIURL(value *string) *string {
+	if value == nil || *value == "" {
+		return nil
+	}
+	return value
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -8416,12 +8560,39 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
+// MCPOpenAPIMaxSpecBytes reports client.mcp_openapi_max_spec_mb in bytes, or 0 when it is unset
+// (openapimcp then applies its built-in limit). It reads under Mu, like the other live readers.
+func (c *Config) MCPOpenAPIMaxSpecBytes() int {
+	if c == nil {
+		return 0
+	}
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return mcpOpenAPIMaxSpecBytes(c.ClientConfig)
+}
+
+func mcpOpenAPIMaxSpecBytes(cc *configstore.ClientConfig) int {
+	if cc == nil || cc.MCPOpenAPIMaxSpecMB <= 0 {
+		return 0
+	}
+	return cc.MCPOpenAPIMaxSpecMB << 20
+}
+
 // ShouldEnforceVKObjectOwnership reports client.enforce_vk_object_ownership. It reads under Mu, the
 // lock config saves and reloads hold while they copy the client config in; unset means on.
 func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
+}
+
+// ShouldIntersectEntityAccessProfiles reports client.entity_access_profile_mode == "intersect".
+// It reads under Mu, the lock config saves and reloads hold while they copy the client config in;
+// unset, or any other value, means union.
+func (c *Config) ShouldIntersectEntityAccessProfiles() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.EntityAccessProfileMode == configstoreTables.EntityAccessProfileModeIntersect
 }
 
 // ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
@@ -8532,6 +8703,67 @@ func normalizeClientMetadataURL(value string) string {
 		authority, path = rest[:i], rest[i:]
 	}
 	return strings.ToLower(scheme) + "://" + strings.TrimSuffix(strings.ToLower(authority), ":443") + path
+}
+
+// GetBifrostURL returns the configured public base URL of the gateway, without a
+// trailing slash, or empty string if it is not configured or not a valid public URL.
+// Resolves env var references automatically.
+func (c *Config) GetBifrostURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil || c.ClientConfig.BifrostURL == nil {
+		return ""
+	}
+	value := strings.TrimRight(strings.TrimSpace(c.ClientConfig.BifrostURL.GetValue()), "/")
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
+}
+
+// GetBifrostMCPAllowWrites reports whether the Bifrost MCP serves non-GET /api tools
+// (true unless turned off).
+func (c *Config) GetBifrostMCPAllowWrites() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig == nil || c.ClientConfig.BifrostMCPAllowWrites == nil || *c.ClientConfig.BifrostMCPAllowWrites
+}
+
+// GetOpenAPIURL returns the OpenAPI spec the Bifrost MCP builds its tools from: the
+// framework config's openapi_url when one is set, else defaultURL, the build's spec
+// (handlers.DefaultOpenAPIURL unless the build passes another).
+func (c *Config) GetOpenAPIURL(defaultURL string) string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.FrameworkConfig != nil && c.FrameworkConfig.Pricing != nil && c.FrameworkConfig.Pricing.OpenAPIURL != nil {
+		if value := resolveOpenAPIURL(*c.FrameworkConfig.Pricing.OpenAPIURL); value != "" {
+			return value
+		}
+	}
+	return defaultURL
+}
+
+// resolveOpenAPIURL is a stored openapi_url as the Bifrost MCP reads it: trimmed, and
+// an env reference resolved and checked the way ResolveFrameworkPricingConfig checks
+// config.json's. A reference that is unset, resolves empty, or resolves to a value
+// ValidateOpenAPIURL refuses is "" (the build's default), never the reference itself,
+// which would otherwise be read as a file of that name.
+func resolveOpenAPIURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if !strings.HasPrefix(value, "env.") {
+		return value
+	}
+	resolved, err := envutils.ProcessEnvValue(value)
+	if err != nil {
+		logger.Warn("openapi_url: env variable not found (%v); using the build's default spec", err)
+		return ""
+	}
+	resolved = strings.TrimSpace(resolved)
+	if err := configstore.ValidateOpenAPIURL(resolved); err != nil {
+		logger.Warn("openapi_url %v; using the build's default spec", err)
+		return ""
+	}
+	return resolved
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway

@@ -9,6 +9,7 @@ import {
 	Building,
 	Building2,
 	ChartColumnBig,
+	ChartPie,
 	ChevronsLeftRightEllipsis,
 	CircuitBoard,
 	Construction,
@@ -32,7 +33,10 @@ import {
 	Network,
 	Palette,
 	Plug,
+	PlugZap,
 	Puzzle,
+	Receipt,
+	ScanSearch,
 	ScrollText,
 	SearchCheck,
 	Server,
@@ -44,6 +48,7 @@ import {
 	SlidersHorizontal,
 	Split,
 	SquareKanban,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -164,6 +169,7 @@ export function useNavItems(): NavItem[] {
 	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const hasProjectsAccess = useRbac(RbacResource.Projects, RbacOperation.View);
+	const hasFinOpsAccess = useRbac(RbacResource.FinOps, RbacOperation.View);
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
 		hasTeamsAccess ||
@@ -342,6 +348,49 @@ export function useNavItems(): NavItem[] {
 					},
 				],
 			},
+			...(IS_ENTERPRISE
+				? [
+						{
+							id: "finops",
+							title: t("nav.finops"),
+							url: "/workspace/finops",
+							icon: Receipt,
+							description: t("navDesc.finops"),
+							hasAccess: hasFinOpsAccess,
+							new: true,
+							subItems: [
+								{
+									id: "finops.overview",
+									title: t("nav.finopsOverview"),
+									url: "/workspace/finops/overview",
+									icon: ChartPie,
+									hasAccess: hasFinOpsAccess,
+								},
+								{
+									id: "finops.connections",
+									title: t("nav.finopsConnections"),
+									url: "/workspace/finops/connections",
+									icon: PlugZap,
+									hasAccess: hasFinOpsAccess,
+								},
+								{
+									id: "finops.explorer",
+									title: t("nav.finopsExplorer"),
+									url: "/workspace/finops/explorer",
+									icon: ScanSearch,
+									hasAccess: hasFinOpsAccess,
+								},
+								{
+									id: "finops.forecast",
+									title: t("nav.finopsForecast"),
+									url: "/workspace/finops/forecast",
+									icon: TrendingUp,
+									hasAccess: hasFinOpsAccess,
+								},
+							],
+						},
+					]
+				: []),
 			{
 				id: "mcp",
 				title: t("nav.mcpGateway"),
@@ -797,6 +846,14 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasSettingsAccess,
 					},
 					{
+						id: "settings.gateways",
+						title: t("nav.gateways"),
+						url: "/workspace/config/gateways",
+						icon: SquareTerminal,
+						description: t("navDesc.gateways"),
+						hasAccess: hasSettingsAccess,
+					},
+					{
 						id: "settings.warp",
 						title: t("nav.warp"),
 						url: "/workspace/config/warp",
@@ -900,6 +957,7 @@ export function useNavItems(): NavItem[] {
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
+			hasFinOpsAccess,
 			hasFeatureFlagsAccess,
 			isWarpEnabled,
 			hasWarpAccess,

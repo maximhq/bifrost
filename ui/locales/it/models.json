@@ -1286,6 +1286,9 @@
 		"unknownClient": "Client sconosciuto",
 		"budgetInformation": "Informazioni budget",
 		"noBudgetLimits": "Nessun limite di budget configurato",
+		"sharedBudgetUser": "Condiviso da tutte le chiavi assegnate a {{name}}. La spesa è il totale di queste chiavi.",
+		"sharedBudgetUserUnnamed": "Condiviso da tutte le chiavi assegnate a questo utente. La spesa è il totale di queste chiavi.",
+		"sharedBudgetOwner": "Condiviso da tutte le chiavi del team, della business unit o del cliente proprietario di questa chiave. La spesa è il totale di queste chiavi.",
 		"noRateLimits": "Nessun rate limit configurato",
 		"basePlusOverride": "Base {{base}} + override {{override}}",
 		"cyclesRemaining": "{{count}} cicli rimanenti",
@@ -2294,7 +2297,7 @@
 			},
 			"routersNotice": {
 				"title": "Il router di complessità sta diventando Router",
-				"body": "I router possono eseguire più classificatori, ognuno con i propri modelli e le richieste che gestisce. Questa pagina continua a funzionare come oggi; ti consigliamo di provare i router per le nuove configurazioni.",
+				"body": "Con i router puoi creare più router, ognuno con il proprio classificatore e i propri modelli. Questa pagina continua a funzionare come oggi; ti consigliamo di passare ai router sia per le configurazioni esistenti sia per quelle nuove.",
 				"action": "Apri i router"
 			}
 		},
@@ -2626,7 +2629,7 @@
 		"title": "Editor delle schede tecniche",
 		"subtitle": "Modifica qualsiasi valore della scheda tecnica o aggiungi modelli. Le tue modifiche vengono riapplicate dopo ogni sincronizzazione della scheda tecnica, quindi gli aggiornamenti a monte non le annullano mai.",
 		"entityName": "scheda tecnica",
-		"allProviders": "tutti i provider",
+		"allProviders": "Tutti i provider",
 		"searchAria": "Cerca nella scheda tecnica",
 		"searchPlaceholder": "Cerca per nome del modello",
 		"overriddenOnly": "Solo modificate",
@@ -2663,6 +2666,7 @@
 		"upstreamValue": "Scheda tecnica: {{value}}",
 		"upstreamChanged": "Il valore della scheda tecnica è cambiato dopo la tua modifica (era {{value}})",
 		"followUpstream": "Segui la scheda tecnica ({{value}})",
+		"followUpstreamNoValue": "Segui la scheda tecnica",
 		"on": "Attivo",
 		"off": "Disattivo",
 		"customModelPlaceholder": "ad es. ft:gpt-4o:acme",

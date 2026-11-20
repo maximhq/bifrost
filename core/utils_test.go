@@ -115,7 +115,7 @@ func TestValidateExternalURL(t *testing.T) {
 			name:    "private 10.x.x.x",
 			url:     "http://10.0.0.1",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "private IP addresses are not allowed: set network_config.allow_private_network to true",
 		},
 		{
 			name:    "private 172.16.x.x",
@@ -403,6 +403,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeySSEReaderFactory,
 		// The load balancer's record of the attempt that just failed.
 		schemas.BifrostContextKeyLoadBalancerAttempt,
+		// A fallback model decides its own structured-output path.
+		schemas.BifrostContextKeyStructuredOutputGrammarRetry,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{
@@ -1224,4 +1226,62 @@ func TestFallbackAttemptOfPrefersNestedErrorType(t *testing.T) {
 			assert.Equal(t, tc.want, fallbackAttemptOf(fallback, tc.err).Type)
 		})
 	}
+}
+
+func TestWrapConvertedStreamPostHookRunner_ToolCallIndexes(t *testing.T) {
+	added := func(output int, itemType schemas.ResponsesMessageType, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex: schemas.Ptr(output),
+			Item: &schemas.ResponsesMessage{
+				ID:                   schemas.Ptr("item_" + callID),
+				Type:                 schemas.Ptr(itemType),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr("tool_" + callID)},
+			},
+		}
+	}
+	argsDelta := func(output int, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(output), ItemID: schemas.Ptr("item_" + callID), Delta: schemas.Ptr(`{}`)}
+	}
+	inputDelta := func(output int, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta, OutputIndex: schemas.Ptr(output), ItemID: schemas.Ptr("item_" + callID), Delta: schemas.Ptr("print(1)")}
+	}
+	nonTool := func(output int, itemType schemas.ResponsesMessageType) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(output), Item: &schemas.ResponsesMessage{Type: schemas.Ptr(itemType)}}
+	}
+	run := func(events ...*schemas.BifrostResponsesStreamResponse) []uint16 {
+		var indexes []uint16
+		runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if result.ChatResponse != nil {
+				for _, choice := range result.ChatResponse.Choices {
+					if choice.ChatStreamResponseChoice != nil && choice.Delta != nil {
+						for _, tc := range choice.Delta.ToolCalls {
+							indexes = append(indexes, tc.Index)
+						}
+					}
+				}
+			}
+			return result, bifrostErr
+		}, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(nil, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+		return indexes
+	}
+
+	t.Run("no reasoning item", func(t *testing.T) {
+		got := run(
+			added(0, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(0, "a"),
+			added(1, schemas.ResponsesMessageTypeCustomToolCall, "b"), inputDelta(1, "b"),
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
+	t.Run("reasoning and a message first", func(t *testing.T) {
+		got := run(
+			nonTool(0, schemas.ResponsesMessageTypeReasoning), nonTool(1, schemas.ResponsesMessageTypeMessage),
+			added(2, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(2, "a"),
+			added(3, schemas.ResponsesMessageTypeFunctionCall, "b"), argsDelta(3, "b"),
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
 }

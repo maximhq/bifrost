@@ -305,6 +305,9 @@
 		"maxNumber": "Must be at most {{maximum}}",
 		"maxChars": "Must be at most {{maximum}} characters",
 		"validUrl": "Must be a valid URL",
+		"publicUrlNoUserinfoQueryOrFragment": "Must not contain userinfo, a query or a fragment",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Must be an http(s) URL or a path relative to the app directory",
+		"openapiUrlMustStayInAppDir": "Must be a path relative to the app directory that stays inside it",
 		"validEmail": "Must be a valid email",
 		"grpcHostPortFormat": "Must be in the format <host>:<port> for gRPC (e.g. {{example}})",
 		"invalidInput": "Invalid input",
@@ -459,7 +462,8 @@
 	"budgetDisplay": {
 		"usageAria": "Budget usage",
 		"override": "override",
-		"baseTooltip": "Base {{base}} + {{override}} override"
+		"baseTooltip": "Base {{base}} + {{override}} override",
+		"sharedTag": "shared"
 	},
 	"rateLimit": {
 		"tokens": "tokens",
@@ -498,6 +502,11 @@
 	},
 	"configSyncAlert": {
 		"message": "This config is synced from <code0>config.json</code0>. Any future updates to config.json will overwrite UI changes. If you are using config.json to bootstrap the initial config, you can ignore this alert."
+	},
+	"configIssuesAlert": {
+		"title": "Part of the config.json declaration was not applied",
+		"badge": "Config issues",
+		"hint": "The rest of the declaration is applied. Each item above clears on its own once what it names exists, for example when the missing MCP client is registered."
 	},
 	"breadcrumb": {
 		"label": "breadcrumb",

@@ -194,6 +194,7 @@ type ElevenlabsSpeechToTextChunkResponse struct {
 	ChannelIndex        *int                                  `json:"channel_index,omitempty"`
 	AdditionalFormats   []*ElevenlabsAdditionalFormatResponse `json:"additional_formats,omitempty"`
 	TranscriptionID     *string                               `json:"transcription_id,omitempty"`
+	AudioDurationSecs   *float64                              `json:"audio_duration_secs,omitempty"` // the audio ElevenLabs transcribed, which is what it bills
 }
 
 type ElevenlabsSpeechToTextWord struct {

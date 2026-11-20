@@ -47,3 +47,24 @@ export function buildHaystack(item, ancestorNames) {
     JSON.stringify(identityOf(item)) + " " + (ancestorNames || []).join(" ")
   ).toLowerCase();
 }
+
+// declaredProviderOf returns the provider a request names in a "provider" form field (multipart or
+// urlencoded) or "provider" query parameter, lowercased, or undefined. Files API calls on
+// /openai/v1/files carry their real provider there ("azure", "gemini"), while their URL matches the
+// openai route keyword, so provider partitioning has to read it before it matches keywords.
+export function declaredProviderOf(item) {
+  const request = item?.request;
+  const body = request?.body;
+  const fields = body?.mode === "formdata" ? body.formdata : body?.mode === "urlencoded" ? body.urlencoded : null;
+  const named = (list) => (list || []).find((f) => f && f.key === "provider" && !f.disabled && typeof f.value === "string")?.value;
+  let value = named(fields);
+  if (value === undefined) {
+    const url = request?.url;
+    if (url && typeof url === "object") {
+      value = named(url.query);
+    } else if (typeof url === "string" && url.includes("?")) {
+      value = new URLSearchParams(url.slice(url.indexOf("?") + 1)).get("provider") ?? undefined;
+    }
+  }
+  return value ? value.trim().toLowerCase() : undefined;
+}

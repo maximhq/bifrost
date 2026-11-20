@@ -3,6 +3,7 @@ package logstore
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -726,6 +727,14 @@ func (l *Log) BuildInputContentSummary() string {
 		}
 	}
 
+	// Agent loops: no user text, so show the latest tool result or tool call.
+	if text := lastChatToolSummary(l.InputHistoryParsed); text != "" {
+		return text
+	}
+	if text := lastResponsesToolSummary(l.ResponsesInputHistoryParsed); text != "" {
+		return text
+	}
+
 	// Speech input
 	if l.SpeechInputParsed != nil && l.SpeechInputParsed.Input != "" {
 		return l.SpeechInputParsed.Input
@@ -752,6 +761,111 @@ func (l *Log) BuildInputContentSummary() string {
 	}
 
 	return ""
+}
+
+// formatToolCall renders a tool call as "name(args)", or just "name" when the
+// arguments are empty.
+func formatToolCall(b *strings.Builder, name, args string) {
+	if name == "" {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	b.WriteString(name)
+	if args = strings.TrimSpace(args); args != "" {
+		b.WriteByte('(')
+		b.WriteString(args)
+		b.WriteByte(')')
+	}
+}
+
+// lastChatToolSummary returns the text of the last tool result, or the
+// "name(args)" calls of the last assistant message that carries tool calls,
+// whichever comes later in the history.
+func lastChatToolSummary(msgs []schemas.ChatMessage) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Role == schemas.ChatMessageRoleTool {
+			if text := extractChatMessageText(msg); text != "" {
+				return text
+			}
+			continue
+		}
+		if msg.Role != schemas.ChatMessageRoleAssistant || msg.ChatAssistantMessage == nil || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		var b strings.Builder
+		for _, tc := range msg.ToolCalls {
+			if tc.Custom != nil && tc.Custom.Name != nil {
+				formatToolCall(&b, *tc.Custom.Name, tc.Custom.Input)
+			} else if tc.Function.Name != nil {
+				formatToolCall(&b, *tc.Function.Name, tc.Function.Arguments)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	return ""
+}
+
+// lastResponsesToolSummary mirrors lastChatToolSummary for Responses API
+// function_call and function_call_output items.
+func lastResponsesToolSummary(msgs []schemas.ResponsesMessage) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Type == nil || msg.ResponsesToolMessage == nil {
+			continue
+		}
+		switch *msg.Type {
+		case schemas.ResponsesMessageTypeFunctionCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
+			if text := extractResponsesToolOutputText(msg.Output); text != "" {
+				return text
+			}
+		case schemas.ResponsesMessageTypeCustomToolCall:
+			if msg.Name == nil || msg.ResponsesCustomToolCall == nil {
+				continue
+			}
+			var b strings.Builder
+			formatToolCall(&b, *msg.Name, msg.ResponsesCustomToolCall.Input)
+			if b.Len() > 0 {
+				return b.String()
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if msg.Name == nil {
+				continue
+			}
+			args := ""
+			if msg.Arguments != nil {
+				args = *msg.Arguments
+			}
+			var b strings.Builder
+			formatToolCall(&b, *msg.Name, args)
+			if b.Len() > 0 {
+				return b.String()
+			}
+		}
+	}
+	return ""
+}
+
+// extractResponsesToolOutputText returns a function_call_output's string
+// output, or the last text block when the output is block-shaped.
+func extractResponsesToolOutputText(output *schemas.ResponsesToolMessageOutputStruct) string {
+	if output == nil {
+		return ""
+	}
+	if output.ResponsesToolCallOutputStr != nil && *output.ResponsesToolCallOutputStr != "" {
+		return *output.ResponsesToolCallOutputStr
+	}
+	var lastText string
+	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+		if block.Text != nil && *block.Text != "" {
+			lastText = *block.Text
+		}
+	}
+	return lastText
 }
 
 // extractChatMessageText returns the text content from a ChatMessage.

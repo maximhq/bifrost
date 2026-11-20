@@ -1074,7 +1074,7 @@
 		"refreshesOnNextUse": "Se renueva en el próximo uso",
 		"unknown": "Desconocido",
 		"revokeTitle": "¿Revocar esta concesión OAuth?",
-		"revokeDescription": "El refresh token de esta concesión deja de rotar de inmediato, así que el cliente MCP ya no puede renovar su acceso. Su token de acceso actual es un JWT de corta duración que sigue funcionando en el endpoint /mcp hasta que caduca (10 minutos por defecto); después el cliente queda desconectado y debe volver a conectarse mediante el flujo de consentimiento de OAuth.",
+		"revokeDescription": "El refresh token de esta concesión deja de rotar de inmediato, así que el cliente ya no puede renovar su acceso. Su token de acceso actual es un JWT de corta duración que sigue funcionando hasta que caduca; después el cliente queda desconectado y debe volver a iniciar sesión mediante el flujo de consentimiento de OAuth.",
 		"filter": {
 			"identity": "Identidad",
 			"virtualKey": "Clave virtual",
@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "El archivo supera el límite de {{size}} para documentos OpenAPI.",
+			"fileTooLargeBodyCap": "El archivo es demasiado grande para enviarlo: las solicitudes están limitadas a {{size}} por client.max_request_body_size_mb. Auméntalo y reinicia Bifrost para subir un documento más grande.",
 			"fileReadFailed": "No se pudo leer el archivo: {{message}}",
 			"fileEmpty": "El archivo está vacío.",
 			"fetch": "Obtener",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "Bifrost obtiene el documento una vez y lo almacena con el servidor; la URL se conserva como su origen.",
 			"chooseFile": "Elegir archivo",
 			"uploadHelp": "JSON o YAML, hasta {{size}}. El archivo se lee en tu navegador y se almacena con el servidor.",
+			"uploadHelpBodyCap": "JSON o YAML, hasta unos {{size}}: las solicitudes están limitadas por client.max_request_body_size_mb, que es inferior al límite de documentos OpenAPI. El archivo se lee en tu navegador y se almacena con el servidor.",
+			"uploadHelpNoLimit": "JSON o YAML. El archivo se lee en tu navegador y se almacena con el servidor.",
 			"parsing": "Analizando el documento…",
 			"staleNotice": "La URL o el nombre del servidor cambió desde que se obtuvo el documento. Vuelve a obtenerlo para actualizar las operaciones de abajo."
 		},
