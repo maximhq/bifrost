@@ -340,6 +340,36 @@ test.describe("MCP Registry", () => {
     });
   });
 
+  test.describe("Description", () => {
+    test("should create a client with a description, change it, and clear it", async ({ mcpRegistryPage, request }) => {
+      const clientData = createHTTPClientData({
+        name: `described_${Date.now()}`,
+        description: "  Dashboards, alerts and Loki queries  ",
+      });
+      const stored = () => mcpRegistryPage.storedDescription(request, clientData.name);
+
+      const created = await mcpRegistryPage.createClient(clientData);
+      expect(created).toBe(true);
+      createdClients.push(clientData.name);
+      expect(await stored()).toBe("Dashboards, alerts and Loki queries");
+
+      await mcpRegistryPage.editClient(clientData.name, { description: "Incident timelines" });
+      expect(await stored()).toBe("Incident timelines");
+
+      await mcpRegistryPage.editClient(clientData.name, { description: "" });
+      expect(await stored()).toBe("");
+    });
+
+    test("should refuse a description over 200 characters in the create form", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await mcpRegistryPage.fillClientForm(createHTTPClientData({ name: `too_long_${Date.now()}`, description: "é".repeat(201) }));
+      await mcpRegistryPage.saveBtn.first().click();
+      await expect(mcpRegistryPage.sheet.getByText("200 characters")).toBeVisible();
+      await mcpRegistryPage.closeSheet();
+    });
+  });
+
   test.describe("Max Protocol Version", () => {
     test("should create a client with a max protocol version and switch it to the global setting", async ({
       mcpRegistryPage,

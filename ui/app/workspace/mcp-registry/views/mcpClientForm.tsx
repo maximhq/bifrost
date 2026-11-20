@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
 import { CreateMCPClientRequest, SecretVar, MCPStdioConfig } from "@/lib/types/mcp";
+import { MCP_CLIENT_DESCRIPTION_MAX_LENGTH } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -179,6 +180,36 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												{...field}
 											/>
 										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Description: shown to models in the code mode catalogue; the server trims and checks it too. */}
+							<FormField
+								control={control}
+								name="description"
+								rules={{
+									validate: {
+										length: (v) =>
+											[...(v ?? "").trim()].length <= MCP_CLIENT_DESCRIPTION_MAX_LENGTH ||
+											tc("validation.descriptionMustBe200CharactersOrFewer"),
+										oneLine: (v) => !/[\p{Cc}\u2028\u2029]/u.test(v ?? "") || tc("validation.descriptionMustBeASingleLine"),
+									},
+								}}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>{t("registry.sheet.descriptionLabel")}</FormLabel>
+										<FormControl>
+											<Input
+												id="client-description"
+												data-testid="client-description-input"
+												placeholder={t("registry.sheet.descriptionPlaceholder")}
+												{...field}
+												value={field.value ?? ""}
+											/>
+										</FormControl>
+										<p className="text-muted-foreground text-xs">{t("registry.sheet.descriptionHelp")}</p>
 										<FormMessage />
 									</FormItem>
 								)}

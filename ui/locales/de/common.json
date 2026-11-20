@@ -496,6 +496,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "Gib das für diese Bifrost-Instanz konfigurierte Setup-Token ein",
 		"giveTheFeedAName": "Gib dem Feed einen Namen",
 		"nameMustBe120CharactersOrFewer": "Der Name darf höchstens 120 Zeichen lang sein",
+		"descriptionMustBe200CharactersOrFewer": "Die Beschreibung darf höchstens 200 Zeichen lang sein",
+		"descriptionMustBeASingleLine": "Die Beschreibung muss einzeilig sein und darf keine Tabulatoren oder anderen Steuerzeichen enthalten",
 		"enterTheFeedUrl": "Gib die Feed-URL ein",
 		"urlIsTooLong": "Die URL ist zu lang",
 		"urlMustStartWithHttpOrHttps": "Die URL muss mit http:// oder https:// beginnen",

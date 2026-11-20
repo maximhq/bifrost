@@ -231,6 +231,7 @@ export function settingsRows(config: MCPClientConfig, globals: MCPClientGlobalSe
 
 	// Unset reads as on, as the edit form defaults it.
 	const rows: MCPClientDetailRow[] = [
+		{ key: "description", label: i18n.t("registry.sheet.descriptionLabel", { ns: "mcp" }), value: config.description || notSet() },
 		{ key: "ping", label: i18n.t("registry.view.pingHealthCheck", { ns: "mcp" }), value: onOff(config.is_ping_available !== false) },
 	];
 	if (config.connection_type === "http" && !PER_USER_AUTH_TYPES.has(config.auth_type ?? "")) {

@@ -243,6 +243,7 @@ export type MCPServerTypeOnSlug = "inherit" | "enabled" | "disabled";
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
+	description?: string; // One-line summary shown to models in the code mode catalogue (omitted = none)
 	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
 	server_type_on_slug?: MCPServerTypeOnSlug;
@@ -416,6 +417,7 @@ export interface MCPClient {
 
 export interface CreateMCPClientRequest {
 	name: string;
+	description?: string; // One-line summary shown to models in code mode; at most 200 characters, no control characters
 	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
 	server_type_on_slug?: MCPServerTypeOnSlug;
@@ -485,6 +487,7 @@ export interface MCPVKConfig {
 
 export interface UpdateMCPClientRequest {
 	name?: string;
+	description?: string; // Omitted = keep, "" = clear; at most 200 characters, no control characters
 	is_code_mode_client?: boolean;
 	server_type_on_slug?: MCPServerTypeOnSlug;
 	headers?: Record<string, SecretVar>;

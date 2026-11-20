@@ -41,6 +41,8 @@ export interface MCPClientConfig {
   isPingAvailable?: boolean
   /** Max protocol version option: 'global', 'auto' or a version */
   maxProtocolVersion?: string
+  /** One-line summary models see in the code mode catalogue; '' clears it on edit */
+  description?: string
   // STDIO specific
   command?: string
   args?: string
@@ -383,6 +385,11 @@ export class MCPRegistryPage extends BasePage {
     return (await this.storedClientConfig(request, name)).server_type_on_slug as string | undefined
   }
 
+  /** The stored description of the named client over the API ("" = unset). */
+  async storedDescription(request: APIRequestContext, name: string): Promise<string> {
+    return ((await this.storedClientConfig(request, name)).description as string | undefined) ?? ''
+  }
+
   /** The stored endpoint_slug of the named client over the API. */
   async storedEndpointSlug(request: APIRequestContext, name: string): Promise<string> {
     return (await this.storedClientConfig(request, name)).endpoint_slug as string
@@ -406,6 +413,10 @@ export class MCPRegistryPage extends BasePage {
   async fillClientForm(config: MCPClientConfig): Promise<void> {
     // Fill name
     await this.nameInput.fill(config.name)
+
+    if (config.description !== undefined) {
+      await this.sheet.getByTestId('client-description-input').fill(config.description)
+    }
 
     if (config.maxProtocolVersion) {
       await this.selectMaxProtocolVersion(this.sheet, config.maxProtocolVersion)
@@ -988,6 +999,10 @@ export class MCPRegistryPage extends BasePage {
 
     if (updates.maxProtocolVersion) {
       await this.selectMaxProtocolVersion(this.detailSheet, updates.maxProtocolVersion)
+    }
+
+    if (updates.description !== undefined) {
+      await this.detailSheet.getByTestId('mcp-client-description-input').fill(updates.description)
     }
 
     if (updates.serverTypeOnSlug) {

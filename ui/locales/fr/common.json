@@ -496,6 +496,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "Saisissez le jeton de configuration défini pour cette instance Bifrost",
 		"giveTheFeedAName": "Donnez un nom au flux",
 		"nameMustBe120CharactersOrFewer": "Le nom doit comporter 120 caractères au maximum",
+		"descriptionMustBe200CharactersOrFewer": "La description doit faire 200 caractères ou moins",
+		"descriptionMustBeASingleLine": "La description doit tenir sur une seule ligne, sans tabulations ni autres caractères de contrôle",
 		"enterTheFeedUrl": "Saisissez l’URL du flux",
 		"urlIsTooLong": "L’URL est trop longue",
 		"urlMustStartWithHttpOrHttps": "L’URL doit commencer par http:// ou https://",

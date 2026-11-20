@@ -291,6 +291,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "Enter the setup token configured for this Bifrost instance",
 		"giveTheFeedAName": "Give the feed a name",
 		"nameMustBe120CharactersOrFewer": "Name must be 120 characters or fewer",
+		"descriptionMustBe200CharactersOrFewer": "Description must be 200 characters or fewer",
+		"descriptionMustBeASingleLine": "Description must be a single line without tabs or other control characters",
 		"enterTheFeedUrl": "Enter the feed URL",
 		"urlIsTooLong": "URL is too long",
 		"urlMustStartWithHttpOrHttps": "URL must start with http:// or https://",

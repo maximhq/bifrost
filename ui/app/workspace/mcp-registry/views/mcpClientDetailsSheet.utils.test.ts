@@ -106,6 +106,7 @@ describe("settingsRows", () => {
 	it("shows the global value an unset override falls back to", () => {
 		const rows = settingsRows(config(), globals);
 		expect(keysOf(rows)).toEqual([
+			"description",
 			"ping",
 			"session_stickiness",
 			"tool_sync_interval",
@@ -113,6 +114,7 @@ describe("settingsRows", () => {
 			"tool_execution_timeout",
 			"max_instructions_length",
 		]);
+		expect(row(rows, "description")).toMatchObject({ value: "Not set" });
 		expect(row(rows, "ping")).toMatchObject({ value: "On" });
 		expect(row(rows, "session_stickiness")).toMatchObject({ value: "Off" });
 		expect(row(rows, "tool_sync_interval")).toMatchObject({ value: "10 min", note: "global default" });
@@ -130,9 +132,11 @@ describe("settingsRows", () => {
 				max_protocol_version: "2025-06-18",
 				tool_execution_timeout: "1m30s",
 				max_instructions_length: 2048,
+				description: "Dashboards and alerts",
 			}),
 			globals,
 		);
+		expect(row(rows, "description")).toEqual({ key: "description", label: "Description", value: "Dashboards and alerts" });
 		expect(row(rows, "ping")).toMatchObject({ value: "Off" });
 		expect(row(rows, "session_stickiness")).toMatchObject({ value: "On" });
 		expect(row(rows, "tool_sync_interval")).toEqual({ key: "tool_sync_interval", label: "Tool sync interval", value: "5 min" });
