@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -13,6 +13,9 @@ MCPAuthType:
     - token_exchange: Delegated token exchange (each caller's own identity-provider token is
       exchanged for a short-lived token scoped to this server on every call; nothing is
       stored per caller). Requires an enabled identity-provider integration (enterprise).
+    - client_credentials: OAuth client_credentials grant with a client registered in advance
+      at the server's authorization server; one token is shared by every caller and no
+      user signs in (MCP OAuth Client Credentials extension).
 
 MCPTokenExchangeConfig:
   type: object
@@ -85,6 +88,76 @@ MCPTokenExchangeConfig:
     deployment's identity-provider integration; this block only says which
     resource the exchanged token must be scoped to and which application
     performs the exchange.
+
+MCPClientCredentialsConfig:
+  type: object
+  required: [client_id]
+  properties:
+    token_url:
+      type: string
+      description: |
+        Token endpoint (https; http only on a loopback host). When empty on
+        create or update, it is discovered from the MCP server's OAuth metadata
+        and stored, and the authorization server must advertise the
+        client_credentials grant. Changing it, or clearing it to discover again,
+        requires client_secret or private_key to be resent rather than its
+        redacted value.
+    client_id:
+      type: string
+      minLength: 1
+      description: |
+        Bifrost's client ID at the authorization server. Supports env.VAR_NAME
+        and vault.path references. Redacted in API responses.
+    client_secret:
+      type: string
+      description: |
+        Client secret. Exactly one of client_secret and private_key is
+        required. Supports env.VAR_NAME and vault.path references. Redacted in
+        API responses.
+    auth_method:
+      type: string
+      enum: ['', client_secret_basic, client_secret_post]
+      description: |
+        How client_secret is sent. Empty: HTTP Basic unless the discovered
+        metadata lists only client_secret_post; the stored value is the one
+        chosen. Requires client_secret.
+    private_key:
+      type: string
+      description: |
+        PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,
+        a client assertion signed with this key, instead of a secret. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    key_id:
+      type: string
+      description: kid header of the client assertion. Requires private_key.
+    signing_algorithm:
+      type: string
+      enum: ['', RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      description: |
+        Client assertion signing algorithm. Empty: chosen from the key on save,
+        the ES algorithm for an EC key's curve, or for an RSA key the first RSA
+        algorithm the authorization server advertises, else RS256; the stored
+        value is the one chosen. Requires private_key.
+    assertion_audience:
+      type: string
+      description: |
+        aud of the client assertion (https). Empty: the token endpoint.
+        Changing it requires private_key to be resent. Requires private_key.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: Scopes to request, sent space-joined.
+    resource:
+      type: string
+      description: |
+        Resource indicator (RFC 8707) sent on the token request. Omitted: the
+        MCP server URL. Empty string: not sent.
+  additionalProperties: false
+  description: |
+    OAuth client_credentials grant for auth_type "client_credentials". Saving
+    the client discovers what was left empty and requests one token, so
+    credentials the authorization server refuses fail the request with 400.
 
 MCPConnectionType:
   type: string
@@ -228,6 +301,28 @@ MCPClientCreateRequestBase:
         description: |
           A `token_exchange` block only applies to auth_type "token_exchange";
           reject it for every other auth_type instead of silently ignoring it.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: client_credentials
+      then:
+        required: [client_credentials]
+        description: |
+          When `auth_type` is `client_credentials`, `client_credentials` must
+          carry a `client_id` and a `client_secret` or `private_key`.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            not:
+              const: client_credentials
+      then:
+        not:
+          required: [client_credentials]
+        description: |
+          A `client_credentials` block only applies to auth_type
+          "client_credentials"; reject it for every other auth_type.
     - if:
         required: [per_user_discovery]
         properties:
@@ -444,6 +539,11 @@ MCPClientCreateRequestBase:
         POST /api/mcp/client/{id}/verify-exchange). A request with neither,
         such as one made with an API key, creates the client in
         pending_verification. There is no sample-token field on this request.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        Required when creating a client with auth_type "client_credentials".
+        Not accepted for connection_type "stdio" or "openapi".
     per_user_discovery:
       type: boolean
       default: false
@@ -502,7 +602,7 @@ MCPClientCreateRequestSSE:
           description: SSE URL (required for SSE connection type)
         auth_type:
           type: string
-          enum: [none, headers, oauth]
+          enum: [none, headers, oauth, client_credentials]
           description: |
             The per-user auth types open a new connection for each call, which an
             SSE stream does not allow, so SSE takes the shared auth types only.
@@ -983,6 +1083,16 @@ MCPClientUpdateRequest:
         from a prior GET is resolved back to the stored value rather than
         overwriting it; any other change re-scopes future exchanges and
         invalidates cached exchanged tokens for this client.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only. Omitted preserves the stored
+        configuration; when sent, it replaces the stored block, and when it
+        differs from it, Bifrost discovers what was left empty and requests one
+        token. A redacted `client_id`,
+        `client_secret` or `private_key` round-tripped from a prior GET keeps
+        the stored value, except when `token_url` or `assertion_audience`
+        changes, which requires the secret or key to be resent (400 otherwise).
     disabled:
       type: boolean
       default: false
@@ -1175,6 +1285,12 @@ MCPClientConfig:
       description: |
         For `token_exchange` clients only. `client_id` and `client_secret` are
         redacted in this response.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only, including the token_url,
+        auth_method and signing_algorithm chosen on save. `client_id`,
+        `client_secret` and `private_key` are redacted in this response.
     per_user_discovery:
       type: boolean
       default: false
