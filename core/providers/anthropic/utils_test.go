@@ -6421,3 +6421,31 @@ func TestParseJSONInput(t *testing.T) {
 		})
 	}
 }
+
+// ConvertBifrostFinishReasonToAnthropic is the shared egress mapping for Anthropic-shaped
+// responses. Only reasons Anthropic defines may leave it; provider-specific reasons such as
+// Bedrock's guardrail_intervened must become end_turn.
+func TestConvertBifrostFinishReasonToAnthropic(t *testing.T) {
+	tests := []struct {
+		name     string
+		reason   string
+		expected AnthropicStopReason
+	}{
+		{"stop", "stop", AnthropicStopReasonEndTurn},
+		{"length", "length", AnthropicStopReasonMaxTokens},
+		{"tool_calls", "tool_calls", AnthropicStopReasonToolUse},
+		{"content_filter", "content_filter", AnthropicStopReasonRefusal},
+		{"refusal passes through", "refusal", AnthropicStopReasonRefusal},
+		{"model_context_window_exceeded passes through", "model_context_window_exceeded", AnthropicStopReasonModelContextWindowExceeded},
+		{"guardrail_intervened becomes end_turn", "guardrail_intervened", AnthropicStopReasonEndTurn},
+		{"malformed_model_output becomes end_turn", "malformed_model_output", AnthropicStopReasonEndTurn},
+		{"unset stays empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConvertBifrostFinishReasonToAnthropic(tt.reason); got != tt.expected {
+				t.Errorf("ConvertBifrostFinishReasonToAnthropic(%q) = %q, want %q", tt.reason, got, tt.expected)
+			}
+		})
+	}
+}
