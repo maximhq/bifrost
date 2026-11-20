@@ -135,3 +135,70 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 
 	return bifrostResponse
 }
+
+// ToBifrostListModelsResponse converts ListInferenceProfiles output into Bifrost models keyed by
+// the profile ID ("us.anthropic.claude-…", "global.…"), so cross-region IDs a key can invoke are
+// listed next to the bare foundation-model IDs. Metadata is inherited from the profile's
+// foundation model when foundationModels has it. requireFoundationModel drops profiles whose
+// foundation model is absent, which carries ListFoundationModels' by* filters over to profiles.
+// No allowlist backfill here: the foundation-model conversion already backfills for the key.
+func (response *BedrockListInferenceProfilesResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool, foundationModels map[string]BedrockModel, requireFoundationModel bool) *schemas.BifrostListModelsResponse {
+	if response == nil {
+		return nil
+	}
+
+	bifrostResponse := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0, len(response.InferenceProfileSummaries)),
+	}
+
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
+	}
+
+	for _, profile := range response.InferenceProfileSummaries {
+		if profile.InferenceProfileID == "" || (profile.Status != "" && profile.Status != "ACTIVE") {
+			continue
+		}
+		var foundation *BedrockModel
+		for _, m := range profile.Models {
+			if idx := strings.LastIndex(m.ModelArn, "foundation-model/"); idx >= 0 {
+				if fm, ok := foundationModels[m.ModelArn[idx+len("foundation-model/"):]]; ok {
+					foundation = &fm
+					break
+				}
+			}
+		}
+		if foundation == nil && requireFoundationModel {
+			continue
+		}
+		for _, result := range pipeline.FilterModel(profile.InferenceProfileID) {
+			modelEntry := schemas.Model{
+				ID: string(providerKey) + "/" + result.ResolvedID,
+			}
+			if profile.InferenceProfileName != "" {
+				modelEntry.Name = new(profile.InferenceProfileName)
+			}
+			if foundation != nil {
+				modelEntry.OwnedBy = new(foundation.ProviderName)
+				modelEntry.Architecture = &schemas.Architecture{
+					InputModalities:  foundation.InputModalities,
+					OutputModalities: foundation.OutputModalities,
+				}
+			}
+			if result.AliasValue != "" {
+				modelEntry.Alias = new(result.AliasValue)
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+		}
+	}
+
+	return bifrostResponse
+}

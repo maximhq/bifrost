@@ -1431,6 +1431,28 @@ type BedrockListModelsResponse struct {
 	ModelSummaries []BedrockModel `json:"modelSummaries"`
 }
 
+// BedrockInferenceProfileModel is one model ARN an inference profile routes to.
+type BedrockInferenceProfileModel struct {
+	ModelArn string `json:"modelArn"`
+}
+
+// BedrockInferenceProfileSummary is one entry of AWS Bedrock's ListInferenceProfiles response.
+type BedrockInferenceProfileSummary struct {
+	InferenceProfileArn  string                         `json:"inferenceProfileArn"`
+	InferenceProfileID   string                         `json:"inferenceProfileId"`
+	InferenceProfileName string                         `json:"inferenceProfileName"`
+	Description          string                         `json:"description,omitempty"`
+	Models               []BedrockInferenceProfileModel `json:"models"`
+	Status               string                         `json:"status"`
+	Type                 string                         `json:"type"`
+}
+
+// BedrockListInferenceProfilesResponse represents the response from AWS Bedrock's ListInferenceProfiles API
+type BedrockListInferenceProfilesResponse struct {
+	InferenceProfileSummaries []BedrockInferenceProfileSummary `json:"inferenceProfileSummaries"`
+	NextToken                 *string                          `json:"nextToken,omitempty"`
+}
+
 // ==================== FILE TYPES (S3 WRAPPER) ====================
 
 // BedrockFileUploadRequest wraps S3 PutObject for Bedrock file operations
