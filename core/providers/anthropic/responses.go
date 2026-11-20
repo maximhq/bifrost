@@ -744,6 +744,9 @@ type anthropicNativeRequestSurface struct {
 	// Comparing against what the conversion itself produced is the only reading
 	// that isolates a later edit.
 	NeutralReasoning *schemas.ResponsesParametersReasoning
+	// DisableParallelToolUse records the caller's own tool_choice.disable_parallel_tool_use setting,
+	// so it is restored on outbound Anthropic requests even if an intermediate layer dropped ParallelToolCalls.
+	DisableParallelToolUse *bool
 }
 
 // The key is schemas.BifrostContextKeyAnthropicNativeRequestSurface rather than
@@ -815,6 +818,9 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		surface.BlockBinding = copyThinkingBlockBinding(req.Thinking.BlockBinding)
 	}
 	surface.MaxTokens = req.MaxTokens
+	if req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil {
+		surface.DisableParallelToolUse = schemas.Ptr(*req.ToolChoice.DisableParallelToolUse)
+	}
 	// Deep copy: the projection's pointer fields alias the inbound request
 	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
 	// and reused after conversion.
@@ -1035,6 +1041,20 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 	}
 
 	restoreThinkingBlockBinding(req, surface.BlockBinding, provider)
+
+	if surface.DisableParallelToolUse != nil {
+		restoreNativeSetting := params == nil || params.ParallelToolCalls == nil ||
+			*params.ParallelToolCalls == !*surface.DisableParallelToolUse
+		if restoreNativeSetting {
+			if req.ToolChoice == nil && len(req.Tools) > 0 {
+				req.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			}
+			if req.ToolChoice != nil && req.ToolChoice.Type != "none" {
+				disable := *surface.DisableParallelToolUse
+				req.ToolChoice.DisableParallelToolUse = &disable
+			}
+		}
+	}
 
 	// Sampling is deliberately NOT restored, and the reason is worth keeping
 	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
