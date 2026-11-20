@@ -44,6 +44,7 @@
 - **Databricks Scoped OAuth Secrets** - Databricks service principals whose OAuth secret is limited to specific scopes work without configuration: Bifrost retries the token request with the scopes its routes need, and a scope 403 is reported as the provider's own message
 - **Virtual MCPs on Virtual Keys** - The virtual key details sheet lists the Virtual MCPs assigned to the key
 - **FIPS-Approved Key Derivation** - In FIPS 140-3 mode, the encryption data key is derived with PBKDF2-HMAC-SHA-256 and passwords are hashed with PBKDF2-HMAC-SHA-256. Standard builds keep writing the earlier formats, and both formats stay readable, so a rolling deploy is safe
+- **Total Request Timeout** - The `x-bf-request-timeout` header (a duration such as `90s`, or seconds) caps the whole request, including retries, backoff and fallbacks. Once it passes no further attempt or fallback starts and the request ends with a 504 `request_timed_out`
 
 ## 🐞 Fixed
 

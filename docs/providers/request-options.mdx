@@ -17,6 +17,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySessionID`               | `x-bf-session-id` (falls back to coding-harness session headers) | `string`              | Session ID for provider and key session affinity (requires KV store)                                                                  |
 | `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session binding TTL (duration string or seconds)                                                                                      |
 | `BifrostContextKeySessionAffinity`         | `x-bf-session-affinity`                              | `bool`                | Whether the session decides routing for this request: `on` (default) or `off`                                                         |
+| _(context deadline)_                       | `x-bf-request-timeout`                               | `time.Duration`       | Total time for the request, including retries, backoff and fallbacks (duration string or seconds); `504` when it passes before a stream starts |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
@@ -399,6 +400,46 @@ The same `trace_id` and `request_id` appear as fields on Bifrost's structured ac
 <Note>
 Provider response headers are forwarded to the caller, except the `x-bifrost-*` names Bifrost writes itself. When the upstream is another Bifrost gateway, its `x-bifrost-*` headers describe its own hop and are not forwarded, so they can never replace this gateway's request ID, trace ID or routing headers. Every header the gateway adds is listed in [Response Headers](/providers/response-headers).
 </Note>
+
+### Request Timeout
+
+**Context Key:** none; the deadline of the request's context (`schemas.NewBifrostContextWithTimeout`)
+**Header:** `x-bf-request-timeout`
+**Type:** `time.Duration` (header value: duration string like `"90s"` or `"2m"`, or seconds as integer)
+**Required:** No
+
+Optional. Caps the total time of the request, including every retry, the backoff between retries and every fallback. Each attempt is still bounded by the provider's `default_request_timeout_in_seconds`, but without this cap a request can run for that timeout multiplied by its retries and fallbacks. Once the deadline passes no further attempt or fallback starts, the attempt in flight is cancelled, and the request ends with a `504` whose error type is `request_timed_out`. For a streaming request the deadline also bounds the stream itself: if it passes before the stream starts the response is the same `504`, but once the stream has started the response keeps its `200` status and the deadline ends the stream with an error event carrying the `request_timed_out` error.
+
+A value that is not a positive duration or number of seconds is ignored.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-request-timeout: 90s' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "fallbacks": ["anthropic/claude-3-5-haiku-20241022"],
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+````
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 90*time.Second)
+defer cancel()
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
+})
+
+````
+</Tab>
+</Tabs>
 
 ### Send Back Raw Request
 

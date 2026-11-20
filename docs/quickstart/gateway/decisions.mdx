@@ -282,6 +282,8 @@ Add `fallbacks` to try other models in order when one fails, including when it r
 }
 ```
 
+Each model is retried per its provider's `max_retries` before the next is tried, so a chain can run for several provider timeouts. Send [`x-bf-request-timeout`](/providers/request-options#request-timeout) to cap the whole request, retries and fallbacks included; when it passes you get a `504`.
+
 ## Validation
 
 Bifrost rejects these with a `400` before calling any provider:
