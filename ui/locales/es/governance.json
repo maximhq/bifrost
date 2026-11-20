@@ -410,6 +410,24 @@
 		"unlockTitle": "Desbloquear proyectos para el acceso y el gasto",
 		"unlockDescription": "Esta función forma parte de la licencia Enterprise de Bifrost. A project is something a request opts into: it grants access alongside what the caller already holds, and decides whose ledger the spend lands on."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "Ve el gasto en IA de todos los proveedores en un solo lugar",
+			"unlockDescription": "Esta función forma parte de la licencia Enterprise de Bifrost. FinOps lee los costes facturados de tus cuentas de proveedor y muestra qué parte de ese gasto pasó por Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Conecta las cuentas de facturación de los proveedores",
+			"unlockDescription": "Esta función forma parte de la licencia Enterprise de Bifrost. Conecta la facturación de OpenAI, Anthropic, AWS Bedrock, Vertex AI y Azure OpenAI con acceso de solo lectura."
+		},
+		"explorer": {
+			"unlockTitle": "Desglosa el gasto en IA por modelo y cuenta",
+			"unlockDescription": "Esta función forma parte de la licencia Enterprise de Bifrost. Compara el gasto facturado con lo que registró Bifrost, modelo a modelo."
+		},
+		"forecast": {
+			"unlockTitle": "Prevé el gasto en IA y detecta anomalías",
+			"unlockDescription": "Esta función forma parte de la licencia Enterprise de Bifrost. Prevé el mes frente a tus presupuestos y recibe alertas cuando el gasto se dispare."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Desbloquear la clasificación de los usuarios para una mejor visibilidad"
 	},

@@ -6074,6 +6074,8 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 		{"claude-opus-5-5", true},
 		{"claude-sonnet-5-5", true},
 		{"claude-fable-5-1", true},
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20261101", true},
 		{"claude-sonnet-5", false},
 		{"claude-opus-4-7", false},
 		{"claude-haiku-4-5", false},
