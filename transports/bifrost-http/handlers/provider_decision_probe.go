@@ -232,68 +232,18 @@ func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 
 // redactDecisionProbeURL masks the userinfo and query values of a URL found in
 // a probe error. A URL that parses is masked by lib.RedactURLCredentials. One
-// that does not, which that helper returns unchanged, is masked by position, so
-// a malformed URL cannot carry its credentials through: the userinfo ends at
-// the first '@' followed by a well-formed host (see decisionProbeUserinfoEnd),
-// and every query value is replaced. The host and path are kept.
+// that does not, which that helper returns unchanged, keeps only its scheme:
+// a malformed URL has no reliable boundary between userinfo, host, and path (a
+// password can hold '@' and '/', and so can a path), so everything after the
+// scheme is replaced rather than guessed at.
 func redactDecisionProbeURL(raw string) string {
 	if _, err := url.Parse(raw); err == nil {
 		return lib.RedactURLCredentials(raw)
 	}
-	scheme, rest, _ := strings.Cut(raw, "://")
-	if at := decisionProbeUserinfoEnd(rest); at >= 0 {
-		userinfo := "redacted"
-		if strings.Contains(rest[:at], ":") {
-			userinfo = "redacted:redacted"
-		}
-		rest = userinfo + rest[at:]
+	if scheme, _, ok := strings.Cut(raw, "://"); ok {
+		return scheme + "://redacted"
 	}
-	address, query, hasQuery := strings.Cut(rest, "?")
-	if !hasQuery {
-		return scheme + "://" + rest
-	}
-	query, fragment, hasFragment := strings.Cut(query, "#")
-	pairs := strings.Split(query, "&")
-	for i, pair := range pairs {
-		if name, _, _ := strings.Cut(pair, "="); pair != "" {
-			pairs[i] = name + "=redacted"
-		}
-	}
-	out := scheme + "://" + address + "?" + strings.Join(pairs, "&")
-	if hasFragment {
-		out += "#" + fragment
-	}
-	return out
-}
-
-// decisionProbeHostPattern is a host with an optional port: a name or IPv4
-// address, or a bracketed IPv6 address.
-var decisionProbeHostPattern = regexp.MustCompile(`^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]*)?$`)
-
-// decisionProbeUserinfoEnd returns the index in rest (a URL after "://") of the
-// '@' that ends its userinfo, or -1 when it has none. A password may itself
-// hold '@' or '/', and a path may hold '@', so the '@' chosen is the first one
-// whose text up to the next '/', '?', '#', or the end is a well-formed host.
-// When no '@' qualifies, the last '@' before the query or fragment is used, so
-// a userinfo is masked even if the host after it is malformed too.
-func decisionProbeUserinfoEnd(rest string) int {
-	beforeQuery := rest
-	if end := strings.IndexAny(rest, "?#"); end >= 0 {
-		beforeQuery = rest[:end]
-	}
-	for i := range len(beforeQuery) {
-		if beforeQuery[i] != '@' {
-			continue
-		}
-		host := beforeQuery[i+1:]
-		if end := strings.IndexByte(host, '/'); end >= 0 {
-			host = host[:end]
-		}
-		if decisionProbeHostPattern.MatchString(host) {
-			return i
-		}
-	}
-	return strings.LastIndexByte(beforeQuery, '@')
+	return "redacted"
 }
 
 // redactWholeToken replaces each occurrence of token in text that is not part

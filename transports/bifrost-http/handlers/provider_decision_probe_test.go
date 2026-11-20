@@ -365,26 +365,19 @@ func TestDecisionProbeErrorFrom_RedactsOverlappingCredentialsInAnyOrder(t *testi
 }
 
 // TestDecisionProbeErrorFrom_RedactsUnparseableURLs pins that a URL url.Parse
-// rejects still has its whole userinfo and every query value masked in the
-// message, type, and code, while its host and path, including an '@' in the
-// path, are kept. A password may hold '@' or '/'.
+// rejects keeps only its scheme in the message, type, and code: a password can
+// hold '@' and '/', and so can a path, so no part after the scheme survives.
 func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
-	cases := []struct{ name, text, want string }{
-		{
-			name: "@ in the password",
-			text: "see https://user:pa@ss%zz@host.example/path?sig=query-secret&x=1#top now",
-			want: "see https://redacted:redacted@host.example/path?sig=redacted&x=redacted#top now",
-		},
-		{
-			name: "@ in the path",
-			text: "see https://user:pa@ss%zz@host.example/a@b?sig=query-secret now",
-			want: "see https://redacted:redacted@host.example/a@b?sig=redacted now",
-		},
-		{
-			name: "/ in the password",
-			text: "see https://user:p%zz/ss@host.example/a?sig=q now",
-			want: "see https://redacted:redacted@host.example/a?sig=redacted now",
-		},
+	const want = "see https://redacted now"
+	cases := []struct {
+		name    string
+		text    string
+		secrets []string
+	}{
+		{name: "@ in the password", text: "see https://user:pa@ss%zz@host.example/path?sig=query-secret&x=1#top now", secrets: []string{"user", "pa@ss", "ss%zz", "query-secret"}},
+		{name: "@ in the path", text: "see https://user:pa@ss%zz@host.example/a@b?sig=query-secret now", secrets: []string{"user", "pa@ss", "ss%zz", "query-secret"}},
+		{name: "/ in the password", text: "see https://user:p%zz/ss@host.example/a?sig=q now", secrets: []string{"user", "p%zz", "zz/ss", "sig=q"}},
+		{name: "@ and / in the password", text: "see https://user:pa@ss/p%zz@host.example/a?sig=q now", secrets: []string{"user", "pa@ss", "ss/p%zz", "p%zz", "sig=q"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,8 +385,18 @@ func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
 				StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
 				Error:      &schemas.ErrorField{Message: tc.text, Type: schemas.Ptr(tc.text), Code: schemas.Ptr(tc.text)},
 			}, nil)
-			if got.Message != tc.want || got.Type == nil || *got.Type != tc.want || got.Code == nil || *got.Code != tc.want {
-				t.Fatalf("message %q, type %v, code %v; want %q in each", got.Message, got.Type, got.Code, tc.want)
+			if got.Type == nil || got.Code == nil {
+				t.Fatalf("type %v, code %v; want both set", got.Type, got.Code)
+			}
+			for field, text := range map[string]string{"message": got.Message, "type": *got.Type, "code": *got.Code} {
+				if text != want {
+					t.Fatalf("%s got %q, want %q", field, text, want)
+				}
+				for _, secret := range tc.secrets {
+					if strings.Contains(text, secret) {
+						t.Fatalf("%s leaks %q: %q", field, secret, text)
+					}
+				}
 			}
 		})
 	}
