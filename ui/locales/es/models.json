@@ -1288,6 +1288,9 @@
 		"unknownClient": "Cliente desconocido",
 		"budgetInformation": "Información presupuestaria",
 		"noBudgetLimits": "No hay límites presupuestarios configurados",
+		"sharedBudgetUser": "Compartido por todas las claves asignadas a {{name}}. El gasto es el total de esas claves.",
+		"sharedBudgetUserUnnamed": "Compartido por todas las claves asignadas a este usuario. El gasto es el total de esas claves.",
+		"sharedBudgetOwner": "Compartido por todas las claves del equipo, unidad de negocio o cliente propietario de esta clave. El gasto es el total de esas claves.",
 		"noRateLimits": "No hay límites de tarifas configurados",
 		"basePlusOverride": "Base{{base}}+{{override}}override",
 		"cyclesRemaining": "Ciclos{{count}}restantes",
@@ -2296,7 +2299,7 @@
 			},
 			"routersNotice": {
 				"title": "El enrutador de complejidad se está actualizando a Enrutadores",
-				"body": "Los enrutadores pueden ejecutar varios clasificadores, cada uno con sus propios modelos y las solicitudes que gestiona. Esta página sigue funcionando como hasta ahora; te recomendamos probar los enrutadores en las configuraciones nuevas.",
+				"body": "Con los enrutadores, puedes crear varios enrutadores, cada uno con su propio clasificador y sus propios modelos. Esta página sigue funcionando como hasta ahora; te recomendamos pasar a los enrutadores tanto en las configuraciones existentes como en las nuevas.",
 				"action": "Abrir enrutadores"
 			}
 		},
@@ -2628,7 +2631,7 @@
 		"title": "Editor de fichas técnicas",
 		"subtitle": "Edita cualquier valor de la ficha técnica o añade modelos. Tus cambios se vuelven a aplicar tras cada sincronización de la ficha técnica, así que las actualizaciones de origen nunca los deshacen.",
 		"entityName": "ficha técnica",
-		"allProviders": "todos los proveedores",
+		"allProviders": "Todos los proveedores",
 		"searchAria": "Buscar entradas de la ficha técnica",
 		"searchPlaceholder": "Buscar por nombre de modelo",
 		"overriddenOnly": "Solo editadas",
@@ -2665,6 +2668,7 @@
 		"upstreamValue": "Ficha técnica: {{value}}",
 		"upstreamChanged": "El valor de la ficha técnica cambió desde tu edición (era {{value}})",
 		"followUpstream": "Seguir la ficha técnica ({{value}})",
+		"followUpstreamNoValue": "Seguir la ficha técnica",
 		"on": "Activado",
 		"off": "Desactivado",
 		"customModelPlaceholder": "p. ej. ft:gpt-4o:acme",

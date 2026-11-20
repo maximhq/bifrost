@@ -21,6 +21,7 @@ export class MCPSettingsPage extends BasePage {
   readonly securityIssuerUrlChangeWarning: Locator
   readonly securitySaveBtn: Locator
   readonly maxProtocolVersionSelect: Locator
+  readonly serverMaxProtocolVersionSelect: Locator
 
   constructor(page: Page) {
     super(page)
@@ -44,6 +45,8 @@ export class MCPSettingsPage extends BasePage {
     this.securityIssuerUrlChangeWarning = page.getByTestId('oauth2-issuer-url-change-warning')
     this.securitySaveBtn = page.getByTestId('security-save-btn')
     this.maxProtocolVersionSelect = page.getByTestId('mcp-max-protocol-version-select')
+    // Under Advanced Settings: the cap on what Bifrost's own /mcp serves.
+    this.serverMaxProtocolVersionSelect = page.getByTestId('mcp-server-max-protocol-version-select')
   }
 
   /** The remove button of one OAuth private allowlist entry, present while the entry is listed. */
@@ -71,6 +74,12 @@ export class MCPSettingsPage extends BasePage {
   async selectMaxProtocolVersion(value: string): Promise<void> {
     await this.maxProtocolVersionSelect.click()
     await this.page.getByTestId(`mcp-max-protocol-version-${value}`).click()
+  }
+
+  /** Picks the version cap of Bifrost's own MCP server; Advanced Settings must be open. */
+  async selectServerMaxProtocolVersion(value: string): Promise<void> {
+    await this.serverMaxProtocolVersionSelect.click()
+    await this.page.getByTestId(`mcp-server-max-protocol-version-${value}`).click()
   }
 
   async goto(): Promise<void> {

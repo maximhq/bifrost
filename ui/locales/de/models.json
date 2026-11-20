@@ -1288,6 +1288,9 @@
 		"unknownClient": "Unbekannter Client",
 		"budgetInformation": "Budget-Informationen",
 		"noBudgetLimits": "Keine Budgetlimits konfiguriert",
+		"sharedBudgetUser": "Geteilt von allen Schlüsseln, die {{name}} zugewiesen sind. Die Ausgaben sind die Summe über diese Schlüssel.",
+		"sharedBudgetUserUnnamed": "Geteilt von allen Schlüsseln, die diesem Benutzer zugewiesen sind. Die Ausgaben sind die Summe über diese Schlüssel.",
+		"sharedBudgetOwner": "Geteilt von allen Schlüsseln des Teams, Geschäftsbereichs oder Kunden, dem dieser Schlüssel gehört. Die Ausgaben sind die Summe über diese Schlüssel.",
 		"noRateLimits": "Keine Ratenbegrenzungen konfiguriert",
 		"basePlusOverride": "Basis-{{base}} + {{override}}-Überschreibung",
 		"cyclesRemaining": "{{count}} Zyklen verbleibend",
@@ -2296,7 +2299,7 @@
 			},
 			"routersNotice": {
 				"title": "Der Komplexitäts-Router wird zu Routern weiterentwickelt",
-				"body": "Router können mehrere Klassifikatoren betreiben, jeder mit eigenen Modellen und den Anfragen, die er übernimmt. Diese Seite funktioniert weiter wie bisher; für neue Einrichtungen empfehlen wir, Router auszuprobieren.",
+				"body": "Mit Routern können Sie mehrere Router erstellen, jeweils mit eigenem Klassifikator und eigenen Modellen. Diese Seite funktioniert weiter wie bisher; wir empfehlen, sowohl für bestehende als auch für neue Einrichtungen zu Routern zu wechseln.",
 				"action": "Router öffnen"
 			}
 		},
@@ -2628,7 +2631,7 @@
 		"title": "Datenblatt-Editor",
 		"subtitle": "Bearbeiten Sie beliebige Datenblattwerte oder fügen Sie Modelle hinzu. Ihre Änderungen werden nach jeder Datenblatt-Synchronisierung erneut angewendet, sodass Upstream-Aktualisierungen sie nie rückgängig machen.",
 		"entityName": "Datenblatt",
-		"allProviders": "alle Anbieter",
+		"allProviders": "Alle Anbieter",
 		"searchAria": "Datenblatteinträge durchsuchen",
 		"searchPlaceholder": "Nach Modellname suchen",
 		"overriddenOnly": "Nur bearbeitete",
@@ -2665,6 +2668,7 @@
 		"upstreamValue": "Datenblatt: {{value}}",
 		"upstreamChanged": "Der Datenblattwert hat sich seit Ihrer Änderung geändert (vorher {{value}})",
 		"followUpstream": "Datenblatt folgen ({{value}})",
+		"followUpstreamNoValue": "Datenblatt folgen",
 		"on": "Ein",
 		"off": "Aus",
 		"customModelPlaceholder": "z. B. ft:gpt-4o:acme",

@@ -31,6 +31,7 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Batch | ✅ | - | `/v1beta/batchJobs` |
 | List Models | ✅ | - | `/v1beta/models` |
 | Decisions | ✅ | - | `/v1beta/decisions` (Gemini Decision models) |
+| Realtime (Live) | - | ✅ | WebSocket: `/v1/realtime`, `/genai/ws/...BidiGenerateContent` |
 
 ---
 
@@ -917,20 +918,51 @@ Decisions run on the Gemini API only. Vertex AI does not serve them yet, so `ver
 
 ---
 
-## Content Type Support
+# 13. Realtime (Live)
 
-Bifrost supports the following content modalities through Gemini:
+Gemini Live models such as `gemini-3.1-flash-live-preview` and `gemini-3.8-live` take speech in and answer in speech over a WebSocket. Bifrost serves them on two routes:
 
-| Content Type | Support | Notes |
-|--------------|---------|-------|
-| Text | ✅ | Full support |
-| Images (URL/Base64) | ✅ | Converted to `{type: "image", source: {...}}` |
-| Video | ✅ | With fps, start/end offset metadata |
-| Audio | ⚠️ | Via file references only |
-| PDF | ✅ | Via file references |
-| Code Execution | ✅ | Auto-executed with results returned |
-| Thinking/Reasoning | ✅ | Thought parts marked with `thought: true` |
-| Function Calls | ✅ | With optional thought signatures |
+| Route | Protocol | Use it for |
+|-------|----------|------------|
+| `/v1/realtime?model=gemini/gemini-3.1-flash-live-preview` | OpenAI Realtime | Apps written for the OpenAI Realtime API. Bifrost translates the events to Live and back |
+| `/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | Google Live | Clients that already speak Live, such as the Google GenAI SDK. Frames are relayed as they are |
+
+Authenticate with your Bifrost virtual key, as on any other route.
+
+**OpenAI Realtime route**
+
+```bash
+wscat -c "ws://localhost:8080/v1/realtime?model=gemini/gemini-3.1-flash-live-preview" \
+  -H "Authorization: Bearer $BIFROST_KEY"
+```
+
+Configure the session once, then ask a question:
+
+```json
+{"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"instructions":"Answer in one short sentence."}}
+{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}
+{"type":"response.create"}
+```
+
+The answer streams back as `response.output_audio.delta` events (24 kHz PCM), the spoken text arrives in `response.output_audio_transcript.done`, and `response.done` carries the usage. To talk instead of type, stream base64 16-bit PCM at 24 kHz with `input_audio_buffer.append`, or set the rate you send in `audio.input.format.rate`; Live detects when you stop speaking.
+
+After the first message, a `session.update` can still change `output_modalities` (or `modalities`) and `audio.input.format` on any Live model, and `instructions`, `tools` and `tool_choice` on Gemini 3 and later. The other settings are fixed when the session opens, so changes to them are ignored.
+
+**Google Live route**
+
+Point the Google GenAI SDK at Bifrost and use your virtual key as the API key:
+
+```python
+from google import genai
+from google.genai import types
+
+client = genai.Client(
+    api_key="BIFROST_KEY",
+    http_options=types.HttpOptions(base_url="https://your-gateway/genai"),
+)
+```
+
+Then use `client.aio.live.connect(...)` as you would with Google's own API.
 
 ---
 

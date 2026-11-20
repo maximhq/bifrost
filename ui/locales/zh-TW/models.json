@@ -1288,6 +1288,9 @@
 		"unknownClient": "未知客戶端",
 		"budgetInformation": "預算資訊",
 		"noBudgetLimits": "未配置預算限額",
+		"sharedBudgetUser": "由指派給 {{name}} 的所有金鑰共用。支出為這些金鑰的總和。",
+		"sharedBudgetUserUnnamed": "由指派給此使用者的所有金鑰共用。支出為這些金鑰的總和。",
+		"sharedBudgetOwner": "由擁有此金鑰的團隊、事業單位或客戶的所有金鑰共用。支出為這些金鑰的總和。",
 		"noRateLimits": "未配置速率限制",
 		"basePlusOverride": "基礎 {{base}} + {{override}} 覆蓋",
 		"cyclesRemaining": "剩餘 {{count}} 個週期",
@@ -2294,7 +2297,7 @@
 			},
 			"routersNotice": {
 				"title": "複雜度路由器正在升級為路由器",
-				"body": "路由器可以執行多個分類器，每個分類器都有自己的模型和所處理的請求。此頁面會照常運作；若是新的設定，我們建議試用路由器。",
+				"body": "使用路由器，您可以建立多個路由器，各自擁有自己的分類器和模型。此頁面會照常運作；我們建議現有設定和新設定都移到路由器。",
 				"action": "開啟路由器"
 			}
 		},
@@ -2663,6 +2666,7 @@
 		"upstreamValue": "資料表：{{value}}",
 		"upstreamChanged": "自你編輯後資料表值已變更（原為 {{value}}）",
 		"followUpstream": "沿用資料表（{{value}}）",
+		"followUpstreamNoValue": "沿用資料表",
 		"on": "開",
 		"off": "關",
 		"customModelPlaceholder": "例如 ft:gpt-4o:acme",

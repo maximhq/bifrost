@@ -201,3 +201,20 @@ func TestConvertToBifrostContextSettlesTheIdentity(t *testing.T) {
 		assert.Same(t, first.Grant(), second.Grant())
 	})
 }
+
+// TestPreAuthenticated pins the marker: unset by default, set only through MarkPreAuthenticated,
+// and not forgeable through a plain string user value of the same name.
+func TestPreAuthenticated(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	_, ok := PreAuthenticated(ctx)
+	assert.False(t, ok)
+
+	ctx.SetUserValue("bifrost-pre-authenticated", PreAuthClientGateway)
+	_, ok = PreAuthenticated(ctx)
+	assert.False(t, ok, "a plain string key must not count as the typed marker")
+
+	MarkPreAuthenticated(ctx, PreAuthClientGateway)
+	method, ok := PreAuthenticated(ctx)
+	assert.True(t, ok)
+	assert.Equal(t, PreAuthClientGateway, method)
+}

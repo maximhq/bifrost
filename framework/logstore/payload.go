@@ -797,7 +797,9 @@ func lastChatToolSummary(msgs []schemas.ChatMessage) string {
 		}
 		var b strings.Builder
 		for _, tc := range msg.ToolCalls {
-			if tc.Function.Name != nil {
+			if tc.Custom != nil && tc.Custom.Name != nil {
+				formatToolCall(&b, *tc.Custom.Name, tc.Custom.Input)
+			} else if tc.Function.Name != nil {
 				formatToolCall(&b, *tc.Function.Name, tc.Function.Arguments)
 			}
 		}
@@ -817,9 +819,18 @@ func lastResponsesToolSummary(msgs []schemas.ResponsesMessage) string {
 			continue
 		}
 		switch *msg.Type {
-		case schemas.ResponsesMessageTypeFunctionCallOutput:
+		case schemas.ResponsesMessageTypeFunctionCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
 			if text := extractResponsesToolOutputText(msg.Output); text != "" {
 				return text
+			}
+		case schemas.ResponsesMessageTypeCustomToolCall:
+			if msg.Name == nil || msg.ResponsesCustomToolCall == nil {
+				continue
+			}
+			var b strings.Builder
+			formatToolCall(&b, *msg.Name, msg.ResponsesCustomToolCall.Input)
+			if b.Len() > 0 {
+				return b.String()
 			}
 		case schemas.ResponsesMessageTypeFunctionCall:
 			if msg.Name == nil {

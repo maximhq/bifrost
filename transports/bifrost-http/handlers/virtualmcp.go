@@ -61,8 +61,10 @@ type VirtualMCPResponse struct {
 	Enabled       bool                            `json:"enabled"`
 	Tools         []configstoreTables.MCPToolSpec `json:"tools"`
 	VirtualKeyIDs []string                        `json:"virtual_key_ids"`
-	CreatedAt     string                          `json:"created_at"`
-	UpdatedAt     string                          `json:"updated_at"`
+	// ConfigIssues lists, one per line, what config.json reconciliation could not apply.
+	ConfigIssues *string `json:"config_issues,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 // toResponse builds the API shape from a definition and its assigned virtual keys. vkIDs are passed in
@@ -84,6 +86,7 @@ func (h *VirtualMCPHandler) toResponse(def *configstoreTables.TableVirtualMCP, v
 		Enabled:       def.Enabled,
 		Tools:         tools,
 		VirtualKeyIDs: vkIDs,
+		ConfigIssues:  def.ConfigIssues,
 		CreatedAt:     def.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:     def.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
