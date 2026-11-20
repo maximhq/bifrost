@@ -24,13 +24,13 @@ Noma owns the detection policy. Detectors, sensitivity, and the action for each 
 ## Prerequisites
 
 - Bifrost Enterprise with guardrails enabled
-- A Noma client credential (Client ID and Client Secret), created in Noma under **Settings** > **API Keys**
+- A Noma client credential (Client ID and Client Secret) with the **Runtime Integrator** role, created in Noma under **Settings** > **Client Credentials**
 - A Runtime Protection profile in Noma for the applications your traffic reports to
 - Network egress from Bifrost to your Noma environment over HTTPS
 
 ## Set Up Noma
 
-1. Create a client credential under **Settings** > **API Keys**.
+1. Under **Settings** > **Client Credentials**, click **New Client Credentials** and give the credential the **Runtime Integrator** role.
 2. Choose how traffic maps to Noma applications:
    - Leave **Application ID** empty in Bifrost to report each virtual key as its own application, named after the key. Noma creates the application on the key's first request.
    - Or enter the ID of an application from **Runtime Protection** > **Applications** to report all traffic of this configuration to it.
@@ -54,14 +54,15 @@ Each scan carries the application, the Bifrost request ID, and the authenticated
 
 ### Streaming Responses
 
-When Noma is the only provider enforcing a rule's output, Bifrost streams responses progressively. It sends Noma the response generated so far at sentence boundaries and releases text as soon as Noma clears it.
+When the only enforced output rule matching a streaming request has Noma as its only profile, Bifrost streams the response progressively. Once at least 200 characters of new text end at a sentence boundary (`.`, `!`, or `?` followed by whitespace, or a newline), Bifrost sends Noma the response generated so far and releases that text when Noma clears it. Later scans wait for more new text as the response grows, so text arrives in bursts at sentence boundaries rather than token by token. A response shorter than 200 characters is scanned once, when it completes, and is delivered then.
 
 - A **block** ends the stream after the text already delivered.
-- A **mask** is applied to text that has not been delivered yet. If a mask would change text the client already received, the stream ends instead.
+- A **mask** is applied to text that has not been delivered yet. A later scan sees more of the response and can flag text that an earlier scan cleared and the client already received. That text stays as delivered, the rest of the response is still masked, and the stream continues; the request log shows `findings fall in text already delivered to the client`. To guarantee that no unmasked value reaches the client, hold the full response instead: add another enforced output rule that matches the request.
 - If Noma cannot be reached during a stream, Bifrost follows the standard guardrail behavior: the error is reported and the affected text continues to the client unscanned.
+- If Noma returns no decision for the response on an intermediate scan, the text stays held and the next scan covers it again; the request log shows `has no verdict yet; keeping text held`.
 - On Responses API streams, including Claude Code through Bifrost, a **tool call** and everything after it is held until Noma's final verdict, so a blocked tool call never reaches the client.
 
-Bifrost holds the complete response and evaluates it once when another provider also enforces the output, for Chat Completions requests that declare tools, and for requests that ask for more than one choice.
+Bifrost holds the complete response and evaluates it once when any other enforced output rule also matches the request (including detect-only rules), when the Noma rule links another profile, for Chat Completions requests that declare tools or carry earlier tool calls, and for requests that ask for more than one choice. Rules in [monitor mode](/enterprise/guardrails#monitor-mode) do not count.
 
 ## Configuration Fields
 
@@ -73,7 +74,7 @@ Bifrost holds the complete response and evaluates it once when another provider 
 | `base_url` | string | No | `https://api.noma.security` | Noma API root: `https://api.us2.noma.security` (Azure), `https://api.eu.noma.security`, `https://api.ap.noma.security`, `https://api.ap5.noma.security`, or your Noma broker URL. Changing it on a saved profile requires re-entering `client_secret`. |
 | `redaction_strategy` | string | No | `replace` | How masked values are rendered: `replace`, `mask`, or `hash`. |
 | `redaction_mode` | string | No | `runtime` | Where masking applies: `runtime` and `runtime_reversible` mask the request and response, while `logs_only` leaves them unchanged and masks only stored logs. See [Guardrail Redaction](/enterprise/guardrails/redaction). |
-| `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
+| `timeout` | integer | No | `30` | Not applied to scans: each scan uses the timeout of the guardrail rule that runs it (default `60` seconds). Set the rule's timeout to bound how long Bifrost waits for Noma. |
 
 ## Configure Bifrost
 

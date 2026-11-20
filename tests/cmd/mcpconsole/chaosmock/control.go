@@ -126,18 +126,32 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			body["tls_url"] = tlsURL
 			body["tls_cert_pem"] = certPEM
 		}
+		if proxy := f.proxyState(); proxy != nil {
+			body["proxy"] = proxy
+		}
 		writeJSON(w, http.StatusOK, body)
 	case http.MethodPost:
 		var body struct {
 			Add    string `json:"add"`
 			Remove string `json:"remove"`
 			Reset  string `json:"reset"`
+			// Proxy sets the forward proxy's mode; clear_log also empties its log.
+			Proxy *struct {
+				ProxyMode
+				ClearLog bool `json:"clear_log"`
+			} `json:"proxy"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		switch {
+		case body.Proxy != nil:
+			if err := f.setProxy(body.Proxy.ProxyMode, body.Proxy.ClearLog); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"proxy": f.proxyState()})
 		case body.Add != "":
 			s := f.Add(body.Add)
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -155,7 +169,7 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"reset": body.Reset, "state": s.State()})
 		default:
-			http.Error(w, "specify add, remove or reset", http.StatusBadRequest)
+			http.Error(w, "specify add, remove, reset or proxy", http.StatusBadRequest)
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

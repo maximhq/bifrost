@@ -1284,6 +1284,9 @@
 		"unknownClient": "Client inconnu",
 		"budgetInformation": "Informations sur le budget",
 		"noBudgetLimits": "Aucune limite de budget configurée",
+		"sharedBudgetUser": "Partagé par toutes les clés attribuées à {{name}}. La dépense est le total de ces clés.",
+		"sharedBudgetUserUnnamed": "Partagé par toutes les clés attribuées à cet utilisateur. La dépense est le total de ces clés.",
+		"sharedBudgetOwner": "Partagé par toutes les clés de l'équipe, de l'unité commerciale ou du client propriétaire de cette clé. La dépense est le total de ces clés.",
 		"noRateLimits": "Aucune limite de débit configurée",
 		"basePlusOverride": "Base {{base}} + surcharge {{override}}",
 		"cyclesRemaining": "{{count}} cycles restants",
@@ -2294,7 +2297,7 @@
 			},
 			"routersNotice": {
 				"title": "Le routeur de complexité évolue vers les Routeurs",
-				"body": "Les routeurs peuvent exécuter plusieurs classificateurs, chacun avec ses propres modèles et les requêtes qu'il traite. Cette page continue de fonctionner comme aujourd'hui ; nous vous recommandons d'essayer les routeurs pour les nouvelles configurations.",
+				"body": "Avec les routeurs, vous pouvez créer plusieurs routeurs, chacun avec son propre classificateur et ses propres modèles. Cette page continue de fonctionner comme aujourd'hui ; nous vous recommandons de passer aux routeurs, pour les configurations existantes comme pour les nouvelles.",
 				"action": "Ouvrir les routeurs"
 			}
 		},
@@ -2626,7 +2629,7 @@
 		"title": "Éditeur de fiches techniques",
 		"subtitle": "Modifiez n'importe quelle valeur de la fiche technique ou ajoutez des modèles. Vos modifications sont réappliquées après chaque synchronisation de la fiche technique, les mises à jour en amont ne les annulent donc jamais.",
 		"entityName": "fiche technique",
-		"allProviders": "tous les fournisseurs",
+		"allProviders": "Tous les fournisseurs",
 		"searchAria": "Rechercher dans la fiche technique",
 		"searchPlaceholder": "Rechercher par nom de modèle",
 		"overriddenOnly": "Modifiées uniquement",
@@ -2663,6 +2666,7 @@
 		"upstreamValue": "Fiche technique : {{value}}",
 		"upstreamChanged": "La valeur de la fiche technique a changé depuis votre modification (elle était de {{value}})",
 		"followUpstream": "Suivre la fiche technique ({{value}})",
+		"followUpstreamNoValue": "Suivre la fiche technique",
 		"on": "Activé",
 		"off": "Désactivé",
 		"customModelPlaceholder": "p. ex. ft:gpt-4o:acme",

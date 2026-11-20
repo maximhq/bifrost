@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,12 +15,24 @@ import (
 
 // reconcileVirtualMCPsConfig performs hash-based reconciliation of Virtual MCPs (mcp.virtual_mcps)
 // between config.json and the config store. Tool specs resolve their source MCP client by id or by
-// name; a Virtual MCP whose client cannot be resolved is skipped so a bad entry doesn't block the
-// rest. When forceFileSync is true, config.json is authoritative and every file entry is written
-// even if its hash matches the stored row.
+// name. A tool spec naming an MCP client that is not registered is left out, and the rest of the
+// Virtual MCP is still applied, with the omission recorded on the row (config_issues) so the
+// dashboard can show it. Leaving a spec out only removes access, and registering the client later
+// re-links it (ReconcileFileVirtualMCPsForClient). A malformed entry (no name, a tool spec naming
+// no client) or a failed client lookup still skips the whole entry, so the stored row keeps
+// working. When forceFileSync is true, config.json is authoritative and every file entry is
+// written even if its hash matches the stored row.
 func reconcileVirtualMCPsConfig(ctx context.Context, store configstore.ConfigStore, fileVMCPs []schemas.VirtualMCPConfig, forceFileSync bool) error {
+	_, err := reconcileVirtualMCPDeclarations(ctx, store, fileVMCPs, forceFileSync)
+	return err
+}
+
+// reconcileVirtualMCPDeclarations is the body of reconcileVirtualMCPsConfig. It returns the IDs of
+// the Virtual MCPs it created or rewrote, so a caller running it outside startup can refresh their
+// cache entries.
+func reconcileVirtualMCPDeclarations(ctx context.Context, store configstore.ConfigStore, fileVMCPs []schemas.VirtualMCPConfig, forceFileSync bool) ([]uint, error) {
 	if store == nil || len(fileVMCPs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	dbByName := make(map[string]configstoreTables.TableVirtualMCP)
@@ -32,7 +45,7 @@ func reconcileVirtualMCPsConfig(ctx context.Context, store configstore.ConfigSto
 			Offset: offset,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to get virtual MCPs from store: %w", err)
+			return nil, fmt.Errorf("failed to get virtual MCPs from store: %w", err)
 		}
 		for _, vmcp := range batch {
 			dbByName[vmcp.Name] = vmcp
@@ -44,11 +57,11 @@ func reconcileVirtualMCPsConfig(ctx context.Context, store configstore.ConfigSto
 		}
 	}
 
+	var written []uint
 	// Names are unique in the store, and IDs select the row to reconcile. Track them separately so a
 	// duplicate name with a different ID is caught too, not just a repeated ID.
 	seenNames := map[string]struct{}{}
 	seenIDs := map[uint]struct{}{}
-vmcpLoop:
 	for _, fileVMCP := range fileVMCPs {
 		if strings.TrimSpace(fileVMCP.Name) == "" {
 			logger.Warn("skipping virtual MCP with missing name in config.json")
@@ -67,25 +80,9 @@ vmcpLoop:
 		}
 		seenNames[fileVMCP.Name] = struct{}{}
 
-		parsedTools := make([]configstoreTables.MCPToolSpec, 0, len(fileVMCP.Tools))
-		for _, tool := range fileVMCP.Tools {
-			clientID := strings.TrimSpace(tool.MCPClientID)
-			if clientID == "" && strings.TrimSpace(tool.MCPClientName) != "" {
-				client, err := store.GetMCPClientByName(ctx, strings.TrimSpace(tool.MCPClientName))
-				if err != nil {
-					logger.Warn("skipping virtual MCP %q: failed to resolve MCP client %q: %v", fileVMCP.Name, tool.MCPClientName, err)
-					continue vmcpLoop
-				}
-				clientID = client.ClientID
-			}
-			if clientID == "" {
-				logger.Warn("skipping virtual MCP %q: tool entry missing mcp_client_id and mcp_client_name", fileVMCP.Name)
-				continue vmcpLoop
-			}
-			parsedTools = append(parsedTools, configstoreTables.MCPToolSpec{
-				MCPClientID: clientID,
-				ToolNames:   tool.ToolNames,
-			})
+		parsedTools, issues, ok := resolveVirtualMCPToolSpecs(ctx, store, fileVMCP)
+		if !ok {
+			continue
 		}
 
 		// Enabled defaults to true when omitted.
@@ -101,6 +98,8 @@ vmcpLoop:
 			Enabled:      enabled,
 			ParsedTools:  parsedTools,
 		}
+		// The hash covers only the specs that resolved, so registering a missing client later changes
+		// it and the next reconcile writes the spec in.
 		fileHash := GenerateVirtualMCPHash(fileVMCP.Name, fileVMCP.Description, enabled, parsedTools, fileVMCP.VirtualKeyIDs)
 		target.ConfigHash = fileHash
 
@@ -124,6 +123,8 @@ vmcpLoop:
 				continue
 			}
 			reconcileVirtualMCPVirtualKeys(ctx, store, target.ID, fileVMCP.Name, fileVMCP.VirtualKeyIDs)
+			recordVirtualMCPConfigIssues(ctx, store, target.ID, fileVMCP.Name, nil, issues)
+			written = append(written, target.ID)
 			continue
 		}
 
@@ -133,6 +134,7 @@ vmcpLoop:
 			// prior attach/detach that failed (logged, not returned) leaves a matching hash. Re-run the
 			// idempotent diff here so it retries on a later load instead of being skipped forever.
 			reconcileVirtualMCPVirtualKeys(ctx, store, dbVMCP.ID, fileVMCP.Name, fileVMCP.VirtualKeyIDs)
+			recordVirtualMCPConfigIssues(ctx, store, dbVMCP.ID, fileVMCP.Name, dbVMCP.ConfigIssues, issues)
 			continue
 		}
 
@@ -144,9 +146,134 @@ vmcpLoop:
 			continue
 		}
 		reconcileVirtualMCPVirtualKeys(ctx, store, target.ID, fileVMCP.Name, fileVMCP.VirtualKeyIDs)
+		recordVirtualMCPConfigIssues(ctx, store, target.ID, fileVMCP.Name, dbVMCP.ConfigIssues, issues)
+		written = append(written, target.ID)
 	}
 
-	return nil
+	return written, nil
+}
+
+// resolveVirtualMCPToolSpecs turns a declaration's tool specs into stored specs, resolving each
+// client named by mcp_client_name to its client_id. A client that is not registered drops only its
+// spec and adds an issue. ok is false when the whole entry has to be skipped: a spec naming no
+// client is a malformed declaration, and a lookup that failed for any other reason must not strip
+// a spec the stored row may still grant.
+func resolveVirtualMCPToolSpecs(ctx context.Context, store configstore.ConfigStore, fileVMCP schemas.VirtualMCPConfig) (parsedTools []configstoreTables.MCPToolSpec, issues []string, ok bool) {
+	parsedTools = make([]configstoreTables.MCPToolSpec, 0, len(fileVMCP.Tools))
+	for _, tool := range fileVMCP.Tools {
+		clientID := strings.TrimSpace(tool.MCPClientID)
+		clientName := strings.TrimSpace(tool.MCPClientName)
+		if clientID == "" && clientName != "" {
+			client, err := store.GetMCPClientByName(ctx, clientName)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					logger.Warn("virtual MCP %q: MCP client %q is not registered; applying the virtual MCP without its tools", fileVMCP.Name, clientName)
+					issues = append(issues, fmt.Sprintf("MCP client %q is not registered; its tools are not applied", clientName))
+					continue
+				}
+				logger.Warn("skipping virtual MCP %q: failed to resolve MCP client %q: %v", fileVMCP.Name, clientName, err)
+				return nil, nil, false
+			}
+			clientID = client.ClientID
+		}
+		if clientID == "" {
+			logger.Warn("skipping virtual MCP %q: tool entry missing mcp_client_id and mcp_client_name", fileVMCP.Name)
+			return nil, nil, false
+		}
+		parsedTools = append(parsedTools, configstoreTables.MCPToolSpec{
+			MCPClientID: clientID,
+			ToolNames:   tool.ToolNames,
+		})
+	}
+	return parsedTools, issues, true
+}
+
+// recordVirtualMCPConfigIssues stores the reconcile issues on the Virtual MCP row, or clears them
+// once the declaration applies in full. It skips the write when the stored value already matches.
+func recordVirtualMCPConfigIssues(ctx context.Context, store configstore.ConfigStore, id uint, name string, stored *string, issues []string) {
+	var next *string
+	if len(issues) > 0 {
+		joined := strings.Join(issues, "\n")
+		next = &joined
+	}
+	if (stored == nil && next == nil) || (stored != nil && next != nil && *stored == *next) {
+		return
+	}
+	if err := store.SetVirtualMCPConfigIssues(ctx, id, next); err != nil {
+		logger.Warn("virtual MCP %q: failed to record config.json issues: %v", name, err)
+	}
+}
+
+// virtualMCPDeclarationNamesClient reports whether a declaration refers to the named MCP client by
+// name in any of its tool specs.
+func virtualMCPDeclarationNamesClient(decl schemas.VirtualMCPConfig, clientName string) bool {
+	for _, tool := range decl.Tools {
+		if strings.TrimSpace(tool.MCPClientID) == "" && strings.TrimSpace(tool.MCPClientName) == clientName {
+			return true
+		}
+	}
+	return false
+}
+
+// firstVirtualMCPDeclarations returns the declarations reconciliation applies, in order: entries
+// with a name, keeping the first of any repeated name or repeated id, as reconcileVirtualMCPDeclarations
+// does when it walks the whole list.
+func firstVirtualMCPDeclarations(decls []schemas.VirtualMCPConfig) []schemas.VirtualMCPConfig {
+	seenNames := map[string]struct{}{}
+	seenIDs := map[uint]struct{}{}
+	kept := make([]schemas.VirtualMCPConfig, 0, len(decls))
+	for _, decl := range decls {
+		if strings.TrimSpace(decl.Name) == "" {
+			continue
+		}
+		if _, dup := seenNames[decl.Name]; dup {
+			continue
+		}
+		if decl.ID != 0 {
+			if _, dup := seenIDs[decl.ID]; dup {
+				continue
+			}
+			seenIDs[decl.ID] = struct{}{}
+		}
+		seenNames[decl.Name] = struct{}{}
+		kept = append(kept, decl)
+	}
+	return kept
+}
+
+// rememberFileVirtualMCPs keeps the config.json Virtual MCP declarations from the last load, so a
+// client registered afterwards can be linked into the declarations that name it.
+func (c *Config) rememberFileVirtualMCPs(decls []schemas.VirtualMCPConfig) {
+	c.muFileVirtualMCPs.Lock()
+	defer c.muFileVirtualMCPs.Unlock()
+	c.fileVirtualMCPs = append([]schemas.VirtualMCPConfig(nil), decls...)
+}
+
+// ReconcileFileVirtualMCPsForClient re-runs config.json reconciliation for the Virtual MCP
+// declarations that name clientName, after that client is registered. A declaration loaded while
+// the client was missing (or registered under an id since deleted) then links the client in
+// without a restart: the resolved client_id changes the declaration's hash, so the row is
+// rewritten and its config issues cleared. Returns the IDs of the Virtual MCPs it rewrote, whose
+// cache entries the caller must refresh.
+func (c *Config) ReconcileFileVirtualMCPsForClient(ctx context.Context, clientName string) ([]uint, error) {
+	clientName = strings.TrimSpace(clientName)
+	if c == nil || c.ConfigStore == nil || clientName == "" {
+		return nil, nil
+	}
+	c.muFileVirtualMCPs.Lock()
+	defer c.muFileVirtualMCPs.Unlock()
+	// Settle duplicates across the whole snapshot first, the way the load did, so filtering by client
+	// can never pick a later duplicate the load skipped and let it overwrite the first declaration.
+	var matching []schemas.VirtualMCPConfig
+	for _, decl := range firstVirtualMCPDeclarations(c.fileVirtualMCPs) {
+		if virtualMCPDeclarationNamesClient(decl, clientName) {
+			matching = append(matching, decl)
+		}
+	}
+	if len(matching) == 0 {
+		return nil, nil
+	}
+	return reconcileVirtualMCPDeclarations(ctx, c.ConfigStore, matching, false)
 }
 
 // reconcileVirtualMCPVirtualKeys diffs a Virtual MCP's desired VK attachments against the stored

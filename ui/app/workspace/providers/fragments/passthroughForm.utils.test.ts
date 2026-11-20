@@ -28,6 +28,7 @@ describe("passthroughRoutePrefix", () => {
 		expect(passthroughRoutePrefix(provider("azure"))).toBe("/azure_passthrough");
 		expect(passthroughRoutePrefix(provider("gemini"))).toBe("/genai_passthrough");
 		expect(passthroughRoutePrefix(provider("vertex"))).toBe("/genai_passthrough");
+		expect(passthroughRoutePrefix(provider("elevenlabs"))).toBe("/elevenlabs_passthrough");
 	});
 
 	it("uses the base provider's route for a custom provider", () => {

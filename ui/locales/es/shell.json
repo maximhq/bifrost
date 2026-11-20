@@ -23,6 +23,11 @@
 		"circuitBreaker": "Disyuntor",
 		"pricingOverrides": "Anulaciones de precios",
 		"modelSettings": "Ajustes de modelos",
+		"finops": "FinOps",
+		"finopsOverview": "Resumen",
+		"finopsConnections": "Conexiones",
+		"finopsExplorer": "Explorador de costes",
+		"finopsForecast": "Previsiones y anomalías",
 		"mcpGateway": "Servidores MCP",
 		"mcpCatalog": "Catálogo MCP",
 		"mcpLibrary": "Biblioteca MCP",
@@ -67,6 +72,7 @@
 		"caching": "Caché",
 		"security": "Seguridad",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "Claves API",
 		"performanceTuning": "Ajuste de rendimiento",
@@ -106,6 +112,7 @@
 		"circuitBreaker": "Reserva automática cuando fallan los endpoints principales",
 		"pricingOverrides": "Anulaciones de precios con alcance",
 		"modelSettings": "Configuración de modelos y enrutamiento",
+		"finops": "Gasto en IA de todas las cuentas de proveedores",
 		"mcpGateway": "Configuración MCP",
 		"mcpCatalog": "Catálogo de herramientas MCP",
 		"mcpLibrary": "Instalar servidores MCP seleccionados",
@@ -150,6 +157,7 @@
 		"caching": "Configuración de caché",
 		"security": "Ajustes de seguridad",
 		"warp": "Configuración del agente Warp",
+		"gateways": "Inicio de sesión de clientes de programación",
 		"proxy": "Configuración del proxy",
 		"apiKeys": "Gestión de claves API",
 		"performanceTuning": "Ajustes de rendimiento",
@@ -430,6 +438,10 @@
 			"indexStatusUnavailable": "Estado del índice no disponible",
 			"askAdminTurnOn": "Pide a un administrador que active Warp.",
 			"askAdminSetUp": "Pide a un administrador que configure Warp.",
+			"needsBifrostMCP": "Warp necesita el Bifrost MCP",
+			"needsBifrostMCPHint": "Configura la URL de Bifrost para que Warp pueda leer la configuración de este despliegue.",
+			"setUpBifrostMCP": "Configurar",
+			"askAdminBifrostMCP": "Pide a un administrador que configure el Bifrost MCP para Warp.",
 			"sendsWhenFinished": "Se envía cuando termine esta respuesta",
 			"remove": "Quitar"
 		},
@@ -453,7 +465,15 @@
 			"label": "Pregunta",
 			"skip": "Omitir",
 			"orType": "O escribe tu propia respuesta abajo.",
-			"skipAnswer": "Usa tu mejor criterio e indica qué has supuesto."
+			"skipAnswer": "Usa tu mejor criterio e indica qué has supuesto.",
+			"confirm": {
+				"subtitle": "Warp aplicará este cambio cuando lo confirmes.",
+				"destructiveSubtitle": "Warp aplicará este cambio cuando lo confirmes. Revísalo con cuidado.",
+				"cannotUndo": "Esta acción no se puede deshacer.",
+				"noArguments": "Sin argumentos.",
+				"cancel": "Cancelar",
+				"confirm": "Confirmar"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Qué cubre esto",
@@ -544,6 +564,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp no está configurado en este despliegue.",
+				"cause": "Warp necesita el Bifrost MCP para leer la configuración de este despliegue, y no está cargado.",
+				"suggestions": ["Pide a un administrador que configure la URL de Bifrost en Ajustes del cliente."]
+			},
 			"not_configured": {
 				"summary": "Warp aún no está configurado.",
 				"cause": "No hay proveedor ni modelo definidos, o Warp está desactivado en la configuración.",

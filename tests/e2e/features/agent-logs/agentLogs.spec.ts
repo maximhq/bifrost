@@ -159,7 +159,7 @@ test.describe("Agent Task conversation history", () => {
       await page.goto(`/workspace/agent-logs?polling=false&period=30d&agent_log_tab=conversation&${selected}`);
       await waitForNetworkIdle(page);
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByRole("heading", { name: view === "operation" ? "Agent operation" : "Agent session", exact: true })).toBeVisible();
+      await expect(dialog.getByRole("heading", { name: view === "operation" ? "Agent trace" : "Agent session", exact: true })).toBeVisible();
       await expect(dialog.getByText("A total of 8 issues were raised yesterday.", { exact: true })).toBeVisible();
       const history = dialog.getByTestId("agent-conversation-history");
       const toggle = history.getByTestId("agent-conversation-history-toggle");
