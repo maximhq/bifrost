@@ -52,12 +52,17 @@ var gzipReaderPool = sync.Pool{
 }
 
 // AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
-// or creates a new one if the pool is empty or reset fails.
+// or creates a new one if the pool is empty or corrupt. I/O errors from Reset
+// are returned without reading the same stream again.
 func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
 	if v := gzipReaderPool.Get(); v != nil {
 		if gz, ok := v.(*gzip.Reader); ok {
-			if safeReset(func() error { return gz.Reset(r) }) {
+			var resetErr error
+			if safeReset(func() error { resetErr = gz.Reset(r); return resetErr }) {
 				return gz, nil
+			}
+			if resetErr != nil {
+				return nil, resetErr
 			}
 		}
 		// Wrong type or reset failed/panicked — discard, let GC reclaim.

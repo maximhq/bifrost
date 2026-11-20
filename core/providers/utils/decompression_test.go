@@ -630,3 +630,24 @@ func TestIsDecompressionSizeLimitError(t *testing.T) {
 		t.Error("nil is not an error")
 	}
 }
+
+// A failed gzip header read is an I/O failure, not evidence that the pooled
+// decoder is corrupt. Retrying initialization can consume or block on the body.
+type gzipHeaderFailureReader struct{ reads int }
+
+func (r *gzipHeaderFailureReader) Read([]byte) (int, error) {
+	r.reads++
+	return 0, ErrStreamIdleTimeout
+}
+
+func TestAcquireGzipReader_DoesNotRetryHeaderReadFailure(t *testing.T) {
+	body := &gzipHeaderFailureReader{}
+	gz, err := AcquireGzipReader(body)
+	ReleaseGzipReader(gz)
+	if err != ErrStreamIdleTimeout {
+		t.Fatalf("gzip initialization error = %v, want idle timeout", err)
+	}
+	if body.reads != 1 {
+		t.Fatalf("gzip header read %d times after I/O failure, want 1", body.reads)
+	}
+}
