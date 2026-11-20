@@ -177,6 +177,47 @@ func TestModelCaps_SupportsNamespaceTools(t *testing.T) {
 	})
 }
 
+// ModelCaps.SupportsNativeStructuredOutput: the wire field name is what the datasheet
+// publishes, and a row decides in either direction over the caller's fallback.
+func TestModelCaps_SupportsNativeStructuredOutput(t *testing.T) {
+	var parsed ModelCapabilities
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_native_structured_output":true}`), &parsed))
+	require.NotNil(t, parsed.SupportsNativeStructuredOutput)
+	assert.True(t, *parsed.SupportsNativeStructuredOutput)
+
+	t.Run("OverrideHit", func(t *testing.T) {
+		model := "open-weight-native-so-yes"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(true)})
+		assert.True(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(false))
+	})
+	t.Run("OverrideExplicitFalse", func(t *testing.T) {
+		model := "claude-opus-4-7-native-so-off"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(false)})
+		assert.False(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(true))
+	})
+	t.Run("OverrideAbsent_CallerFallbackTakesOver", func(t *testing.T) {
+		assert.True(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(true))
+		assert.False(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(false))
+	})
+}
+
+// supports_native_mid_conversation_system decodes under its own wire name and never reads the older
+// key: production holds the older one false for released gateways while the native key drives this build.
+func TestModelCaps_SupportsNativeMidConversationSystem(t *testing.T) {
+	var parsed ModelCapabilities
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_mid_conversation_system_messages":false,"supports_native_mid_conversation_system":true}`), &parsed))
+	require.NotNil(t, parsed.SupportsNativeMidConversationSystem)
+	assert.True(t, *parsed.SupportsNativeMidConversationSystem)
+	assert.False(t, *parsed.SupportsMidConversationSystem)
+
+	model := "claude-opus-5-5-midconv-native"
+	setCapabilityOverride(t, model, ModelCapabilities{SupportsMidConversationSystem: new(false)})
+	assert.True(t, ResolveModelCaps(Bedrock, model).SupportsNativeMidConversationSystem(true), "older key must not feed the native key")
+	setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeMidConversationSystem: new(false)})
+	assert.False(t, ResolveModelCaps(Bedrock, model).SupportsNativeMidConversationSystem(true))
+	assert.True(t, ResolveModelCaps(Bedrock, model).SupportsMidConversationSystem(true), "the native key must not feed the older key")
+}
+
 // ModelCaps.ToolNameMaxLength: a row's tool_name_max_length replaces the caller's
 // per-provider default; absent hands the default back.
 func TestModelCaps_ToolNameMaxLength(t *testing.T) {

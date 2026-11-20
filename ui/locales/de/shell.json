@@ -19,9 +19,15 @@
 		"budgetsLimits": "Budgets und Limits",
 		"routingRules": "Routing-Regeln",
 		"complexityRouter": "Komplexitäts-Router",
+		"routers": "Router",
 		"circuitBreaker": "Schutzschalter",
 		"pricingOverrides": "Preisüberschreibungen",
 		"modelSettings": "Modelleinstellungen",
+		"finops": "FinOps",
+		"finopsOverview": "Übersicht",
+		"finopsConnections": "Verbindungen",
+		"finopsExplorer": "Kosten-Explorer",
+		"finopsForecast": "Prognosen & Anomalien",
 		"mcpGateway": "MCP-Server",
 		"mcpCatalog": "MCP-Katalog",
 		"mcpLibrary": "MCP-Bibliothek",
@@ -66,6 +72,7 @@
 		"caching": "Zwischenspeicherung",
 		"security": "Sicherheit",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "API-Schlüssel",
 		"performanceTuning": "Performance-Tuning",
@@ -105,6 +112,7 @@
 		"circuitBreaker": "Automatischer Fallback bei Ausfall primärer Endpunkte",
 		"pricingOverrides": "Gültigkeitsbereich-spezifische Preisüberschreibungen",
 		"modelSettings": "Modell- und Routing-Konfiguration",
+		"finops": "KI-Ausgaben über alle Anbieterkonten",
 		"mcpGateway": "MCP-Konfiguration",
 		"mcpCatalog": "MCP-Tool-Katalog",
 		"mcpLibrary": "Kuratierte MCP-Server installieren",
@@ -149,6 +157,7 @@
 		"caching": "Caching-Konfiguration",
 		"security": "Sicherheitseinstellungen",
 		"warp": "Warp-Agent-Konfiguration",
+		"gateways": "Anmeldung für Coding-Clients",
 		"proxy": "Proxy-Konfiguration",
 		"apiKeys": "API-Schlüssel-Verwaltung",
 		"performanceTuning": "Einstellungen zur Leistungsoptimierung",
@@ -429,6 +438,10 @@
 			"indexStatusUnavailable": "Indexstatus nicht verfügbar",
 			"askAdminTurnOn": "Bitte einen Administrator, Warp zu aktivieren.",
 			"askAdminSetUp": "Bitte einen Administrator, Warp einzurichten.",
+			"needsBifrostMCP": "Warp benötigt den Bifrost MCP",
+			"needsBifrostMCPHint": "Lege die Bifrost-URL fest, damit Warp die Konfiguration dieser Bereitstellung lesen kann.",
+			"setUpBifrostMCP": "Einrichten",
+			"askAdminBifrostMCP": "Bitte einen Administrator, den Bifrost MCP für Warp einzurichten.",
 			"sendsWhenFinished": "Wird gesendet, sobald diese Antwort abgeschlossen ist",
 			"remove": "Entfernen"
 		},
@@ -452,7 +465,15 @@
 			"label": "Frage",
 			"skip": "Überspringen",
 			"orType": "Oder eigene Antwort unten eingeben.",
-			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast."
+			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast.",
+			"confirm": {
+				"subtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen.",
+				"destructiveSubtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen. Prüfen Sie sie sorgfältig.",
+				"cannotUndo": "Dies kann nicht rückgängig gemacht werden.",
+				"noArguments": "Keine Argumente.",
+				"cancel": "Abbrechen",
+				"confirm": "Bestätigen"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Was das abdeckt",
@@ -543,6 +564,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp ist auf dieser Bereitstellung nicht eingerichtet.",
+				"cause": "Warp benötigt den Bifrost MCP, um die Konfiguration dieser Bereitstellung zu lesen, und er ist nicht geladen.",
+				"suggestions": ["Bitte einen Administrator, die Bifrost-URL in den Client-Einstellungen festzulegen."]
+			},
 			"not_configured": {
 				"summary": "Warp ist noch nicht konfiguriert.",
 				"cause": "Kein Anbieter und Modell gesetzt, oder Warp ist in den Einstellungen ausgeschaltet.",

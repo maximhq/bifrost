@@ -263,6 +263,109 @@ func TestSessionRecordRealtimeInputUpdatesPendingItemAndIgnoresConsumedLateUpdat
 	}
 }
 
+// TestSessionRecordRealtimeEchoedInput lets the provider's announcement of a user item take the place of a message
+// the client sent without an id, and nothing else.
+func TestSessionRecordRealtimeEchoedInput(t *testing.T) {
+	ids := func(session *Session) []string {
+		var got []string
+		for _, input := range session.PeekRealtimeTurnInputs() {
+			got = append(got, input.ItemID)
+		}
+		return got
+	}
+	same := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	t.Run("takes the oldest message with no id of the same text", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "a", "client 1")
+		session.RecordRealtimeInput("", "a", "client 2")
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); !same(got, []string{"x", ""}) {
+			t.Fatalf("ids = %q, want [x \"\"]", got)
+		}
+		if raw := session.PeekRealtimeTurnInputs()[0].Raw; raw != "echo" {
+			t.Fatalf("raw = %q, want the echo's, as for an item matched by id", raw)
+		}
+	})
+
+	t.Run("an entry that already holds the id is merged first", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("x", "a", "client with id")
+		session.RecordRealtimeInput("", "a", "client without id")
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); !same(got, []string{"x", ""}) {
+			t.Fatalf("ids = %q, want [x \"\"]", got)
+		}
+	})
+
+	t.Run("a message of another role is not taken", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.AddRealtimeToolOutput("a", "tool result")
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); !same(got, []string{"", "x"}) {
+			t.Fatalf("ids = %q, want [\"\" x]", got)
+		}
+	})
+
+	t.Run("text that is empty is never a match", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "", "audio without a transcript")
+		session.RecordRealtimeEchoedInput("x", "", "echo")
+		if got := ids(session); !same(got, []string{"", "x"}) {
+			t.Fatalf("ids = %q, want [\"\" x]", got)
+		}
+	})
+
+	t.Run("whitespace around the text is ignored", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "  a  ", "client")
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); !same(got, []string{"x"}) {
+			t.Fatalf("ids = %q, want [x]", got)
+		}
+	})
+
+	t.Run("only an announcement takes a message's place, never another recording", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "a", "client 1")
+		session.RecordRealtimeInput("x", "a", "client 2")
+		session.RecordRealtimeInput("", "a", "transcript without an id")
+		if got := ids(session); !same(got, []string{"", "x", ""}) {
+			t.Fatalf("ids = %q, want [\"\" x \"\"]", got)
+		}
+	})
+
+	t.Run("a closed session records nothing", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "a", "client")
+		session.Close()
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); len(got) != 0 {
+			t.Fatalf("ids = %q, want none", got)
+		}
+	})
+
+	t.Run("an echo after the inputs were consumed is an input of its own", func(t *testing.T) {
+		session := NewSession(newTestConn())
+		session.RecordRealtimeInput("", "a", "client")
+		session.ConsumeRealtimeTurnInputs()
+		session.RecordRealtimeEchoedInput("x", "a", "echo")
+		if got := ids(session); !same(got, []string{"x"}) {
+			t.Fatalf("ids = %q, want [x]", got)
+		}
+	})
+}
+
 func newTestConn() *ws.Conn {
 	return &ws.Conn{}
 }

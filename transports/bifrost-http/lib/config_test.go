@@ -486,6 +486,39 @@ func TestLoadClientConfig_FileSyncKeepsMaxProtocolVersion(t *testing.T) {
 	assert.Equal(t, schemas.MCPProtocolVersion20250618, cfg.ClientConfig.MCPMaxProtocolVersion)
 }
 
+// A config.json listing a telemetry collector twice still boots: every entry for it is dropped
+// with a warning and never reaches the store, while the other collectors are kept.
+func TestLoadClientConfig_DuplicateTelemetryCollectorIsSkipped(t *testing.T) {
+	SetLogger(&testLogger{})
+	file := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com","headers":{"authorization":"Bearer first"}},` +
+		`{"endpoint":"https://b.example.com"},` +
+		`{"endpoint":" https://a.example.com","headers":{"authorization":"Bearer second"}}]}}}}}}`
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var data ConfigData
+	require.NoError(t, json.Unmarshal([]byte(file), &data))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+
+	for name, cc := range map[string]*configstore.ClientConfig{"live": cfg.ClientConfig, "stored": store.clientConfig} {
+		dests := cc.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations
+		require.Len(t, dests, 1, name)
+		assert.Equal(t, "https://b.example.com", dests[0].Endpoint.GetValue(), name)
+	}
+
+	// With only the repeated collector listed, nothing is left, so forwarding is paused rather than failing boot.
+	only := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com"},{"endpoint":"https://a.example.com"}]}}}}}}`
+	var onlyData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(only), &onlyData))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &onlyData))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+	telemetry := store.clientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.False(t, telemetry.Enabled)
+	assert.Empty(t, telemetry.Destinations)
+}
+
 // A partial wildcard in config.json must stop the file sync before it reaches the
 // store, so the previously stored allowlist stays in effect and fixing the file
 // is enough to recover.
@@ -662,7 +695,8 @@ type MockConfigStore struct {
 		ID     string
 		Config tables.TableMCPClient
 	}
-	governanceItemsCreated struct {
+	mcpClientConfigHashUpdates [][3]string // client ID, old hash, new hash
+	governanceItemsCreated     struct {
 		budgets     []tables.TableBudget
 		rateLimits  []tables.TableRateLimit
 		customers   []tables.TableCustomer
@@ -708,7 +742,16 @@ func (m *MockConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id 
 func (m *MockConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	return nil, configstore.ErrNotFound
 }
+func (m *MockConfigStore) GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
 func (m *MockConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	return nil
+}
+func (m *MockConfigStore) DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error {
 	return nil
 }
 func (m *MockConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
@@ -726,14 +769,14 @@ func (m *MockConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID st
 func (m *MockConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
 	return nil, configstore.ErrNotFound
 }
-func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	return nil
 }
-func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
 	return 0, nil
@@ -933,6 +976,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 				Name:                clientConfig.Name,
 				EndpointSlug:        m.mcpConfig.ClientConfigs[i].EndpointSlug, // immutable: the real store never updates it
 				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 				ConnectionString:    clientConfig.ConnectionString,
 				StdioConfig:         clientConfig.StdioConfig,
@@ -949,6 +993,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		ID:                  clientConfig.ClientID,
 		Name:                clientConfig.Name,
 		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 		ConnectionString:    clientConfig.ConnectionString,
 		StdioConfig:         clientConfig.StdioConfig,
@@ -959,6 +1004,11 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	})
 
 	return nil
+}
+
+func (m *MockConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	m.mcpClientConfigHashUpdates = append(m.mcpClientConfigHashUpdates, [3]string{clientID, oldHash, newHash})
+	return true, nil
 }
 
 func (m *MockConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
@@ -2887,6 +2937,8 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 		{[]string{"https://*.example.com/cb"}, true},
 		{[]string{"https://app.example.com/*"}, true},
 		{[]string{"**"}, true},
+		{[]string{"https://app.example.com/cb\x00gateways.claude_code.enabled:true"}, true},
+		{[]string{"https://app.example.com/cb\n"}, true},
 	} {
 		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: tc.uris}})
 		if tc.wantErr {
@@ -2939,6 +2991,41 @@ func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway pins that the
+// Claude Code gateway needs a pinned issuer_url in every MCP auth mode, since it
+// does not depend on MCP OAuth being enabled.
+func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T) {
+	gateway := func(enabled bool, issuerURL string) *configstore.ClientConfig {
+		oc := &tables.OAuth2ServerConfig{Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: enabled}}}
+		if issuerURL != "" {
+			oc.IssuerURL = schemas.NewSecretVar(issuerURL)
+		}
+		return &configstore.ClientConfig{MCPServerAuthMode: tables.MCPServerAuthModeHeaders, OAuth2ServerConfig: oc}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"enabled, no issuer_url", gateway(true, ""), true},
+		{"enabled, issuer_url env reference unset", gateway(true, "env.BIFROST_TEST_UNSET_ISSUER_URL"), true},
+		{"enabled, issuer_url set", gateway(true, "https://issuer.example.com"), false},
+		{"disabled, no issuer_url", gateway(false, ""), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "oauth2_server_config.gateways")
+				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
 // discovery enabled with no issuer_url in config.json makes LoadConfig fail
 // rather than silently falling back to Host-derived issuer identity.
@@ -2982,6 +3069,139 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	}
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth_code_ttl")
+}
+
+// TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing pins that a config.json
+// redirect URI imitating the gateway block's NUL framing fails startup before the file is
+// hashed. Without the early check its hash matches the stored row (the plain URI plus an
+// enabled gateway), the stored row is kept, and the file is silently ignored.
+func TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	data := func(uri string, gateways *tables.ClientGatewaysConfig) *ConfigData {
+		return &ConfigData{
+			Client: &configstore.ClientConfig{
+				InitialPoolSize: 10, EnableLogging: new(true), MaxRequestBodySizeMB: 100,
+				OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+					IssuerURL:           schemas.NewSecretVar("https://bifrost.example.com"),
+					AllowedRedirectURIs: []string{uri},
+					Gateways:            gateways,
+				},
+			},
+			ConfigStoreConfig: &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(tempDir, "config.db")}},
+		}
+	}
+	ctx := context.Background()
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback", &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: true}}))
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback\x00gateways.claude_code.enabled:true", nil))
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		defer second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "contains a control character")
+}
+
+// TestValidateClientConfig_MCPOpenAPIMaxSpecMB: PUT /api/config bounds
+// mcp_openapi_max_spec_mb to 0..256, but config.json and older DB rows reach the
+// runtime through validateClientConfig, so the same bound holds there.
+func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
+	for _, tc := range []struct {
+		mb      int
+		wantErr bool
+	}{
+		{0, false}, {32, false}, {configstore.MaxMCPOpenAPISpecMB, false},
+		{configstore.MaxMCPOpenAPISpecMB + 1, true}, {1024, true}, {-1, true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{MCPOpenAPIMaxSpecMB: tc.mb})
+		if tc.wantErr {
+			require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", tc.mb)
+		} else {
+			require.NoError(t, err, "mb=%d", tc.mb)
+		}
+	}
+}
+
+// TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
+// mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
+// 1 GiB spec through (or a negative value fall back silently).
+func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, mb := range []int{1024, -1} {
+		tempDir := createTempDir(t)
+		createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{MCPOpenAPIMaxSpecMB: mb}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", mb)
+	}
+}
+
+// TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an
+// openapi_url outside the app directory, and config.json gets the same rule.
+func TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, specURL := range []string{"/etc/bifrost/openapi.json", "../openapi.json"} {
+		tempDir := createTempDir(t)
+		value := specURL
+		createConfigFile(t, tempDir, &ConfigData{FrameworkConfig: &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "openapi_url", specURL)
+	}
+}
+
+// TestGetBifrostURLAndBifrostMCPSettings: the getters trim, ignore an invalid public
+// URL rather than letting a request-derived fallback be shadowed by garbage, treat
+// an unset writes switch as on, and read the build's default spec while openapi_url
+// is unset or blank.
+func TestGetBifrostURLAndBifrostMCPSettings(t *testing.T) {
+	const fallback = "https://example.com/default/openapi.json"
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	assert.Empty(t, cfg.GetBifrostURL())
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback))
+	assert.True(t, cfg.GetBifrostMCPAllowWrites())
+
+	blank := "  "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &blank}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "a blank openapi_url reads the default")
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar(" https://gw.example.com/bifrost/ ")
+	set := " specs/openapi.json "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &set}}
+	cfg.ClientConfig.BifrostMCPAllowWrites = new(false)
+	assert.Equal(t, "https://gw.example.com/bifrost", cfg.GetBifrostURL())
+	assert.Equal(t, "specs/openapi.json", cfg.GetOpenAPIURL(fallback))
+	assert.False(t, cfg.GetBifrostMCPAllowWrites())
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("not a url")
+	assert.Empty(t, cfg.GetBifrostURL())
+
+	// An env reference (saved through the API, or stored before config.json resolved
+	// it) is resolved like config.json's: an unset, empty or invalid value reads the
+	// default rather than a file named after the reference.
+	useEnv := func(value string) string {
+		ref := " env.BIFROST_TEST_OPENAPI_URL "
+		cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &ref}}
+		t.Setenv("BIFROST_TEST_OPENAPI_URL", value)
+		return cfg.GetOpenAPIURL(fallback)
+	}
+	assert.Equal(t, "https://mirror.internal/openapi.json", useEnv(" https://mirror.internal/openapi.json "), "an env reference is resolved and trimmed")
+	assert.Equal(t, "specs/openapi.json", useEnv("specs/openapi.json"), "an env reference may name a path in the app directory")
+	assert.Equal(t, fallback, useEnv(""), "an env reference that resolves empty reads the default")
+	assert.Equal(t, fallback, useEnv("/etc/openapi.json"), "an env reference that resolves outside the app directory reads the default")
+	unset := "env.BIFROST_TEST_OPENAPI_URL_NEVER_SET"
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unset}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "an unset env reference reads the default")
 }
 
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
@@ -14001,6 +14221,40 @@ func TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets(t *test
 	assert.NotEmpty(t, team.ConfigHash, "the rest of the entry still applies, hash and all")
 }
 
+// TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate: when the file changes an ungoverned team's
+// inline budget and rate limit, the update writes them, as the first load did. Both are saved with
+// the team row, so the team save must keep saving those associations.
+func TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	withLimits := func(suffix string) *ConfigData {
+		configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+		configData.Governance = &configstore.GovernanceConfig{
+			Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One",
+				RateLimit: &tables.TableRateLimit{ID: "team-rl-" + suffix, TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h")},
+				Budgets:   []tables.TableBudget{{ID: "team-budget-" + suffix, MaxLimit: 100, ResetDuration: "1M"}}}},
+		}
+		return configData
+	}
+	ctx := context.Background()
+	createConfigFile(t, tempDir, withLimits("a"))
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	createConfigFile(t, tempDir, withLimits("b"))
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	exists, _ := countBudget(t, config2, "team-budget-b")
+	assert.True(t, exists, "the team's new inline budget was written on update")
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	require.NotNil(t, team.RateLimitID)
+	assert.Equal(t, "team-rl-b", *team.RateLimitID, "the team's new inline rate limit was written and linked")
+}
+
 // governedKeyConfig declares team-1 owning key vk-1, which carries a budget in governance.budgets, a
 // rate limit in governance.rate_limits and a provider config of its own: the shape a file keeps after
 // an access profile is attached to the team.
@@ -19987,10 +20241,15 @@ var excludedGoFields = map[string]map[string]bool{
 		// deliberately without a deprecated client-level twin in the schema.
 		"mcp_max_instructions_per_client": true,
 		"mcp_max_instructions_total":      true,
-		// Configured only as mcp.max_protocol_version.
-		"mcp_max_protocol_version": true,
+		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
+		"mcp_max_protocol_version":        true,
+		"mcp_server_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
+	// Phrase suggestions are a model router's: the type is shared with
+	// model_routers entries, whose schema has suggestions, and the complexity
+	// analyzer config's schema refuses them.
+	"configstore.ComplexityAnalyzerConfig": {"suggestions": true},
 	// GovernanceConfig - some fields are internal/enterprise
 	"configstore.GovernanceConfig": {
 		"model_configs": true, // Internal
@@ -20004,6 +20263,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"updated_at":         true,
 		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
 		"provider_config_id": true, // Internal DB FK for multi-budget ownership
+		"business_unit_id":   true, // Enterprise owner FK; the OSS loader clears it with a warning (ignoreBudgetBusinessUnitIDs)
 	},
 	"tables.TableRateLimit": {
 		"config_hash": true,
@@ -21127,14 +21387,84 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, dbURL, *tableOut.PricingURL,
 			"URL from a valid DB field must still be used")
 	})
+
+	t.Run("openapi_url has no default to backfill; file applies, then DB wins until the file changes", func(t *testing.T) {
+		fullDB := func(openAPIURL *string, hash string) *tables.TableFrameworkConfig {
+			return &tables.TableFrameworkConfig{
+				ID: 9, PricingURL: &defaultURL, PricingSyncInterval: &defaultSyncSeconds, ModelParametersURL: &defaultModelParamsURL,
+				MCPLibraryURL: &defaultMCPLibraryURL, MCPLibrarySyncInterval: &defaultSyncSeconds, LiveModelsSyncInterval: &defaultLiveModelsSyncSeconds,
+				OpenAPIURL: openAPIURL, ConfigHash: hash,
+			}
+		}
+		withOpenAPI := func(value string) *framework.FrameworkConfig {
+			return &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+		}
+
+		tableOut, catalogOut, needsDBUpdate := ResolveFrameworkPricingConfig(fullDB(nil, ""), nil)
+		require.False(t, needsDBUpdate, "an unset openapi_url is not a backfill: the build's default is read at use")
+		require.Nil(t, tableOut.OpenAPIURL)
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// No DB row: initFrameworkConfig writes the result whatever needsDBUpdate says.
+		tableOut, catalogOut, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI(" specs/openapi.json "))
+		require.Equal(t, "specs/openapi.json", *tableOut.OpenAPIURL, "no DB row: the file value applies, trimmed")
+		require.Equal(t, "specs/openapi.json", *catalogOut.OpenAPIURL)
+
+		fileURL := "specs/openapi.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &fileURL})
+		require.NoError(t, err)
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(nil, storedHash), withOpenAPI(fileURL))
+		require.False(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "cleared in the UI while config.json is unchanged: the cleared value stands")
+		uiURL := "https://mirror.internal/openapi.json"
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(fileURL))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "set in the UI while config.json is unchanged: the DB value stands")
+
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI("specs/v2.json"))
+		require.True(t, needsDBUpdate)
+		require.Equal(t, "specs/v2.json", *tableOut.OpenAPIURL, "a changed config.json wins and is saved")
+
+		tableOut, _, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI("/etc/bifrost/openapi.json"))
+		require.Nil(t, tableOut.OpenAPIURL, "a path outside the app directory is ignored")
+
+		// An explicit "" in config.json chooses the build's default. Once the file
+		// changes it clears a stored override, like any other changed file value.
+		tableOut, catalogOut, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(""))
+		require.True(t, needsDBUpdate, "switching config.json to an explicit empty openapi_url is a file change")
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the stored override")
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// The same when another file setting is what changed the hash.
+		empty := ""
+		emptyHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &empty})
+		require.NoError(t, err)
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), withOpenAPI(""))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unchanged config.json leaves the stored override in place")
+		fileSync := int64(7200)
+		emptyAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &empty, PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), emptyAndSync)
+		require.True(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the override when another setting changed the file")
+
+		// Omitted, or an env reference that does not resolve: the stored override stays.
+		onlySync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), onlySync)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an omitted openapi_url keeps the stored override")
+		unresolved := "env.BIFROST_TEST_OPENAPI_URL_UNSET"
+		unresolvedAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unresolved, PricingSyncInterval: &fileSync}}
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), unresolvedAndSync)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unresolved env reference keeps the stored override")
+	})
 }
 
-func TestIsBcryptHash(t *testing.T) {
+func TestIsPasswordHash(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected bool
 	}{
+		{"pbkdf2-sha256 prefix", "$pbkdf2-sha256$i=600000$c2FsdHNhbHRzYWx0c2FsdA$ZGlnZXN0", true},
 		{"bcrypt $2a$ prefix", "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2b$ prefix", "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2y$ prefix", "$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
@@ -21146,9 +21476,9 @@ func TestIsBcryptHash(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isBcryptHash(tt.input)
+			result := isPasswordHash(tt.input)
 			if result != tt.expected {
-				t.Errorf("isBcryptHash(%q) = %v, want %v", tt.input, result, tt.expected)
+				t.Errorf("isPasswordHash(%q) = %v, want %v", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -21183,7 +21513,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotEqual(t, plainPassword, storedAuth.AdminPassword, "password should be hashed, not plain text")
 
 		// Verify the stored hash is a valid bcrypt hash
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
 
 		// Verify the hash can be used to verify the original password
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), plainPassword)
@@ -21275,7 +21605,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
 		require.Equal(t, "newadmin", storedAuth.AdminUserName.GetValue(), "username should be overwritten by file config")
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new file password")
@@ -21356,7 +21686,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.GetRawRef(), "env var reference should be preserved")
 
 		// Verify password was hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
 	})
 
 	t.Run("password from env variable gets resolved and hashed", func(t *testing.T) {
@@ -21380,7 +21710,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotNil(t, storedAuth)
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpassword123")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21416,7 +21746,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpass456")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21488,7 +21818,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new password")
@@ -21542,7 +21872,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, storedAuth)
 	require.Equal(t, "nested-admin", storedAuth.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()))
 	require.True(t, storedAuth.IsEnabled)
 	config1.Close(ctx)
 
@@ -21555,7 +21885,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NotNil(t, config2.GovernanceConfig)
 	require.NotNil(t, config2.GovernanceConfig.AuthConfig)
 	require.Equal(t, "nested-admin", config2.GovernanceConfig.AuthConfig.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
 	require.True(t, config2.GovernanceConfig.AuthConfig.IsEnabled)
 }
 
@@ -23574,17 +23904,20 @@ func TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion(t *testing.T) {
 			initTestLogger()
 			store := createTestSQLiteConfigStore(t, t.TempDir())
 			ctx := context.Background()
-			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored}
+			// mcp.server_max_protocol_version follows the same rules for /mcp.
+			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored, MCPServerMaxProtocolVersion: tc.stored}
 			require.NoError(t, store.UpdateClientConfig(ctx, clientConfig))
 			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
-			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file}
+			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file, ServerMaxProtocolVersion: tc.file}
 
 			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tc.fileIsTruth)
 
 			assert.Equal(t, tc.want, mcpCfg.MaxProtocolVersion, "value handed to bifrost.Init")
+			assert.Equal(t, tc.want, mcpCfg.ServerMaxProtocolVersion, "server value handed on")
 			persisted, err := store.GetClientConfig(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, persisted.MCPMaxProtocolVersion, "stored value")
+			assert.Equal(t, tc.want, persisted.MCPServerMaxProtocolVersion, "stored server value")
 		})
 	}
 }
@@ -23936,6 +24269,145 @@ func TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled(t *testing.T) {
 	require.Len(t, store.mcpClientConfigUpdates, 1, "an endpoint_slug-only edit must be reconciled, not skipped")
 	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
 	require.Equal(t, "echo-http", cfg.MCPConfig.ClientConfigs[0].EndpointSlug, "the stored slug still wins")
+}
+
+// TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled: a config.json edit that only sets server_type_on_slug drifts the
+// hash, so the stored client takes the override and the runtime config carries it.
+func TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	declared := func(slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: true,
+			ServerTypeOnSlug: slug,
+		}
+	}
+	existing := declared(schemas.MCPServerTypeOnSlugInherit)
+	existing.ID = "mcp-existing"
+	row, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(schemas.MCPServerTypeOnSlugDisabled)}}}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "a server_type_on_slug-only edit must be reconciled, not skipped")
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, store.mcpClientConfigUpdates[0].Config.ServerTypeOnSlug, "the stored row takes the override")
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, cfg.MCPConfig.ClientConfigs[0].ServerTypeOnSlug, "the runtime config carries the override")
+}
+
+// TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits: on the first boot after is_code_mode_client joined the hash,
+// an unchanged config.json code-mode client keeps its dashboard edits and only its stored hash moves to the
+// current form; a later config.json edit that only turns code mode off or on still applies.
+func TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	mock := NewMockConfigStore()
+
+	declared := func(codeMode bool) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: codeMode,
+		}
+	}
+	// Stored by an older build: config.json's client hashed without is_code_mode_client, then edited in the UI.
+	legacyRow, err := mcpClientConfigToTable(declared(false))
+	require.NoError(t, err)
+	legacyHash, err := configstore.GenerateMCPClientHash(legacyRow)
+	require.NoError(t, err)
+	existing := declared(true)
+	existing.ID = "mcp-existing"
+	existing.ToolsToExecute = schemas.WhiteList{"echo"}
+	existing.ConfigHash = legacyHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+
+	cfg := &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+
+	currentRow, err := mcpClientConfigToTable(declared(true))
+	require.NoError(t, err)
+	currentHash, err := configstore.GenerateMCPClientHash(currentRow)
+	require.NoError(t, err)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, schemas.WhiteList{"echo"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the dashboard edit survives the upgrade")
+	assert.Empty(t, mock.mcpClientConfigUpdates, "no stored field is rewritten")
+	assert.Equal(t, [][3]string{{"mcp-existing", legacyHash, currentHash}}, mock.mcpClientConfigHashUpdates,
+		"only the stored hash moves, and only from the legacy value")
+
+	// Next boot, config.json turns code mode off: the upgraded hash makes that a detected edit.
+	upgraded := declared(true)
+	upgraded.ID = "mcp-existing"
+	upgraded.ToolsToExecute = schemas.WhiteList{"echo"}
+	upgraded.ConfigHash = currentHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{upgraded}}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(false)}}}, mock.mcpConfig)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode off in config.json is a file edit")
+	assert.False(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.Equal(t, schemas.WhiteList{"*"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the file version applies")
+
+	// A client stored without code mode hashes the same under both formulas, so config.json turning it on
+	// must apply rather than read as an old hash.
+	withoutCodeMode := declared(false)
+	withoutCodeMode.ID = "mcp-existing"
+	withoutCodeMode.ConfigHash = legacyHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{withoutCodeMode}}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode on in config.json is a file edit")
+	assert.True(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].IsCodeModeClient, "the file version applies")
+}
+
+// TestGetMCPServerTypesOnSlug: the gateway learns every enabled client with an override, and nothing else; a
+// per-user discovery client counts as code mode when either /mcp or its slug runs it in code mode.
+func TestGetMCPServerTypesOnSlug(t *testing.T) {
+	perUser := func(name string, codeMode bool, slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: name + "-id", Name: name, AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserDiscovery: schemas.Ptr(true),
+			IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
+		}
+	}
+	cfg := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "plain", IsCodeModeClient: true},
+		{Name: "slug_direct", IsCodeModeClient: true, ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled},
+		{Name: "slug_code", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+		{Name: "off", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled, Disabled: true},
+		perUser("per_user_direct", false, schemas.MCPServerTypeOnSlugInherit),
+		perUser("per_user_slug_code", false, schemas.MCPServerTypeOnSlugEnabled),
+		perUser("per_user_code", true, schemas.MCPServerTypeOnSlugDisabled),
+	}}}
+
+	assert.Equal(t, map[string]MCPClientCodeModes{
+		"slug_direct":        {Global: true, OnSlug: false},
+		"slug_code":          {Global: false, OnSlug: true},
+		"per_user_slug_code": {Global: false, OnSlug: true},
+		"per_user_code":      {Global: true, OnSlug: false},
+	}, cfg.GetMCPServerTypesOnSlug(), "only enabled clients with an override are listed")
+
+	perUserClients := cfg.GetMCPPerUserDiscoveryClients()
+	assert.False(t, perUserClients["per_user_direct-id"].CodeMode)
+	assert.True(t, perUserClients["per_user_slug_code-id"].CodeMode, "code mode on its slug only still needs the code-mode placeholders")
+	assert.True(t, perUserClients["per_user_code-id"].CodeMode)
+
+	assert.Nil(t, (&Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "plain"}}}}).GetMCPServerTypesOnSlug(),
+		"no override anywhere leaves the gateway nothing to check")
 }
 
 // TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug: a config.json client with no endpoint_slug gets
@@ -24744,6 +25216,28 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	_, err = enterprise.Set(context.Background(), FeatureFlagWarp, true)
 	require.NoError(t, err)
 	require.True(t, enterprise.IsEnabled(FeatureFlagWarp))
+}
+
+// The phrase suggestions dashboard ships behind a flag that is off in both
+// builds, so a few deployments can try the suggestion APIs first; either build
+// can turn it on.
+func TestRegisterFeatureFlags_PhraseSuggestionsOffByDefault(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+
+	def, ok := featureflags.LookupDef(FeatureFlagPhraseSuggestions)
+	require.True(t, ok, "phrase-suggestions flag must be registered")
+	require.False(t, def.DefaultFor(false), "off by default in OSS")
+	require.False(t, def.DefaultFor(true), "off by default in enterprise")
+	require.False(t, def.EnterpriseOnly, "OSS can turn it on")
+
+	for _, isEnterprise := range []bool{false, true} {
+		store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+		require.NoError(t, err)
+		require.False(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v", isEnterprise)
+		_, err = store.Set(context.Background(), FeatureFlagPhraseSuggestions, true)
+		require.NoError(t, err)
+		require.True(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v: an operator can turn it on", isEnterprise)
+	}
 }
 
 // governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
@@ -26808,7 +27302,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	str := func(s string) *string { return &s }
 
 	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir, 0))
 	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
 	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
 	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
@@ -26816,7 +27310,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
 
 	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir, 0))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
 
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
@@ -26829,7 +27323,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir, 0))
 		})
 	}
 }
@@ -26982,6 +27476,34 @@ func TestLoadClientConfigExplicitEmptySkillsURL(t *testing.T) {
 	require.Empty(t, start(`{"client":{"log_retention_days":7,"skills_external_client_url":""}}`).GetSkillsExternalClientURL())
 }
 
+// TestLoadClientConfigMCPClientMetadataURL loads the hosted document URL from config.json into the store,
+// keeps a dashboard edit while the file is unchanged, and applies the file when it changes: an explicit empty
+// value clears the URL, and an unusable one is dropped.
+func TestLoadClientConfigMCPClientMetadataURL(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(raw string) *Config {
+		t.Helper()
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(ctx, cfg, parseConfigData(t, raw)))
+		return cfg
+	}
+	const hosted = "https://public.example.com/bifrost/client.json"
+	file := `{"client":{"log_retention_days":7,"mcp_client_metadata_url":"` + hosted + `"}}`
+	require.Equal(t, hosted, start(file).GetMCPClientMetadataURL())
+	stored, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, hosted, stored.MCPClientMetadataURL.GetValue())
+
+	stored.MCPClientMetadataURL = schemas.NewSecretVar("https://public.example.com/bifrost/v2/client.json")
+	require.NoError(t, store.UpdateClientConfig(ctx, stored))
+	require.Equal(t, "https://public.example.com/bifrost/v2/client.json", start(file).GetMCPClientMetadataURL(), "an unchanged file keeps the dashboard's URL")
+
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"mcp_client_metadata_url":""}}`).GetMCPClientMetadataURL())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"mcp_client_metadata_url":"https://localhost/client.json"}}`).GetMCPClientMetadataURL(), "an unusable URL is dropped")
+}
+
 // TestLoadClientConfigExplicitEmptyA2AURL disables a stored Agent Gateway URL while omission preserves dashboard edits.
 func TestLoadClientConfigExplicitEmptyA2AURL(t *testing.T) {
 	initTestLogger()
@@ -27042,6 +27564,48 @@ func TestPublicURLPolicyAppliesToMCPAndA2A(t *testing.T) {
 		require.Nil(t, client.MCPExternalClientURL)
 		require.Nil(t, client.A2AExternalClientURL)
 	}
+}
+
+// TestMCPClientMetadataURLPolicy is the one table for which hosted Client ID Metadata Document URLs are
+// accepted, how they are normalised, and that config.json and env references go through the same check.
+func TestMCPClientMetadataURLPolicy(t *testing.T) {
+	initTestLogger()
+	for _, tc := range []struct {
+		value, want string // want "" means refused
+	}{
+		{"https://public.example.com/bifrost/client.json", "https://public.example.com/bifrost/client.json"},
+		{"HTTPS://Public.Example.com:443/Bifrost/client.json", "https://public.example.com/Bifrost/client.json"},
+		{"https://public.example.com:8443/client.json", "https://public.example.com:8443/client.json"},
+		{"https://8.8.8.8/client.json", "https://8.8.8.8/client.json"},
+		{"http://public.example.com/client.json", ""},      // not https
+		{"https://public.example.com", ""},                 // no path
+		{"https://public.example.com/", ""},                // root path
+		{"https://public.example.com/client.json?v=1", ""}, // query
+		{"https://public.example.com/client.json?", ""},    // empty query
+		{"https://public.example.com/client.json#x", ""},   // fragment
+		{"https://user:pw@public.example.com/client.json", ""},
+		{"https://public.example.com/a/../client.json", ""},
+		{"https://localhost/client.json", ""}, // loopback: never fetched
+		{"https://bifrost.localhost/client.json", ""},
+		{"https://127.0.0.1/client.json", ""},
+		{"https://[::1]/client.json", ""},
+		{"https://10.0.0.5/client.json", ""}, // private: authorization servers must not fetch it
+		{"https://169.254.169.254/client.json", ""},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			require.Equal(t, tc.want == "", ValidateClientMetadataURL(tc.value) != nil)
+			client := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar(tc.value)}
+			require.Equal(t, tc.want, (&Config{ClientConfig: client}).GetMCPClientMetadataURL())
+			sanitizeMCPExternalOAuthURLs(client)
+			require.Equal(t, tc.want == "", client.MCPClientMetadataURL == nil, "config.json drops a refused URL")
+		})
+	}
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+	client := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")}
+	sanitizeMCPExternalOAuthURLs(client)
+	require.Equal(t, "https://public.example.com/bifrost/client.json", (&Config{ClientConfig: client}).GetMCPClientMetadataURL())
+	require.Empty(t, (*Config)(nil).GetMCPClientMetadataURL())
+	require.NoError(t, ValidateClientMetadataURL(""), "empty means none is hosted")
 }
 
 // TestA2APrivateAllowlist validates configuration and prevents callers from mutating live permissions.
@@ -27393,4 +27957,25 @@ func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
 
 	// config.json and stored rows reach the runtime through validateClientConfig.
 	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
+}
+
+// TestIgnoreBudgetBusinessUnitIDs pins that business_unit_id on a governance.budgets entry is not
+// read: it is cleared with a warning naming the budget, and every other field and entry is kept.
+func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
+	buID := "bu-1"
+	teamID := "team-1"
+	data := &ConfigData{Governance: &configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+		{ID: "named", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID},
+		{ID: "team", MaxLimit: 20, ResetDuration: "1w", TeamID: &teamID},
+	}}}
+	var warned []string
+	ignoreBudgetBusinessUnitIDs(data, func(format string, args ...any) { warned = append(warned, args[0].(string)) })
+
+	assert.Nil(t, data.Governance.Budgets[0].BusinessUnitID)
+	assert.Equal(t, 10.0, data.Governance.Budgets[0].MaxLimit)
+	assert.Equal(t, &teamID, data.Governance.Budgets[1].TeamID, "other owners are left alone")
+	assert.Equal(t, []string{"named"}, warned)
+
+	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
+	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
 }

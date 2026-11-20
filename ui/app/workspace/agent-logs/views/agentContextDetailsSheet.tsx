@@ -135,6 +135,12 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 			return;
 		}
 
+		// Tasks also carry status and contextId, so identify snapshots before status updates.
+		if (typeof update.id === "string" && asRecord(update.status)) {
+			addTaskSnapshot(update, `${keyPrefix}-task`, fallbackTaskId);
+			return;
+		}
+
 		const statusUpdate = asRecord(update.statusUpdate) ?? (asRecord(update.status) && (update.taskId || update.contextId) ? update : null);
 		if (statusUpdate) {
 			const status = asRecord(statusUpdate.status);
@@ -163,12 +169,6 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 		}
 	}
 
-	const response = parseProtocolBody(log.response_body);
-	if (response && !isPushRelay) {
-		if (partsFromMessage(response)) addMessage(response, "response-message", "agent", "message");
-		else addTaskSnapshot(response, "response-task", log.task_id);
-	}
-
 	const event = parseProtocolBody(log.event_body);
 	if (event) processUpdate(event, `event-${log.event_sequence ?? log.id}`, log.task_id, log.artifact_id);
 	log.events.forEach((eventLog) => {
@@ -177,6 +177,13 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 			processUpdate(eventBody, `event-${eventLog.event_sequence ?? eventLog.id}`, eventLog.task_id, eventLog.artifact_id);
 		}
 	});
+
+	// Final response artifacts supersede earlier snapshots and streamed updates.
+	const response = parseProtocolBody(log.response_body);
+	if (response && !isPushRelay) {
+		if (partsFromMessage(response)) addMessage(response, "response-message", "agent", "message");
+		else addTaskSnapshot(response, "response-task", log.task_id);
+	}
 
 	artifactOrder.forEach((identity) => {
 		const artifact = assembledArtifacts.get(identity);
@@ -237,15 +244,23 @@ function ConversationError({ error, timestamp }: { error: unknown; timestamp?: s
 	);
 }
 
-export function A2AConversationHistory({ responseBody }: { responseBody?: string }) {
+function A2AConversationHistory({ log }: { log: AgentLogOperation }) {
 	const { t } = useTranslation("observability");
-	const response = parseProtocolBody(responseBody);
-	const history = Array.isArray(response?.history) ? response.history : [];
+	let history: unknown[] = [];
+	// Snapshots contain cumulative history. Use the latest one, with a final response taking precedence.
+	for (const body of [log.event_body, ...log.events.map((event) => event.event_body), log.response_body]) {
+		const task = parseProtocolBody(body);
+		if (Array.isArray(task?.history)) history = task.history;
+	}
 	if (history.length === 0) return null;
 
 	return (
-		<details className="group rounded-sm border">
-			<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-3 py-2 text-sm transition">
+		<details className="group mt-4 rounded-sm border" data-testid="agent-conversation-history">
+			<summary
+				className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-3 py-2 text-sm transition"
+				data-testid="agent-conversation-history-toggle"
+				onClick={(event) => event.stopPropagation()}
+			>
 				<span className="font-medium">{t("agentLogs.contextSheet.conversationHistory")}</span>
 				<span className="text-muted-foreground text-xs">{t("agentLogs.contextSheet.messageCount", { count: history.length })}</span>
 			</summary>
@@ -429,6 +444,7 @@ export function A2AOperationConversation({
 					{renderedTimestamp ? <span className="font-mono text-[10px]">{renderedTimestamp}</span> : null}
 				</div>
 			) : null}
+			<A2AConversationHistory log={log} />
 		</div>
 	);
 }

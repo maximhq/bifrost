@@ -50,7 +50,8 @@
 			"budgetLimits": "Limites budgétaires",
 			"updateAction": "Mettre à jour le client",
 			"createAction": "Créer le client",
-			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour ce client, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement."
+			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour ce client, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement.",
+			"limitsCheckFailed": "Impossible de vérifier ce qui encadre les dépenses de ce client : son budget et sa limite de débit ne peuvent pas encore être affichés."
 		},
 		"detail": {
 			"title": "Détails du client",
@@ -408,6 +409,24 @@
 	"projects": {
 		"unlockTitle": "Débloquez les projets pour un accès et des dépenses cadrés",
 		"unlockDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Un projet est quelque chose qu’une requête choisit : il accorde un accès en plus de ce que l’appelant détient déjà, et décide sur quel ledger la dépense est imputée."
+	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "Visualisez les dépenses d’IA de tous les fournisseurs au même endroit",
+			"unlockDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. FinOps lit les coûts facturés depuis vos comptes fournisseurs et montre quelle part de ces dépenses est passée par Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Connectez les comptes de facturation des fournisseurs",
+			"unlockDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Connectez la facturation OpenAI, Anthropic, AWS Bedrock, Vertex AI et Azure OpenAI avec un accès en lecture seule."
+		},
+		"explorer": {
+			"unlockTitle": "Ventilez les dépenses d’IA par modèle et par compte",
+			"unlockDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Comparez les dépenses facturées avec ce que Bifrost a journalisé, modèle par modèle."
+		},
+		"forecast": {
+			"unlockTitle": "Prévoyez les dépenses d’IA et détectez les anomalies",
+			"unlockDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Projetez le mois par rapport à vos budgets et soyez alerté lorsque les dépenses s’envolent."
+		}
 	},
 	"userRankings": {
 		"unlockTitle": "Débloquez les classements utilisateurs pour une meilleure visibilité"

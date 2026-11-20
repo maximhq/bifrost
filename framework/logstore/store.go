@@ -67,6 +67,15 @@ func logTimestampFromContext(ctx context.Context) (time.Time, bool) {
 	return ts, ok && !ts.IsZero()
 }
 
+// withLogTimestamp attaches ts as the row timestamp hint (LogTimestampContextKey)
+// when it is set, so a store can bound the id lookup an update or read makes.
+func withLogTimestamp(ctx context.Context, ts time.Time) context.Context {
+	if ts.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, LogTimestampContextKey, ts)
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
@@ -76,6 +85,10 @@ type LogStore interface {
 	// WarpTopicStore is where Warp's topics, and each request's place among
 	// them, are kept. See warptopics.go.
 	WarpTopicStore
+	// ComplexitySuggestionStore is where the complexity router's phrase
+	// suggestions, and the runs that wrote them, are kept. See
+	// complexitysuggestions.go.
+	ComplexitySuggestionStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error

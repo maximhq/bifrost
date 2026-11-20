@@ -45,6 +45,8 @@ WebhookEndpointRequest:
       description: Delivery URL. HTTPS is required unless allow_private_network is set.
     events:
       type: array
+      minItems: 1
+      uniqueItems: true
       items:
         $ref: '#/WebhookEvent'
       description: Events this endpoint subscribes to.
@@ -197,12 +199,10 @@ WebhookEndpointWithSecret:
 
 TestWebhookRequest:
   type: object
-  required:
-    - event
   properties:
     event:
       $ref: '#/WebhookEvent'
-      description: The event to render for the sample delivery. Must be one the endpoint subscribes to.
+      description: The event to render for the sample delivery. Must be one the endpoint subscribes to. Defaults to the endpoint's first subscribed event when omitted (the body may be empty).
 
 TestWebhookResponse:
   type: object
