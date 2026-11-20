@@ -152,7 +152,11 @@ export const coreConfigApi = {
    */
   async get(request: APIRequestContext) {
     const response = await request.get(`${API_BASE}/config?from_db=true`)
-    return handleResponse<{ client_config: Record<string, unknown>; auth_config?: DashboardAuthConfig }>(
+    return handleResponse<{
+      client_config: Record<string, unknown>
+      framework_config: Record<string, unknown>
+      auth_config?: DashboardAuthConfig
+    }>(
       response,
       'Get core config'
     )
@@ -200,6 +204,17 @@ export const coreConfigApi = {
       data: { client_config: { ...current.client_config, ...changes } },
     })
     return handleResponse(response, 'Update core config')
+  },
+
+  /**
+   * Update framework config fields, sending the current client and framework config back with the changes applied
+   */
+  async updateFrameworkConfig(request: APIRequestContext, changes: Record<string, unknown>) {
+    const current = await coreConfigApi.get(request)
+    const response = await request.put(`${API_BASE}/config`, {
+      data: { client_config: current.client_config, framework_config: { ...current.framework_config, ...changes } },
+    })
+    return handleResponse(response, 'Update framework config')
   },
 }
 

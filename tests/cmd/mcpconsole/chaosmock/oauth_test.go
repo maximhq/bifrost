@@ -631,7 +631,15 @@ func TestAuthorizationServerTakesClientMetadataDocuments(t *testing.T) {
 		t.Errorf("with documents off nothing is fetched: %d fetches, want 4", got)
 	}
 
-	for _, bad := range []map[string]any{{"metadata_documents": "sometimes"}, {"metadata_documents": "advertised", "metadata_documents_via": "ftp://docs"}} {
+	// A per-host override: docs.example.test is served, every other host goes through a closed port.
+	post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{
+		"metadata_documents": "advertised", "metadata_documents_via": "http://127.0.0.1:9",
+		"metadata_documents_via_hosts": map[string]string{"docs.example.test": docs.URL},
+	}}})
+	refused("a document behind a closed port", "https://private.example.test/client.json", testRedirect)
+	authorize(t, authURL("https://docs.example.test/fifth.json", testRedirect))
+
+	for _, bad := range []map[string]any{{"metadata_documents": "sometimes"}, {"metadata_documents": "advertised", "metadata_documents_via": "ftp://docs"}, {"metadata_documents_via_hosts": map[string]string{"x": "ftp://docs"}}} {
 		if resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": bad}}); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%v: status %d, want 400", bad, resp.StatusCode)
 		}

@@ -549,14 +549,56 @@ kubectl delete pvc -l app.kubernetes.io/instance=bifrost
 
 Bifrost exposes Prometheus metrics at `/metrics` (`/<prefix>/metrics` through an ingress when `bifrost.server.basePath` is set).
 
-Enable ServiceMonitor for automatic scraping:
+If you run the Prometheus Operator (for example through kube-prometheus-stack), enable the bundled `ServiceMonitor` for automatic scraping. The `monitoring.coreos.com/v1` CRDs must be installed when the manifest is applied; rendering does not need them, so `helm template`, Argo CD and Flux work offline.
 
 ```yaml
 serviceMonitor:
   enabled: true
+  # Must match your Prometheus serviceMonitorSelector. kube-prometheus-stack
+  # only picks up ServiceMonitors labelled with its release name by default.
+  additionalLabels:
+    release: kube-prometheus-stack
   interval: 30s
   scrapeTimeout: 10s
 ```
+
+The `ServiceMonitor` scrapes the service's `http` port directly, so its path stays `/metrics` even when `bifrost.server.basePath` is set.
+
+**Scraping with auth enabled.** When `bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled` is on, `/metrics` requires credentials too. An unauthenticated scrape gets a `401` and the target sits at `up=0` without any error. Turn on `basicAuth` so the scrape sends the admin credentials:
+
+```yaml
+bifrost:
+  authConfig:
+    isEnabled: true
+    # Prometheus reads scrape credentials from a Secret, so the admin
+    # credentials must live in one; inline adminUsername/adminPassword cannot be used.
+    existingSecret: bifrost-secrets
+    usernameKey: admin-username
+    passwordKey: admin-password
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack
+  basicAuth:
+    enabled: true   # inherits the Secret and keys from the active authConfig
+```
+
+- In the release namespace, `basicAuth` inherits the Secret and key names from the active `bifrost.governance.authConfig` (preferred) or `bifrost.authConfig`. If you set `serviceMonitor.namespace` to another namespace, set `serviceMonitor.basicAuth.existingSecret` (and `usernameKey` / `passwordKey`) to a Secret in that namespace.
+- Bifrost reads the Secret as environment variables at pod start, so restart the pods after rotating it (`kubectl rollout restart`); until then scrapes get `401`.
+- For a bearer token instead, set `serviceMonitor.authorization.credentials` to a Secret key reference. It cannot be combined with `basicAuth`.
+- The render fails rather than producing a `ServiceMonitor` that can never scrape: when no Secret can be resolved, when both auth methods are set, when `authorization` has no `credentials`, or when `bifrost.plugins.telemetry.config.metrics_enabled` is `false` (`/metrics` then returns `404`).
+
+<Warning>
+The scrape credentials are admin credentials. Bifrost has no metrics-only credential: the basic-auth admin credentials, a base64 `username:password` bearer token and a session token all grant the same access as the dashboard and management API.
+
+- The Prometheus Operator copies the referenced credentials into the configuration it generates for Prometheus, so they also live in the Prometheus namespace. Restrict who can read Secrets there and in the `ServiceMonitor`'s namespace.
+- With the default `http` scheme they cross the pod network in plain text on every scrape. Use `scheme: https` with `tlsConfig` when Bifrost serves TLS, or a service mesh that encrypts pod-to-pod traffic.
+</Warning>
+
+<Warning>
+Do not make `/metrics` public by adding it to `bifrost.client.whitelistedRoutes` unless the ingress blocks it. The default ingress routes every path (`path: /`, `pathType: Prefix`), so a whitelisted `/metrics` (and `/<prefix>/metrics` with `bifrost.server.basePath`) is reachable from outside the cluster, and its labels carry customer, team, user and virtual key names and IDs. If you whitelist it, exclude `/metrics` at the ingress and limit in-cluster access to Prometheus with a NetworkPolicy.
+</Warning>
 
 ### Health Checks
 

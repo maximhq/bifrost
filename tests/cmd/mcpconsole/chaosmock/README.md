@@ -98,7 +98,8 @@ scenario that never sets versions keeps the handshakes and session counts it had
 `init_fail` and `bad_version` apply to `server/discover` as they do to `initialize`: the first
 fails the handshake, the second advertises that one version instead of the list. Requests the
 STDIO bridge forwards never take the sessionless path: stdio has no headers to check, and the
-bridge answers one message at a time, so it cannot hold a listen stream open.
+bridge answers one message at a time, so it cannot hold a `subscriptions/listen` stream open
+(it relays the session's GET stream instead, see below).
 
 ### The STDIO bridge
 
@@ -106,7 +107,10 @@ A STDIO server cannot share memory with the fleet, since the process under
 test spawns it. Rather than reimplement the state there, and end up with two
 tool sets and two sets of counters to keep in step, the child is deliberately
 thin: it reads newline-delimited JSON-RPC from stdin, forwards each message to
-the fleet over HTTP, and writes the reply to stdout. Every control verb keeps
+the fleet over HTTP, and writes the reply to stdout. Once the fleet issues a
+session, the child also holds that session's GET stream open and writes what
+the server pushes on it (`notify/tools-changed` among them) to stdout between
+replies, as a real STDIO server would. Every control verb keeps
 working unchanged, and what is actually under test on this transport
 (subprocess lifecycle, pipe framing, respawn after death) is exercised for
 real.

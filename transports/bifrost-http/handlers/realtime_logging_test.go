@@ -167,7 +167,7 @@ func TestBuildRealtimeTurnPostResponseModelsTranscriptionAsOutput(t *testing.T) 
 	t.Parallel()
 
 	rawResponse := []byte(`{"type":"conversation.item.input_audio_transcription.completed","transcript":"spoken user turn","usage":{"total_tokens":11}}`)
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-transcribe", `{"type":"input_audio_buffer.commit"}`, rawResponse, "spoken user turn", 123, true)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-transcribe", `{"type":"input_audio_buffer.commit"}`, rawResponse, "spoken user turn", 123, true, nil)
 	if resp == nil || resp.ResponsesResponse == nil || len(resp.ResponsesResponse.Output) != 1 {
 		t.Fatalf("response = %#v, want one transcription output", resp)
 	}
@@ -555,7 +555,7 @@ func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) 
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, false)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, false, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response to be built")
 	}
@@ -603,7 +603,7 @@ func TestBuildRealtimeTurnPostResponseMergesTextAndToolCalls(t *testing.T) {
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, false)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, false, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response")
 	}

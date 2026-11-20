@@ -1,7 +1,13 @@
 import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import i18n from "@/lib/i18n";
 import type { ModelProvider } from "@/lib/types/config";
-import type { WarpConfig, WarpConfigInput } from "@/lib/types/warp";
+import {
+	WARP_MANAGEMENT_WRITES,
+	type WarpConfig,
+	type WarpConfigInput,
+	type WarpManagementToolSize,
+	type WarpManagementWrite,
+} from "@/lib/types/warp";
 import { v4 as uuid } from "uuid";
 
 export interface WarpEmbeddingFields {
@@ -134,3 +140,50 @@ export const validateWarpModelRows = (rows: WarpModelValues[], enabled: boolean)
 		return null;
 	});
 };
+/** Turns one kind of configuration change on or off, keeping WARP_MANAGEMENT_WRITES order so equal sets compare equal. */
+export const setWarpManagementWrite = (
+	writes: readonly WarpManagementWrite[],
+	kind: WarpManagementWrite,
+	on: boolean,
+): WarpManagementWrite[] => WARP_MANAGEMENT_WRITES.filter((candidate) => (candidate === kind ? on : writes.includes(candidate)));
+
+/** Whether the chosen kinds differ from the saved ones, order aside. */
+export const warpManagementWritesChanged = (
+	current: readonly WarpManagementWrite[],
+	saved: readonly WarpManagementWrite[] | undefined,
+): boolean => {
+	const stored = saved ?? [];
+	return current.length !== stored.length || current.some((kind) => !stored.includes(kind));
+};
+
+/**
+ * Roughly how many tokens the management tools add to every Warp request with
+ * these kinds on: reads always, plus each chosen kind. Null while the sizes are
+ * unknown (the Bifrost MCP is not loaded).
+ */
+export const warpManagementTokens = (
+	sizes: readonly WarpManagementToolSize[] | undefined,
+	writes: readonly WarpManagementWrite[],
+): number | null => {
+	if (!sizes || sizes.length === 0) return null;
+	return sizes.reduce((total, size) => (size.kind === "read" || writes.includes(size.kind) ? total + size.estimated_tokens : total), 0);
+};
+/**
+ * Whether a configuration-tool switch is locked. Without access every switch is.
+ * Otherwise only turning a kind on needs the Bifrost MCP to serve writes and the
+ * kind to exist in its catalog: a kind that is on can always be turned off, so a
+ * deployment whose writes were switched off at the ceiling can still clear it.
+ */
+export const warpManagementWriteSwitchDisabled = ({
+	disabled,
+	checked,
+	writesAvailable,
+	loaded,
+	offered,
+}: {
+	disabled: boolean;
+	checked: boolean;
+	writesAvailable: boolean;
+	loaded: boolean;
+	offered: boolean;
+}): boolean => disabled || (!checked && (!writesAvailable || (loaded && !offered)));

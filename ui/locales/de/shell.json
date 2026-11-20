@@ -14,10 +14,12 @@
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle",
 		"modelCatalog": "Modellkatalog",
+		"datasheet": "Datenblatt-Editor",
 		"modelProviders": "Modellanbieter",
 		"budgetsLimits": "Budgets und Limits",
 		"routingRules": "Routing-Regeln",
 		"complexityRouter": "Komplexitäts-Router",
+		"routers": "Router",
 		"circuitBreaker": "Schutzschalter",
 		"pricingOverrides": "Preisüberschreibungen",
 		"modelSettings": "Modelleinstellungen",
@@ -65,6 +67,7 @@
 		"caching": "Zwischenspeicherung",
 		"security": "Sicherheit",
 		"warp": "Warp",
+		"gateways": "Gateways",
 		"proxy": "Proxy",
 		"apiKeys": "API-Schlüssel",
 		"performanceTuning": "Performance-Tuning",
@@ -96,6 +99,7 @@
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle konfigurieren",
 		"modelCatalog": "Übersicht über Anbieter, Schlüssel und Nutzung",
+		"datasheet": "Modelllimits, Fähigkeiten und Preise bearbeiten",
 		"modelProviders": "Modelle konfigurieren",
 		"budgetsLimits": "Budgets und Ratenbegrenzungen",
 		"routingRules": "Intelligente Routing-Regeln",
@@ -147,6 +151,7 @@
 		"caching": "Caching-Konfiguration",
 		"security": "Sicherheitseinstellungen",
 		"warp": "Warp-Agent-Konfiguration",
+		"gateways": "Anmeldung für Coding-Clients",
 		"proxy": "Proxy-Konfiguration",
 		"apiKeys": "API-Schlüssel-Verwaltung",
 		"performanceTuning": "Einstellungen zur Leistungsoptimierung",
@@ -351,6 +356,12 @@
 		"descriptionStuckEnterprise": "Der Rollout läuft noch. Lade die Seite in einer Minute neu, um erneut zu prüfen. Wenn das nicht hilft, wende dich an den Administrator deiner Bifrost-Bereitstellung.",
 		"waitingEnterprise": "Warte auf den Abschluss des Rollouts…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Ein Teil des Dashboards konnte nicht geladen werden",
+		"bannerDescription": "Prüfe dein Netzwerk, deinen Proxy oder deine Browser-Erweiterungen und lade dann neu.",
+		"screenTitle": "Diese Seite konnte nicht geladen werden",
+		"screenDescription": "Dein Browser konnte einige Dashboard-Dateien nicht herunterladen. Möglicherweise blockiert ein Proxy, eine Firewall oder eine Browser-Erweiterung sie. Prüfe dein Netzwerk und lade neu."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Einrichtungs-Checkliste aufklappen",
 		"setupChecklist": "Einrichtungs-Checkliste",
@@ -421,6 +432,10 @@
 			"indexStatusUnavailable": "Indexstatus nicht verfügbar",
 			"askAdminTurnOn": "Bitte einen Administrator, Warp zu aktivieren.",
 			"askAdminSetUp": "Bitte einen Administrator, Warp einzurichten.",
+			"needsBifrostMCP": "Warp benötigt den Bifrost MCP",
+			"needsBifrostMCPHint": "Lege die Bifrost-URL fest, damit Warp die Konfiguration dieser Bereitstellung lesen kann.",
+			"setUpBifrostMCP": "Einrichten",
+			"askAdminBifrostMCP": "Bitte einen Administrator, den Bifrost MCP für Warp einzurichten.",
 			"sendsWhenFinished": "Wird gesendet, sobald diese Antwort abgeschlossen ist",
 			"remove": "Entfernen"
 		},
@@ -444,7 +459,15 @@
 			"label": "Frage",
 			"skip": "Überspringen",
 			"orType": "Oder eigene Antwort unten eingeben.",
-			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast."
+			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast.",
+			"confirm": {
+				"subtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen.",
+				"destructiveSubtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen. Prüfen Sie sie sorgfältig.",
+				"cannotUndo": "Dies kann nicht rückgängig gemacht werden.",
+				"noArguments": "Keine Argumente.",
+				"cancel": "Abbrechen",
+				"confirm": "Bestätigen"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Was das abdeckt",
@@ -535,6 +558,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp ist auf dieser Bereitstellung nicht eingerichtet.",
+				"cause": "Warp benötigt den Bifrost MCP, um die Konfiguration dieser Bereitstellung zu lesen, und er ist nicht geladen.",
+				"suggestions": ["Bitte einen Administrator, die Bifrost-URL in den Client-Einstellungen festzulegen."]
+			},
 			"not_configured": {
 				"summary": "Warp ist noch nicht konfiguriert.",
 				"cause": "Kein Anbieter und Modell gesetzt, oder Warp ist in den Einstellungen ausgeschaltet.",

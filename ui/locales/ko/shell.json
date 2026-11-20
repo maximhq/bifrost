@@ -14,10 +14,12 @@
 		"logsSettings": "로그 설정",
 		"models": "모델",
 		"modelCatalog": "모델 카탈로그",
+		"datasheet": "데이터시트 편집기",
 		"modelProviders": "모델 공급자",
 		"budgetsLimits": "예산 및 한도",
 		"routingRules": "라우팅 규칙",
 		"complexityRouter": "복잡도 라우터",
+		"routers": "라우터",
 		"circuitBreaker": "서킷 브레이커",
 		"pricingOverrides": "가격 재정의",
 		"modelSettings": "모델 설정",
@@ -65,6 +67,7 @@
 		"caching": "캐싱",
 		"security": "보안",
 		"warp": "Warp",
+		"gateways": "게이트웨이",
 		"proxy": "프록시",
 		"apiKeys": "API 키",
 		"performanceTuning": "성능 튜닝",
@@ -96,6 +99,7 @@
 		"logsSettings": "로그 구성",
 		"models": "모델 구성",
 		"modelCatalog": "공급자, 키, 사용량 개요",
+		"datasheet": "모델 한도, 기능, 가격 편집",
 		"modelProviders": "모델 구성",
 		"budgetsLimits": "예산 및 속도 제한",
 		"routingRules": "지능형 라우팅 규칙",
@@ -147,6 +151,7 @@
 		"caching": "캐싱 구성",
 		"security": "보안 설정",
 		"warp": "Warp 에이전트 구성",
+		"gateways": "코딩 클라이언트 로그인",
 		"proxy": "프록시 구성",
 		"apiKeys": "API 키 관리",
 		"performanceTuning": "성능 튜닝 설정",
@@ -351,6 +356,12 @@
 		"descriptionStuckEnterprise": "출시가 아직 진행 중입니다. 잠시 후 다시 확인하려면 새로고침하세요. 그래도 문제가 해결되지 않으면 Bifrost 배포 관리자에게 문의하세요.",
 		"waitingEnterprise": "출시가 완료되기를 기다리는 중…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "대시보드 일부를 불러오지 못했습니다",
+		"bannerDescription": "네트워크, 프록시 또는 브라우저 확장 프로그램을 확인한 후 새로고침하세요.",
+		"screenTitle": "이 페이지를 불러오지 못했습니다",
+		"screenDescription": "브라우저가 일부 대시보드 파일을 다운로드하지 못했습니다. 프록시, 방화벽 또는 브라우저 확장 프로그램이 차단하고 있을 수 있습니다. 네트워크를 확인하고 새로고침하세요."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "설정 체크리스트 펼치기",
 		"setupChecklist": "설정 체크리스트",
@@ -421,6 +432,10 @@
 			"indexStatusUnavailable": "색인 상태를 확인할 수 없음",
 			"askAdminTurnOn": "관리자에게 Warp를 켜달라고 요청하세요.",
 			"askAdminSetUp": "관리자에게 Warp 설정을 요청하세요.",
+			"needsBifrostMCP": "Warp에는 Bifrost MCP가 필요합니다",
+			"needsBifrostMCPHint": "Warp가 이 배포의 구성을 읽을 수 있도록 Bifrost URL을 설정하세요.",
+			"setUpBifrostMCP": "설정",
+			"askAdminBifrostMCP": "관리자에게 Warp용 Bifrost MCP 설정을 요청하세요.",
 			"sendsWhenFinished": "이 답변이 완료되면 전송됩니다.",
 			"remove": "제거하다"
 		},
@@ -444,7 +459,15 @@
 			"label": "질문",
 			"skip": "건너뛰기",
 			"orType": "또는 아래에 직접 답변을 입력하세요.",
-			"skipAnswer": "최선의 판단으로 진행하고 어떤 가정을 했는지 알려 주세요."
+			"skipAnswer": "최선의 판단으로 진행하고 어떤 가정을 했는지 알려 주세요.",
+			"confirm": {
+				"subtitle": "확인하면 Warp가 이 변경을 적용합니다.",
+				"destructiveSubtitle": "확인하면 Warp가 이 변경을 적용합니다. 내용을 신중히 확인하세요.",
+				"cannotUndo": "이 작업은 되돌릴 수 없습니다.",
+				"noArguments": "인수가 없습니다.",
+				"cancel": "취소",
+				"confirm": "확인"
+			}
 		},
 		"message": {
 			"whatThisCovers": "다루는 내용",
@@ -535,6 +558,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "이 배포에는 Warp가 설정되어 있지 않습니다.",
+				"cause": "Warp는 이 배포의 구성을 읽으려면 Bifrost MCP가 필요하지만, 로드되어 있지 않습니다.",
+				"suggestions": ["관리자에게 클라이언트 설정에서 Bifrost URL을 설정하도록 요청하세요."]
+			},
 			"not_configured": {
 				"summary": "Warp가 아직 구성되지 않았습니다.",
 				"cause": "프로바이더와 모델이 설정되지 않았거나, 설정에서 Warp가 꺼져 있습니다.",

@@ -51,7 +51,7 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 		<div className="space-y-4">
 			{/* Speech Input */}
 			{speechInput && (
-				<div className="w-full rounded-sm border">
+				<div className="w-full rounded-sm border" data-testid="log-speech-input">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<Volume2 className="h-4 w-4" />
 						{t("logs.speech.input")}
@@ -64,7 +64,7 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 
 			{/* Speech Output */}
 			{(speechOutput || isStreaming) && (
-				<div className="w-full rounded-sm border">
+				<div className="w-full rounded-sm border" data-testid="log-speech-output">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<Play className="h-4 w-4" />
 						{t("logs.speech.output")}

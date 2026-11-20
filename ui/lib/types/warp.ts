@@ -62,6 +62,29 @@ export interface WarpConfig {
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
+	/** Whether the gateway's Bifrost MCP is loaded. While bifrost_mcp_enabled, Warp does not answer without it. */
+	bifrost_mcp_available: boolean;
+	/** Whether Warp uses the Bifrost MCP at all. Off for now: no setup step, no management tools section. */
+	bifrost_mcp_enabled: boolean;
+	/** Kinds of configuration change Warp may offer; empty is reads only (the default). */
+	management_writes: WarpManagementWrite[];
+	/** Whether the Bifrost MCP serves writes at all: bifrost_mcp_allow_writes is the ceiling. */
+	management_writes_available: boolean;
+	/** Per kind, what Warp could be offered and roughly what it adds to every request. Absent while the Bifrost MCP is not loaded. */
+	management_tool_sizes?: WarpManagementToolSize[];
+}
+
+/** A kind of configuration change Warp may offer. Mirrors schemas.WarpManagementWrites. */
+export type WarpManagementWrite = "create" | "update" | "delete" | "action";
+
+/** Every kind, in the order the settings page lists them and the server stores them. */
+export const WARP_MANAGEMENT_WRITES: readonly WarpManagementWrite[] = ["create", "update", "delete", "action"];
+
+export interface WarpManagementToolSize {
+	kind: "read" | WarpManagementWrite;
+	tools: number;
+	/** Rough: declaration characters / 3. */
+	estimated_tokens: number;
 }
 
 /** The write body. Every field round-trips; nothing here is write-only. */
@@ -88,6 +111,8 @@ export interface WarpConfigInput {
 	semantic_search_limit?: number;
 	/** 10 to 20000. Zero means "use the default"; omitted keeps the stored value. */
 	topic_discovery_min_requests?: number;
+	/** Omitted keeps the stored value; [] is reads only. */
+	management_writes?: WarpManagementWrite[];
 }
 
 /**
@@ -105,7 +130,7 @@ export const WARP_MAX_TEMPERATURE = 2;
  * its settings, while a deployment with no log store has nothing to read and no
  * in-panel remedy.
  */
-export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";
+export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store" | "no_bifrost_mcp";
 
 export interface WarpBackfillInput {
 	start_time: string;
@@ -190,6 +215,8 @@ export interface WarpStoredMessage {
 		options?: { label: string; hint?: string }[];
 		allow_other?: boolean;
 		kind?: string;
+		/** On a confirmation card, the write it asks about. */
+		action?: { tool: string; arguments: string; destructive?: boolean };
 	};
 	total_tokens?: number;
 	cost?: number;

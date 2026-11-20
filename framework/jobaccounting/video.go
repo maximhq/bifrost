@@ -57,6 +57,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
+	schemas.MachGen:   {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
@@ -158,6 +159,12 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	settlement := &Settlement{
 		Model:  dims.Model,
 		Object: videoObjectFor(dims.RequestType),
+	}
+	// A token-metered provider (Seedance's completion_tokens) reports what it billed.
+	// The settlement row is the only row that bills the job, so its token columns and
+	// the count governance is told come from here; polls never carry them.
+	if dims.OutputTokens > 0 {
+		settlement.Usage = schemas.BifrostLLMUsage{CompletionTokens: dims.OutputTokens, TotalTokens: dims.OutputTokens}
 	}
 
 	// Attached on every path below, including the unpriceable ones: a row with no

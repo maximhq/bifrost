@@ -1362,15 +1362,16 @@ func TestToolSearch_CodexClientSearchNameAvoidsCallerFunction(t *testing.T) {
 	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *got.Output[1].Type)
 }
 
-// A tool_search_output can load tool types core does not declare (only functions and
-// namespaces are hoisted); a tool_reference to one would name an undeclared tool, so
-// only function tools are referenced.
+// A tool_search_output can load tool types core does not declare (only functions, custom
+// tools and namespaces are hoisted); a tool_reference to one would name an undeclared
+// tool, so only those are referenced.
 func TestRewriteClientToolSearchHistory_ReferencesOnlyDeclaredTypes(t *testing.T) {
 	t.Parallel()
 	var input []schemas.ResponsesMessage
 	require.NoError(t, schemas.Unmarshal([]byte(`[
 		{"type":"tool_search_output","call_id":"call_ts_1","execution":"client","tools":[
 			{"type":"custom","name":"apply_patch"},
+			{"type":"web_search"},
 			{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}},
 			{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"create_issue"}]}
 		]}
@@ -1383,7 +1384,7 @@ func TestRewriteClientToolSearchHistory_ReferencesOnlyDeclaredTypes(t *testing.T
 		require.NotNil(t, block.ToolName)
 		refs = append(refs, *block.ToolName)
 	}
-	assert.Equal(t, []string{"get_weather", "mcp__linear__create_issue"}, refs)
+	assert.Equal(t, []string{"apply_patch", "get_weather", "mcp__linear__create_issue"}, refs)
 }
 
 // The response converter tolerates a nil context, as the rest of it does.

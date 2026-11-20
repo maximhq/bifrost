@@ -223,7 +223,7 @@ make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BA
 
 ## Configured stream read buffer
 
-Folder 323 pins `stream_read_buffer_size_kb` through the Gemini chat stream route. The fixture
+Folder 372 pins `stream_read_buffer_size_kb` through the Gemini chat stream route. The fixture
 model `upstream-oversized-line` streams one 11 MB SSE line, above the gateway's default 10 MB line
 limit. The `gemini` provider in the fixture profile sets the buffer to 16384 KB and must return the
 whole text. The `gemini_default_buffer` provider serves the same model without the setting and must
@@ -277,6 +277,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.

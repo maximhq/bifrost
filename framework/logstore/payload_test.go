@@ -160,6 +160,89 @@ func TestBuildInputContentSummary(t *testing.T) {
 	assert.NotContains(t, summary, "It's sunny", "BuildInputContentSummary should not include output")
 }
 
+func TestBuildInputContentSummary_ToolLoopFallback(t *testing.T) {
+	system := "You are an agent."
+	toolResult := "25\nexit=0"
+	toolName := "AskUserQuestion"
+	callID := "call_1"
+	fcType := schemas.ResponsesMessageTypeFunctionCall
+	fcoType := schemas.ResponsesMessageTypeFunctionCallOutput
+	ctcType := schemas.ResponsesMessageTypeCustomToolCall
+	ctcoType := schemas.ResponsesMessageTypeCustomToolCallOutput
+	args := `{"q":"amend?"}`
+	output := "done"
+
+	cases := []struct {
+		name string
+		log  *Log
+		want string
+	}{
+		{
+			name: "chat tool result",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &toolResult}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID}},
+			}},
+			want: toolResult,
+		},
+		{
+			name: "chat assistant tool call",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: args}},
+				}}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call output",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+				{Type: &fcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
+			}},
+			want: output,
+		},
+		{
+			name: "chat assistant custom call",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{Type: schemas.Ptr("custom"), Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: schemas.Ptr("code_exec"), Input: "print(1)"}},
+				}}},
+			}},
+			want: "code_exec(print(1))",
+		},
+		{
+			name: "responses custom tool call",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &ctcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("code_exec"), ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"}}},
+			}},
+			want: "code_exec(print(1))",
+		},
+		{
+			name: "responses custom tool call output",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &ctcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("code_exec"), ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"}}},
+				{Type: &ctcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
+			}},
+			want: output,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.log.BuildInputContentSummary())
+		})
+	}
+}
+
 func TestBuildTags(t *testing.T) {
 	vkID := "vk_123"
 	rrID := "rr_456"

@@ -1661,13 +1661,17 @@ func (provider *AzureProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
+// UploadsFileSource marks AzureProvider as streaming BifrostFileUploadRequest.FileSource
+// (schemas.FileSourceUploader), so Bifrost does not read the upload into memory first.
+func (provider *AzureProvider) UploadsFileSource() {}
+
 // FileUpload uploads a file to Azure OpenAI.
 func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
-	if len(request.File) == 0 {
+	if len(request.File) == 0 && request.FileSource == nil {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
 
@@ -1675,30 +1679,9 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil)
 	}
 
-	// Create multipart form data
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	// Add purpose field
-	if err := writer.WriteField("purpose", string(request.Purpose)); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err)
-	}
-
-	// Add file field
 	filename := request.Filename
 	if filename == "" {
 		filename = "file.jsonl"
-	}
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := part.Write(request.File); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	// Create request
@@ -1714,14 +1697,23 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType(writer.FormDataContentType())
 
-	// Set Azure authentication
+	// Set Azure authentication before the upload is opened: on an auth error nothing would
+	// attach the opened file to req, so ReleaseRequest could not close it.
 	if err := provider.setAzureAuth(ctx, req, key); err != nil {
 		return nil, err
 	}
 
-	req.SetBody(buf.Bytes())
+	// The file is streamed from its source while the request is written, never copied into a
+	// buffer: uploads run to hundreds of MB. ReleaseRequest closes the body stream.
+	upload, err := providerUtils.NewMultipartFileUpload(
+		[]providerUtils.MultipartField{{Name: "purpose", Value: string(request.Purpose)}},
+		"file", filename, providerUtils.FileUploadSource(request))
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to build multipart upload body", err)
+	}
+	req.Header.SetContentType(upload.ContentType)
+	req.SetBodyStream(upload.Body, upload.Size)
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1847,6 +1839,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 			Object:        file.Object,
 			Bytes:         file.Bytes,
 			CreatedAt:     file.CreatedAt,
+			ExpiresAt:     file.ExpiresAt,
 			Filename:      file.Filename,
 			Purpose:       schemas.FilePurpose(file.Purpose),
 			Status:        openai.ToBifrostFileStatus(file.Status),
@@ -3751,6 +3744,10 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 	return nil, lastErr
 }
 
+// SendsPassthroughBodySource marks AzureProvider as streaming BifrostPassthroughRequest.BodySource
+// (schemas.PassthroughBodySourceSender), so Bifrost does not read a multipart upload into memory first.
+func (provider *AzureProvider) SendsPassthroughBodySource() {}
+
 // Passthrough forwards a raw request to Azure's API without any transformation.
 func (provider *AzureProvider) Passthrough(
 	ctx *schemas.BifrostContext,
@@ -3784,7 +3781,9 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
@@ -3802,7 +3801,7 @@ func (provider *AzureProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
+		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req), body, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3858,7 +3857,9 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
@@ -3898,6 +3899,7 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError("provider returned an empty stream body", fmt.Errorf("provider returned an empty stream body"))
 	}
 
+	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
 		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
@@ -3922,7 +3924,7 @@ func (provider *AzureProvider) PassthroughStream(
 				if anthropicUsage != nil {
 					return anthropicUsage.ObserveEvent(event)
 				}
-				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
 			},
 		},
 	), nil

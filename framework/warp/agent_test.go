@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // scriptedModel replays a fixed list of turns, so the loop can be exercised
@@ -2118,6 +2120,22 @@ func TestWarpAgentNamesArgumentMisplacedInsideFilters(t *testing.T) {
 	require.False(t, failed, "the same argument beside filters runs")
 }
 
+// A call whose arguments do not parse is told so in a tool result that is
+// itself valid JSON: the parser's message carries quotes and newlines, so it is
+// quoted rather than spliced in. Both Warp's own tools and management reads.
+func TestWarpAgentInvalidArgumentsResultIsValidJSON(t *testing.T) {
+	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	management := newFakeManagement()
+	agent.management, agent.managementCatalog = management, management.catalog
+	for _, name := range []string{"query_logs", "listVirtualKeys"} {
+		result, failed := agent.executeTool(context.Background(), name, `{"limit":`)
+		require.True(t, failed, name)
+		require.True(t, json.Valid([]byte(result)), "%s: result is not valid JSON: %s", name, result)
+		require.Contains(t, gjson.Get(result, "error").String(), "arguments were not valid JSON: ", name)
+	}
+	require.Empty(t, management.called(), "a call with unparseable arguments never reaches /api")
+}
+
 // The same live run read an all-empty alias ranking as a finding about
 // spread. A breakdown by a field the requests never set says nothing about
 // them; the prompt has to say so, whichever field it was.
@@ -2156,6 +2174,7 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, "Never write chart or diagram code")
 	require.NotContains(t, content, "You cannot draw charts")
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
+	// Decoupled from the Bifrost MCP, Warp only reads.
 	require.Contains(t, content, "You only read")
 	require.Contains(t, content, "Nothing carries over between conversations")
 	// "Remember my team" got "I'll use it in this conversation" and no link.

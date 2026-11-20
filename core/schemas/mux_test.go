@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestToChatMessages_PreservesDeveloperRole(t *testing.T) {
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(chatMessages))
 	}
@@ -68,7 +69,7 @@ func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 		{Role: Ptr(ResponsesInputMessageRoleAssistant)},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != len(messages) {
 		t.Fatalf("expected %d messages, got %d", len(messages), len(chatMessages))
 	}
@@ -109,7 +110,7 @@ func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages (reasoning absorbed into assistant), got %d", len(chatMessages))
 	}
@@ -162,7 +163,7 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages (tool-call assistant + tool result), got %d", len(chatMessages))
 	}
@@ -199,7 +200,7 @@ func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) 
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
 	}
@@ -293,7 +294,7 @@ func TestToResponsesMessages_KeepsTextBeforeToolCalls(t *testing.T) {
 	}
 
 	// Round trip back to chat must yield one assistant turn carrying both the text and the calls.
-	back := ToChatMessages(out)
+	back := ToChatMessages(out, nil)
 	if len(back) != 1 {
 		t.Fatalf("expected round trip to yield 1 assistant message, got %d: %#v", len(back), back)
 	}
@@ -361,7 +362,7 @@ func TestToChatMessages_RoundTripKeepsReasoningTextAndCallsOnOneTurn(t *testing.
 	items = append(items, user.ToResponsesMessages()...)
 	items = append(items, cm.ToResponsesMessages()...)
 	items = append(items, toolResult.ToResponsesMessages()...)
-	back := ToChatMessages(items)
+	back := ToChatMessages(items, nil)
 
 	if len(back) != 3 {
 		t.Fatalf("expected user, assistant, tool messages, got %d: %#v", len(back), back)
@@ -522,7 +523,7 @@ func TestToResponsesToolMessage_MarksAFailedToolResult(t *testing.T) {
 	if general := failed.ToResponsesMessages(); len(general) != 1 || general[0].Status == nil || *general[0].Status != *msg.Status {
 		t.Fatalf("expected ToResponsesMessages to mark it the same way, got %#v", general)
 	}
-	back := ToChatMessages([]ResponsesMessage{*msg})
+	back := ToChatMessages([]ResponsesMessage{*msg}, nil)
 	if len(back) != 1 || back[0].ChatToolMessage == nil || back[0].ChatToolMessage.IsError == nil || !*back[0].ChatToolMessage.IsError {
 		t.Fatalf("expected the mark to read back as is_error, got %#v", back)
 	}
@@ -2373,7 +2374,7 @@ func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
 		t.Fatal("guard marker dropped on chat -> responses")
 	}
 
-	back := ToChatMessages(responses)
+	back := ToChatMessages(responses, nil)
 	if len(back) != 1 || back[0].Content == nil || len(back[0].Content.ContentBlocks) != 2 {
 		t.Fatalf("unexpected chat shape: %+v", back)
 	}
@@ -2402,7 +2403,7 @@ func TestReasoningItemIDSurvivesChatRoundTrip(t *testing.T) {
 		},
 	}
 
-	chat := ToChatMessages(items)
+	chat := ToChatMessages(items, nil)
 	var assistant *ChatMessage
 	for i := range chat {
 		if chat[i].Role == ChatMessageRoleAssistant && chat[i].ChatAssistantMessage != nil {
@@ -2552,7 +2553,7 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
 			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
 		}}},
-	})
+	}, nil)
 	if len(chat) != 2 {
 		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
 	}
@@ -2587,12 +2588,73 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 		t.Fatalf("unmarshal input: %v", err)
 	}
 
-	got := ToChatMessages(input)
+	got := ToChatMessages(input, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
 	}
 	if got[0].Role != ChatMessageRoleUser {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}
+
+// TestToChatMessages_DropsMCPCallItems pins #9721 on the Responses->Chat fallback: the
+// mcp_call items an Anthropic mcp_tool_use / mcp_tool_result block becomes have no chat
+// equivalent and no role, so they must be dropped rather than emitted as roleless messages.
+func TestToChatMessages_DropsMCPCallItems(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_call","id":"call_1","name":"analyze_image","arguments":"{}","server_label":"4_5v_mcp"},
+		{"type":"mcp_call","status":"completed","call_id":"call_1","output":"a red pixel"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input, nil)
+	if len(got) != 2 {
+		t.Fatalf("expected only the two user messages, got %d messages: %+v", len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != ChatMessageRoleUser {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, ChatMessageRoleUser)
+		}
+	}
+}
+
+// TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent pins the rest of the #9721
+// class: every typed Responses item that Chat Completions cannot express (MCP siblings,
+// server-tool calls, item references) is dropped instead of becoming a roleless message,
+// while the roleless items the converter does render (function_call / _output) survive.
+func TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_list_tools","id":"lt_1","server_label":"docs"},
+		{"type":"mcp_approval_request","id":"ar_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"mcp_approval_response","approval_request_id":"ar_1","approve":true},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"type":"code_interpreter_call","id":"ci_1","status":"completed"},
+		{"type":"item_reference","id":"msg_prev"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input, nil)
+	wantRoles := []ChatMessageRole{ChatMessageRoleUser, ChatMessageRoleAssistant, ChatMessageRoleTool, ChatMessageRoleUser}
+	if len(got) != len(wantRoles) {
+		t.Fatalf("expected %d messages, got %d: %+v", len(wantRoles), len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != wantRoles[i] {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, wantRoles[i])
+		}
+	}
+	if got[1].ChatAssistantMessage == nil || len(got[1].ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("chat[1] should carry the function_call as one tool call: %+v", got[1])
 	}
 }
 
@@ -2650,5 +2712,401 @@ func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkToChatMessages measures the Responses->Chat fallback on a typical multi-turn
+// history (text, a function call round trip, and server-tool items that are dropped).
+func BenchmarkToChatMessages(b *testing.B) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"system","content":"be brief"},
+		{"role":"user","content":"look"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"assistant","content":[{"type":"output_text","text":"done"}]},
+		{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		b.Fatalf("unmarshal input: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ToChatMessages(input, nil)
+	}
+}
+
+// Custom tools in the OpenAI Chat wire shape carry name and description inside
+// "custom"; both must survive ingress and the chat -> responses conversion.
+func TestToResponsesRequest_CustomToolKeepsNameAndDescription(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		wantDesc string
+		wantFmt  bool
+	}{
+		{
+			name:     "nested_with_grammar",
+			tool:     `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"grammar","grammar":{"syntax":"lark","definition":"start: x"}}}}`,
+			wantDesc: "Apply a patch",
+			wantFmt:  true,
+		},
+		{
+			name:     "nested_without_format",
+			tool:     `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch"}}`,
+			wantDesc: "Apply a patch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tool ChatTool
+			if err := json.Unmarshal([]byte(tc.tool), &tool); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			req := &BifrostChatRequest{Params: &ChatParameters{Tools: []ChatTool{tool}}}
+			rt := req.ToResponsesRequest().Params.Tools[0]
+			if rt.Type != ResponsesToolTypeCustom {
+				t.Fatalf("type = %q, want custom", rt.Type)
+			}
+			if rt.Name == nil || *rt.Name != "ApplyPatch" {
+				t.Fatalf("name = %v, want ApplyPatch", rt.Name)
+			}
+			if tc.wantDesc != "" && (rt.Description == nil || *rt.Description != tc.wantDesc) {
+				t.Fatalf("description = %v, want %q", rt.Description, tc.wantDesc)
+			}
+			hasFmt := rt.ResponsesToolCustom != nil && rt.ResponsesToolCustom.Format != nil
+			if hasFmt != tc.wantFmt {
+				t.Fatalf("format present = %v, want %v", hasFmt, tc.wantFmt)
+			}
+		})
+	}
+}
+
+// A chat custom tool forwarded as-is must keep custom.name on the outbound wire.
+func TestChatTool_CustomToolNameSurvivesRoundTrip(t *testing.T) {
+	in := `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"text"}}}`
+	var tool ChatTool
+	if err := json.Unmarshal([]byte(in), &tool); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"text"}}}`
+	if string(out) != want {
+		t.Fatalf("round trip:\n got  %s\n want %s", out, want)
+	}
+}
+
+func TestResponsesToolToChatTool_CustomToolKeepsNameAndDescription(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"custom","name":"ApplyPatch","description":"Apply a patch","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}`,
+		`{"type":"custom","name":"ApplyPatch","description":"Apply a patch"}`,
+	} {
+		var rt ResponsesTool
+		if err := json.Unmarshal([]byte(in), &rt); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := json.Marshal(rt.ToChatTool())
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(out), `"name":"ApplyPatch"`) || !strings.Contains(string(out), `"description":"Apply a patch"`) {
+			t.Fatalf("ToChatTool(%s) = %s, want name and description inside custom", in, out)
+		}
+	}
+}
+
+// Chat logprobs must survive the chat -> Responses conversion, which carries them
+// as an include entry rather than a boolean.
+func TestToResponsesRequest_LogProbsAddsInclude(t *testing.T) {
+	cases := []struct {
+		name     string
+		logprobs *bool
+		want     bool
+	}{
+		{name: "true", logprobs: Ptr(true), want: true},
+		{name: "false", logprobs: Ptr(false), want: false},
+		{name: "unset", logprobs: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			brr := (&BifrostChatRequest{
+				Model:  "gpt-6-luna",
+				Params: &ChatParameters{LogProbs: tc.logprobs, TopLogProbs: Ptr(2)},
+			}).ToResponsesRequest()
+			got := slices.Contains(brr.Params.Include, ResponsesIncludeOutputTextLogProbs)
+			if got != tc.want {
+				t.Fatalf("include %q present = %v, want %v (include=%v)", ResponsesIncludeOutputTextLogProbs, got, tc.want, brr.Params.Include)
+			}
+			if brr.Params.TopLogProbs == nil || *brr.Params.TopLogProbs != 2 {
+				t.Fatalf("expected top_logprobs 2, got %v", brr.Params.TopLogProbs)
+			}
+		})
+	}
+}
+
+func responsesTextOutputWithLogProbs(text string, logprobs []ResponsesOutputMessageContentTextLogProb) []ResponsesMessage {
+	out := responsesTextOutput(text)
+	out[0].Content.ContentBlocks[0].ResponsesOutputMessageContentText = &ResponsesOutputMessageContentText{LogProbs: logprobs}
+	return out
+}
+
+func TestToBifrostChatResponse_MapsOutputTextLogProbs(t *testing.T) {
+	logprobs := []ResponsesOutputMessageContentTextLogProb{
+		{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi"}}},
+		{Bytes: []int{33}, LogProb: -0.00002, Token: "!", TopLogProbs: []LogProb{{Bytes: []int{33}, LogProb: -0.00002, Token: "!"}}},
+	}
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutputWithLogProbs("Hi!", logprobs),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", chatResp)
+	}
+	lp := chatResp.Choices[0].LogProbs
+	if lp == nil {
+		t.Fatal("expected choices[0].logprobs to be set")
+	}
+	want := []ContentLogProb{
+		{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi"}}},
+		{Bytes: []int{33}, LogProb: -0.00002, Token: "!", TopLogProbs: []LogProb{{Bytes: []int{33}, LogProb: -0.00002, Token: "!"}}},
+	}
+	if !reflect.DeepEqual(lp.Content, want) {
+		t.Fatalf("logprobs.content mismatch:\n got %+v\nwant %+v", lp.Content, want)
+	}
+}
+
+// OpenAI echoes "logprobs": [] on every text block, requested or not; that must
+// stay null on the chat side, as it is on a native chat completion.
+func TestToBifrostChatResponse_EmptyOutputTextLogProbsStayNull(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutputWithLogProbs("Hi!", []ResponsesOutputMessageContentTextLogProb{}),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", chatResp)
+	}
+	if chatResp.Choices[0].LogProbs != nil {
+		t.Fatalf("expected nil logprobs, got %+v", chatResp.Choices[0].LogProbs)
+	}
+}
+
+// Each choice built from an output message carries only that message's logprobs, even
+// when items with no chat message of their own (reasoning) sit between them.
+func TestToBifrostChatResponse_LogProbsFollowTheirMessage(t *testing.T) {
+	hi := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{72, 105}, LogProb: -0.1, Token: "Hi", TopLogProbs: []LogProb{}}}
+	bye := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{66, 121, 101}, LogProb: -0.2, Token: "Bye", TopLogProbs: []LogProb{}}}
+	output := append(responsesTextOutputWithLogProbs("Hi", hi), ResponsesMessage{
+		Type:               Ptr(ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &ResponsesReasoning{Summary: []ResponsesReasoningSummary{}},
+	})
+	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
+
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
+	if chatResp == nil || len(chatResp.Choices) != 2 {
+		t.Fatalf("expected two choices, got %+v", chatResp)
+	}
+	for i, want := range []struct{ text, token string }{{"Hi", "Hi"}, {"Bye", "Bye"}} {
+		choice := chatResp.Choices[i]
+		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
+			t.Fatalf("choices[%d] text = %v, want %q", i, got, want.text)
+		}
+		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
+			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i, choice.LogProbs, want.token)
+		}
+	}
+}
+
+// A standalone tool call ahead of the text gets no logprobs, and a call after the text
+// merges into that text's choice without taking a later message's logprobs.
+func TestToBifrostChatResponse_LogProbsSurviveInterleavedToolCalls(t *testing.T) {
+	call := func(id string) ResponsesMessage {
+		return ResponsesMessage{
+			Type:                 Ptr(ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr(id), Name: Ptr("get_weather"), Arguments: Ptr("{}")},
+		}
+	}
+	hi := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{72, 105}, LogProb: -0.1, Token: "Hi", TopLogProbs: []LogProb{}}}
+	bye := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{66, 121, 101}, LogProb: -0.2, Token: "Bye", TopLogProbs: []LogProb{}}}
+	output := []ResponsesMessage{call("call_1")}
+	output = append(output, responsesTextOutputWithLogProbs("Hi", hi)...)
+	output = append(output, call("call_2"))
+	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
+
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
+	if chatResp == nil || len(chatResp.Choices) != 3 {
+		t.Fatalf("expected three choices (call_1, Hi+call_2, Bye), got %+v", chatResp)
+	}
+	if lp := chatResp.Choices[0].LogProbs; lp != nil {
+		t.Fatalf("standalone tool-call choice must carry no logprobs, got %+v", lp)
+	}
+	for i, want := range []struct{ text, token, call string }{{"Hi", "Hi", "call_2"}, {"Bye", "Bye", ""}} {
+		choice := chatResp.Choices[i+1]
+		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
+			t.Fatalf("choices[%d] text = %v, want %q", i+1, got, want.text)
+		}
+		if want.call != "" {
+			calls := choice.Message.ChatAssistantMessage.ToolCalls
+			if len(calls) != 1 || calls[0].ID == nil || *calls[0].ID != want.call {
+				t.Fatalf("choices[%d] tool calls = %+v, want %s merged", i+1, calls, want.call)
+			}
+		}
+		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
+			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i+1, choice.LogProbs, want.token)
+		}
+	}
+}
+
+func TestResponsesStreamToBifrostChatResponse_MapsOutputTextDeltaLogProbs(t *testing.T) {
+	chunk := &BifrostResponsesStreamResponse{
+		Type:  ResponsesStreamResponseTypeOutputTextDelta,
+		Delta: Ptr("Hi"),
+		LogProbs: []ResponsesOutputMessageContentTextLogProb{
+			{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{}},
+		},
+	}
+
+	resp := chunk.ToBifrostChatResponse()
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", resp)
+	}
+	lp := resp.Choices[0].LogProbs
+	if lp == nil || len(lp.Content) != 1 || lp.Content[0].Token != "Hi" || lp.Content[0].LogProb != -0.0001 {
+		t.Fatalf("expected delta logprobs for token Hi, got %+v", lp)
+	}
+
+	chunk.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
+	if resp := chunk.ToBifrostChatResponse(); resp.Choices[0].LogProbs != nil {
+		t.Fatalf("expected nil logprobs for an empty delta list, got %+v", resp.Choices[0].LogProbs)
+	}
+}
+func customToolCallItem() ResponsesMessage {
+	return ResponsesMessage{
+		ID:     Ptr("ctc_1"),
+		Type:   Ptr(ResponsesMessageTypeCustomToolCall),
+		Status: Ptr("completed"),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID:                  Ptr("call_1"),
+			Name:                    Ptr("code_exec"),
+			ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: "print(1)"},
+		},
+	}
+}
+
+func requireCustomChatToolCall(t *testing.T, tc ChatAssistantMessageToolCall, input string) {
+	t.Helper()
+	if tc.Type == nil || *tc.Type != string(ChatToolTypeCustom) {
+		t.Fatalf("tool call type = %v, want custom", tc.Type)
+	}
+	if tc.ID == nil || *tc.ID != "call_1" {
+		t.Fatalf("tool call id = %v, want call_1", tc.ID)
+	}
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != input {
+		t.Fatalf("custom = %+v, want code_exec/%q", tc.Custom, input)
+	}
+}
+
+// A chat request served through the Responses API answers a custom tool call with a
+// chat custom tool call, not an empty choices list.
+func TestResponsesToChatResponse_CustomToolCall(t *testing.T) {
+	resp := &BifrostResponsesResponse{ID: Ptr("resp_1"), Status: Ptr(ResponsesResponseStatusCompleted), Output: []ResponsesMessage{customToolCallItem()}}
+	chat := resp.ToBifrostChatResponse()
+	if len(chat.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(chat.Choices))
+	}
+	choice := chat.Choices[0]
+	if choice.FinishReason == nil || *choice.FinishReason != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("finish_reason = %v, want tool_calls", choice.FinishReason)
+	}
+	calls := choice.Message.ChatAssistantMessage.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(calls))
+	}
+	requireCustomChatToolCall(t, calls[0], "print(1)")
+}
+
+func TestResponsesStreamToChat_CustomToolCall(t *testing.T) {
+	item := customToolCallItem()
+	item.ResponsesCustomToolCall = &ResponsesCustomToolCall{}
+	added := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: Ptr(0), Item: &item}).ToBifrostChatResponse()
+	calls := added.Choices[0].Delta.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("added: tool calls = %d, want 1", len(calls))
+	}
+	requireCustomChatToolCall(t, calls[0], "")
+
+	delta := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCustomToolCallInputDelta, OutputIndex: Ptr(0), ItemID: Ptr("ctc_1"), Delta: Ptr("pri")}).ToBifrostChatResponse()
+	calls = delta.Choices[0].Delta.ToolCalls
+	if len(calls) != 1 || calls[0].Custom == nil || calls[0].Custom.Input != "pri" || calls[0].Custom.Name != nil {
+		t.Fatalf("delta: tool calls = %+v, want one custom input delta", calls)
+	}
+
+	completed := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &BifrostResponsesResponse{Output: []ResponsesMessage{customToolCallItem()}}}).ToBifrostChatResponse()
+	if fr := completed.Choices[0].FinishReason; fr == nil || *fr != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("finish_reason = %v, want tool_calls", fr)
+	}
+}
+
+// Replayed chat history keeps a custom call and its result custom on the Responses wire;
+// OpenAI pairs a custom_tool_call only with a custom_tool_call_output.
+func TestChatToResponsesRequest_CustomToolCallHistory(t *testing.T) {
+	req := &BifrostChatRequest{Input: []ChatMessage{
+		{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("run it")}},
+		{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+			ID: Ptr("call_1"), Type: Ptr("custom"), Custom: &ChatAssistantMessageToolCallCustom{Name: Ptr("code_exec"), Input: "print(1)"},
+		}}}},
+		{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}, Content: &ChatMessageContent{ContentStr: Ptr("1")}},
+	}}
+	input := req.ToResponsesRequest().Input
+	if len(input) != 3 {
+		t.Fatalf("input items = %d, want 3", len(input))
+	}
+	call := input[1]
+	if *call.Type != ResponsesMessageTypeCustomToolCall || call.ResponsesCustomToolCall == nil || call.ResponsesCustomToolCall.Input != "print(1)" ||
+		*call.Name != "code_exec" || *call.CallID != "call_1" || call.Arguments != nil {
+		t.Fatalf("call item = %+v", call)
+	}
+	if output := input[2]; *output.Type != ResponsesMessageTypeCustomToolCallOutput || *output.CallID != "call_1" {
+		t.Fatalf("output item type = %v, want custom_tool_call_output", *output.Type)
+	}
+}
+
+// A chat response carrying a custom call converts to a custom_tool_call output item.
+func TestChatToResponsesResponse_CustomToolCall(t *testing.T) {
+	chat := &BifrostChatResponse{Choices: []BifrostResponseChoice{{
+		FinishReason: Ptr("tool_calls"),
+		ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{Message: &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+				ID: Ptr("call_1"), Type: Ptr("custom"), Custom: &ChatAssistantMessageToolCallCustom{Name: Ptr("code_exec"), Input: "print(1)"},
+			}}},
+		}},
+	}}}
+	output := chat.ToBifrostResponsesResponse().Output
+	if len(output) != 1 || *output[0].Type != ResponsesMessageTypeCustomToolCall || output[0].ResponsesCustomToolCall.Input != "print(1)" {
+		t.Fatalf("output = %+v", output)
+	}
+}
+
+func TestToolChoiceAllowedTools_CustomEntryNameSurvivesResponses(t *testing.T) {
+	choice := &ChatToolChoice{ChatToolChoiceStruct: &ChatToolChoiceStruct{
+		Type: ChatToolChoiceTypeAllowedTools,
+		AllowedTools: &ChatToolChoiceAllowedTools{Mode: "required", Tools: []ChatToolChoiceAllowedToolsTool{
+			{Type: "custom", Custom: &ChatToolChoiceCustom{Name: "exec"}},
+		}},
+	}}
+	rtc := choice.ToResponsesToolChoice()
+	if got := rtc.ResponsesToolChoiceStruct.Tools[0].Name; got == nil || *got != "exec" {
+		t.Fatalf("responses entry name = %v", got)
+	}
+	back := rtc.ToChatToolChoice().ChatToolChoiceStruct.AllowedTools.Tools[0]
+	if back.Type != "custom" || back.Custom == nil || back.Custom.Name != "exec" || back.Function.Name != "" {
+		t.Fatalf("chat entry = %+v", back)
 	}
 }

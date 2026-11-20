@@ -866,8 +866,7 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 	t.Run("custom_type_clears_function_and_server_tool_fields", func(t *testing.T) {
 		tool := ChatTool{
 			Type:   ChatToolTypeCustom,
-			Custom: &ChatToolCustom{Format: &ChatToolCustomFormat{Type: "text"}},
-			Name:   "my_custom",
+			Custom: &ChatToolCustom{Name: "my_custom", Format: &ChatToolCustomFormat{Type: "text"}},
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
 			MaxUses:  Ptr(5),
@@ -877,7 +876,7 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 		raw := string(data)
 
 		assert.Contains(t, raw, `"type":"custom"`)
-		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"my_custom"`) // custom tool keeps custom.name
 		assert.Contains(t, raw, `"format"`)    // custom's format field
 		assert.NotContains(t, raw, `"function"`)
 		assert.NotContains(t, raw, `"should_be_stripped"`)
