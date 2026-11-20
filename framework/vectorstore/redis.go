@@ -2110,7 +2110,7 @@ func buildKey(namespace, id string) string {
 }
 
 // newRedisStore creates a new Redis vector store.
-func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
+func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
 	// Validate required fields
 	if config.Addr == nil || config.Addr.GetValue() == "" {
 		return nil, fmt.Errorf("redis addr is required")
@@ -2194,10 +2194,27 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}
 	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
-	if err := store.Ping(context.Background()); err != nil {
+	if err := pingWithin(ctx, store); err != nil {
+		_ = store.client.Close()
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
 	return store, nil
+}
+
+// pingWithin pings until ctx ends. go-redis bounds a read by ReadTimeout, not
+// by the context's deadline, unless ContextTimeoutEnabled is set, which would
+// change every call this store makes. So the connect ping alone is raced
+// against ctx: a server that accepts and never answers fails at the caller's
+// deadline instead of after the client's own timeouts and retries.
+func pingWithin(ctx context.Context, store *RedisStore) error {
+	done := make(chan error, 1)
+	go func() { done <- store.Ping(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func systemCertPoolWithCA(caCertPEM string) (*x509.CertPool, error) {

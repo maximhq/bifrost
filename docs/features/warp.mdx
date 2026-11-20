@@ -277,6 +277,59 @@ Vectors from different embedding models cannot be compared. When you change the 
 
 You cannot change the embedding configuration while a backfill is running. Cancel it first.
 
+### Give Warp its own vector store
+
+A store of Warp's own is optional. Without one, Warp uses the shared store and nothing needs to change.
+
+By default Warp's log index shares the deployment's [vector store](/architecture/framework/vector-store) with the semantic cache and the complexity router. Warp embeds every indexed log, so on a busy deployment its index is by far the largest thing in that store. To keep it on separately sized infrastructure, or behind its own access controls, give Warp a store of its own with `vector_store` in the `warp` section of `config.json`. It takes the same shape as the top-level `vector_store`:
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": { "addr": "env.REDIS_ADDR" }
+  },
+  "warp": {
+    "vector_store": {
+      "enabled": true,
+      "type": "qdrant",
+      "config": { "host": "env.WARP_QDRANT_HOST", "port": 6334, "api_key": "env.WARP_QDRANT_API_KEY" }
+    }
+  }
+}
+```
+
+- **Set at startup only.** It is read when Bifrost starts, never saved from the dashboard, and not part of the `warp` section's sync, so changing it does not re-apply the rest of the section. Restart Bifrost to apply a change.
+- **No fallback.** If the store is invalid or cannot be reached at startup, Warp is unavailable until it is fixed and Bifrost restarts. The server log has the connection error, and **Settings** > **Warp** says what happened. Warp never falls back to the shared store, and the rest of Bifrost runs normally.
+- **Run a backfill after adding or moving it.** The new store starts empty. The backfill section shows no completed run for it, so start a [backfill](#backfill) to index existing logs. Topics are kept: they live in the logs store. Bifrost tells stores apart by their type and endpoint, so a stopped backfill resumes only on the store it was writing to. If you replace a store's data but keep its address (a restore, or a wiped volume), start the backfill with `"restart": true`.
+- **The old index stays where it was.** Bifrost never deletes Warp's vectors from the store it moved off, and retention and the [size budget](/deployment-guides/config-json/client) no longer cover them. Delete them yourself, as below. While Warp is on its own store, **Settings** > **Warp** shows a reminder with the namespace.
+- **Every replica needs the same `warp.vector_store`.** Replicas on different stores each index into their own.
+- **Same retention.** [`vector_retention_days`](/deployment-guides/config-json/client) applies to Warp's store as it does to the shared one.
+
+A `warp.vector_store` that is disabled, or that points at the same location as the top-level `vector_store`, leaves Warp on the shared store.
+
+#### Delete the old index
+
+After moving Warp to a store of its own, its earlier log index is still in the store it left, under the `log_vector_store_namespace` it used there (`BifrostWarpLogs` by default). Delete it once every Bifrost replica runs with the new `warp.vector_store`: a replica still on the old config keeps writing to it.
+
+<Warning>
+Check first that `warp.vector_store` really is a different store. If it reaches the same store as the top-level `vector_store` under another address (a different hostname for the same server, say), the namespace below is the one Warp uses now, and deleting it deletes Warp's live index.
+</Warning>
+
+Delete only Warp's namespace, not the whole store: the semantic cache and the complexity router keep their data there too.
+
+| Store | Warp's namespace is | Delete it with |
+|-------|---------------------|----------------|
+| Weaviate | A class | `DELETE /v1/schema/BifrostWarpLogs` |
+| Qdrant | A collection | `DELETE /collections/BifrostWarpLogs` |
+| Redis | A search index and its keys | `FT.DROPINDEX BifrostWarpLogs DD` |
+| Pinecone | A namespace in the index | Delete all vectors in namespace `BifrostWarpLogs` (console, or `delete` with `deleteAll` and the namespace) |
+
+Chromem runs inside Bifrost, so there is no outside tool to delete one collection. A memory-only Chromem store drops the index at the next restart; one on disk keeps it.
+
+If Warp moves off a store of its own, the same applies to that store: Bifrost no longer connects to it, so the index stays there until you delete it. An older namespace from before a rename of `log_vector_store_namespace` also stays until you delete it.
+
 ---
 
 ## Use Warp
@@ -440,12 +493,12 @@ The response body has a `reason` field:
 |---|---|---|
 | `not_configured` | Warp is switched off or a required setting is missing. | Fill in the default model and the embedding settings, then turn on **Enable Warp**. |
 | `no_log_store` | The deployment persists no logs. | Configure a logs store. |
-| `no_vector_store` | No vector store is connected. | Configure a vector store. |
+| `no_vector_store` | No vector store is connected, or Warp's own store (`warp.vector_store`) could not be reached at startup. The message says which. | Configure a vector store, or fix Warp's own store and restart Bifrost. |
 
 ### The Enable Warp switch is disabled
 
-**Cause:** No vector store is connected.
-**Fix:** Configure a [vector store](/architecture/framework/vector-store). The settings page shows the connection status under **Conversation search**.
+**Cause:** No vector store is connected, or Warp's own store (`warp.vector_store`) could not be reached at startup.
+**Fix:** Configure a [vector store](/architecture/framework/vector-store), or check the server log for Warp's store, fix it, and restart Bifrost. The settings page shows the connection status under **Conversation search**.
 
 ### Saving fails with "namespace must change"
 

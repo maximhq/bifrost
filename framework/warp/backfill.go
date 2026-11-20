@@ -47,6 +47,7 @@ type BackfillJobMeta struct {
 	EndTime         time.Time  `json:"end_time"`
 	ConfigSignature string     `json:"config_signature"`
 	Namespace       string     `json:"namespace"`
+	VectorStore     string     `json:"vector_store,omitempty"` // VectorStoreSource.ID of the store indexed into; empty for the shared store
 	CursorTime      *time.Time `json:"cursor_time,omitempty"`
 	CursorOffset    int        `json:"cursor_offset,omitempty"`
 	Total           int64      `json:"total"`
@@ -149,6 +150,11 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	if !start.Before(end) {
 		return "", fmt.Errorf("%w: start_time must be before end_time", ErrInvalidConfig)
 	}
+	// No store is its own error, before the rest: when Warp's own store failed
+	// at startup, that is what the admin has to fix, not "not configured".
+	if s.vectorStore == nil && s.store != nil {
+		return "", s.noVectorStore()
+	}
 	if s.logs == nil || s.indexer == nil {
 		return "", ErrUnavailable
 	}
@@ -178,7 +184,7 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	if result.Pagination.TotalCount > total {
 		total = result.Pagination.TotalCount
 	}
-	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), Total: total}
+	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), VectorStore: s.vectorSource.ID, Total: total}
 	return marshalBackfillMeta(meta)
 }
 
@@ -204,6 +210,27 @@ func (s *Service) BackfillMatchesConfig(ctx context.Context, metadata string) bo
 		return true
 	}
 	return meta.ConfigSignature == embeddingConfigSignature(config)
+}
+
+// BackfillMatchesStore reports whether a backfill indexed into the store Warp
+// uses now, by the store's ID from startup (VectorStoreSource.ID). The
+// embedding signature cannot carry this: topics are keyed by it in the log
+// store and stay valid when the vectors move, so a store switch changes only
+// whether the index is built. A job from before stores were named names none
+// and matches only the shared store. Metadata that does not parse is left to
+// BackfillMatchesConfig.
+func (s *Service) BackfillMatchesStore(metadata string) bool {
+	var meta BackfillJobMeta
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return true
+	}
+	return s.checkpointIsForThisStore(meta.VectorStore)
+}
+
+// checkpointIsForThisStore reports whether a checkpoint was written for the
+// store Warp indexes into now.
+func (s *Service) checkpointIsForThisStore(vectorStore string) bool {
+	return vectorStore == s.vectorSource.ID
 }
 
 // resumableBackfillMeta looks for the most recent backfill job that stopped
@@ -233,6 +260,11 @@ func (s *Service) resumableBackfillMeta(ctx context.Context, start, end time.Tim
 	if meta.CursorTime == nil || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature {
 		return BackfillJobMeta{}, false, nil
 	}
+	// Only into the store it was indexing: resuming in another would skip every
+	// log the old run indexed there.
+	if !s.checkpointIsForThisStore(meta.VectorStore) {
+		return BackfillJobMeta{}, false, nil
+	}
 	meta.LastError = ""
 	meta.Message = fmt.Sprintf("Resuming from log %d of %d.", meta.Scanned, meta.Total)
 	return meta, true, nil
@@ -252,6 +284,14 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 			lastSnapshot = encoded
 		}
 		return lastSnapshot
+	}
+
+	// A job picked back up after a restart may have been written for a store
+	// Warp no longer uses; its cursor would skip logs the store never had. It
+	// fails here and keeps its checkpoint. Checked once, as the job starts:
+	// warp.vector_store changes only with a restart, never under a running job.
+	if !s.checkpointIsForThisStore(meta.VectorStore) {
+		return snapshot(), fmt.Errorf("Warp's vector store changed since this backfill was started; start a new backfill")
 	}
 
 	// Counted in memory only: a resumed job starts with a clean slate, which is

@@ -6398,6 +6398,10 @@
           "minimum": 0,
           "description": "Vector size the embedding model returns, e.g. 1536 for text-embedding-3-small. Required when enabled."
         },
+        "vector_store": {
+          "$ref": "#/properties/vector_store",
+          "description": "Warp's own vector store for its log index, in the same shape as the top-level vector_store. Omit to keep Warp's index in the shared vector store. Read at startup only, never saved from the dashboard, and not part of this section's sync. If it is invalid or cannot be reached at startup, Warp is unavailable until it is fixed and Bifrost restarts; Warp never falls back to the shared store, and the rest of Bifrost runs normally. Adding or moving it leaves the new store empty: start a backfill from Settings > Warp. Vectors in the previous store are not deleted."
+        },
         "log_vector_store_namespace": {
           "type": "string",
           "default": "BifrostWarpLogs",

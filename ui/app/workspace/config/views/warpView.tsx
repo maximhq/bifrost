@@ -612,7 +612,8 @@ export default function WarpView() {
 							)}
 							{!config?.vector_store_connected && (
 								<p className="text-destructive flex items-center gap-1.5 text-xs" data-testid="warp-vector-store-required">
-									<AlertTriangle className="h-3.5 w-3.5" /> {t("warp.vectorRequired")}
+									<AlertTriangle className="h-3.5 w-3.5" />{" "}
+									{config?.vector_store_failed ? t("warp.dedicatedVectorFailed") : t("warp.vectorRequired")}
 								</p>
 							)}
 						</div>
@@ -825,10 +826,47 @@ export default function WarpView() {
 									) : (
 										<Database className="mr-1 h-3.5 w-3.5" />
 									)}
-									{config?.vector_store_connected ? t("warp.vectorConnected") : t("warp.vectorDisconnected")}
+									{config?.vector_store_dedicated
+										? config.vector_store_connected
+											? t("warp.dedicatedVectorConnected", { type: config.vector_store_type ?? "" })
+											: t("warp.dedicatedVectorUnavailable")
+										: config?.vector_store_connected
+											? t("warp.vectorConnected")
+											: t("warp.vectorDisconnected")}
 								</Badge>
 							}
 						>
+							{config?.vector_store_dedicated && config.vector_store_connected && (
+								<p className="text-muted-foreground mb-4 text-xs" data-testid="warp-dedicated-vector-store-note">
+									{t("warp.dedicatedVectorHelp", { type: config.vector_store_type ?? "" })}
+								</p>
+							)}
+							{/* The default: say a store of Warp's own is an option, not a requirement. */}
+							{config && !config.vector_store_dedicated && config.vector_store_connected && (
+								<p className="text-muted-foreground mb-4 text-xs" data-testid="warp-shared-vector-store-note">
+									{t("warp.sharedVectorHelp")}
+								</p>
+							)}
+							{/* Bifrost cannot tell whether the two stores are one, so it never deletes the old index: it says where it is. */}
+							{config?.vector_store_dedicated && config.vector_store_connected && (
+								<Alert variant="warning" className="mb-4" data-testid="warp-shared-store-cleanup-note">
+									<TriangleAlert className="h-4 w-4" />
+									<AlertDescription>
+										<span>
+											{t("warp.sharedStoreCleanup", { namespace: config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE })}{" "}
+											<a
+												className="underline"
+												href="https://docs.getbifrost.ai/features/warp#delete-the-old-index"
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="warp-shared-store-cleanup-docs-link"
+											>
+												{t("learnMore")}
+											</a>
+										</span>
+									</AlertDescription>
+								</Alert>
+							)}
 							<div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
 								<WarpField label={t("warp.embeddingProvider")} htmlFor="warp-embedding-provider">
 									<ProviderSelector

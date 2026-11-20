@@ -941,3 +941,101 @@ func TestRegisterBackfillRegistersTopicsWithoutAnIndexer(t *testing.T) {
 	require.NoError(t, runner.Enqueue(context.Background(), "topics-1", TopicsJobKind, "{}", ""))
 	require.Error(t, runner.Enqueue(context.Background(), "backfill-1", BackfillJobKind, "{}", ""), "the backfill does need the indexer")
 }
+
+// backfillServiceOn is a backfill service indexing into vectors. Two services
+// on one store instance are one store under two configurations; separate
+// instances are separate stores, as a memory-only store is after a restart.
+func backfillServiceOn(t *testing.T, vectors *fakeWarpVectorStore, source VectorStoreSource, jobs BackfillJobStore) *Service {
+	t.Helper()
+	opts := []Option{WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
+		WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithVectorStoreSource(source)}
+	if jobs != nil {
+		opts = append(opts, WithBackfillJobStore(jobs))
+	}
+	service := NewService(nil, opts...)
+	t.Cleanup(service.Shutdown)
+	return service
+}
+
+// Two dedicated stores, by their IDs from startup.
+var (
+	dedicatedSource = VectorStoreSource{Dedicated: true, Type: "qdrant", ID: "qdrant://vectors-a:6334"}
+	otherDedicated  = VectorStoreSource{Dedicated: true, Type: "qdrant", ID: "qdrant://vectors-b:6334"}
+)
+
+// A backfill names the store it indexed into by the store's ID from startup,
+// so a run into one store is not taken for the index of another, shared or
+// dedicated. A job from before stores were named matches only the shared
+// store; unreadable metadata is left to BackfillMatchesConfig.
+func TestWarpBackfillMatchesOnlyTheStoreItIndexedInto(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	onA := backfillServiceOn(t, newFakeWarpVectorStore(), dedicatedSource, nil)
+	metaJSON, err := onA.BuildBackfillJobMeta(ctx, start, start.Add(time.Hour), false)
+	require.NoError(t, err)
+	var meta BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+	require.Equal(t, dedicatedSource.ID, meta.VectorStore, "the checkpoint names its store")
+
+	require.True(t, onA.BackfillMatchesStore(metaJSON))
+	require.True(t, backfillServiceOn(t, newFakeWarpVectorStore(), dedicatedSource, nil).BackfillMatchesStore(metaJSON), "another replica of the same store")
+	require.False(t, backfillServiceOn(t, newFakeWarpVectorStore(), otherDedicated, nil).BackfillMatchesStore(metaJSON), "another store is empty")
+	require.False(t, backfillServiceOn(t, newFakeWarpVectorStore(), VectorStoreSource{}, nil).BackfillMatchesStore(metaJSON), "the shared store was not indexed")
+
+	legacy := `{"config_signature":"x","namespace":"BifrostWarpLogs"}`
+	require.True(t, backfillServiceOn(t, newFakeWarpVectorStore(), VectorStoreSource{}, nil).BackfillMatchesStore(legacy), "a job from before stores were named indexed the shared store")
+	require.False(t, onA.BackfillMatchesStore(legacy))
+	require.True(t, onA.BackfillMatchesStore("not json"))
+}
+
+// A stopped backfill resumes from its checkpoint only into the store it was
+// indexing: in any other, resuming would skip every log the old run had
+// indexed elsewhere.
+func TestWarpBackfillDoesNotResumeIntoAnotherStore(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	cursor := start.Add(30 * time.Minute)
+	built, err := backfillServiceOn(t, newFakeWarpVectorStore(), dedicatedSource, nil).BuildBackfillJobMeta(ctx, start, end, false)
+	require.NoError(t, err)
+	var stopped BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(built), &stopped))
+	stopped.CursorTime, stopped.Total, stopped.Scanned = &cursor, 10, 5
+	stoppedJSON, err := marshalBackfillMeta(stopped)
+	require.NoError(t, err)
+	jobs := activeBackfillStore{active: &tables.TableSidekiqJob{ID: "stopped", Status: tables.SidekiqStatusFailed, Metadata: stoppedJSON}}
+	resume := func(source VectorStoreSource) BackfillJobMeta {
+		metaJSON, err := backfillServiceOn(t, newFakeWarpVectorStore(), source, jobs).BuildBackfillJobMeta(ctx, start, end, false)
+		require.NoError(t, err)
+		var meta BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+		return meta
+	}
+
+	require.Equal(t, 5, resume(dedicatedSource).Scanned, "the same store resumes from the checkpoint, on any replica")
+	for name, source := range map[string]VectorStoreSource{"another dedicated store": otherDedicated, "the shared store": {}} {
+		fresh := resume(source)
+		require.Zero(t, fresh.Scanned, name+" starts a clean scan")
+		require.Nil(t, fresh.CursorTime, name)
+		require.Equal(t, source.ID, fresh.VectorStore, name)
+	}
+}
+
+// A job the runner picks back up after a restart carries the checkpoint it was
+// written with. If the store has changed since, running it would skip every
+// log before the cursor in a store that never had them, so it fails and keeps
+// its checkpoint instead. Any replica of the same store runs it.
+func TestWarpBackfillRefusesARecoveredJobFromAnotherStore(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now().Add(-time.Hour)
+	metaJSON, err := backfillServiceOn(t, newFakeWarpVectorStore(), dedicatedSource, nil).BuildBackfillJobMeta(ctx, start, time.Now(), false)
+	require.NoError(t, err)
+
+	restarted := backfillServiceOn(t, newFakeWarpVectorStore(), otherDedicated, nil)
+	finalJSON, err := restarted.RunBackfillJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	require.ErrorContains(t, err, "vector store")
+	require.JSONEq(t, metaJSON, finalJSON, "the checkpoint is kept as it was")
+
+	_, err = backfillServiceOn(t, newFakeWarpVectorStore(), dedicatedSource, nil).RunBackfillJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	require.NoError(t, err, "another replica of the store it was written for runs it")
+}

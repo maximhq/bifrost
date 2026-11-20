@@ -131,8 +131,8 @@ func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers)
 // because the flag can be switched on at runtime and routes are only
 // registered once; what the flag withholds is every route and the indexing of
 // new logs.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
-	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, vectorSource warp.VectorStoreSource, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors), warp.WithVectorStoreSource(vectorSource)}
 	if store != nil {
 		opts = append(opts, warp.WithVirtualKeyDecorator(warpVirtualKeyDecorator(store, resolvers)))
 	}
@@ -422,7 +422,13 @@ func (h *WarpHandler) startJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	case errors.Is(err, warp.ErrTopicsAlreadyBuilt):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
-	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
+	case errors.Is(err, warp.ErrDedicatedVectorStoreFailed):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, warpDedicatedVectorStoreFailedMsg)
+		return
+	case errors.Is(err, warp.ErrNoVectorStore):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, err.Error())
+		return
+	case errors.Is(err, warp.ErrUnavailable):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
@@ -471,6 +477,9 @@ func (h *WarpHandler) jobStatus(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	if id != "" {
 		job, err = h.backfillStore.GetSidekiqJob(ctx, id)
 	} else {
+		// An in-flight job is shown whichever store it names: it holds the slot,
+		// so a new run cannot start until it ends, and the page must say why. One
+		// from another store ends fast, refusing to run there (RunBackfillJob).
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, spec.kind)
 		if err == nil && job == nil {
 			// Nothing running. A reloaded page still wants to see how the last
@@ -482,6 +491,12 @@ func (h *WarpHandler) jobStatus(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 			// its topics belong to a space nothing reads.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, spec.kind)
 			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+				job = nil
+			}
+			// An embedding backfill that indexed into another store says nothing
+			// about this one: after warp.vector_store is added or moved, the page
+			// offers a fresh backfill instead of showing the old store's run as done.
+			if err == nil && job != nil && spec.kind == warp.BackfillJobKind && !h.service.BackfillMatchesStore(job.Metadata) {
 				job = nil
 			}
 		}
@@ -666,6 +681,12 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 	if job != nil && !warpJobMatchesNamespace(job, view.LogVectorStoreNamespace) {
 		job = nil
 	}
+	// Likewise a job that indexed into another vector store: after
+	// warp.vector_store is added or moved, the new store is empty whatever the
+	// last run said.
+	if job != nil && !h.service.BackfillMatchesStore(job.Metadata) {
+		job = nil
+	}
 	if job != nil {
 		backfill := warpBackfillStatusFromRow(job)
 		// This route has no admin gate, unlike the backfill endpoints. LastError
@@ -779,6 +800,9 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 	switch {
 	case errors.Is(err, warp.ErrUnavailable):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		return
+	case errors.Is(err, warp.ErrDedicatedVectorStoreFailed):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, warpDedicatedVectorStoreFailedMsg)
 		return
 	case errors.Is(err, warp.ErrNoVectorStore):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, err.Error())

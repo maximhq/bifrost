@@ -7,6 +7,7 @@ package warp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -30,7 +31,29 @@ var (
 	ErrTopicsAlreadyBuilt = errors.New("warp: topics are already built for this embedding model")
 	// ErrNoVectorStore means Warp's required semantic index has no backend.
 	ErrNoVectorStore = errors.New("warp: vector store is not connected")
+	// ErrDedicatedVectorStoreFailed is ErrNoVectorStore for a deployment that
+	// gave Warp its own store (warp.vector_store in config.json) and that store
+	// could not be reached at startup. Warp does not fall back to the shared
+	// store: that would write the log index to the place the admin chose to keep
+	// it out of.
+	ErrDedicatedVectorStoreFailed = fmt.Errorf("%w: warp.vector_store in config.json could not be reached at startup", ErrNoVectorStore)
 )
+
+// VectorStoreSource says where Warp's vector store comes from.
+//
+// ID names the store for backfill checkpoints, from its configuration as
+// Bifrost read it at startup: empty for the shared store, otherwise the
+// dedicated store's location (its type and endpoint, never its credentials).
+// Like the embedding signature, it is used only to say no: a checkpoint whose
+// ID differs is neither resumed nor shown, and the cost of a wrong "differs"
+// is a fresh scan. Replacing a store's data under the same configuration is
+// not seen; the docs say to start that backfill with restart.
+type VectorStoreSource struct {
+	Dedicated bool   // warp.vector_store in config.json, not the shared vector_store
+	Type      string // the dedicated store's type
+	Failed    bool   // the dedicated store was configured but could not connect at startup
+	ID        string // the store's identity for backfill checkpoints, see above
+}
 
 // Service is the in-process face of Warp. It is built once at bootstrap, before
 // plugins load, so construction must stay allocation-only: no store reads, no
@@ -93,15 +116,16 @@ type Service struct {
 	topicsAdmitMu sync.Mutex
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog     *modelcatalog.ModelCatalog
-	vectorStore vectorstore.VectorStore
+	catalog      *modelcatalog.ModelCatalog
+	vectorStore  vectorstore.VectorStore
+	vectorSource VectorStoreSource
 	// vectorRetention reports the vector retention in days, for the vector sweep.
 	vectorRetention func() int
-	embed        EmbeddingExecutor
-	indexer      *LogIndexer
-	semantic     *SemanticSearcher
-	topics       *TopicReader
-	backfillJobs BackfillJobStore
+	embed           EmbeddingExecutor
+	indexer         *LogIndexer
+	semantic        *SemanticSearcher
+	topics          *TopicReader
+	backfillJobs    BackfillJobStore
 	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
 	// them so a run crosses its thresholds on a handful of requests.
 	topicLimits topicLimits
@@ -183,9 +207,25 @@ func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
 	return func(s *Service) { s.catalog = catalog }
 }
 
-// WithVectorStore connects Warp to the deployment-wide vector store.
+// WithVectorStore connects Warp to its vector store: the deployment-wide one,
+// or Warp's own when WithVectorStoreSource says so.
 func WithVectorStore(store vectorstore.VectorStore) Option {
 	return func(s *Service) { s.vectorStore = store }
+}
+
+// WithVectorStoreSource says where the store given to WithVectorStore comes
+// from. Without it the store is the shared one.
+func WithVectorStoreSource(source VectorStoreSource) Option {
+	return func(s *Service) { s.vectorSource = source }
+}
+
+// noVectorStore is the error for a missing vector store: the specific one when
+// Warp's own store failed at startup, so the caller can say what to fix.
+func (s *Service) noVectorStore() error {
+	if s.vectorSource.Dedicated && s.vectorSource.Failed {
+		return ErrDedicatedVectorStoreFailed
+	}
+	return ErrNoVectorStore
 }
 
 // WithResponsesExecutor supplies the main gateway responses path, which Warp's

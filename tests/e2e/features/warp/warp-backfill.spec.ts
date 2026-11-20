@@ -49,7 +49,7 @@ async function acknowledgeMCPNotice(page: Page) {
 // The warp flag is shared server state that other suites toggle in parallel,
 // and it only gates the UI. Turning it on in this page's view of the flags
 // leaves the server's copy alone, so no suite races another over it.
-async function mockWarpBackfill(page: Page, job: object) {
+async function mockWarpBackfill(page: Page, job: object, config: object = configuredWarp) {
   await acknowledgeMCPNotice(page)
   await page.route('**/api/feature-flags', async (route) => {
     if (route.request().method() !== 'GET') return route.continue()
@@ -59,7 +59,7 @@ async function mockWarpBackfill(page: Page, job: object) {
     await route.fulfill({ response, json: body })
   })
   await page.route('**/api/warp/config', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(configuredWarp) }),
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }),
   )
   await page.route('**/api/warp/log-index/backfill/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(job) }),
@@ -207,5 +207,79 @@ test.describe('Warp semantic search threshold', () => {
     threshold = 0.62
     await page.reload()
     await expect(page.getByTestId('warp-search-threshold-input')).toHaveValue('0.62')
+  })
+})
+
+// warp.vector_store in config.json gives Warp its own store. The page names it,
+// says a new or moved store needs a backfill, and when it could not be reached
+// at startup says exactly that instead of the generic "connect a vector store".
+// The config endpoint is mocked: the store is only set at startup.
+test.describe("Warp's own vector store", () => {
+  const idle = { status: 'idle' }
+
+  test('names a connected dedicated store and points at the backfill', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: true, vector_store_type: 'qdrant' })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText("Warp's own qdrant store connected")
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toContainText('start a backfill')
+    await expect(page.getByTestId('warp-vector-store-required')).toHaveCount(0)
+  })
+
+  test('says why Warp is unavailable when its own store failed at startup', async ({ page }) => {
+    await mockWarpBackfill(page, idle, {
+      ...configuredWarp,
+      enabled: false,
+      vector_store_connected: false,
+      vector_store_dedicated: true,
+      vector_store_type: 'qdrant',
+      vector_store_failed: true,
+    })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-required')).toContainText('warp.vector_store in config.json')
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText("Warp's own vector store unavailable")
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toHaveCount(0)
+  })
+
+  test('keeps the shared-store wording without warp.vector_store', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: false })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText('Vector store connected')
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toHaveCount(0)
+    await expect(page.getByTestId('warp-shared-vector-store-note')).toContainText('Optionally, give Warp its own')
+  })
+})
+
+// When Warp has its own store, Bifrost cannot tell whether it is the same store
+// as the shared one, so it never deletes the index Warp built there: the
+// settings page says where it is and links to how to delete it.
+test.describe("Warp's index left in the shared store", () => {
+  const idle = { status: 'idle' }
+
+  test('says where the old index is while Warp is on its own store', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: true, vector_store_type: 'qdrant', log_vector_store_namespace: 'BifrostWarpLogs' })
+    await page.goto('/workspace/config/warp')
+    const note = page.getByTestId('warp-shared-store-cleanup-note')
+    await expect(note).toContainText('under the namespace Warp used there: BifrostWarpLogs')
+    await expect(note).toContainText('delete that namespace from the shared store')
+    await expect(note.getByTestId('warp-shared-store-cleanup-docs-link')).toHaveAttribute('href', /features\/warp#delete-the-old-index$/)
+  })
+
+  // The page knows only the namespace Warp uses now. One renamed during the move
+  // left the old index under its previous name, so the note says to use that.
+  test('points at the previous namespace when it changed during the move', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: true, vector_store_type: 'qdrant', log_vector_store_namespace: 'NewLogs' })
+    await page.goto('/workspace/config/warp')
+    const note = page.getByTestId('warp-shared-store-cleanup-note')
+    await expect(note).toContainText('NewLogs, unless log_vector_store_namespace was different before the move')
+  })
+
+  test('says nothing while Warp is on the shared store', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: false })
+    await page.goto('/workspace/config/warp')
+    await expect(page.getByTestId('warp-shared-vector-store-note')).toBeVisible()
+    await expect(page.getByTestId('warp-shared-store-cleanup-note')).toHaveCount(0)
   })
 })
