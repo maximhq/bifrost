@@ -3,6 +3,7 @@ package complexity
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"unicode/utf8"
 
@@ -39,36 +40,93 @@ type PhraseAppend struct {
 // whole append, since a phrase routes to one tier. The bank's phrase and
 // length limits apply. keywords is not modified.
 func AppendPhrases(keywords EditableKeywordConfig, add map[string][]string) (EditableKeywordConfig, PhraseAppend, error) {
-	out := EditableKeywordConfig{
-		SimpleKeywords:  append([]string(nil), keywords.SimpleKeywords...),
-		MediumKeywords:  append([]string(nil), keywords.MediumKeywords...),
-		ComplexKeywords: append([]string(nil), keywords.ComplexKeywords...),
+	lists, result, err := appendToTiers(map[string][]string{
+		TierSimple: keywords.SimpleKeywords, TierMedium: keywords.MediumKeywords, TierComplex: keywords.ComplexKeywords,
+	}, add, phraseBankLimits)
+	out := EditableKeywordConfig{SimpleKeywords: lists[TierSimple], MediumKeywords: lists[TierMedium], ComplexKeywords: lists[TierComplex]}
+	return out, result, err
+}
+
+// AppendDecisionExamples appends examples, keyed by tier as AppendPhrases
+// takes phrases, to a copy of a decision-model router's guidance, under the
+// same rules: compared case- and whitespace-insensitively, skipped when the
+// tier holds one already, refused when another tier does or a tier would go
+// past its limit. A tier's examples are the ones the decision model reads, so
+// a tier that has never been edited starts from its shipped examples, which
+// an override would otherwise replace. Only tiers given an example are
+// written. decision is not modified; nil is the shipped guidance.
+func AppendDecisionExamples(decision *DecisionConfig, add map[string][]string) (*DecisionConfig, PhraseAppend, error) {
+	resolved := decision.ResolvedCriteria()
+	lists := make(map[string][]string, len(resolved))
+	for tier, criteria := range resolved {
+		lists[tier] = criteria.Examples
 	}
-	lists := map[string]*[]string{TierSimple: &out.SimpleKeywords, TierMedium: &out.MediumKeywords, TierComplex: &out.ComplexKeywords}
-	held := map[string]string{} // canonical phrase -> tier
-	for _, tier := range []string{TierSimple, TierMedium, TierComplex} {
-		for _, phrase := range *lists[tier] {
-			held[canonicalPhrase(phrase)] = tier
+	lists, result, err := appendToTiers(lists, add, decisionExampleLimits)
+	if err != nil {
+		return decision, result, err
+	}
+	out := &DecisionConfig{}
+	if decision != nil {
+		copied := *decision
+		out = &copied
+	}
+	out.Criteria = maps.Clone(out.Criteria)
+	if out.Criteria == nil {
+		out.Criteria = map[string]configstore.ComplexityDecisionTierCriteria{}
+	}
+	for tier, added := range result.Added {
+		if len(added) > 0 {
+			criteria := out.Criteria[tier]
+			criteria.Examples = lists[tier]
+			out.Criteria[tier] = criteria
 		}
 	}
+	return out, result, nil
+}
+
+// tierAppendLimits are what an append to per-tier lists checks, and the word
+// its errors use for an item.
+type tierAppendLimits struct {
+	item       string // "phrase" or "example"
+	oneTier    string // why an item cannot be in two tiers
+	maxChars   int
+	maxTotal   int // across all tiers; 0 is none
+	maxPerTier int // 0 is none
+}
+
+var (
+	phraseBankLimits      = tierAppendLimits{item: "phrase", oneTier: "a phrase routes to one tier", maxChars: configstore.MaxComplexitySemanticPhraseCharacters, maxTotal: configstore.MaxComplexitySemanticPhrases}
+	decisionExampleLimits = tierAppendLimits{item: "example", oneTier: "an example describes one tier", maxChars: configstore.MaxComplexityDecisionCriteriaItemCharacters, maxPerTier: configstore.MaxComplexityDecisionExamples}
+)
+
+// appendToTiers appends items, keyed by tier in any case, to copies of
+// per-tier lists; see AppendPhrases for the rules. lists is not modified.
+func appendToTiers(lists map[string][]string, add map[string][]string, limits tierAppendLimits) (map[string][]string, PhraseAppend, error) {
+	out := make(map[string][]string, 3)
+	held := map[string]string{} // canonical item -> tier
+	total := 0
+	for _, tier := range OrderedTiers() {
+		out[tier] = append([]string(nil), lists[tier]...)
+		for _, item := range out[tier] {
+			held[canonicalPhrase(item)] = tier
+		}
+		total += len(out[tier])
+	}
 	result := PhraseAppend{Added: map[string][]string{}}
-	total := len(out.SimpleKeywords) + len(out.MediumKeywords) + len(out.ComplexKeywords)
 	given := 0
-	for _, phrases := range add {
-		given += len(phrases)
+	for _, items := range add {
+		given += len(items)
 	}
 	if given == 0 {
-		return out, result, fmt.Errorf("%w: no phrases given", ErrPhraseAppend)
+		return out, result, fmt.Errorf("%w: no %ss given", ErrPhraseAppend, limits.item)
 	}
 	// One key per tier: two spellings of a tier ("SIMPLE" and "simple") would
-	// merge in map order, so which of their phrases was added and which skipped
+	// merge in map order, so which of their items was added and which skipped
 	// would vary from call to call.
 	keys := make(map[string]string, len(add))
 	for key := range add {
 		tier := strings.ToUpper(strings.TrimSpace(key))
-		switch tier {
-		case TierSimple, TierMedium, TierComplex:
-		default:
+		if !isComplexityTier(tier) {
 			return out, result, fmt.Errorf("%w: unknown tier %q; use SIMPLE, MEDIUM or COMPLEX", ErrPhraseAppend, key)
 		}
 		if other, ok := keys[tier]; ok {
@@ -81,37 +139,40 @@ func AppendPhrases(keywords EditableKeywordConfig, add map[string][]string) (Edi
 		keys[tier] = key
 	}
 	// Tiers in a fixed order, so the result does not depend on map order.
-	for _, tier := range []string{TierSimple, TierMedium, TierComplex} {
-		var phrases []string
+	for _, tier := range OrderedTiers() {
+		var items []string
 		for key, values := range add {
 			if strings.EqualFold(strings.TrimSpace(key), tier) {
-				phrases = append(phrases, values...)
+				items = append(items, values...)
 			}
 		}
-		for _, raw := range phrases {
-			phrase := strings.TrimSpace(raw)
-			if phrase == "" {
-				return out, result, fmt.Errorf("%w: a %s phrase is empty", ErrPhraseAppend, tier)
+		for _, raw := range items {
+			item := strings.TrimSpace(raw)
+			if item == "" {
+				return out, result, fmt.Errorf("%w: a %s %s is empty", ErrPhraseAppend, tier, limits.item)
 			}
-			if n := utf8.RuneCountInString(phrase); n > configstore.MaxComplexitySemanticPhraseCharacters {
-				return out, result, fmt.Errorf("%w: a %s phrase has %d characters; the limit is %d", ErrPhraseAppend, tier, n, configstore.MaxComplexitySemanticPhraseCharacters)
+			if n := utf8.RuneCountInString(item); n > limits.maxChars {
+				return out, result, fmt.Errorf("%w: a %s %s has %d characters; the limit is %d", ErrPhraseAppend, tier, limits.item, n, limits.maxChars)
 			}
-			key := canonicalPhrase(phrase)
+			key := canonicalPhrase(item)
 			if holder, ok := held[key]; ok {
 				if holder != tier {
-					return out, result, fmt.Errorf("%w: %q is already a %s phrase; a phrase routes to one tier", ErrPhraseAppend, phrase, holder)
+					return out, result, fmt.Errorf("%w: %q is already a %s %s; %s", ErrPhraseAppend, item, holder, limits.item, limits.oneTier)
 				}
-				result.Skipped = append(result.Skipped, SkippedPhrase{Tier: tier, Text: phrase})
+				result.Skipped = append(result.Skipped, SkippedPhrase{Tier: tier, Text: item})
 				continue
 			}
 			held[key] = tier
-			*lists[tier] = append(*lists[tier], phrase)
-			result.Added[tier] = append(result.Added[tier], phrase)
+			out[tier] = append(out[tier], item)
+			result.Added[tier] = append(result.Added[tier], item)
 			total++
 		}
+		if limits.maxPerTier > 0 && len(out[tier]) > limits.maxPerTier {
+			return out, result, fmt.Errorf("%w: %s would hold %d %ss; the limit is %d per tier", ErrPhraseAppend, tier, len(out[tier]), limits.item, limits.maxPerTier)
+		}
 	}
-	if total > configstore.MaxComplexitySemanticPhrases {
-		return out, result, fmt.Errorf("%w: the bank would hold %d phrases; the limit is %d across all tiers", ErrPhraseAppend, total, configstore.MaxComplexitySemanticPhrases)
+	if limits.maxTotal > 0 && total > limits.maxTotal {
+		return out, result, fmt.Errorf("%w: the bank would hold %d %ss; the limit is %d across all tiers", ErrPhraseAppend, total, limits.item, limits.maxTotal)
 	}
 	return out, result, nil
 }

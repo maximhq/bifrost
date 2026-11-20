@@ -54,6 +54,12 @@ type backfillableSpace interface {
 	Target() complexity.CaptureTarget
 }
 
+// loggedTierRecorder is a space that reads the tier the router logged for
+// each request, and can be handed them from a pass over its logs.
+type loggedTierRecorder interface {
+	RecordLoggedTiers(from, to time.Time, tiers map[string]string)
+}
+
 // backfills reports whether a router's suggestions have a use for a log: any
 // request for a semantic router, which routes them against its phrases
 // again; for a decision-model router only one its decision model logged a
@@ -103,8 +109,19 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 	}
 	keep := newestLogs{max: backfillCandidateFactor * limit, held: map[string]struct{}{}}
 	var plan backfillPlan
+	// A space that reads the router's logged tiers is handed them from this
+	// pass over the same logs, so the run reading the window does not page
+	// them again.
+	recorder, _ := space.(loggedTierRecorder)
+	var tiers map[string]string
+	if recorder != nil {
+		tiers = map[string]string{}
+	}
 	if err := logs.EachComplexityRouterLog(ctx, router.id, from, to, func(page []logstore.ComplexityRouterLog) error {
 		for _, l := range page {
+			if tiers != nil && backfills(router, l) {
+				tiers[l.ID] = l.Tier
+			}
 			if _, done := captured[l.ID]; done || !complexity.CaptureSampled(l.ID, rate) || !backfills(router, l) {
 				continue
 			}
@@ -115,6 +132,9 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 		return ctx.Err()
 	}); err != nil {
 		return backfillPlan{}, fmt.Errorf("read the router's logs: %w", err)
+	}
+	if recorder != nil {
+		recorder.RecordLoggedTiers(from, to, tiers)
 	}
 	plan.candidates = keep.newestFirst()
 	return plan, nil
@@ -212,7 +232,7 @@ func (p *RoutingPlugin) backfillWindow(ctx context.Context, router suggestionRou
 		}
 	}
 	if left := plan.missing - tried; left > 0 {
-		p.logger.Info("[Routing] phrase suggestions for router %s: backfilled %d requests from logs; %d older ones are left for later runs", router.id, written, left)
+		p.logger.Info("[Routing] suggestions for router %s: backfilled %d requests from logs; %d older ones are left for later runs", router.id, written, left)
 	}
 	return written, nil
 }

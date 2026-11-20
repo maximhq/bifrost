@@ -263,7 +263,7 @@ func NewSuggester(live []Phrase, emb Embedder, llm LLM, opts Options) *Suggester
 // SuggestAll suggests for every cluster, keeping their order.
 func (s *Suggester) SuggestAll(ctx context.Context, clusters []*Cluster) ([]Suggestion, error) {
 	out := make([]Suggestion, len(clusters))
-	err := forEach(len(clusters), s.opts.Workers, func(i int) error {
+	err := ForEach(len(clusters), s.opts.Workers, func(i int) error {
 		sg, err := s.Suggest(ctx, clusters[i])
 		if err != nil {
 			return err

@@ -54,9 +54,9 @@ func parallelRange(n int, fn func(lo, hi int)) {
 	wg.Wait()
 }
 
-// forEach runs fn over [0,n) on at most workers goroutines and returns the
+// ForEach runs fn over [0,n) on at most workers goroutines and returns the
 // first error. Every index runs even after an error, so results stay aligned.
-func forEach(n, workers int, fn func(i int) error) error {
+func ForEach(n, workers int, fn func(i int) error) error {
 	workers = max(1, min(workers, n))
 	var (
 		wg    sync.WaitGroup

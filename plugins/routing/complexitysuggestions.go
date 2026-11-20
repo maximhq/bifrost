@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -275,7 +276,7 @@ func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick tim
 				return
 			case now := <-timer.C:
 				if err := p.scheduleComplexitySuggestions(cs.ctx, now); err != nil {
-					p.logger.Warn("[Routing] phrase suggestion schedule check failed: %v", err)
+					p.logger.Warn("[Routing] suggestion schedule check failed: %v", err)
 				}
 				timer.Reset(tick + rand.N(suggestionScheduleJitter))
 			}
@@ -363,13 +364,14 @@ func (p *RoutingPlugin) scheduleComplexitySuggestions(ctx context.Context, now t
 func (p *RoutingPlugin) scheduleRouterSuggestions(ctx context.Context, router suggestionRouter, now time.Time) error {
 	cs := p.suggestions
 	deps := cs.deps.Load()
-	if deps == nil || !router.config.SuggestionsEnabled() || !semanticSuggestions(router) {
+	if deps == nil || !router.config.SuggestionsEnabled() || checkSuggestionClassifier(router) != nil {
 		return nil
 	}
 	// Nothing is captured without a capture store, and that does not pass
 	// the way warming does, so the run is neither claimed nor recorded as
 	// skipped every interval; the status says why instead.
-	if router.classifier != nil && !router.classifier.Status().CaptureAvailable {
+	decision := decisionSuggestions(router)
+	if (decision && p.captureStore() == nil) || (!decision && router.classifier != nil && !router.classifier.Status().CaptureAvailable) {
 		return nil
 	}
 	schedule := router.config.Suggestions.EffectiveSchedule()
@@ -402,8 +404,13 @@ func (p *RoutingPlugin) scheduleRouterSuggestions(ctx context.Context, router su
 	// A router still warming (after a restart, or a phrase change) has no
 	// space to suggest against: the run is recorded as skipped, so the
 	// schedule never claims to have run when it did not.
-	if router.classifier == nil || router.classifier.Status().State != complexity.SemanticStatusReady {
+	if !decision && (router.classifier == nil || router.classifier.Status().State != complexity.SemanticStatusReady) {
 		return recordSkippedSuggestionRun(recordCtx, deps.store, runID, router.id, trigger, "the complexity router was still warming up")
+	}
+	// A decision-model router has nothing to warm, but its examples are
+	// embedded through the embedding path, which comes up after the plugin.
+	if decision && p.embeddingExecutor() == nil {
+		return recordSkippedSuggestionRun(recordCtx, deps.store, runID, router.id, trigger, "the embedding path was not ready yet")
 	}
 	started, err := p.startComplexitySuggestionRun(recordCtx, complexitySuggestionJobMeta{RunID: runID, RouterID: router.id, TriggeredBy: trigger})
 	switch {
@@ -533,17 +540,95 @@ func suggestionsConfigured(router suggestionRouter) bool {
 	return router.config != nil && router.config.Suggestions != nil
 }
 
-// ErrComplexitySuggestionsClassifier is a run asked of a router whose
-// classifier this gateway cannot suggest for yet.
-var ErrComplexitySuggestionsClassifier = errors.New("suggestion runs are available for semantic routers only")
+// ErrComplexitySuggestionsClassifier is a suggestion call the router's
+// classifier has no use for: any call for an llm-classifier router, a phrase
+// test or impact replay for a decision-model router, an examples test for a
+// semantic one. The error names which.
+var ErrComplexitySuggestionsClassifier = errors.New("not available for this router's classifier")
 
-// semanticSuggestions reports whether a router's suggestions run against its
-// semantic classifier. Every router holds a semantic classifier, warmed or
-// not, so the configured classifier is what decides: a decision-model
-// router's settings are accepted, but its runs are not scheduled, rather than
-// recorded every slot as skipped while a classifier it does not use "warms".
-func semanticSuggestions(router suggestionRouter) bool {
-	return router.config != nil && (router.config.Classifier == "" || router.config.Classifier == complexity.ClassifierSemantic)
+// decisionSuggestions reports whether a router's suggestions are tier
+// examples for its decision model, rather than phrases for its semantic
+// classifier. Every router holds a semantic classifier, warmed or not, so the
+// configured classifier is what decides.
+func decisionSuggestions(router suggestionRouter) bool {
+	return router.config != nil && router.config.Classifier == complexity.ClassifierDecision
+}
+
+// checkSuggestionClassifier refuses suggestions for a router whose
+// classifier has no space to suggest in: only the semantic and decision
+// classifiers have one.
+func checkSuggestionClassifier(router suggestionRouter) error {
+	switch router.config.Classifier {
+	case "", complexity.ClassifierSemantic, complexity.ClassifierDecision:
+		return nil
+	}
+	return fmt.Errorf("%w: suggestions need the %q or %q classifier, and this router uses %q", ErrComplexitySuggestionsClassifier,
+		complexity.ClassifierSemantic, complexity.ClassifierDecision, router.config.Classifier)
+}
+
+// ErrComplexitySuggestionPhrasesOnly and ErrComplexitySuggestionExamplesOnly
+// refuse a call made for the other kind of router; both are
+// ErrComplexitySuggestionsClassifier.
+var (
+	ErrComplexitySuggestionPhrasesOnly  = fmt.Errorf("%w: phrase tests and impact replays are for semantic routers; test a decision-model router's examples with the examples test", ErrComplexitySuggestionsClassifier)
+	ErrComplexitySuggestionExamplesOnly = fmt.Errorf("%w: examples tests are for decision-model routers; test a semantic router's phrases with the phrase test", ErrComplexitySuggestionsClassifier)
+)
+
+// suggestionSpace is the space a router's suggestions read: a semantic
+// router's serving phrase bank and captures, or a decision-model router's
+// examples and the captures backfilled for it.
+type suggestionSpace interface {
+	suggestrun.Space
+	backfillableSpace
+	CountCaptured(ctx context.Context, from, to time.Time) (int, error)
+}
+
+// routerSuggestionSpace takes the router's space and returns its release. A
+// semantic router's needs its phrase bank served; a decision-model router's
+// embeds its examples (those not embedded before) with its suggestions
+// embedding model.
+func (p *RoutingPlugin) routerSuggestionSpace(ctx context.Context, router suggestionRouter) (suggestionSpace, func(), error) {
+	if decisionSuggestions(router) {
+		space, err := p.decisionSuggestionSpace(ctx, router)
+		if err != nil {
+			return nil, nil, err
+		}
+		return space, func() {}, nil
+	}
+	if router.classifier == nil {
+		return nil, nil, complexity.ErrNoServingGeneration
+	}
+	space, err := router.classifier.SuggestionSpace(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return space, space.Close, nil
+}
+
+// suggestionsReady refuses a run its router cannot make now, before one is
+// queued: a semantic router needs its phrase bank served (a previous one
+// still serving while a new one warms is enough) and a capture store; a
+// decision-model router an embedding model, the embedding path and a capture
+// store.
+func (p *RoutingPlugin) suggestionsReady(router suggestionRouter) error {
+	if decisionSuggestions(router) {
+		switch {
+		case router.config.Suggestions.Embedding == nil:
+			return complexity.ErrNoDecisionEmbedding
+		case p.captureStore() == nil:
+			return complexity.ErrNoCaptureStore
+		case p.embeddingExecutor() == nil:
+			return ErrEmbeddingRequestExecutorNotConfigured
+		}
+		return nil
+	}
+	if router.classifier == nil || !router.classifier.Serving() {
+		return complexity.ErrNoServingGeneration
+	}
+	if !router.classifier.Status().CaptureAvailable {
+		return complexity.ErrNoCaptureStore
+	}
+	return nil
 }
 
 // ErrComplexitySuggestionRunInFlight is a run asked for while one is already
@@ -561,19 +646,15 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, rou
 	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !suggestionsConfigured(router) {
 		return "", ErrComplexitySuggestionsOff
 	}
-	if !semanticSuggestions(router) {
-		return "", ErrComplexitySuggestionsClassifier
+	if err := checkSuggestionClassifier(router); err != nil {
+		return "", err
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
 		return "", err
 	}
-	// Refused up front rather than accepted and recorded as a failed run. A
-	// previous phrase bank still serving while a new one warms is enough.
-	if router.classifier == nil || !router.classifier.Serving() {
-		return "", complexity.ErrNoServingGeneration
-	}
-	if !router.classifier.Status().CaptureAvailable {
-		return "", complexity.ErrNoCaptureStore
+	// Refused up front rather than accepted and recorded as a failed run.
+	if err := p.suggestionsReady(router); err != nil {
+		return "", err
 	}
 	runID, err := p.manualSuggestionRunID(ctx, router.id)
 	if err != nil {
@@ -640,20 +721,17 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if !suggestionsConfigured(router) {
 		return suggestrun.Estimate{}, ErrComplexitySuggestionsOff
 	}
-	if !semanticSuggestions(router) {
-		return suggestrun.Estimate{}, ErrComplexitySuggestionsClassifier
+	if err := checkSuggestionClassifier(router); err != nil {
+		return suggestrun.Estimate{}, err
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
 		return suggestrun.Estimate{}, err
 	}
-	if router.classifier == nil {
-		return suggestrun.Estimate{}, complexity.ErrNoServingGeneration
-	}
-	space, err := router.classifier.SuggestionSpace(ctx)
+	space, release, err := p.routerSuggestionSpace(ctx, router)
 	if err != nil {
 		return suggestrun.Estimate{}, err
 	}
-	defer space.Close()
+	defer release()
 	settings := runSettings(router, "", "", window)
 	now := time.Now()
 	window = settings.Window
@@ -674,7 +752,7 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 		logs, _ := deps.store.(ComplexitySuggestionRouterLogs)
 		plan, err := p.planBackfill(ctx, router, space, logs, now.Add(-window), now, backfillLimit(router))
 		if err != nil {
-			p.logger.Warn("[Routing] phrase suggestion estimate for router %s: backfill unknown: %v", routerID, err)
+			p.logger.Warn("[Routing] suggestion estimate for router %s: backfill unknown: %v", routerID, err)
 			backfillUnknown = true
 		} else {
 			backfill = min(plan.missing, backfillLimit(router))
@@ -692,6 +770,9 @@ func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, rou
 	router, ok := p.suggestionRouter(routerID)
 	if !ok {
 		return suggestrun.PhraseTest{}, ErrUnknownComplexityRouter
+	}
+	if decisionSuggestions(router) {
+		return suggestrun.PhraseTest{}, ErrComplexitySuggestionPhrasesOnly
 	}
 	if router.classifier == nil {
 		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
@@ -730,11 +811,22 @@ func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount(routerID string)
 	return 1
 }
 
-// ComplexitySuggestionRouterVersion names the phrase bank a router serves, so
-// suggestions made against an earlier one can be shown as such. Empty while
-// nothing is serving or the router does not exist.
+// ComplexitySuggestionRouterVersion names the phrase bank a router serves, or
+// a decision-model router's examples, so suggestions made against an earlier
+// one can be shown as such. Empty while nothing is serving or the router
+// does not exist.
 func (p *RoutingPlugin) ComplexitySuggestionRouterVersion(routerID string) string {
-	if router, ok := p.suggestionRouter(routerID); ok && router.classifier != nil {
+	router, ok := p.suggestionRouter(routerID)
+	switch {
+	case !ok:
+		return ""
+	case decisionSuggestions(router):
+		embedding := router.config.Suggestions
+		if embedding == nil || embedding.Embedding == nil {
+			return ""
+		}
+		return complexity.DecisionExamplesVersion(embedding.Embedding.Provider, embedding.Embedding.Model, decisionExamples(router.config))
+	case router.classifier != nil:
 		return router.classifier.ServingVersion()
 	}
 	return ""
@@ -837,7 +929,7 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 			err = recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, suggestionsTurnedOffReason)
 		}
 		if err != nil {
-			p.logger.Warn("[Routing] phrase suggestion run %s failed: %v", meta.RunID, err)
+			p.logger.Warn("[Routing] suggestion run %s failed: %v", meta.RunID, err)
 		}
 	}()
 	return true, nil
@@ -999,6 +1091,12 @@ func (p *RoutingPlugin) ComplexitySuggestionImpact(ctx context.Context, routerID
 	}
 	if !suggestionsConfigured(router) {
 		return suggestrun.Impact{}, 0, ErrComplexitySuggestionsOff
+	}
+	// A decision-model router routes by asking its decision model, so a
+	// replay would be a decision call per request in the window; its draft
+	// examples are tried on a few requests with the examples test instead.
+	if decisionSuggestions(router) {
+		return suggestrun.Impact{}, 0, ErrComplexitySuggestionPhrasesOnly
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
 		return suggestrun.Impact{}, 0, err
@@ -1175,9 +1273,22 @@ func runSettings(router suggestionRouter, runID, triggeredBy string, window time
 		MinClusterRequests: settings.MinClusterRequests,
 		MaxPhrases:         configstore.MaxComplexitySemanticPhrases,
 		Instructions:       settings.Instructions,
-		Seed:               time.Now().UnixNano(),
+		Seed:               suggestionSeed(router.id),
+	}
+	if decisionSuggestions(router) {
+		s.Mode, s.MaxPhrases, s.MaxPerTier = suggest.ModeExamples, 0, configstore.MaxComplexityDecisionExamples
 	}
 	return s
+}
+
+// suggestionSeed is a router's clustering seed, the same for every run, so
+// runs over the same traffic form the same clusters and refresh the
+// suggestions they made before; a seed that changed per run regrouped the
+// requests each time, and most suggestions were superseded and written again.
+func suggestionSeed(routerID string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("complexity-suggestion-seed\x00" + routerID))
+	return int64(h.Sum64()>>1) | 1
 }
 
 // suggestionTier returns a router's tier settings, normalized; a block saved
@@ -1199,18 +1310,36 @@ func suggestionTier(settings *complexity.SuggestionsConfig) configstore.Complexi
 // SuggestionTierDefaults is what a router's tier step sends when nothing is
 // edited, rendered from the router as configured: the llm prompt body, and
 // the decision model's per-tier criteria. Both carry, as examples, the phrases
-// the router's administrator configured. Configuration surfaces show these in
+// the router's administrator configured; for a decision-model router, its
+// decision guidance as its decision model reads it, examples included. Configuration surfaces show these in
 // the editors, and an unedited run sends exactly them.
 func SuggestionTierDefaults(cfg *complexity.AnalyzerConfig) (string, map[string]configstore.ComplexityDecisionTierDefaults) {
 	if cfg == nil {
 		cfg = &complexity.AnalyzerConfig{}
 	}
-	examples := suggest.BankTierExamples(cfg.Keywords)
 	guidance := ""
 	if cfg.LLM != nil {
 		guidance = cfg.LLM.Prompt
 	}
 	criteria := cfg.Decision.ResolvedCriteria()
+	if cfg.Classifier == complexity.ClassifierDecision {
+		// A decision-model router's tiers are described by its decision
+		// guidance, examples included, so the judge is told the same. The llm
+		// prompt shows the examples its administrator wrote, as a semantic
+		// router's shows its phrases.
+		var live []suggest.Phrase
+		for _, tier := range complexity.OrderedTiers() {
+			for _, text := range criteria[tier].Examples {
+				live = append(live, suggest.Phrase{Tier: tier, Text: text})
+			}
+		}
+		shipped := map[string][]string{}
+		for tier, c := range configstore.DefaultComplexityDecisionGuidance().Criteria {
+			shipped[tier] = c.Examples
+		}
+		return suggest.TierPrompt(guidance, suggest.TierExamples(live, shipped)), criteria
+	}
+	examples := suggest.BankTierExamples(cfg.Keywords)
 	for tier, c := range criteria {
 		c.Examples = append([]string{}, examples[tier]...)
 		criteria[tier] = c
@@ -1274,7 +1403,7 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 	}
 	// A scheduled run needs suggestions still on; one started on demand
 	// needs only their settings.
-	if !ok || !suggestionsConfigured(router) || deps == nil || router.classifier == nil ||
+	if !ok || !suggestionsConfigured(router) || deps == nil || checkSuggestionClassifier(router) != nil ||
 		(meta.TriggeredBy == logstore.ComplexitySuggestionTriggerSchedule && !router.config.SuggestionsEnabled()) {
 		return suggestrun.Result{}, errSuggestionsUnavailable
 	}
@@ -1301,11 +1430,11 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 		}
 		return suggestrun.Result{}, ctx.Err()
 	}
-	space, err := router.classifier.SuggestionSpace(ctx)
+	space, release, err := p.routerSuggestionSpace(ctx, router)
 	if err != nil {
 		return suggestrun.Result{}, errors.Join(err, p.recordUnstartedSuggestionRun(ctx, deps.store, meta, router.id, s, err))
 	}
-	defer space.Close()
+	defer release()
 	tier, tierPrompt, tierCost, err := p.newSuggestionTierDecider(router)
 	if err != nil {
 		return suggestrun.Result{}, errors.Join(err, p.recordUnstartedSuggestionRun(ctx, deps.store, meta, router.id, s, err))
@@ -1321,7 +1450,7 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 		return total
 	}
 	texts := func(ctx context.Context, ids []string) (map[string]string, error) {
-		return deps.texts(ctx, ids, space.MessageHistoryCount)
+		return deps.texts(ctx, ids, space.Target().MessageHistoryCount)
 	}
 	s.Cancelled = func(ctx context.Context) bool { return p.suggestionRunCancelled(ctx, meta.RunID) }
 	s.Backfill = func(ctx context.Context, from, to time.Time) (int, error) {
@@ -1329,10 +1458,10 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 	}
 	result, err := suggestrun.Run(ctx, space, deps.store, texts, llm, s)
 	if err == nil && result.Backfilled > 0 {
-		p.logger.Info("[Routing] phrase suggestion run %s: embedded %d of the window's requests from their logs first", meta.RunID, result.Backfilled)
+		p.logger.Info("[Routing] suggestion run %s: embedded %d of the window's requests from their logs first", meta.RunID, result.Backfilled)
 	}
 	if err == nil && result.Unmatched > 0 {
-		p.logger.Info("[Routing] phrase suggestion run %s: %d of %d assigned requests matched no cluster; raise max_clustered_requests to cluster more of the window",
+		p.logger.Info("[Routing] suggestion run %s: %d of %d assigned requests matched no cluster; raise max_clustered_requests to cluster more of the window",
 			meta.RunID, result.Unmatched, result.Assigned)
 	}
 	return result, err
@@ -1536,11 +1665,7 @@ func (p *RoutingPlugin) decisionSuggestionSpace(ctx context.Context, router sugg
 		return nil, ErrEmbeddingRequestExecutorNotConfigured
 	}
 	embedding := *cfg.Suggestions.Embedding
-	criteria := cfg.Decision.ResolvedCriteria()
-	examples := make(map[string][]string, len(criteria))
-	for tier, c := range criteria {
-		examples[tier] = c.Examples
-	}
+	examples := decisionExamples(cfg)
 	var logs ComplexitySuggestionRouterLogs
 	if deps := p.suggestionDeps(); deps != nil {
 		logs, _ = deps.store.(ComplexitySuggestionRouterLogs)
@@ -1578,6 +1703,17 @@ func (p *RoutingPlugin) decisionSuggestionSpace(ctx context.Context, router sugg
 	return space, nil
 }
 
+// decisionExamples is each tier's examples as a decision-model router's
+// decision model reads them, shipped defaults included.
+func decisionExamples(cfg *complexity.AnalyzerConfig) map[string][]string {
+	criteria := cfg.Decision.ResolvedCriteria()
+	examples := make(map[string][]string, len(criteria))
+	for tier, c := range criteria {
+		examples[tier] = c.Examples
+	}
+	return examples
+}
+
 // embedSuggestionText embeds one text for a suggestion run, for a model that
 // takes one input per request. It goes through the batch path, which bills a
 // suggestion run as warmup is billed; the single-text path would bill the
@@ -1611,4 +1747,106 @@ func routerLoggedTiers(logs ComplexitySuggestionRouterLogs, routerID string) com
 		})
 		return tiers, err
 	}
+}
+
+// ErrDecisionRequestExecutorNotConfigured means the HTTP server has not wired
+// the decision-model request path yet.
+var ErrDecisionRequestExecutorNotConfigured = errors.New("decision-model executor is not configured")
+
+// exampleTestWorkers is how many requests an examples test asks about at
+// once; each is two decision calls.
+const exampleTestWorkers = 4
+
+// TestComplexitySuggestionExamples asks a decision-model router's decision
+// model about requests twice, with its examples as they are and with draft
+// examples added, exactly as routing asks it, so examples can be tried before
+// they are saved. Nothing is stored. Each request's text is the turns the
+// decision model reads, joined, sent as one user message. The draft is
+// checked as accepting it would check it, and the calls' cost is reported.
+func (p *RoutingPlugin) TestComplexitySuggestionExamples(ctx context.Context, routerID string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return suggestrun.ExampleTest{}, ErrUnknownComplexityRouter
+	}
+	if !decisionSuggestions(router) {
+		return suggestrun.ExampleTest{}, ErrComplexitySuggestionExamplesOnly
+	}
+	if len(draft) == 0 || len(draft) > suggestrun.MaxTestPhrases {
+		return suggestrun.ExampleTest{}, fmt.Errorf("%w: test between 1 and %d examples", suggestrun.ErrInvalidPhraseTest, suggestrun.MaxTestPhrases)
+	}
+	add := map[string][]string{}
+	for _, e := range draft {
+		add[e.Tier] = append(add[e.Tier], e.Text)
+	}
+	drafted, _, err := complexity.AppendDecisionExamples(router.config.Decision, add)
+	if err != nil {
+		return suggestrun.ExampleTest{}, fmt.Errorf("%w: %v", suggestrun.ErrInvalidPhraseTest, err)
+	}
+	executor := p.decisionExecutor()
+	if executor == nil {
+		return suggestrun.ExampleTest{}, ErrDecisionRequestExecutorNotConfigured
+	}
+	if len(requests) > suggestrun.MaxExampleTestRequests {
+		requests = requests[:suggestrun.MaxExampleTestRequests]
+	}
+	provider, model, timeout := resolvedDecisionModel(router.config.Decision)
+	current, with := router.config.Decision.ResolvedCriteria(), drafted.ResolvedCriteria()
+	out := suggestrun.ExampleTest{Requests: make([]suggestrun.TestedRequest, len(requests))}
+	costs := make([]float64, len(requests))
+	err = suggest.ForEach(len(requests), exampleTestWorkers, func(i int) error {
+		r := requests[i]
+		before, costBefore, err := p.decideTestRequest(ctx, executor, provider, model, timeout, r.Text, current)
+		if err != nil {
+			return err
+		}
+		after, costAfter, err := p.decideTestRequest(ctx, executor, provider, model, timeout, r.Text, with)
+		if err != nil {
+			return err
+		}
+		out.Requests[i] = suggestrun.TestedRequest{LogID: r.LogID, Text: r.Text, Current: before, With: after, Changed: before.Tier != after.Tier}
+		costs[i] = costBefore + costAfter
+		return nil
+	})
+	if err != nil {
+		return suggestrun.ExampleTest{}, err
+	}
+	for i, r := range out.Requests {
+		out.Cost += costs[i]
+		if r.Changed {
+			out.Changed++
+		}
+	}
+	return out, nil
+}
+
+// decideTestRequest asks the decision model about one request with the given
+// criteria, as routing would, and returns the tier it picked (none for an
+// answer without a valid tier) and what the call cost.
+func (p *RoutingPlugin) decideTestRequest(ctx context.Context, executor DecisionRequestExecutor, provider schemas.ModelProvider, model string, timeout time.Duration, text string, criteria map[string]configstore.ComplexityDecisionTierDefaults) (suggestrun.DecisionRouting, float64, error) {
+	decisionCtx := schemas.NewBifrostContext(ctx, time.Now().Add(timeout))
+	defer decisionCtx.Cancel()
+	bifrost.PrepareContextForInternalRequest(decisionCtx)
+	window := []complexity.ConversationMessage{{Role: "user", Content: text}}
+	response, bifrostErr := executor(decisionCtx, routerDecisionRequest(provider, model, window, criteria))
+	if bifrostErr != nil {
+		return suggestrun.DecisionRouting{}, 0, fmt.Errorf("decision model call failed: %v", bifrostErr.GetErrorString())
+	}
+	if response == nil {
+		return suggestrun.DecisionRouting{}, 0, errors.New("decision model returned no response")
+	}
+	cost := decisionCtx.CalculateCost(&schemas.BifrostResponse{DecisionResponse: response})
+	answer, ok := decisionAnswerNamed(response.Answers, decisionComplexityQuestion)
+	if !ok || answer.Type != schemas.DecisionTypeChoice || answer.Choice == nil {
+		return suggestrun.DecisionRouting{}, cost, nil
+	}
+	tier, ok := complexityTierFromDecisionChoice(*answer.Choice)
+	if !ok {
+		return suggestrun.DecisionRouting{}, cost, nil
+	}
+	routing := suggestrun.DecisionRouting{Tier: tier}
+	if c := answer.Confidence; c != nil && !math.IsNaN(*c) && *c >= 0 && *c <= 1 {
+		value := *c
+		routing.Confidence = &value
+	}
+	return routing, cost, nil
 }

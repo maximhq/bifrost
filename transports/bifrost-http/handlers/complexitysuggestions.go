@@ -41,6 +41,9 @@ type ComplexitySuggestionManager interface {
 	StartComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (string, error)
 	EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error)
 	TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error)
+	// TestComplexitySuggestionExamples asks a decision-model router's
+	// decision model about requests with and without draft examples.
+	TestComplexitySuggestionExamples(ctx context.Context, routerID string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error)
 	// CancelComplexitySuggestionRun stops a queued or running run and returns
 	// its record as it now stands.
 	CancelComplexitySuggestionRun(ctx context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error)
@@ -152,6 +155,7 @@ func (h *RoutingHandler) registerComplexitySuggestionRoutes(r *router.Router, mi
 	const base = "/api/routing/model-routers/{router_id}/suggestions"
 	handle(fasthttp.MethodGet, base, h.listComplexitySuggestions)
 	handle(fasthttp.MethodPost, base+"/test", h.testComplexitySuggestionPhrases)
+	handle(fasthttp.MethodPost, base+"/test-examples", h.testComplexitySuggestionExamples)
 	handle(fasthttp.MethodGet, base+"/runs", h.listComplexitySuggestionRuns)
 	handle(fasthttp.MethodGet, base+"/runs/estimate", h.estimateComplexitySuggestionRun)
 	handle(fasthttp.MethodPost, base+"/runs", h.startComplexitySuggestionRun)
@@ -379,6 +383,61 @@ func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestC
 // send, and so the logs it may read looking for readable examples.
 const maxComplexitySuggestionTestLogIDs = 256
 
+// readTestRequests reads the requests a phrase or examples test routes: the
+// caller's log IDs first, then the suggestion's examples, read within the
+// caller's access scope, at most limit of them that can be read. It answers
+// the error itself and returns false when it cannot.
+func (h *RoutingHandler) readTestRequests(ctx *fasthttp.RequestCtx, manager ComplexitySuggestionManager, store logstore.ComplexitySuggestionStore, routerID, suggestionID string, logIDs []string, limit int) ([]suggestrun.TestExample, bool) {
+	if len(logIDs) > maxComplexitySuggestionTestLogIDs {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("send at most %d log IDs", maxComplexitySuggestionTestLogIDs))
+		return nil, false
+	}
+	// The caller's own log IDs come first, then the suggestion's examples.
+	ids := make([]string, 0, len(logIDs))
+	seen := map[string]struct{}{}
+	addID := func(id string) {
+		if _, dup := seen[id]; !dup && id != "" {
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range logIDs {
+		addID(id)
+	}
+	if suggestionID != "" {
+		rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, IDs: []string{suggestionID}, OmitCentroids: true})
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestion: %v", err))
+			return nil, false
+		}
+		if len(rows) == 0 {
+			SendError(ctx, fasthttp.StatusNotFound, "suggestion not found")
+			return nil, false
+		}
+		for _, id := range rows[0].ExampleLogIDs() {
+			addID(id)
+		}
+	}
+	// The cap applies to the examples that can be read: logs are read a
+	// batch at a time until it is reached, so a log that is gone or hidden
+	// never takes a readable one's place.
+	examples := make([]suggestrun.TestExample, 0, min(len(ids), limit))
+	for start := 0; start < len(ids) && len(examples) < limit; start += limit {
+		batch := ids[start:min(start+limit, len(ids))]
+		texts, err := manager.ComplexitySuggestionTexts(ctx, routerID, batch)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read examples: %v", err))
+			return nil, false
+		}
+		for _, id := range batch {
+			if text := texts[id]; text != "" && len(examples) < limit {
+				examples = append(examples, suggestrun.TestExample{LogID: id, Text: text})
+			}
+		}
+	}
+	return examples, true
+}
+
 // testComplexitySuggestionPhrases routes examples with and without phrases
 // against the serving bank, so an edited phrase can be tried before it is
 // staged. Examples are a suggestion's, or given log IDs, read within the
@@ -401,52 +460,9 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("test between 1 and %d phrases", suggestrun.MaxTestPhrases))
 		return
 	}
-	if len(req.LogIDs) > maxComplexitySuggestionTestLogIDs {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("send at most %d log IDs", maxComplexitySuggestionTestLogIDs))
+	examples, ok := h.readTestRequests(ctx, manager, store, routerID, req.SuggestionID, req.LogIDs, suggestrun.MaxTestExamples)
+	if !ok {
 		return
-	}
-	// The caller's own log IDs come first, then the suggestion's examples.
-	ids := make([]string, 0, len(req.LogIDs))
-	seen := map[string]struct{}{}
-	addID := func(id string) {
-		if _, dup := seen[id]; !dup && id != "" {
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-		}
-	}
-	for _, id := range req.LogIDs {
-		addID(id)
-	}
-	if req.SuggestionID != "" {
-		rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, IDs: []string{req.SuggestionID}, OmitCentroids: true})
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestion: %v", err))
-			return
-		}
-		if len(rows) == 0 {
-			SendError(ctx, fasthttp.StatusNotFound, "suggestion not found")
-			return
-		}
-		for _, id := range rows[0].ExampleLogIDs() {
-			addID(id)
-		}
-	}
-	// The cap applies to the examples that can be read: logs are read a
-	// batch at a time until it is reached, so a log that is gone or hidden
-	// never takes a readable one's place.
-	examples := make([]suggestrun.TestExample, 0, min(len(ids), suggestrun.MaxTestExamples))
-	for start := 0; start < len(ids) && len(examples) < suggestrun.MaxTestExamples; start += suggestrun.MaxTestExamples {
-		batch := ids[start:min(start+suggestrun.MaxTestExamples, len(ids))]
-		texts, err := manager.ComplexitySuggestionTexts(ctx, routerID, batch)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read examples: %v", err))
-			return
-		}
-		for _, id := range batch {
-			if text := texts[id]; text != "" && len(examples) < suggestrun.MaxTestExamples {
-				examples = append(examples, suggestrun.TestExample{LogID: id, Text: text})
-			}
-		}
 	}
 	phrases := make([]complexity.SuggestionPhrase, len(req.Phrases))
 	for i, p := range req.Phrases {
@@ -461,6 +477,8 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	switch {
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
 		h.sendModelRouterNotServed(ctx, routerID)
+	case errors.Is(err, routing.ErrComplexitySuggestionsClassifier):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
 	case errors.Is(err, complexity.ErrNoServingGeneration):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, suggestrun.ErrInvalidPhraseTest):
@@ -471,6 +489,67 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	default:
 		if result.Examples == nil {
 			result.Examples = []suggestrun.TestedExample{}
+		}
+		SendJSON(ctx, result)
+	}
+}
+
+// complexitySuggestionExampleTestRequest is an examples test: the draft
+// examples, with the requests to ask about named as a phrase test names them.
+type complexitySuggestionExampleTestRequest struct {
+	Examples     []complexitySuggestionTestPhrase `json:"examples"`
+	SuggestionID string                           `json:"suggestion_id,omitempty"`
+	LogIDs       []string                         `json:"log_ids,omitempty"`
+}
+
+// testComplexitySuggestionExamples asks a decision-model router's decision
+// model about requests with and without draft examples, so an edited example
+// can be tried before it is staged. It is the decision-model router's phrase
+// test: requests are a suggestion's, or given log IDs, read within the
+// caller's access scope, and each costs two decision-model calls, so fewer
+// are asked about.
+func (h *RoutingHandler) testComplexitySuggestionExamples(ctx *fasthttp.RequestCtx) {
+	manager, store, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	var req complexitySuggestionExampleTestRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if len(req.Examples) == 0 || len(req.Examples) > suggestrun.MaxTestPhrases {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("test between 1 and %d examples", suggestrun.MaxTestPhrases))
+		return
+	}
+	requests, ok := h.readTestRequests(ctx, manager, store, routerID, req.SuggestionID, req.LogIDs, suggestrun.MaxExampleTestRequests)
+	if !ok {
+		return
+	}
+	draft := make([]complexity.SuggestionPhrase, len(req.Examples))
+	for i, e := range req.Examples {
+		draft[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(e.Tier)), Text: strings.TrimSpace(e.Text)}
+	}
+	result, err := manager.TestComplexitySuggestionExamples(ctx, routerID, draft, requests)
+	switch {
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		h.sendModelRouterNotServed(ctx, routerID)
+	case errors.Is(err, routing.ErrComplexitySuggestionsClassifier):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
+	case errors.Is(err, suggestrun.ErrInvalidPhraseTest):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, routing.ErrDecisionRequestExecutorNotConfigured):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+	case err != nil:
+		// The decision model failed a call.
+		SendError(ctx, fasthttp.StatusBadGateway, err.Error())
+	default:
+		if result.Requests == nil {
+			result.Requests = []suggestrun.TestedRequest{}
 		}
 		SendJSON(ctx, result)
 	}
@@ -532,10 +611,11 @@ func (h *RoutingHandler) startComplexitySuggestionRun(ctx *fasthttp.RequestCtx) 
 		h.sendModelRouterNotServed(ctx, routerID)
 		return
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionRunInFlight),
-		errors.Is(err, routing.ErrComplexitySuggestionsClassifier):
+		errors.Is(err, routing.ErrComplexitySuggestionsClassifier), errors.Is(err, complexity.ErrNoDecisionEmbedding):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
-	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
+	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore),
+		errors.Is(err, routing.ErrEmbeddingRequestExecutorNotConfigured):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
@@ -570,9 +650,11 @@ func (h *RoutingHandler) estimateComplexitySuggestionRun(ctx *fasthttp.RequestCt
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
 		h.sendModelRouterNotServed(ctx, routerID)
-	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionsClassifier):
+	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionsClassifier),
+		errors.Is(err, complexity.ErrNoDecisionEmbedding):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
-	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
+	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore),
+		errors.Is(err, routing.ErrEmbeddingRequestExecutorNotConfigured):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 	case err != nil:
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to estimate suggestion run: %v", err))
@@ -658,6 +740,10 @@ func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
+	if router.Classifier == complexity.ClassifierDecision {
+		SendError(ctx, fasthttp.StatusConflict, routing.ErrComplexitySuggestionPhrasesOnly.Error())
+		return
+	}
 	keywords, appended, err := complexity.AppendPhrases(router.Keywords, req.Phrases)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -674,7 +760,7 @@ func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
 		h.sendModelRouterNotServed(ctx, routerID)
-	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
+	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionsClassifier):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 	case errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
@@ -764,7 +850,23 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 	var refusal *phraseAppendRefusal
 	edited, err := h.configStore.EditModelRouter(ctx, routerID, func(router *configstore.ModelRouter) (bool, error) {
 		before = *router
-		keywords, result, err := complexity.AppendPhrases(router.Keywords, req.Phrases)
+		// A decision-model router's suggestions are examples for its decision
+		// model's guidance; a semantic router's are phrases for its bank.
+		var result complexity.PhraseAppend
+		var err error
+		if router.Classifier == complexity.ClassifierDecision {
+			var decision *complexity.DecisionConfig
+			decision, result, err = complexity.AppendDecisionExamples(router.Decision, req.Phrases)
+			if err == nil && len(result.Added) > 0 {
+				router.Decision = decision
+			}
+		} else {
+			var keywords complexity.EditableKeywordConfig
+			keywords, result, err = complexity.AppendPhrases(router.Keywords, req.Phrases)
+			if err == nil && len(result.Added) > 0 {
+				router.Keywords = keywords
+			}
+		}
 		if err != nil {
 			refusal = &phraseAppendRefusal{status: fasthttp.StatusBadRequest, err: err}
 			return false, refusal
@@ -773,7 +875,6 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 		if len(result.Added) == 0 {
 			return false, nil
 		}
-		router.Keywords = keywords
 		normalized, err := complexity.ValidateAndNormalize(&router.ComplexityAnalyzerConfig)
 		if err != nil {
 			refusal = &phraseAppendRefusal{status: fasthttp.StatusBadRequest, err: err}

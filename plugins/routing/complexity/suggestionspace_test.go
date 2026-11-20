@@ -294,3 +294,66 @@ func TestSuggestionSpaceEmbedsOneTextAtATimeWhenBatchesAreRefused(t *testing.T) 
 	_, err = space.Embed(context.Background(), []string{"an easy one"})
 	assert.ErrorContains(t, err, "does not match the space's dimension 3")
 }
+
+// A run reads its window twice, and its backfill paged the same logs first:
+// the logged tiers are read once per window, or not at all when the backfill
+// recorded them. A different window is read again.
+func TestDecisionSuggestionSpaceReadsEachWindowsTiersOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newCaptureTestStore(t)
+	cfg := decisionTestSpaceConfig(store, &decisionTestEmbedding{})
+	reads := 0
+	cfg.LoggedTiers = func(context.Context, time.Time, time.Time) (map[string]string, error) {
+		reads++
+		return map[string]string{"routed": TierSimple}, nil
+	}
+	space, err := NewDecisionSuggestionSpace(ctx, cfg)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	capture := NewRequestCapture(nil)
+	t.Cleanup(capture.Close)
+	capture.HoldForBackfill([]string{"routed"})
+	require.NoError(t, capture.WriteBackfilled(ctx, store, space.Namespace(), space.Dimension, []CapturedRequest{{LogID: "routed", Vector: []float32{1, 0}, At: now.Add(-time.Minute)}}))
+
+	read := func(from time.Time, want string) {
+		t.Helper()
+		got := ""
+		require.NoError(t, space.EachCaptured(ctx, from, now, func(page []CapturedRequest) error {
+			for _, r := range page {
+				got = r.Tier
+			}
+			return nil
+		}))
+		assert.Equal(t, want, got)
+	}
+	from := now.Add(-time.Hour)
+	read(from, TierSimple)
+	read(from, TierSimple)
+	assert.Equal(t, 1, reads, "one window, one read of its logs")
+	read(now.Add(-2*time.Hour), TierSimple)
+	assert.Equal(t, 2, reads, "another window is read again")
+
+	space.RecordLoggedTiers(from, now, map[string]string{"routed": TierComplex})
+	read(from, TierComplex)
+	assert.Equal(t, 2, reads, "tiers its backfill recorded are not read again")
+
+	count, err := space.CountCaptured(ctx, from, now)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+// A decision-model router's examples are versioned by their texts, in tier
+// order, and the embedding model, so a suggestion made against other
+// examples shows as made against an earlier version.
+func TestDecisionExamplesVersion(t *testing.T) {
+	examples := map[string][]string{TierSimple: {"say hi"}, TierComplex: {"a hard proof"}}
+	v := DecisionExamplesVersion("openai", "text-embedding-3-small", examples)
+	assert.Len(t, v, 16)
+	assert.Equal(t, v, DecisionExamplesVersion("openai", "text-embedding-3-small", map[string][]string{TierSimple: {" say hi ", ""}, TierComplex: {"a hard proof"}}),
+		"blank and padded examples are as the space reads them")
+	assert.NotEqual(t, v, DecisionExamplesVersion("openai", "text-embedding-3-large", examples), "another model")
+	assert.NotEqual(t, v, DecisionExamplesVersion("openai", "text-embedding-3-small", map[string][]string{TierMedium: {"say hi"}, TierComplex: {"a hard proof"}}), "an example moved tier")
+	space, err := NewDecisionSuggestionSpace(context.Background(), decisionTestSpaceConfig(nil, &decisionTestEmbedding{}))
+	require.NoError(t, err)
+	assert.Equal(t, DecisionExamplesVersion("openai", "text-embedding-3-small", decisionTestSpaceConfig(nil, nil).Examples), space.ServedVersion())
+}
