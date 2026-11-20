@@ -27,6 +27,8 @@ import {
 import {
 	DEFAULT_DECISION_CONFIG,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
+	MAX_DECISION_EXAMPLES,
+	MAX_DECISION_SIGNALS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	MAX_LLM_MESSAGE_HISTORY,
 	MAX_LLM_PROMPT_CHARACTERS,
@@ -837,6 +839,27 @@ describe("Decision classification guidance", () => {
 			previous_message_count: 1,
 			timeout: "1500ms",
 		});
+	});
+
+	test("bounds examples at 60 and signals at 12 per tier", () => {
+		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
+		const items = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `${prefix} ${i}`);
+		const withMedium = (signals: string[], examples: string[]) =>
+			analyzerConfigSchema.safeParse(
+				decisionValues({ ...seeded, criteria: { ...seeded.criteria, MEDIUM: { ...seeded.criteria.MEDIUM, signals, examples } } }),
+			);
+		expect(MAX_DECISION_EXAMPLES).toBe(60);
+		expect(MAX_DECISION_SIGNALS).toBe(12);
+		expect(withMedium(items(MAX_DECISION_SIGNALS, "signal"), items(MAX_DECISION_EXAMPLES, "example")).success).toBe(true);
+		for (const [signals, examples, path] of [
+			[items(MAX_DECISION_SIGNALS, "signal"), items(MAX_DECISION_EXAMPLES + 1, "example"), "decision.criteria.MEDIUM.examples"],
+			[items(MAX_DECISION_SIGNALS + 1, "signal"), items(1, "example"), "decision.criteria.MEDIUM.signals"],
+		] as const) {
+			const parsed = withMedium([...signals], [...examples]);
+			expect(parsed.success).toBe(false);
+			if (parsed.success) return;
+			expect(parsed.error.issues.map((issue) => issue.path.join("."))).toContain(path);
+		}
 	});
 
 	test("rejects an emptied definition or list once guidance is seeded", () => {

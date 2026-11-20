@@ -335,8 +335,14 @@ export const DEFAULT_DECISION_MIN_CONFIDENCE = 0;
 
 // Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
 export const MAX_DECISION_DEFINITION_CHARACTERS = 500;
-export const MAX_DECISION_CRITERIA_ITEMS = 12;
+export const MAX_DECISION_SIGNALS = 12;
+export const MAX_DECISION_EXAMPLES = 60;
 export const MAX_DECISION_CRITERIA_ITEM_CHARACTERS = 300;
+
+/** The most items a tier's signals or examples list may hold. */
+export function maxDecisionListItems(field: "signals" | "examples"): number {
+	return field === "signals" ? MAX_DECISION_SIGNALS : MAX_DECISION_EXAMPLES;
+}
 
 // The timeout is stored as a Go time.Duration — int64 nanoseconds — so this is
 // the largest whole millisecond value time.ParseDuration accepts. One more and

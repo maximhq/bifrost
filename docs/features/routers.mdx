@@ -361,7 +361,7 @@ These settings are the same for routers and for the deprecated Complexity Router
 | `decision.min_confidence` | number | `0` | Confidence an answer must reach to publish its tier, from `0` to `1`. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. `0` keeps every answer |
 | `decision.criteria.<TIER>.definition` | string | Shipped definition | Replaces the tier's definition (max 500 characters). `<TIER>` is `SIMPLE`, `MEDIUM`, or `COMPLEX` |
 | `decision.criteria.<TIER>.signals` | string[] | Shipped signals | Replaces the tier's whole signal list (max 12 items, 300 characters each) |
-| `decision.criteria.<TIER>.examples` | string[] | Shipped examples | Replaces the tier's whole example list (max 12 items, 300 characters each) |
+| `decision.criteria.<TIER>.examples` | string[] | Shipped examples | Replaces the tier's whole example list (max 60 items, 300 characters each; 180 across the three tiers). Every example is sent with each classification, so a long list raises the decision model's per-request input tokens |
 | `semantic.provider` | string | Required | Provider used for embedding calls; must have an enabled key |
 | `semantic.embedding_model` | string | Required | Embedding model (e.g. `text-embedding-3-small`) |
 | `semantic.timeout` | duration | `1.5s` | Ceiling on the inline embedding call; exceeding it leaves the request without a tier |
@@ -392,7 +392,7 @@ In split configuration mode, the `decision` block is applied as a whole: a chang
 | | Decision model | Semantic | LLM classifier |
 |---|---|---|---|
 | **How it decides** | A decision model reads the request and picks the tier whose [definition, signals, and examples](#tier-guidance) fit it best | The request is embedded and takes the tier of its nearest [reference phrase](#reference-phrases) | A chat model reads the request with a [classification prompt](#llm-classifier) and replies with a tier |
-| **What you maintain** | Nothing to start. Optionally, a definition plus up to 12 signals and 12 examples per tier | Reference phrases for each tier (150 shipped, up to 750) | Nothing to start. Optionally, the classification prompt |
+| **What you maintain** | Nothing to start. Optionally, a definition plus up to 12 signals and 60 examples per tier | Reference phrases for each tier (150 shipped, up to 750) | Nothing to start. Optionally, the classification prompt |
 | **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default; [OpenAI](/providers/supported-providers/openai), [Gemini](/providers/supported-providers/gemini#12-decisions), [OpenRouter](/providers/supported-providers/openrouter), [Cloudflare](/providers/supported-providers/cloudflare), [Perplexity](/providers/supported-providers/perplexity), [Ollama](/providers/supported-providers/ollama), [Azure](/providers/supported-providers/azure), or [Databricks](/providers/supported-providers/databricks) for their decision models; or a [custom provider](/providers/self-hosted-decision-models) for Laya or Nimble | An embedding provider and model with an enabled key; optionally a vector store | A chat model with an enabled key |
 | **Per-request cost** | One decision call (Typesafe Jev typically 600–800 ms) | One embedding call plus a vector lookup, usually much faster than a decision call | One chat completion, the slowest of the three |
 | **Warmup** | None | Reference phrases are embedded in the background after each change | None |

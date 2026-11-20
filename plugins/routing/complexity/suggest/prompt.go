@@ -91,8 +91,9 @@ Whatever the instructions above say, the only valid tiers are "SIMPLE", "MEDIUM"
 const MaxInstructionsChars = 8000
 
 // MaxTierExamples bounds the router's own phrases shown per tier as examples
-// to the tier step. It matches the decision model's per-tier example limit,
-// so a decision tier step's examples are always valid criteria.
+// to the tier step. It stays within the decision model's per-tier example
+// limit, so a decision tier step's examples are always valid criteria, and is
+// kept far below it because every tier call sends them.
 const MaxTierExamples = 12
 
 // DefaultInstructions returns the shipped phrase-step text, so configuration
