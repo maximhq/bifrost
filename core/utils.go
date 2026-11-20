@@ -570,6 +570,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
+	ctx.ClearPhysicalSendGuard()
 	ctx.ClearValue(schemas.BifrostContextKeyLargePayloadMode)
 	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)

@@ -854,3 +854,127 @@ func TestGetOrStoreOpencodeSession(t *testing.T) {
 		}
 	})
 }
+
+func TestPhysicalSendGuardIsRequestScopedAndSingleInstall(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	defer root.Cancel()
+	name := "ace"
+	scoped := root.WithPluginScope(&name)
+	guard := PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1024,
+		Authorize:                 func(context.Context, PhysicalSendAttempt) error { return nil },
+	}
+	if !scoped.SetPhysicalSendGuard(guard) {
+		t.Fatal("plugin scope did not install a physical-send guard on its request")
+	}
+	route := PhysicalSendRoute{Provider: OpenAI, Model: "gpt-test"}
+	if !root.SetPhysicalSendRoute(route) {
+		t.Fatal("guarded request rejected the core-owned physical route")
+	}
+	if _, ok := root.PhysicalSendGuard(); !ok {
+		t.Fatal("root request lost the plugin-scoped physical-send guard")
+	}
+	if !root.PhysicalSendGuardRequired() {
+		t.Fatal("guarded request did not retain its physical-send requirement")
+	}
+	if got, ok := scoped.PhysicalSendRoute(); !ok || got != route {
+		t.Fatalf("scoped physical route = (%+v, %v), want (%+v, true)", got, ok, route)
+	}
+	if scoped.SetPhysicalSendGuard(guard) {
+		t.Fatal("a second guard replaced the request's single authorized guard")
+	}
+
+	child := NewBifrostContext(root, NoDeadline)
+	if _, ok := child.PhysicalSendGuard(); ok {
+		t.Fatal("a derived internal request inherited the caller's physical-send guard")
+	}
+	if !child.PhysicalSendGuardRequired() {
+		t.Fatal("a derived internal request lost the requirement to authorize its provider sends")
+	}
+	if _, ok := child.PhysicalSendRoute(); ok {
+		t.Fatal("a derived internal request inherited the caller's physical route")
+	}
+	child.ClearPhysicalSendGuard()
+	if !child.PhysicalSendGuardRequired() {
+		t.Fatal("clearing a child guard also cleared the inherited authorization requirement")
+	}
+	if _, ok := root.PhysicalSendGuard(); !ok {
+		t.Fatal("clearing a derived internal request cleared its parent guard")
+	}
+	root.ClearPhysicalSendGuard()
+	if _, ok := root.PhysicalSendGuard(); ok {
+		t.Fatal("cleared physical-send guard remains active")
+	}
+	if !root.PhysicalSendGuardRequired() {
+		t.Fatal("clearing the guard must not make an admitted request unguarded")
+	}
+	if root.SetPhysicalSendGuard(guard) {
+		t.Fatal("a cleared single-use guard must not be reinstalled on the same request")
+	}
+}
+
+type physicalSendStateTestParent struct {
+	context.Context
+	mu     sync.RWMutex
+	values map[any]any
+}
+
+func (p *physicalSendStateTestParent) Value(key any) any {
+	p.mu.RLock()
+	value := p.values[key]
+	p.mu.RUnlock()
+	if value != nil {
+		return value
+	}
+	return p.Context.Value(key)
+}
+
+func (p *physicalSendStateTestParent) SetUserValue(key, value any) {
+	p.mu.Lock()
+	p.values[key] = value
+	p.mu.Unlock()
+}
+
+func TestPhysicalSendStateSurvivesHTTPContextBoundaryWithoutUserValueExposure(t *testing.T) {
+	parent := &physicalSendStateTestParent{Context: context.Background(), values: make(map[any]any)}
+	root := NewBifrostContext(parent, NoDeadline)
+	defer root.Cancel()
+	guard := PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1024,
+		Authorize:                 func(context.Context, PhysicalSendAttempt) error { return nil },
+	}
+	type trustedKey struct{}
+	if !root.SetPhysicalSendGuard(guard) {
+		t.Fatal("request guard was not installed")
+	}
+	root.SetTrustedValue(trustedKey{}, "receipt-binding")
+	if !root.PublishPhysicalSendStateToParent() {
+		t.Fatal("request guard was not published to the transport context")
+	}
+	if len(root.GetUserValues()) != 0 {
+		t.Fatalf("trusted send state leaked through user values: %#v", root.GetUserValues())
+	}
+
+	coreContext := NewBifrostContext(parent, NoDeadline)
+	defer coreContext.Cancel()
+	if _, ok := coreContext.PhysicalSendGuard(); !ok || !coreContext.PhysicalSendGuardRequired() {
+		t.Fatal("downstream core context did not restore the physical-send guard")
+	}
+	if coreContext.TrustedValue(trustedKey{}) != "receipt-binding" {
+		t.Fatal("downstream core context lost the trusted projection binding")
+	}
+	coreContext.ClearPhysicalSendGuard()
+	if _, ok := coreContext.PhysicalSendGuard(); ok || !coreContext.PhysicalSendGuardRequired() {
+		t.Fatal("internal child clear must shed the guard but preserve the required-guard marker")
+	}
+	if _, ok := root.PhysicalSendGuard(); !ok {
+		t.Fatal("clearing the downstream context cleared the transport request guard")
+	}
+
+	parent.SetUserValue(physicalSendTransportStateKey{}, nil)
+	clearedContext := NewBifrostContext(parent, NoDeadline)
+	defer clearedContext.Cancel()
+	if _, ok := clearedContext.PhysicalSendGuard(); ok || clearedContext.PhysicalSendGuardRequired() {
+		t.Fatal("cleared transport state leaked into a later core context")
+	}
+}
