@@ -609,6 +609,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
+	{IDs: []string{"widen_batch_job_file_id_columns"}, run: migrationWidenBatchJobFileIDColumns},
+	{IDs: []string{"hash_batch_job_file_id_indexes"}, run: migrationHashBatchJobFileIDIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1165,7 +1167,13 @@ func batchJobsFileIDIndexesMigration(ctx context.Context, migrationName string) 
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for name, column := range indexes {
-				if err := ensureIndexConcurrently(tx, "batch_jobs", name, column, false); err != nil {
+				var err error
+				if tx.Dialector.Name() == "postgres" {
+					err = ensureIndexConcurrentlyUsing(tx, "batch_jobs", name, "hash", column, "", false)
+				} else {
+					err = ensureIndexConcurrently(tx, "batch_jobs", name, column, false)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -13511,9 +13519,9 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 						model                    VARCHAR(255),
 						endpoint                 VARCHAR(255),
 						provider_status          VARCHAR(50),
-						input_file_id            VARCHAR(255),
-						output_file_id           VARCHAR(255),
-						error_file_id            VARCHAR(255),
+						input_file_id            TEXT,
+						output_file_id           TEXT,
+						error_file_id            TEXT,
 						results_url              TEXT,
 						next_check_at            TIMESTAMPTZ,
 						poll_attempts            INTEGER NOT NULL DEFAULT 0,
@@ -17739,4 +17747,132 @@ func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, 
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
 		},
 	})
+}
+
+// migrationWidenBatchJobFileIDColumns removes the PostgreSQL length limit from
+// provider-returned file identifiers. Providers may return opaque identifiers
+// longer than 255 characters, and truncating them would make later result
+// retrieval and accounting address the wrong object.
+//
+// SQLite does not enforce VARCHAR length limits and fresh PostgreSQL tables use
+// TEXT in migrationAddBatchJobsTable, so this only needs to alter existing
+// PostgreSQL installations that still have the legacy VARCHAR(255) columns.
+func migrationWidenBatchJobFileIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_batch_job_file_id_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+
+			if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+				return fmt.Errorf("failed to bound the batch_jobs lock wait: %w", err)
+			}
+
+			columns := []struct {
+				name string
+				ddl  string
+			}{
+				{"input_file_id", "ALTER TABLE batch_jobs ALTER COLUMN input_file_id TYPE TEXT"},
+				{"output_file_id", "ALTER TABLE batch_jobs ALTER COLUMN output_file_id TYPE TEXT"},
+				{"error_file_id", "ALTER TABLE batch_jobs ALTER COLUMN error_file_id TYPE TEXT"},
+			}
+			for _, column := range columns {
+				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column.name) {
+					continue
+				}
+				if err := tx.Exec(column.ddl).Error; err != nil {
+					return fmt.Errorf("failed to widen batch_jobs.%s: %w", column.name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: narrowing provider file identifiers could truncate values already stored", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationHashBatchJobFileIDIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "hash_batch_job_file_id_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	indexes := map[string]string{
+		"idx_batch_jobs_input_file_id":  "input_file_id",
+		"idx_batch_jobs_output_file_id": "output_file_id",
+		"idx_batch_jobs_error_file_id":  "error_file_id",
+	}
+	m := migrator.New(db, &noTxOpts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for name, column := range indexes {
+				if err := replaceBatchJobFileIDIndexWithHash(tx, name, column); err != nil {
+					return fmt.Errorf("failed to replace batch_jobs index %s: %w", name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: long provider file identifiers may already exceed the B-tree entry limit", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// replaceBatchJobFileIDIndexWithHash keeps an existing index usable while the
+// replacement is built, then swaps names after the hash index is ready.
+func replaceBatchJobFileIDIndexWithHash(tx *gorm.DB, name, column string) error {
+	table := "batch_jobs"
+	current, err := describeIndex(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if current.exists && current.valid && current.method == "hash" {
+		return nil
+	}
+
+	replacement := name + "_hash_replacement"
+	if err := ensureIndexConcurrentlyUsing(tx, table, replacement, "hash", column, "", false); err != nil {
+		return fmt.Errorf("build replacement index %s: %w", replacement, err)
+	}
+	if current.exists {
+		if err := dropIndexConcurrently(tx, table, name); err != nil {
+			return fmt.Errorf("drop previous index %s: %w", name, err)
+		}
+	}
+
+	built, err := describeIndex(tx, table, replacement)
+	if err != nil {
+		return fmt.Errorf("check replacement index %s: %w", replacement, err)
+	}
+	if !built.exists || !built.valid || built.method != "hash" {
+		return fmt.Errorf("replacement index %s is missing, invalid, or not a hash index", replacement)
+	}
+	qualified, _, _, err := postgresIndexOnTable(tx, table, replacement)
+	if err != nil {
+		return fmt.Errorf("check replacement index %s: %w", replacement, err)
+	}
+	if err := tx.Exec(fmt.Sprintf("ALTER INDEX %s RENAME TO %s", qualified, name)).Error; err != nil {
+		return fmt.Errorf("rename replacement index %s: %w", replacement, err)
+	}
+	return nil
 }
