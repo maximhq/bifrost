@@ -1,3 +1,4 @@
+- fix: Perplexity, Cohere and HuggingFace converters no longer remove the keys they map from the caller's ExtraParams, so a retry or a fallback converts the same request, and HuggingFace speech no longer panics when the request has no params
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)

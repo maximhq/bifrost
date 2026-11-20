@@ -2,6 +2,7 @@ package huggingface
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -76,25 +77,27 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 			hfReq.Dimensions = params.Dimensions
 		}
 
-		if params.ExtraParams != nil {
-			if normalize, ok := params.ExtraParams["normalize"].(bool); ok {
-				delete(params.ExtraParams, "normalize")
+		// Work on a copy: the keys consumed below must not disappear from the caller's map.
+		extraParams := maps.Clone(params.ExtraParams)
+		if extraParams != nil {
+			if normalize, ok := extraParams["normalize"].(bool); ok {
+				delete(extraParams, "normalize")
 				hfReq.Normalize = &normalize
 			}
-			if promptName, ok := params.ExtraParams["prompt_name"].(string); ok {
-				delete(params.ExtraParams, "prompt_name")
+			if promptName, ok := extraParams["prompt_name"].(string); ok {
+				delete(extraParams, "prompt_name")
 				hfReq.PromptName = &promptName
 			}
-			if truncate, ok := params.ExtraParams["truncate"].(bool); ok {
-				delete(params.ExtraParams, "truncate")
+			if truncate, ok := extraParams["truncate"].(bool); ok {
+				delete(extraParams, "truncate")
 				hfReq.Truncate = &truncate
 			}
-			if truncationDirection, ok := params.ExtraParams["truncation_direction"].(string); ok {
-				delete(params.ExtraParams, "truncation_direction")
+			if truncationDirection, ok := extraParams["truncation_direction"].(string); ok {
+				delete(extraParams, "truncation_direction")
 				hfReq.TruncationDirection = &truncationDirection
 			}
 		}
-		hfReq.ExtraParams = params.ExtraParams
+		hfReq.ExtraParams = extraParams
 	}
 
 	return hfReq, nil
