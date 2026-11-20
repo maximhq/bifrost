@@ -80,6 +80,25 @@ func ResolveModelCaps(provider ModelProvider, model string) ModelCaps {
 	}
 }
 
+// ResolveModelCapsForRequest resolves the capability record for a request:
+// the row keyed by the request's own provider first, then the base provider
+// backing it when a custom provider publishes no row of its own. Custom
+// providers' datasheet rows (effort renames, levels, defaults) are keyed by
+// their own name and must outrank the base family's; the fallback keeps the
+// base-family inheritance from #8884 for providers without their own row.
+func ResolveModelCapsForRequest(ctx *BifrostContext, provider ModelProvider, model string) ModelCaps {
+	caps := ResolveModelCaps(provider, model)
+	if caps.record != nil {
+		return caps
+	}
+	if base := ResolveBaseProvider(ctx, provider); base != "" && base != provider {
+		// caps.model is already normalized against the wire provider; the raw
+		// model could keep the wire prefix and miss the base row.
+		return ResolveModelCaps(base, caps.model)
+	}
+	return caps
+}
+
 // Provider returns the provider the capabilities were resolved for.
 func (c ModelCaps) Provider() ModelProvider { return c.provider }
 
@@ -176,6 +195,21 @@ func (c ModelCaps) FieldUnsupported(field string, fallback bool) bool {
 		}
 	}
 	return fallback
+}
+
+// RowRestrictsField reports whether the row publishes any restriction for the
+// field — an outright unsupported_fields entry or a conditional one. Callers
+// that gate a strip on a provider family use this to still honor an explicit
+// row restriction outside that family.
+func (c ModelCaps) RowRestrictsField(field string) bool {
+	if c.record == nil {
+		return false
+	}
+	if _, ok := c.record.UnsupportedFields[field]; ok {
+		return true
+	}
+	_, ok := c.record.ConditionallyUnsupportedFields[field]
+	return ok
 }
 
 // FieldName resolves the wire name a model expects for a logical field, from the

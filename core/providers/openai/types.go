@@ -463,6 +463,11 @@ type OpenAIChatRequest struct {
 	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
 
+	// effortNormalized marks that the effort already went through the row's
+	// rename table, so provider compat passes must clamp only, not re-rename.
+	// Unexported: never serialized.
+	effortNormalized bool
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters

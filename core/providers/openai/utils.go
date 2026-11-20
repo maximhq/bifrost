@@ -25,6 +25,14 @@ func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model
 // isGPTOSS reports whether model is gpt-oss, which accepts sampling params at any effort.
 func isGPTOSS(model string) bool { return strings.Contains(strings.ToLower(model), "gpt-oss") }
 
+// samplingNameRules reports whether OpenAI's name-based sampling rules apply to
+// this target: the OpenAI/Azure hosts, plus Bedrock except for gpt-oss. Every
+// other family answers from its own datasheet row.
+func samplingNameRules(base schemas.ModelProvider, model string) bool {
+	return base == schemas.OpenAI || base == schemas.Azure ||
+		((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(model))
+}
+
 // joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
 // vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
 // anything but reasoning text are returned unchanged.
@@ -151,7 +159,19 @@ func defaultReasoningEffort(model string) string {
 // the name-based default.
 func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
-	return effort != "" && effort != schemas.ReasoningEffortNone
+	if effort == "" || effort == schemas.ReasoningEffortNone {
+		return false
+	}
+	// A row can spell its disabled default in its own dialect (none → off);
+	// omitted effort then agrees with an explicit disabled label. Only on a
+	// model that can disable reasoning — an always-reasoning row maps "none"
+	// onto its lowest rung, which is not the disabled state.
+	if caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
+		if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort

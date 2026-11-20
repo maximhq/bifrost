@@ -160,8 +160,19 @@ func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortContr
 	if renamed, ok := renames[effort]; ok {
 		return renamed
 	}
+	return c.ClampReasoningEffort(effort, fallback)
+}
+
+// ClampReasoningEffort snaps effort onto the model's published levels without
+// applying the rename table, for values an earlier pass already renamed.
+func (c ModelCaps) ClampReasoningEffort(effort string, fallback *EffortControl) string {
 	levels := c.ReasoningEffortLevels(fallback)
 	if slices.Contains(levels, effort) {
+		return effort
+	}
+	// A rename target is the row's own spelling of a valid value; a ladder
+	// without it is the wrong oracle, not the value.
+	if c.renamesToEffort(effort) {
 		return effort
 	}
 	// Snap onto the nearest rung the model actually publishes. Hard-coding
@@ -193,6 +204,30 @@ func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortContr
 		return effort
 	}
 	return best
+}
+
+// renamesToEffort reports whether effort is a target of the row's rename map —
+// the wire label the row itself publishes for some canonical value.
+func (c ModelCaps) renamesToEffort(effort string) bool {
+	if c.record == nil {
+		return false
+	}
+	for _, label := range c.record.ReasoningEffortRenames {
+		if label == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// EffortLabelFor returns the row's wire label for a canonical effort value
+// when reasoning_effort_renames translates it.
+func (c ModelCaps) EffortLabelFor(canonical string) (string, bool) {
+	if c.record == nil {
+		return "", false
+	}
+	label, ok := c.record.ReasoningEffortRenames[canonical]
+	return label, ok
 }
 
 // ReasoningBudgetRange returns the model's allowed thinking-budget range. ok is

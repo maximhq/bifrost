@@ -508,7 +508,7 @@ func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T
 	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider: schemas.VLLM,
-		Model:    "deepseek-v4.1-flash",
+		Model:    "frontier-gpt-5.4",
 		Input: []schemas.ResponsesMessage{{
 			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
@@ -3968,6 +3968,400 @@ func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_CustomProviderRowDrivesToolFilter pins that the
+// tool filter reads the request's own (custom) row: a row marking
+// search_content_types unsupported must drop them from the outbound web_search
+// tool instead of falling back to the base family's answer.
+func TestToOpenAIResponsesRequest_CustomProviderRowDrivesToolFilter(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "deepseek-v4.1-flash" {
+			return &schemas.ModelCapabilities{
+				UnsupportedFields: map[string]bool{
+					schemas.FieldSearchContentTypes: true,
+				},
+			}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeWebSearch,
+			ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+				SearchContentTypes: []string{"page"},
+			},
+		}}},
+	}
+	out := ToOpenAIResponsesRequest(ctx, req)
+	require.NotNil(t, out)
+	require.NotEmpty(t, out.Tools, "web_search itself stays supported")
+	require.NotNil(t, out.Tools[0].ResponsesToolWebSearch)
+	require.Empty(t, out.Tools[0].ResponsesToolWebSearch.SearchContentTypes,
+		"the custom row rejects search_content_types, so they must not reach the wire")
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderRowDropsToolSearchOnUnsupported
+// pins the tool_search follow-through: a row marking SupportsToolSearch false
+// must drop a client-supplied tool_search definition as well as its typed
+// history — the type whitelist would otherwise forward it.
+func TestToOpenAIResponsesRequest_CustomProviderRowDropsToolSearchOnUnsupported(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "frontier-gpt-5.4" {
+			return &schemas.ModelCapabilities{SupportsToolSearch: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "frontier-gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeWebSearch},
+			{Type: schemas.ResponsesToolTypeToolSearch},
+		}},
+	}
+	out := ToOpenAIResponsesRequest(ctx, req)
+	require.NotNil(t, out)
+	require.Len(t, out.Tools, 1, "only the web_search tool survives: the row rejects tool_search")
+	require.Equal(t, schemas.ResponsesToolTypeWebSearch, out.Tools[0].Type)
+}
+
+// TestToOpenAIResponsesRequest_RowRestrictsSamplingOutsideFamily pins that an
+// explicit unsupported_fields entry is honored whatever the base family, while
+// the name-based fallback stays behind the OpenAI-family gate: an unrestricted
+// third-party gpt-oss host keeps its sampling parameters.
+func TestToOpenAIResponsesRequest_RowRestrictsSamplingOutsideFamily(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "my-vllm-model" {
+			return &schemas.ModelCapabilities{
+				UnsupportedFields: map[string]bool{
+					schemas.FieldTemperature: true,
+				},
+			}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	newReq := func(model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.5)},
+		}
+	}
+
+	t.Run("explicit row restriction strips outside the family", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.VLLM)
+		out := ToOpenAIResponsesRequest(ctx, newReq("my-vllm-model"))
+		require.NotNil(t, out)
+		require.Nil(t, out.Temperature, "the row explicitly rejects temperature, so it must not reach the wire")
+	})
+
+	t.Run("unrestricted third-party gpt-oss keeps temperature", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.VLLM)
+		out := ToOpenAIResponsesRequest(ctx, newReq("gpt-oss-120b"))
+		require.NotNil(t, out)
+		require.NotNil(t, out.Temperature, "no row and no family gate: the fallback must not fire for third-party gpt-oss")
+	})
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderRowDropsNestedToolSearch pins that
+// the unsupported-tool_search removal also reaches tool_search definitions
+// nested inside a retained namespace tool.
+func TestToOpenAIResponsesRequest_CustomProviderRowDropsNestedToolSearch(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "frontier-gpt-5.4" {
+			return &schemas.ModelCapabilities{SupportsToolSearch: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	namespaceTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace}
+	namespaceTool.ResponsesToolNamespace = &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeToolSearch},
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup")},
+	}}
+	out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "frontier-gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{namespaceTool}},
+	})
+	require.NotNil(t, out)
+	require.Len(t, out.Tools, 1, "the namespace tool itself stays")
+	require.NotNil(t, out.Tools[0].ResponsesToolNamespace)
+	require.Len(t, out.Tools[0].ResponsesToolNamespace.Tools, 1, "only the nested function survives")
+	require.Equal(t, schemas.ResponsesToolTypeFunction, out.Tools[0].ResponsesToolNamespace.Tools[0].Type)
+}
+
+// TestToOpenAIResponsesRequest_NamespaceEmptiedByToolSearchRemovalIsDropped pins
+// that a namespace whose only nested definition was tool_search is removed with
+// it, while a namespace that arrived empty passes through unchanged.
+func TestToOpenAIResponsesRequest_NamespaceEmptiedByToolSearchRemovalIsDropped(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "frontier-gpt-5.4" {
+			return &schemas.ModelCapabilities{SupportsToolSearch: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	onlyToolSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace}
+	onlyToolSearch.ResponsesToolNamespace = &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}}}
+	alreadyEmpty := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("empty-ns")}
+	alreadyEmpty.ResponsesToolNamespace = &schemas.ResponsesToolNamespace{}
+	webSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+
+	out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "frontier-gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{onlyToolSearch, alreadyEmpty, webSearch}},
+	})
+	require.NotNil(t, out)
+	require.Len(t, out.Tools, 2, "the emptied namespace is gone; the arrived-empty one and web_search remain")
+	types := []string{string(out.Tools[0].Type), string(out.Tools[1].Type)}
+	require.Contains(t, types, string(schemas.ResponsesToolTypeNamespace))
+	require.Contains(t, types, string(schemas.ResponsesToolTypeWebSearch))
+	for i := range out.Tools {
+		if out.Tools[i].Type == schemas.ResponsesToolTypeNamespace {
+			require.Equal(t, "empty-ns", *out.Tools[i].Name, "the surviving namespace is the one that arrived empty")
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_ToolSearchRemovalClearsToolChoiceWhenAlone pins
+// the tool_choice follow-through of the unsupported-tool_search removal: the
+// choice is dropped only when no tools remain, and preserved otherwise.
+func TestToOpenAIResponsesRequest_ToolSearchRemovalClearsToolChoiceWhenAlone(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "frontier-gpt-5.4" {
+			return &schemas.ModelCapabilities{SupportsToolSearch: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	required := &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
+
+	t.Run("tool_search alone with a required choice", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools:      []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: required,
+			},
+		})
+		require.NotNil(t, out)
+		require.Empty(t, out.Tools, "the row rejects tool_search")
+		require.Nil(t, out.ToolChoice, "a leftover required choice with no tools is an upstream 400")
+	})
+
+	t.Run("allowed_tools naming only the removed tool is cleared", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type:  schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{Type: string(schemas.ResponsesToolTypeToolSearch)}},
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Empty(t, out.Tools)
+		require.Nil(t, out.ToolChoice, "the choice names only the removed tool, so it cannot survive")
+	})
+
+	t.Run("allowed_tools keeps entries naming surviving tools", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{
+						{Type: string(schemas.ResponsesToolTypeWebSearch)},
+						{Type: string(schemas.ResponsesToolTypeToolSearch)},
+					},
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1)
+		require.NotNil(t, out.ToolChoice)
+		require.NotNil(t, out.ToolChoice.ResponsesToolChoiceStruct)
+		require.Len(t, out.ToolChoice.ResponsesToolChoiceStruct.Tools, 1, "only the entry naming a surviving tool remains")
+		require.Equal(t, string(schemas.ResponsesToolTypeWebSearch), out.ToolChoice.ResponsesToolChoiceStruct.Tools[0].Type)
+	})
+
+	t.Run("allowed_tools keeps entries for retained additional_tools definitions", func(t *testing.T) {
+		additional := schemas.ResponsesMessage{
+			Type:            schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools),
+			Role:            schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			AdditionalTools: json.RawMessage(`[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]`),
+		}
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				},
+				additional,
+			},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{
+						{Type: string(schemas.ResponsesToolTypeFunction), Name: schemas.Ptr("lookup")},
+						{Type: string(schemas.ResponsesToolTypeWebSearch)},
+					},
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1, "tool_search is gone")
+		require.NotNil(t, out.ToolChoice, "lookup is still defined by the retained additional_tools item")
+		require.Len(t, out.ToolChoice.ResponsesToolChoiceStruct.Tools, 2, "both surviving tools stay allowed")
+	})
+
+	t.Run("allowed_tools mcp entries match on server_label", func(t *testing.T) {
+		mcpTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP}
+		mcpTool.ResponsesToolMCP = &schemas.ResponsesToolMCP{ServerLabel: "repo"}
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{mcpTool, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{
+						{Type: string(schemas.ResponsesToolTypeMCP), ServerLabel: schemas.Ptr("repo")},
+					},
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1)
+		require.NotNil(t, out.ToolChoice, "the mcp entry names a surviving server, so the choice survives")
+		require.Len(t, out.ToolChoice.ResponsesToolChoiceStruct.Tools, 1)
+	})
+
+	t.Run("allowed_tools mcp entries with a wrong server_label are dropped", func(t *testing.T) {
+		mcpTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP}
+		mcpTool.ResponsesToolMCP = &schemas.ResponsesToolMCP{ServerLabel: "repo"}
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{mcpTool, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{
+						{Type: string(schemas.ResponsesToolTypeMCP), ServerLabel: schemas.Ptr("other")},
+					},
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1)
+		require.Nil(t, out.ToolChoice, "the only entry names a server that is not on the wire")
+	})
+
+	t.Run("a direct tool_search choice is cleared with its tool", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceType(string(schemas.ResponsesToolTypeToolSearch)),
+				}},
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1, "web_search remains")
+		require.Nil(t, out.ToolChoice, "a choice forcing the removed tool cannot survive")
+	})
+
+	t.Run("tool_search beside a supported tool keeps the choice", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "frontier-gpt-5.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools:      []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}, {Type: schemas.ResponsesToolTypeToolSearch}},
+				ToolChoice: required,
+			},
+		})
+		require.NotNil(t, out)
+		require.Len(t, out.Tools, 1)
+		require.NotNil(t, out.ToolChoice, "supported tools remain, so the choice survives")
+	})
+}
+
 // TestSamplingParamGateReadsDatasheet covers the datasheet side of the sampling
 // strip. Their verdict can be conditional on reasoning effort, so both
 // unsupported_fields and conditionally_unsupported_fields have to drive it.
@@ -4005,6 +4399,76 @@ func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", ""), field)
 			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", "low"), field)
 		}
+	})
+
+	t.Run("mapped_none_label_is_not_disabled_on_always_reasoning_rows", func(t *testing.T) {
+		const model = "always-reasons-renamed-low"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			// The model always reasons, so a canonical "none" maps onto its lowest rung.
+			SupportsReasoningDisable: schemas.Ptr(false),
+			ReasoningEffortRenames:   map[string]string{"none": "low"},
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			},
+		})
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, "low"),
+			"an explicit mapped label is not the disabled state on an always-reasoning row")
+	})
+
+	t.Run("mapped_none_default_is_not_disabled_on_always_reasoning_rows", func(t *testing.T) {
+		const model = "always-reasons-default-low"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsReasoningDisable: schemas.Ptr(false),
+			ReasoningEffortRenames:   map[string]string{"none": "low"},
+			DefaultReasoningEffort:   schemas.Ptr("low"),
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			},
+		})
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, ""),
+			"an omitted default spelled in the row's dialect is not the disabled state on an always-reasoning row")
+	})
+
+	t.Run("renamed_disabled_default_drives_omitted_effort", func(t *testing.T) {
+		const model = "effnone-default-reasoner"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ReasoningEffortRenames: map[string]string{"none": "off"},
+			DefaultReasoningEffort: schemas.Ptr("off"),
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			},
+		})
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, ""),
+			"omitted effort means disabled by the row's own default")
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, "off"),
+			"an explicit off agrees with the omitted default")
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, "low"))
+	})
+
+	t.Run("renamed_disabled_label_keeps_sampling_fields", func(t *testing.T) {
+		const model = "effnone-gpt-5.4"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ReasoningEffortRenames: map[string]string{"none": "off"},
+		})
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		// Name fallback: gpt-5.4 keeps top_p while reasoning is disabled, and
+		// "off" is this row's label for the disabled state.
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", "off"))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", "low"))
+
+		// Conditional label: the row's when_effort_none gate opens on "off" too.
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ReasoningEffortRenames: map[string]string{"none": "off"},
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			},
+		})
+		caps = schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.4", "off"))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.4", "low"))
 	})
 
 	t.Run("conditional_label_drives_both_directions", func(t *testing.T) {
@@ -5777,6 +6241,94 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 				require.Len(t, reasoningItems, 1, "the reasoning item must still be replayed: %s", wire)
 				require.JSONEq(t, `"gAAAA-reasoning"`, string(reasoningItems[0]["encrypted_content"]), "a separate reasoning item keeps its token: %s", wire)
 			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderBudgetEffortFollowsDatasheet is
+// the Responses-API twin of the chat budget-effort test.
+func TestToOpenAIResponsesRequest_CustomProviderBudgetEffortFollowsDatasheet(t *testing.T) {
+	commandCodeRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "xhigh", "max"},
+		ReasoningEffortRenames: map[string]string{"high": "off"},
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "deepseek-v4.1-flash" {
+			return commandCodeRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(20000)},
+			MaxOutputTokens: schemas.Ptr(10000),
+		},
+	}
+	out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.ResponsesParameters)
+	require.NotNil(t, out.ResponsesParameters.Reasoning)
+	require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+	require.Equal(t, "off", *out.ResponsesParameters.Reasoning.Effort)
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderEffortRenamesFollowDatasheet is
+// the Responses-API twin of the chat renames test.
+func TestToOpenAIResponsesRequest_CustomProviderEffortRenamesFollowDatasheet(t *testing.T) {
+	commandCodeRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "high", "xhigh", "max"},
+		ReasoningEffortRenames: map[string]string{"none": "off"},
+	}
+	opencodeGoRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:    []string{"none", "low", "medium", "high"},
+		ReasoningEffortRenames:   map[string]string{"off": "none"},
+		SupportsReasoningDisable: schemas.Ptr(true),
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		switch {
+		case p == "commandcode" && m == "deepseek-v4.1-flash":
+			return commandCodeRow
+		case p == "opencode-go" && m == "deepseek-v4.1-flash":
+			return opencodeGoRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   string
+		expected string
+	}{
+		{name: "commandcode renames none to off", provider: "commandcode", effort: "none", expected: "off"},
+		{name: "opencode-go renames off to none", provider: "opencode-go", effort: "off", expected: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tt.provider,
+				Model:    "deepseek-v4.1-flash",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(tt.effort)}},
+			}
+			out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.ResponsesParameters)
+			require.NotNil(t, out.ResponsesParameters.Reasoning)
+			require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+			require.Equal(t, tt.expected, *out.ResponsesParameters.Reasoning.Effort)
 		})
 	}
 }

@@ -29,7 +29,58 @@ const toolSearchExecutionServer = "server"
 // filterUnsupportedTools, on slices that are not shared with the caller's request.
 func (req *OpenAIResponsesRequest) provisionToolSearch(supported bool) {
 	req.keepDeferLoading = false
-	if !supported || len(req.Tools) == 0 {
+	if !supported {
+		req.dropTypedToolSearchCalls()
+		// The type whitelist admits tool_search, so an unsupported row must
+		// drop a client-supplied definition here as well, not just the typed
+		// history.
+		if len(req.Tools) > 0 {
+			req.Tools = slices.DeleteFunc(slices.Clone(req.Tools), func(t schemas.ResponsesTool) bool {
+				return t.Type == schemas.ResponsesToolTypeToolSearch
+			})
+			// A retained namespace tool keeps nested definitions; a tool_search
+			// nested inside one must go too, and a namespace this filter emptied
+			// is removed itself (one that arrived empty passes through). Both
+			// before the choice repair so choices naming the removed namespace
+			// are repaired against what actually remains.
+			emptied := make([]bool, len(req.Tools))
+			for i := range req.Tools {
+				if ns := req.Tools[i].ResponsesToolNamespace; ns != nil && len(ns.Tools) > 0 {
+					nested := slices.DeleteFunc(slices.Clone(ns.Tools), func(t schemas.ResponsesTool) bool {
+						return t.Type == schemas.ResponsesToolTypeToolSearch
+					})
+					switch {
+					case len(nested) == len(ns.Tools):
+						// nothing removed
+					case len(nested) == 0:
+						emptied[i] = true
+					default:
+						nsCopy := *ns
+						nsCopy.Tools = nested
+						req.Tools[i].ResponsesToolNamespace = &nsCopy
+					}
+				}
+			}
+			if slices.Contains(emptied, true) {
+				kept := req.Tools[:0]
+				for i, tool := range req.Tools {
+					if !emptied[i] {
+						kept = append(kept, tool)
+					}
+				}
+				req.Tools = kept
+			}
+			remaining := req.Tools
+			// A retained additional_tools item keeps its own definitions callable;
+			// an allowed_tools entry naming one must survive the repair.
+			if extra := retainedAdditionalTools(req.Input.OpenAIResponsesRequestInputArray); len(extra) > 0 {
+				remaining = append(slices.Clone(req.Tools), extra...)
+			}
+			req.ToolChoice = repairToolChoiceAfterToolRemoval(req.ToolChoice, remaining)
+		}
+		return
+	}
+	if len(req.Tools) == 0 {
 		req.dropTypedToolSearchCalls()
 		return
 	}
@@ -248,4 +299,82 @@ func (req *OpenAIResponsesRequest) toolSearchOutputItem(callID *string, executio
 			Execution: schemas.Ptr(execution),
 		},
 	}
+}
+
+// retainedAdditionalTools decodes the definitions carried by retained
+// additional_tools input items. Those tools stay callable even when the
+// top-level slice loses one, so the choice repair counts them as survivors.
+func retainedAdditionalTools(input []schemas.ResponsesMessage) []schemas.ResponsesTool {
+	var tools []schemas.ResponsesTool
+	for _, message := range input {
+		if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeAdditionalTools {
+			continue
+		}
+		tools = append(tools, hoistAdditionalTools(message)...)
+	}
+	return tools
+}
+
+// repairToolChoiceAfterToolRemoval repairs a tool choice after a server tool
+// was removed: a global string choice survives only when tools remain, and an
+// allowed_tools list names only tools still in the request — the choice is
+// dropped when nothing it names survives. A leftover choice with no tools is an
+// upstream 400 ("tool_choice must be specified with tools").
+func repairToolChoiceAfterToolRemoval(choice *schemas.ResponsesToolChoice, remaining []schemas.ResponsesTool) *schemas.ResponsesToolChoice {
+	if choice == nil {
+		return nil
+	}
+	if strct := choice.ResponsesToolChoiceStruct; strct != nil {
+		if strct.Type == schemas.ResponsesToolChoiceType(string(schemas.ResponsesToolTypeToolSearch)) {
+			// The choice forces the tool that was just removed.
+			return nil
+		}
+		if strct.Type == schemas.ResponsesToolChoiceTypeAllowedTools {
+			kept := make([]schemas.ResponsesToolChoiceAllowedToolDef, 0, len(strct.Tools))
+			for _, allowed := range strct.Tools {
+				for i := range remaining {
+					if allowedToolNamesTool(allowed, &remaining[i]) {
+						kept = append(kept, allowed)
+						break
+					}
+				}
+			}
+			if len(kept) == 0 {
+				return nil
+			}
+			if len(kept) == len(strct.Tools) {
+				return choice
+			}
+			strctCopy := *strct
+			strctCopy.Tools = kept
+			return &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &strctCopy}
+		}
+		return choice
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	return choice
+}
+
+// allowedToolNamesTool reports whether an allowed_tools entry names the tool.
+// Function and custom entries match on name; MCP entries match on server_label,
+// the identifier the tool itself carries — the top-level name never does.
+func allowedToolNamesTool(allowed schemas.ResponsesToolChoiceAllowedToolDef, tool *schemas.ResponsesTool) bool {
+	if string(tool.Type) != allowed.Type {
+		return false
+	}
+	if allowed.Type == string(schemas.ResponsesToolTypeMCP) {
+		if tool.ResponsesToolMCP == nil {
+			return false
+		}
+		if allowed.ServerLabel == nil || *allowed.ServerLabel == "" {
+			return true
+		}
+		return tool.ResponsesToolMCP.ServerLabel == *allowed.ServerLabel
+	}
+	if allowed.Name == nil || *allowed.Name == "" {
+		return true
+	}
+	return tool.Name != nil && *tool.Name == *allowed.Name
 }
