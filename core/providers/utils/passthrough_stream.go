@@ -124,6 +124,14 @@ func streamPassthrough(
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
+		// Register the accumulating usage handle, as the typed streams do, so a mid-stream
+		// cancel/timeout bills the usage observed so far (attachBilledUsageFromContext reads it).
+		// Updated in place below; it stays all zero, and bills nothing, until usage arrives.
+		var billedUsage schemas.BifrostLLMUsage
+		if success && params.Observe != nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &billedUsage)
+		}
+
 		observe := func(payload []byte) (terminal bool) {
 			if len(bytes.TrimSpace(payload)) == 0 {
 				return false
@@ -132,6 +140,9 @@ func streamPassthrough(
 			if success && params.Observe != nil && (params.HasUsage == nil || params.HasUsage(payload)) {
 				if u := params.Observe(payload); u != nil {
 					usage = u
+					if u.LLMUsage != nil {
+						billedUsage = *u.LLMUsage
+					}
 				}
 			}
 			if params.EndsStream != nil && params.EndsStream(payload) {
