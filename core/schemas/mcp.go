@@ -601,6 +601,10 @@ const (
 	DefaultMaxInstructionsPerClient = 4096
 	DefaultMaxInstructionsTotal     = 16384
 
+	// MaxMCPClientDescriptionLength bounds an MCP client's description in characters (runes), as JSON Schema's maxLength counts. It is sent to the
+	// model in the code mode catalogue on every request that reaches the client, so it stays one line.
+	MaxMCPClientDescriptionLength = 200
+
 	DefaultCodeModeMaxSourceBytes  = 64 << 10
 	DefaultCodeModeMaxSteps        = 1_000_000
 	DefaultCodeModeMaxMemoryBytes  = 64 << 20
@@ -938,6 +942,7 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 type MCPClientConfig struct {
 	ID                string            `json:"client_id"`                     // Client ID
 	Name              string            `json:"name"`                          // Client name
+	Description       string            `json:"description,omitempty"`         // What the server is for, shown to models in the code mode catalogue
 	EndpointSlug      string            `json:"endpoint_slug"`                 // URL-safe, immutable; serves /mcp/<slug>
 	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
 	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)

@@ -2567,6 +2567,36 @@ func TestMigrationAddMCPClientServerTypeOnSlugColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddMCPClientDescriptionColumn adds the column with the empty default, so every existing
+// client has no description, and re-runs cleanly.
+func TestMigrationAddMCPClientDescriptionColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "description"))
+	now := time.Now()
+	require.NoError(t, db.Exec(
+		`INSERT INTO config_mcp_clients (client_id, name, endpoint_slug, connection_type, auth_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"existing", "existing", "existing", "http", "headers", now, now).Error)
+
+	require.NoError(t, migrationAddMCPClientDescriptionColumn(ctx, db, testMigrationLogger))
+
+	require.True(t, mg.HasColumn(&tables.TableMCPClient{}, "description"))
+	var row tables.TableMCPClient
+	require.NoError(t, db.Where("client_id = ?", "existing").First(&row).Error)
+	assert.Empty(t, row.Description, "existing rows must have no description")
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_description_column").Error)
+	require.NoError(t, migrationAddMCPClientDescriptionColumn(ctx, db, testMigrationLogger))
+}
+
 // TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait pins that on postgres the
 // pending_verification column's ALTER on config_mcp_clients gives up on a held lock instead of
 // queueing every later query on the table behind it.

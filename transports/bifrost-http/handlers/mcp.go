@@ -839,6 +839,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	updateReq := &configstoreTables.TableMCPClient{
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
+		Description:            clientConfig.Description,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
 		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
@@ -1049,6 +1050,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	updateReq := &configstoreTables.TableMCPClient{
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
+		Description:            clientConfig.Description,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
 		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
@@ -1949,6 +1951,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		clientConfig := &schemas.MCPClientConfig{
 			ID:                     dbClient.ClientID,
 			Name:                   dbClient.Name,
+			Description:            dbClient.Description,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
 			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
@@ -2324,6 +2327,7 @@ const maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
 	Name                   *string                         `json:"name,omitempty"`
+	Description            *string                         `json:"description,omitempty"` // "" clears it
 	Disabled               *bool                           `json:"disabled,omitempty"`
 	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
@@ -2766,6 +2770,11 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "max_instructions_length must not be negative")
 		return
 	}
+	req.Description, err = lib.NormalizeMCPClientDescription(req.Description)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	resolvedToolExecutionTimeout := time.Duration(req.ToolExecutionTimeout) * time.Second
 	resolvedMaxInstructionsLength := req.MaxInstructionsLength
 
@@ -2822,6 +2831,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig := &schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			Description:            req.Description,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			ServerTypeOnSlug:       req.ServerTypeOnSlug,
@@ -2981,6 +2991,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig := &schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			Description:            req.Description,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			ServerTypeOnSlug:       req.ServerTypeOnSlug,
@@ -3129,6 +3140,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		pendingConfig := schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			Description:            req.Description,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			ServerTypeOnSlug:       req.ServerTypeOnSlug,
@@ -3220,6 +3232,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		pendingConfig := schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			Description:            req.Description,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			ServerTypeOnSlug:       req.ServerTypeOnSlug,
@@ -3278,6 +3291,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     req.ClientID,
 		Name:                   req.Name,
+		Description:            req.Description,
 		EndpointSlug:           req.EndpointSlug,
 		IsCodeModeClient:       req.IsCodeModeClient,
 		ServerTypeOnSlug:       req.ServerTypeOnSlug,
@@ -3428,6 +3442,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	name := existingConfig.Name
 	if req.Name != nil {
 		name = *req.Name
+	}
+	description := existingConfig.Description
+	if req.Description != nil {
+		description, err = lib.NormalizeMCPClientDescription(*req.Description)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	disabled := existingConfig.Disabled
 	if req.Disabled != nil {
@@ -3965,6 +3987,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	dbUpdateRecord := configstoreTables.TableMCPClient{
 		ClientID:               id,
 		Name:                   name,
+		Description:            description,
 		IsCodeModeClient:       isCodeMode,
 		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         string(existingConfig.ConnectionType),
@@ -4067,6 +4090,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     id,
 		Name:                   name,
+		Description:            description,
 		IsCodeModeClient:       isCodeMode,
 		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         existingConfig.ConnectionType,
@@ -4767,6 +4791,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 	updateReq := &configstoreTables.TableMCPClient{
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
+		Description:            clientConfig.Description,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
 		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
@@ -5070,6 +5095,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			updateReq := &configstoreTables.TableMCPClient{
 				ClientID:               mcpClientConfig.ID,
 				Name:                   mcpClientConfig.Name,
+				Description:            mcpClientConfig.Description,
 				IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
 				ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 				ConnectionType:         string(mcpClientConfig.ConnectionType),
@@ -5211,6 +5237,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		updateReq := &configstoreTables.TableMCPClient{
 			ClientID:               mcpClientConfig.ID,
 			Name:                   mcpClientConfig.Name,
+			Description:            mcpClientConfig.Description,
 			IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
 			ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 			ConnectionType:         string(mcpClientConfig.ConnectionType),

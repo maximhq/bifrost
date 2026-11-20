@@ -1880,6 +1880,68 @@ func TestGetMCPClients_ReturnsMaxInstructionsLength(t *testing.T) {
 	assert.Equal(t, 50, list.Clients[0].Config.MaxInstructionsLength)
 }
 
+// TestMCPClientDescription pins the description on create and update, in both the runtime config and
+// the stored row: create trims it; an update that omits it keeps it, one that sends it replaces it,
+// and "" clears it; and a description longer than schemas.MaxMCPClientDescriptionLength characters
+// or not on one line is answered 400 before anything is stored or applied.
+func TestMCPClientDescription(t *testing.T) {
+	invalid := []struct{ name, description, wantErr string }{
+		{"too long", strings.Repeat("é", schemas.MaxMCPClientDescriptionLength+1), "description must be at most 200 characters"},
+		{"control character", "Dashboards\nalerts", "description must be a single line without control characters"},
+		{"line separator", "Dashboards\u2028alerts", "description must be a single line without control characters"},
+	}
+	h, mgr := newOpenAPITestHandler(t)
+	create := func(description string) (int, string) {
+		body, _ := json.Marshal(map[string]any{
+			"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+			"description":      description,
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		return doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	}
+
+	for _, tc := range invalid {
+		status, respBody := create(tc.description)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "create %s: %s", tc.name, respBody)
+		assert.Contains(t, respBody, tc.wantErr, "create %s", tc.name)
+	}
+	require.Empty(t, mgr.added, "a refused create applies nothing")
+
+	status, respBody := create("  Pets: list, adopt and return  ")
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	id := mgr.added[0].ID
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	stored := func() string {
+		row, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+		require.NoError(t, err)
+		return row.Description
+	}
+	assert.Equal(t, "Pets: list, adopt and return", mgr.added[0].Description, "create trims the description")
+	assert.Equal(t, "Pets: list, adopt and return", stored(), "create stores the trimmed description")
+
+	for _, tc := range invalid {
+		body, _ := json.Marshal(map[string]any{"description": tc.description})
+		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, string(body), id, false)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "update %s: %s", tc.name, respBody)
+		assert.Contains(t, respBody, tc.wantErr, "update %s", tc.name)
+	}
+	require.Empty(t, mgr.updated, "a refused update applies nothing")
+	assert.Equal(t, "Pets: list, adopt and return", stored(), "a refused update stores nothing")
+
+	for _, tc := range []struct{ name, body, want string }{
+		{"omitted keeps it", `{"name":"petstore_renamed"}`, "Pets: list, adopt and return"},
+		{"sent replaces it", `{"description":" Pet adoption "}`, "Pet adoption"},
+		{"empty clears it", `{"description":""}`, ""},
+	} {
+		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, tc.body, id, false)
+		require.Equal(t, fasthttp.StatusOK, status, "%s: %s", tc.name, respBody)
+		assert.Equal(t, tc.want, mgr.updated[len(mgr.updated)-1].Description, "%s: runtime config", tc.name)
+		assert.Equal(t, tc.want, stored(), "%s: stored row", tc.name)
+	}
+}
+
 // dialFailingUpdateManager applies every update and then reports the dial that
 // followed as failed, as the runtime does for an enable whose upstream is down.
 type dialFailingUpdateManager struct {

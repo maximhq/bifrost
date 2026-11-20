@@ -3992,6 +3992,31 @@ func TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders(t *testing.T) {
 	assert.Equal(t, schemas.MCPAuthTypeHeaders, store.mcpConfigsCreated[0].AuthType, "the store")
 }
 
+// TestLoadMCPConfig_NormalizesDescription pins that config.json gets the create API's answer on
+// description: surrounding whitespace is trimmed, and a client whose description breaks the rule
+// (here, spanning several lines) is skipped and not stored, while the client beside it loads.
+func TestLoadMCPConfig_NormalizesDescription(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	client := func(name, description string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{Name: name, Description: description, ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: schemas.MCPAuthTypeNone}
+	}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("multi_line", "Dashboards\nalerts"),
+		client("grafana", "  Dashboards and alerts  "),
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"grafana"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
+	assert.Equal(t, "Dashboards and alerts", cfg.MCPConfig.ClientConfigs[0].Description, "the runtime keeps the trimmed description")
+	require.Len(t, store.mcpConfigsCreated, 1)
+	assert.Equal(t, "Dashboards and alerts", store.mcpConfigsCreated[0].Description, "the store keeps the trimmed description")
+}
+
 // TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient: a stored client whose
 // config.json declaration is now refused for its auth_type is kept with its stored
 // configuration, the way an unparsable OpenAPI declaration keeps it, instead of being

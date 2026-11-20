@@ -10485,6 +10485,12 @@
           "type": "string",
           "description": "Name of the MCP client"
         },
+        "description": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*$",
+          "description": "One-line summary of what this MCP server is for (e.g. 'Dashboards, alerts, Prometheus and Loki queries'). Models see it in the code mode catalogue. Surrounding whitespace is trimmed; at most 200 characters, no newlines, tabs or other control characters. Omit or leave empty for none."
+        },
         "endpoint_slug": {
           "type": "string",
           "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",

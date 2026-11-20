@@ -2420,6 +2420,10 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	if m.MaxProtocolVersion != "" {
 		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
 	}
+	// Only a set value contributes, so existing hashes are unchanged.
+	if m.Description != "" {
+		hash.Write([]byte("description:" + m.Description))
+	}
 	// Only true contributes, so a file edit of this flag syncs while clients without code mode keep their hash.
 	if m.IsCodeModeClient {
 		hash.Write([]byte("is_code_mode_client:true"))

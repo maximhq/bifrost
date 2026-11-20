@@ -531,6 +531,21 @@ func TestGenerateMCPClientHash_MaxProtocolVersion(t *testing.T) {
 	assert.NotEqual(t, hash(schemas.MCPProtocolVersion20250618), hash(schemas.MCPMaxProtocolVersionAuto))
 }
 
+// TestGenerateMCPClientHash_Description: an unset description leaves stored hashes as they were,
+// a declared one drifts the hash so a config.json edit is synced.
+func TestGenerateMCPClientHash_Description(t *testing.T) {
+	hash := func(description string) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", Description: description})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(""), "an unset description must not move existing stored hashes")
+	assert.NotEqual(t, before, hash("Dashboards and alerts"), "setting a description must drift the hash")
+	assert.NotEqual(t, hash("Dashboards and alerts"), hash("Prometheus queries"), "editing a description must drift the hash")
+}
+
 // Unset allow-lists leave the hash as it was; [] and a list each drift it, so editing them in
 // config.json is reconciled.
 func TestGenerateMCPClientHash_ExposeLists(t *testing.T) {

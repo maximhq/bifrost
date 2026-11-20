@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -2491,6 +2492,24 @@ func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schem
 	}
 }
 
+// NormalizeMCPClientDescription returns an MCP client description trimmed of surrounding
+// whitespace, or why it cannot be stored. Models read the description in the code mode
+// catalogue, so it must stay one short line: at most schemas.MaxMCPClientDescriptionLength
+// characters (the unit config.schema.json's maxLength counts) and no control or line-separator characters (newline, carriage return and tab
+// included). The API create and update and the config.json load all apply it.
+func NormalizeMCPClientDescription(description string) (string, error) {
+	description = strings.TrimSpace(description)
+	if length := utf8.RuneCountInString(description); length > schemas.MaxMCPClientDescriptionLength {
+		return "", fmt.Errorf("description must be at most %d characters, got %d", schemas.MaxMCPClientDescriptionLength, length)
+	}
+	if strings.ContainsFunc(description, func(r rune) bool {
+		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	}) {
+		return "", fmt.Errorf("description must be a single line without control characters")
+	}
+	return description, nil
+}
+
 // loadMCPConfig loads the MCP client configs from the store and config.json and
 // reconciles the two. A config.json client that cannot be created is skipped, and a
 // stored client of the same name keeps its stored configuration.
@@ -2522,6 +2541,16 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				continue
 			}
 			c.AuthType = authType
+			description, err := NormalizeMCPClientDescription(c.Description)
+			if err != nil {
+				logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
+				if configData.rejectedMCPClients == nil {
+					configData.rejectedMCPClients = map[string]bool{}
+				}
+				configData.rejectedMCPClients[c.Name] = true
+				continue
+			}
+			c.Description = description
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
@@ -3389,6 +3418,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 	return configstoreTables.TableMCPClient{
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
+		Description:            clientConfig.Description,
 		EndpointSlug:           clientConfig.EndpointSlug,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
 		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
@@ -10351,6 +10381,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	// Preserve connection info (connection_type, connection_string, stdio_config) from oldConfig
 	// as these are read-only and not sent in the update request
 	c.MCPConfig.ClientConfigs[configIndex].Name = updatedConfig.Name
+	c.MCPConfig.ClientConfigs[configIndex].Description = updatedConfig.Description
 	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = updatedConfig.IsCodeModeClient
 	c.MCPConfig.ClientConfigs[configIndex].ServerTypeOnSlug = updatedConfig.ServerTypeOnSlug
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
