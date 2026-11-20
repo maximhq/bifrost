@@ -257,3 +257,87 @@ func TestRewriteBooleanSchemaNodes_LeavesNestedInstanceData(t *testing.T) {
 		t.Fatalf("instance data changed: %s", got)
 	}
 }
+
+// A schema stored by value in an OrderedMap serializes like a pointer, so its boolean
+// subschemas are rewritten too, on a copy.
+func TestRewriteBooleanSchemaNodes_OrderedMapValues(t *testing.T) {
+	child := schemas.NewOrderedMapFromPairs(schemas.KV("type", "array"), schemas.KV("items", true))
+	members := schemas.NewOrderedMapFromPairs(schemas.KV("x", false))
+	props := schemas.NewOrderedMap()
+	props.Set("list", *child)
+	props.Set("obj", *schemas.NewOrderedMapFromPairs(schemas.KV("type", "object"), schemas.KV("properties", *members)))
+	params := &schemas.ToolFunctionParameters{Type: "object", Properties: props}
+
+	rewritten, changed := RewriteBooleanSchemaNodes(params)
+	if !changed {
+		t.Fatal("boolean subschemas in OrderedMap values were not rewritten")
+	}
+	want := `{"type":"object","properties":{"list":{"type":"array","items":{}},"obj":{"type":"object","properties":{"x":{"not":{}}}}}}`
+	if got := marshalBooleanSchemaParams(t, rewritten); got != want {
+		t.Fatalf("OrderedMap value rewrite mismatch\n got: %s\nwant: %s", got, want)
+	}
+	if items, _ := child.Get("items"); items != true {
+		t.Fatalf("caller's child map was mutated: items = %#v", items)
+	}
+	if x, _ := members.Get("x"); x != false {
+		t.Fatalf("caller's members map was mutated: x = %#v", x)
+	}
+}
+
+// Draft-07 dependencies map a property name to a schema or to a list of property
+// names. Schema values are rewritten and name lists stay as they are.
+func TestRewriteBooleanSchemaNodes_LegacyDependencies(t *testing.T) {
+	params := booleanSchemaParams(t, `{"type":"object","properties":{"obj":{"type":"object","dependencies":{"trigger":false,"other":true,"names":["a","b"],"nested":{"properties":{"y":true}}}}}}`)
+	rewritten, changed := RewriteBooleanSchemaNodes(params)
+	if !changed {
+		t.Fatal("boolean subschemas under dependencies were not rewritten")
+	}
+	want := `{"type":"object","properties":{"obj":{"type":"object","dependencies":{"trigger":{"not":{}},"other":{},"names":["a","b"],"nested":{"properties":{"y":{}}}}}}}`
+	if got := marshalBooleanSchemaParams(t, rewritten); got != want {
+		t.Fatalf("dependencies rewrite mismatch\n got: %s\nwant: %s", got, want)
+	}
+
+	namesOnly := booleanSchemaParams(t, `{"type":"object","properties":{"obj":{"type":"object","dependencies":{"names":["a","b"]}}}}`)
+	if rewritten, changed := RewriteBooleanSchemaNodes(namesOnly); changed || rewritten != namesOnly {
+		t.Fatal("a dependencies map holding only property-name lists was rewritten")
+	}
+}
+
+// A raw request body staged for passthrough gets the rewrite in place: Chat and
+// Responses function tools, chat-shaped tools on Responses, namespace members and
+// root-level keywords are all covered, and every other byte is kept.
+func TestRewriteToolBooleanSchemaNodesJSON(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"tools: {\"items\":true}"}],` +
+		`"tools":[` +
+		`{"type":"function","function":{"name":"chat","parameters":{"type":"object","properties":{"a":true}}}},` +
+		`{"type":"function","name":"resp","parameters":{"type":"array","items":true,"not":true}},` +
+		`{"type":"namespace","name":"ns","tools":[{"type":"function","name":"inner","parameters":{"type":"object","properties":{"b":false},"additionalProperties":false}}]},` +
+		`{"type":"function","name":"clean","parameters":{"type":"object",  "properties":{"c":{"type":"string"}}}},` +
+		`{"type":"web_search","parameters":{"items":true}}` +
+		`],"stream":true}`
+	want := `{"model":"m","messages":[{"role":"user","content":"tools: {\"items\":true}"}],` +
+		`"tools":[` +
+		`{"type":"function","function":{"name":"chat","parameters":{"type":"object","properties":{"a":{}}}}},` +
+		`{"type":"function","name":"resp","parameters":{"type":"array","items":{},"not":{}}},` +
+		`{"type":"namespace","name":"ns","tools":[{"type":"function","name":"inner","parameters":{"type":"object","properties":{"b":{"not":{}}},"additionalProperties":false}}]},` +
+		`{"type":"function","name":"clean","parameters":{"type":"object",  "properties":{"c":{"type":"string"}}}},` +
+		`{"type":"web_search","parameters":{"items":true}}` +
+		`],"stream":true}`
+	got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || string(got) != want {
+		t.Fatalf("raw body rewrite mismatch (changed=%t)\n got: %s\nwant: %s", changed, got, want)
+	}
+
+	for _, unchanged := range []string{
+		`{"model":"m","messages":[]}`,
+		`{"model":"m","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"boolean","default":true}},"additionalProperties":false}}}]}`,
+	} {
+		got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(unchanged))
+		if err != nil || changed || string(got) != unchanged {
+			t.Fatalf("body without boolean subschemas changed: changed=%t err=%v got=%s", changed, err, got)
+		}
+	}
+}

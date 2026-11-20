@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -269,6 +270,90 @@ func TestBooleanSchemaNodesUnsupported_OnlyOptedInOpenAIBaseRewrites(t *testing.
 				provider.normalizeChatToolSchemas(chat)
 				provider.normalizeResponsesToolSchemas(responses)
 			}))
+		})
+	}
+}
+
+// sendLargePayloadThroughProvider stages staged as a large payload passthrough body, the
+// way the transport does when it skips parsing, sends it through an OpenAI-base custom
+// provider with the given flag and returns the body the upstream received.
+func sendLargePayloadThroughProvider(t *testing.T, mode string, flagged bool, staged string) []byte {
+	t.Helper()
+	server, body := booleanSchemaServer(t, mode)
+	var customConfig schemas.CustomProviderConfig
+	require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(`{"base_provider_type":"openai","boolean_schema_nodes_unsupported":%t}`, flagged)), &customConfig))
+	customConfig.CustomProviderKey = "acme"
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		CustomProviderConfig: &customConfig,
+	}, testNoopLogger{})
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(staged))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(staged))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
+	chat := &schemas.BifrostChatRequest{Provider: "acme", Model: booleanSchemaModel}
+	responses := &schemas.BifrostResponsesRequest{Provider: "acme", Model: booleanSchemaModel}
+
+	var bErr *schemas.BifrostError
+	switch mode {
+	case "chat":
+		_, bErr = provider.ChatCompletion(ctx, key, chat)
+	case "chat-stream":
+		var stream chan *schemas.BifrostStreamChunk
+		stream, bErr = provider.ChatCompletionStream(ctx, passthroughPostHook, nil, key, chat)
+		if bErr == nil {
+			drainBooleanSchemaStream(t, stream)
+		}
+	case "responses":
+		_, bErr = provider.Responses(ctx, key, responses)
+	case "responses-stream":
+		var stream chan *schemas.BifrostStreamChunk
+		stream, bErr = provider.ResponsesStream(ctx, passthroughPostHook, nil, key, responses)
+		if bErr == nil {
+			drainBooleanSchemaStream(t, stream)
+		}
+	}
+	if bErr != nil {
+		t.Fatalf("large payload %s through the provider failed: %+v", mode, bErr.Error)
+	}
+	return capturedBooleanSchemaBody(t, body)
+}
+
+// A body staged for large payload passthrough skips request conversion, so a flagged
+// provider rewrites the tool schemas in the staged bytes and leaves every other byte as
+// sent. Without the flag the staged body reaches the upstream byte for byte.
+func TestBooleanSchemaNodesUnsupported_LargePayloadPassthrough(t *testing.T) {
+	for _, mode := range booleanSchemaModes {
+		t.Run(mode, func(t *testing.T) {
+			stream := mode == "chat-stream" || mode == "responses-stream"
+			params := booleanSchemaParametersPath(mode)
+			staged := fmt.Sprintf(`{"model":%q,"input":"hi","stream":%t,"tools":[{"type":"function","name":"set_state","parameters":%s}]}`, booleanSchemaModel, stream, booleanSchemaToolParameters)
+			if mode == "chat" || mode == "chat-stream" {
+				staged = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"stream":%t,"tools":[{"type":"function","function":{"name":"set_state","parameters":%s}}]}`, booleanSchemaModel, stream, booleanSchemaToolParameters)
+			}
+
+			flagged := sendLargePayloadThroughProvider(t, mode, true, staged)
+			for path, want := range map[string]string{
+				".properties.state":                       `{}`,
+				".properties.denied":                      `{"not":{}}`,
+				".properties.tags.items":                  `{}`,
+				".properties.choice.anyOf.0.items":        `{}`,
+				".properties.strict.additionalProperties": `false`,
+				".properties.open.additionalProperties":   `true`,
+				".properties.flag.enum":                   `[true,false]`,
+				".properties.flag.default":                `true`,
+				".additionalProperties":                   `false`,
+			} {
+				require.Equal(t, want, gjson.GetBytes(flagged, params+path).Raw, "flagged %s%s in %s", params, path, flagged)
+			}
+			restored, err := sjson.SetRawBytes(append([]byte(nil), flagged...), params, []byte(booleanSchemaToolParameters))
+			require.NoError(t, err)
+			require.Equal(t, staged, string(restored), "the rewrite touched more than the tool parameters")
+
+			require.Equal(t, staged, string(sendLargePayloadThroughProvider(t, mode, false, staged)))
 		})
 	}
 }

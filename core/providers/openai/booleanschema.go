@@ -1,6 +1,10 @@
 package openai
 
 import (
+	"bytes"
+	"io"
+	"strings"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -46,4 +50,32 @@ func (provider *OpenAIProvider) normalizeResponsesToolSchemas(request *schemas.B
 	normalized := *request
 	normalized.Params = &params
 	return &normalized
+}
+
+// rewriteLargePayloadToolSchemas applies the boolean schema rewrite to a request body
+// staged for large payload passthrough, which is forwarded as-is and never reaches
+// normalizeChatToolSchemas or normalizeResponsesToolSchemas. The staged body is read
+// into memory so its tool schemas can be rewritten, and the context then carries the
+// rewritten bytes, so the passthrough still sends one body and the upstream answer is
+// streamed back as before. It does nothing unless this provider rewrites boolean schema
+// nodes and a JSON body is staged.
+func (provider *OpenAIProvider) rewriteLargePayloadToolSchemas(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	if !provider.rewritesBooleanSchemaNodes() || !providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil
+	}
+	if contentType, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadContentType).(string); contentType != "" && !strings.Contains(strings.ToLower(contentType), "json") {
+		return nil
+	}
+	reader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to read the large payload request body to rewrite boolean tool schemas", err)
+	}
+	rewritten, _, err := providerUtils.RewriteToolBooleanSchemaNodesJSON(body)
+	if err != nil {
+		return providerUtils.NewBifrostBadRequestError("failed to rewrite boolean tool schemas in the request body: " + err.Error())
+	}
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, bytes.NewReader(rewritten))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(rewritten))
+	return nil
 }

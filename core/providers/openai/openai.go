@@ -1009,6 +1009,9 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	return HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -1244,6 +1247,9 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Use shared streaming logic
@@ -2020,6 +2026,9 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	return HandleOpenAIResponsesRequest(
 		ctx,
@@ -2213,6 +2222,9 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Use shared streaming logic

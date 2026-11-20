@@ -441,17 +441,33 @@ subschemas with equivalent object schemas: `true` becomes `{}` and `false` becom
 `{"not":{}}`. This preserves which values the schema accepts.
 
 The rewrite visits schema positions: values in `properties`, `patternProperties`,
-`$defs`, `definitions` and `dependentSchemas`; `items`, `contains`, `propertyNames`,
-`not`, `if`, `then`, `else`, `additionalItems` and `contentSchema`; and entries in
-`anyOf`, `oneOf`, `allOf`, `prefixItems` and tuple-form `items`.
+`$defs`, `definitions` and `dependentSchemas`, and schema values in draft-07
+`dependencies`; `items`, `contains`, `propertyNames`, `not`, `if`, `then`, `else`,
+`additionalItems` and `contentSchema`; and entries in `anyOf`, `oneOf`, `allOf`,
+`prefixItems` and tuple-form `items`.
 Object-valued `additionalProperties`, `unevaluatedProperties` and `unevaluatedItems`
 are visited, but their boolean forms are left unchanged. Instance data such as
-`enum`, `const`, `default` and `examples`, and unknown keywords, are never rewritten.
+`enum`, `const`, `default` and `examples`, property-name lists in `dependencies`,
+and unknown keywords are never rewritten.
+
+Except on large payload passthrough, Bifrost keeps only the keywords it models at
+the root of a tool's `parameters`, with or without this option: `type`,
+`description`, `properties`, `required`,
+`additionalProperties`, `enum`, `$defs`, `definitions`, `$ref`, `items`,
+`minItems`, `maxItems`, `anyOf`, `oneOf`, `allOf`, `format`, `pattern`,
+`minLength`, `maxLength`, `minimum`, `maximum`, `title`, `default` and `nullable`.
+Other root keywords, such as `not`, `if` or `prefixItems`, are not forwarded, and a
+root-level boolean `items` or a boolean entry in a root-level `anyOf`, `oneOf` or
+`allOf` fails request parsing before the rewrite runs. Place such keywords inside a
+property schema, where they are forwarded and rewritten.
 
 The option defaults to `false`, applies only to the `openai` base provider, preserves
 schema key order, and does not mutate the caller's request. Without the option,
-outbound request bytes are unchanged. The same option is available as **Rewrite
-Boolean Tool Schemas?** in the custom-provider creation and API Structure forms.
+outbound request bytes are unchanged. A request body forwarded as sent through large
+payload passthrough is read into memory when the option is on, so its tool schemas,
+root keywords included, get the same rewrite before it is sent. The same option is
+available as **Rewrite Boolean Tool Schemas?** in the custom-provider creation and
+API Structure forms.
 
 
 ### Request Path Overrides

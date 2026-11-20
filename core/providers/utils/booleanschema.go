@@ -1,6 +1,13 @@
 package utils
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"fmt"
+	"sort"
+	"strconv"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+)
 
 // RewriteBooleanSchemaNodes replaces every boolean subschema in a tool parameter schema
 // with its object form, for upstreams whose validator iterates every subschema as an
@@ -9,9 +16,10 @@ import "github.com/maximhq/bifrost/core/schemas"
 // `{"not":{}}` both reject every instance.
 //
 // Only schema positions are rewritten: the values of properties, patternProperties,
-// $defs, definitions and dependentSchemas; the single-schema keywords items,
-// contains, propertyNames, not, if, then, else, additionalItems and contentSchema;
-// and the entries of anyOf, oneOf, allOf, prefixItems and tuple-form items. A boolean
+// $defs, definitions and dependentSchemas, and the schema values of draft-07
+// dependencies; the single-schema keywords items, contains, propertyNames, not, if,
+// then, else, additionalItems and contentSchema; and the entries of anyOf, oneOf,
+// allOf, prefixItems and tuple-form items. A boolean
 // additionalProperties, unevaluatedProperties or unevaluatedItems is that keyword's
 // standard form and stays a boolean; only an object there is walked. Instance data
 // (enum, const, default, examples), required, property names and unknown keywords
@@ -82,6 +90,111 @@ func RewriteResponsesToolBooleanSchemaNodes(tools []schemas.ResponsesTool) ([]sc
 	return rewriteResponsesToolParameters(tools, RewriteBooleanSchemaNodes)
 }
 
+// RewriteToolBooleanSchemaNodesJSON applies the same rewrite to the tool parameter
+// schemas inside a raw Chat Completions or Responses request body, for bodies that
+// are forwarded without being decoded (large payload passthrough). A function tool
+// carries its schema at parameters (Responses) or function.parameters (Chat
+// Completions, also accepted on Responses), and a namespace tool is walked through
+// its member tools. Each schema is walked as a whole schema object, so its root
+// keywords are covered too.
+//
+// Only rewritten schemas are re-encoded and spliced back in; every other byte of the
+// body is kept as it was. A body with no boolean subschema is returned as-is.
+func RewriteToolBooleanSchemaNodesJSON(body []byte) ([]byte, bool, error) {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body, false, nil
+	}
+	if tools.Index <= 0 || tools.Index+len(tools.Raw) > len(body) || string(body[tools.Index:tools.Index+len(tools.Raw)]) != tools.Raw {
+		return nil, false, fmt.Errorf("cannot locate tools in the request body")
+	}
+	var edits []rawSchemaEdit
+	if err := collectToolSchemaEdits(tools.Raw, "", &edits); err != nil {
+		return nil, false, err
+	}
+	if len(edits) == 0 {
+		return body, false, nil
+	}
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+	size := len(body)
+	for _, edit := range edits {
+		size += len(edit.raw) - (edit.end - edit.start)
+	}
+	out := make([]byte, 0, size)
+	prev := 0
+	for _, edit := range edits {
+		out = append(out, body[prev:tools.Index+edit.start]...)
+		out = append(out, edit.raw...)
+		prev = tools.Index + edit.end
+	}
+	out = append(out, body[prev:]...)
+	return out, true, nil
+}
+
+// rawSchemaEdit replaces toolsRaw[start:end] with raw.
+type rawSchemaEdit struct {
+	start, end int
+	raw        []byte
+}
+
+// collectToolSchemaEdits records one edit per tool schema in the tools array at
+// prefix (a gjson path into toolsRaw, empty for toolsRaw itself) that holds a
+// boolean subschema.
+func collectToolSchemaEdits(toolsRaw, prefix string, edits *[]rawSchemaEdit) error {
+	list := gjson.Parse(toolsRaw)
+	if prefix != "" {
+		list = gjson.Get(toolsRaw, prefix)
+	}
+	for i := range len(list.Array()) {
+		path := strconv.Itoa(i)
+		if prefix != "" {
+			path = prefix + "." + path
+		}
+		switch gjson.Get(toolsRaw, path+".type").String() {
+		case "", string(schemas.ResponsesToolTypeFunction):
+			if err := collectSchemaEdit(toolsRaw, path+".parameters", edits); err != nil {
+				return err
+			}
+			if err := collectSchemaEdit(toolsRaw, path+".function.parameters", edits); err != nil {
+				return err
+			}
+		case string(schemas.ResponsesToolTypeNamespace):
+			if gjson.Get(toolsRaw, path+".tools").IsArray() {
+				if err := collectToolSchemaEdits(toolsRaw, path+".tools", edits); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// collectSchemaEdit rewrites the schema object at path in toolsRaw and records the
+// edit when it changed. A missing or non-object value is not a schema and is skipped.
+func collectSchemaEdit(toolsRaw, path string, edits *[]rawSchemaEdit) error {
+	value := gjson.Get(toolsRaw, path)
+	if !value.IsObject() {
+		return nil
+	}
+	if value.Index <= 0 || value.Index+len(value.Raw) > len(toolsRaw) || toolsRaw[value.Index:value.Index+len(value.Raw)] != value.Raw {
+		return fmt.Errorf("cannot locate tool schema %s in the request body", path)
+	}
+	var schema schemas.OrderedMap
+	if err := schemas.Unmarshal([]byte(value.Raw), &schema); err != nil {
+		return fmt.Errorf("failed to decode tool schema %s: %w", path, err)
+	}
+	rewritten, changed := rewriteBooleanSchemaObject(&schema)
+	if !changed {
+		return nil
+	}
+	raw, err := rewritten.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("failed to encode tool schema %s: %w", path, err)
+	}
+	*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: raw})
+	return nil
+}
+
 // booleanSchemaObject returns the object form of a boolean schema. Each call returns a
 // fresh map, so no two rewritten positions share one the caller could later edit.
 func booleanSchemaObject(accept bool) *schemas.OrderedMap {
@@ -101,6 +214,11 @@ func rewriteBooleanSchema(value any) (any, bool) {
 	case *schemas.OrderedMap:
 		if rewritten, changed := rewriteBooleanSchemaObject(typed); changed {
 			return rewritten, true
+		}
+	case schemas.OrderedMap:
+		// Schemas built in code may store the map by value; it serializes the same way.
+		if rewritten, changed := rewriteBooleanSchemaObject(&typed); changed {
+			return *rewritten, true
 		}
 	case map[string]any:
 		// Schemas built in code arrive as plain maps (see normalizeSchemaValue).
@@ -130,6 +248,10 @@ func rewriteBooleanSchemaKeyword(key string, value any) (any, bool) {
 	switch key {
 	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
 		return rewriteBooleanSchemaMemberValues(value)
+	case "dependencies":
+		// Draft-07: each value is a schema or a list of property names. A list is not
+		// a schema, so rewriteBooleanSchema leaves it as it is.
+		return rewriteBooleanSchemaMemberValues(value)
 	case "anyOf", "oneOf", "allOf", "prefixItems":
 		if list, ok := value.([]any); ok {
 			return rewriteBooleanSchemaList(value, list)
@@ -158,6 +280,10 @@ func rewriteBooleanSchemaMemberValues(value any) (any, bool) {
 	case *schemas.OrderedMap:
 		if rewritten, changed := rewriteBooleanSchemaMembers(typed); changed {
 			return rewritten, true
+		}
+	case schemas.OrderedMap:
+		if rewritten, changed := rewriteBooleanSchemaMembers(&typed); changed {
+			return *rewritten, true
 		}
 	case map[string]any:
 		var updated map[string]any
