@@ -3585,16 +3585,25 @@
                   }
                 },
                 {
-                  "$comment": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise. The type guard keeps the 'not' below from rejecting a null config.",
-                  "if": {
-                    "type": "object",
-                    "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}},
-                    "required": ["suggestions"]
-                  },
-                  "then": {
-                    "required": ["semantic"],
-                    "not": {"required": ["classifier"], "properties": {"classifier": {"enum": ["decision", "llm"]}}}
-                  }
+                  "$comment": "Suggestions need the semantic or the decision classifier, with the space each clusters in; the loader rejects them otherwise. Enabled with the llm classifier: refused. Enabled with semantic (the default): need a semantic block. Enabled with decision: need suggestions.embedding. suggestions.embedding with any classifier but decision, enabled or not: refused. The type guards keep the rules from rejecting a null config.",
+                  "allOf": [
+                    {
+                      "if": {"type": "object", "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}}, "required": ["suggestions"]},
+                      "then": {"not": {"required": ["classifier"], "properties": {"classifier": {"const": "llm"}}}}
+                    },
+                    {
+                      "if": {"type": "object", "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}, "classifier": {"const": "semantic"}}, "required": ["suggestions"]},
+                      "then": {"required": ["semantic"]}
+                    },
+                    {
+                      "if": {"type": "object", "properties": {"suggestions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}, "classifier": {"const": "decision"}}, "required": ["suggestions", "classifier"]},
+                      "then": {"properties": {"suggestions": {"required": ["embedding"]}}}
+                    },
+                    {
+                      "if": {"type": "object", "properties": {"suggestions": {"required": ["embedding"]}}, "required": ["suggestions"]},
+                      "then": {"required": ["classifier"], "properties": {"classifier": {"const": "decision"}}}
+                    }
+                  ]
                 },
                 {
                   "$comment": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
@@ -7468,7 +7477,7 @@
         "routing": {"$ref": "#/$defs/modelRouterRouting"}
       },
       "required": ["id", "name", "keywords"],
-      "$comment": "The same cross-field rules as complexityAnalyzerConfig: session.enabled needs semantic unless the decision model or the llm is primary, semantic.fallback llm needs llm, classifier llm needs llm, and enabled suggestions need semantic as the primary classifier and a model.",
+      "$comment": "The same cross-field rules as complexityAnalyzerConfig: session.enabled needs semantic unless the decision model or the llm is primary, semantic.fallback llm needs llm, classifier llm needs llm, and enabled suggestions need the semantic classifier with a semantic block, or the decision classifier with suggestions.embedding, and a model.",
       "allOf": [
         {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/0"},
         {"$ref": "#/properties/bifrost/properties/governance/properties/complexityAnalyzerConfig/allOf/1"},
@@ -7480,7 +7489,7 @@
     },
     "complexitySuggestionsConfig": {
       "type": "object",
-      "description": "Phrase suggestions for the semantic router: a sample of the vectors the semantic classifier computes is kept under each request's log ID so suggestions can cluster real traffic. Request text stays in the logs.",
+      "description": "Suggestions for a model router: phrases for a semantic router, whose classifier's vectors are sampled and kept under each request's log ID; tier examples for a decision-model router, whose logged requests a run embeds with suggestions.embedding. Either way suggestions cluster real traffic; request text stays in the logs.",
       "properties": {
         "enabled": {"type": "boolean", "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."},
         "sample_rate": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Share of classified requests captured; default 0.1."},
@@ -7511,6 +7520,16 @@
             "criteria": {"type": "object", "description": "decision only: each tier's definition, signals and examples, sent as written as that tier's choice. A tier left out is generated from the router (its decision definitions and signals, its own phrases as examples).", "properties": {"SIMPLE": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 60, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}, "MEDIUM": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 60, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}, "COMPLEX": {"type": "object", "properties": {"definition": {"type": "string", "minLength": 1, "maxLength": 500}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}}, "examples": {"type": "array", "maxItems": 60, "items": {"type": "string", "maxLength": 300}}}, "required": ["definition"], "additionalProperties": false}}, "additionalProperties": false}
           },
           "dependentRequired": {"provider": ["model"], "model": ["provider"]},
+          "additionalProperties": false
+        },
+        "embedding": {
+          "type": "object",
+          "description": "Decision classifier only, and required there when suggestions are enabled: the embedding model a run embeds the router's logged requests and current tier examples with. Refused for the semantic classifier, which clusters in its own embedding space.",
+          "properties": {
+            "provider": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Provider of the embedding model."},
+            "model": {"type": "string", "minLength": 1, "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]", "description": "Embedding model name."}
+          },
+          "required": ["provider", "model"],
           "additionalProperties": false
         }
       },

@@ -123,6 +123,7 @@ func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 		assert.Nil(t, row.SuggestionsEnabled)
 		assert.Nil(t, row.SuggestionsScheduleEvery)
 		assert.Nil(t, row.SuggestionsTierClassifier)
+		assert.Nil(t, row.SuggestionsEmbeddingProvider)
 
 		back, err := modelRouterFromTable(row)
 		require.NoError(t, err)
@@ -419,6 +420,49 @@ func TestMigrationAddModelRouterSuggestionTierColumns(t *testing.T) {
 	assert.True(t, back.Suggestions.Enabled)
 	assert.Equal(t, 14, back.Suggestions.LookbackDays)
 	assert.Nil(t, back.Suggestions.Tier, "no tier block was saved, so none reads back")
+}
+
+// TestMigrationAddModelRouterSuggestionEmbeddingColumns pins that a router
+// table created before the suggestions embedding block gets its columns, that
+// a router saved then reads back without one, that one saved after keeps it,
+// and that rerunning is a no-op.
+func TestMigrationAddModelRouterSuggestionEmbeddingColumns(t *testing.T) {
+	ctx := context.Background()
+	db := setupModelRouterMigrationDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableModelRouter{}))
+	saved := testModelRouter("support", "Support")
+	saved.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14, Provider: "openai", Model: "gpt-5"}
+	row, err := modelRouterToTable(saved)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(row).Error)
+	for _, column := range modelRouterSuggestionEmbeddingColumns {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableModelRouter{}, column))
+	}
+
+	require.NoError(t, migrationAddModelRouterSuggestionEmbeddingColumns(ctx, db, testMigrationLogger))
+	for _, column := range modelRouterSuggestionEmbeddingColumns {
+		assert.True(t, db.Migrator().HasColumn(&tables.TableModelRouter{}, column), column)
+	}
+	require.NoError(t, migrationAddModelRouterSuggestionEmbeddingColumns(ctx, db, testMigrationLogger))
+
+	var stored tables.TableModelRouter
+	require.NoError(t, db.First(&stored, "id = ?", "support").Error)
+	back, err := modelRouterFromTable(&stored)
+	require.NoError(t, err, "a router saved before the migration still reads")
+	require.NotNil(t, back.Suggestions)
+	assert.Nil(t, back.Suggestions.Embedding, "no embedding block was saved, so none reads back")
+
+	decision := testModelRouter("triage", "Triage")
+	decision.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14, Provider: "openai", Model: "gpt-5",
+		Embedding: &ComplexitySuggestionsEmbedding{Provider: "openai", Model: "text-embedding-3-small"}}
+	row, err = modelRouterToTable(decision)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(row).Error)
+	var storedDecision tables.TableModelRouter
+	require.NoError(t, db.First(&storedDecision, "id = ?", "triage").Error)
+	back, err = modelRouterFromTable(&storedDecision)
+	require.NoError(t, err)
+	assert.Equal(t, decision.Suggestions.Embedding, back.Suggestions.Embedding)
 }
 
 // EditModelRouter edits the router as stored when it runs, under its row

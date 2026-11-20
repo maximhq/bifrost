@@ -227,6 +227,10 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 				row.SuggestionsTierCriteriaJSON = bifrost.Ptr(string(criteria))
 			}
 		}
+		if e := g.Embedding; e != nil {
+			row.SuggestionsEmbeddingProvider = bifrost.Ptr(string(e.Provider))
+			row.SuggestionsEmbeddingModel = bifrost.Ptr(e.Model)
+		}
 		if sc := g.Schedule; sc != nil {
 			row.SuggestionsScheduleEvery = bifrost.Ptr(sc.Every)
 			if sc.StartAt != nil {
@@ -335,6 +339,12 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 				if err := json.Unmarshal([]byte(raw), &suggestions.Tier.Criteria); err != nil {
 					return nil, fmt.Errorf("%w: model router %q suggestions tier criteria: %w", ErrConfigUnreadable, row.ID, err)
 				}
+			}
+		}
+		if row.SuggestionsEmbeddingProvider != nil {
+			suggestions.Embedding = &ComplexitySuggestionsEmbedding{
+				Provider: schemas.ModelProvider(*row.SuggestionsEmbeddingProvider),
+				Model:    valueOrZero(row.SuggestionsEmbeddingModel),
 			}
 		}
 		cfg.Suggestions = suggestions

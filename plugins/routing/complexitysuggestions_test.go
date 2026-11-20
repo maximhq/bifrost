@@ -951,6 +951,38 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	assert.Empty(t, runs)
 }
 
+// A decision-model router's suggestion settings are accepted, but this gateway
+// does not run them yet: the schedule records nothing for it (rather than a
+// skipped run every slot while a semantic classifier it never uses "warms"),
+// and a run or an estimate asked on demand is refused as such.
+func TestComplexitySuggestionsDecisionRouterIsNotRunYet(t *testing.T) {
+	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	p, store := scheduledSuggestionPlugin(t, start, suggestionScheduleStore(t))
+	settings := suggestionTestSettings()
+	settings.Schedule = hourlyFrom(start)
+	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
+	cfg := captureTestConfig(settings)
+	cfg.Classifier, cfg.Semantic, cfg.Decision = complexity.ClassifierDecision, nil, &complexity.DecisionConfig{}
+	const decisionRouterID = "decision-router"
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: decisionRouterID, Name: decisionRouterID, ComplexityAnalyzerConfig: *cfg}))
+	_, ok := p.suggestionRouter(decisionRouterID)
+	require.True(t, ok, "the router is served with its suggestion settings")
+
+	ctx := context.Background()
+	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(time.Hour + time.Second), start.Add(2*time.Hour + time.Second)} {
+		require.NoError(t, p.scheduleComplexitySuggestions(ctx, at))
+	}
+	p.suggestions.wg.Wait()
+	for _, run := range runsOf(t, store) {
+		assert.NotEqual(t, decisionRouterID, run.RouterID, "no run is recorded for the decision router: %+v", run)
+	}
+
+	_, err := p.StartComplexitySuggestionRunNow(ctx, decisionRouterID, 0)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
+	_, err = p.EstimateComplexitySuggestionRun(ctx, decisionRouterID, 0)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
+}
+
 // A scheduled run that comes due while a manual one is queued or running is
 // recorded as skipped, not queued behind it, and the schedule moves on; a
 // manual run never moves the schedule.

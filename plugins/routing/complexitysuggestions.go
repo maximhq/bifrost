@@ -362,7 +362,7 @@ func (p *RoutingPlugin) scheduleComplexitySuggestions(ctx context.Context, now t
 func (p *RoutingPlugin) scheduleRouterSuggestions(ctx context.Context, router suggestionRouter, now time.Time) error {
 	cs := p.suggestions
 	deps := cs.deps.Load()
-	if deps == nil || !router.config.SuggestionsEnabled() {
+	if deps == nil || !router.config.SuggestionsEnabled() || !semanticSuggestions(router) {
 		return nil
 	}
 	// Nothing is captured without a capture store, and that does not pass
@@ -532,6 +532,19 @@ func suggestionsConfigured(router suggestionRouter) bool {
 	return router.config != nil && router.config.Suggestions != nil
 }
 
+// ErrComplexitySuggestionsClassifier is a run asked of a router whose
+// classifier this gateway cannot suggest for yet.
+var ErrComplexitySuggestionsClassifier = errors.New("suggestion runs are available for semantic routers only")
+
+// semanticSuggestions reports whether a router's suggestions run against its
+// semantic classifier. Every router holds a semantic classifier, warmed or
+// not, so the configured classifier is what decides: a decision-model
+// router's settings are accepted, but its runs are not scheduled, rather than
+// recorded every slot as skipped while a classifier it does not use "warms".
+func semanticSuggestions(router suggestionRouter) bool {
+	return router.config != nil && (router.config.Classifier == "" || router.config.Classifier == complexity.ClassifierSemantic)
+}
+
 // ErrComplexitySuggestionRunInFlight is a run asked for while one is already
 // queued or running.
 var ErrComplexitySuggestionRunInFlight = errors.New("a phrase suggestion run is already queued or running")
@@ -546,6 +559,9 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, rou
 	}
 	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !suggestionsConfigured(router) {
 		return "", ErrComplexitySuggestionsOff
+	}
+	if !semanticSuggestions(router) {
+		return "", ErrComplexitySuggestionsClassifier
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
 		return "", err
@@ -622,6 +638,9 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	}
 	if !suggestionsConfigured(router) {
 		return suggestrun.Estimate{}, ErrComplexitySuggestionsOff
+	}
+	if !semanticSuggestions(router) {
+		return suggestrun.Estimate{}, ErrComplexitySuggestionsClassifier
 	}
 	if err := checkSuggestionWindow(router, window); err != nil {
 		return suggestrun.Estimate{}, err

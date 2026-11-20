@@ -75,6 +75,8 @@ type TableModelRouter struct {
 	SuggestionsTierInstructions     *string    `gorm:"type:text" json:"-"`
 	SuggestionsTierPrompt           *string    `gorm:"type:text" json:"-"`
 	SuggestionsTierCriteriaJSON     *string    `gorm:"column:suggestions_tier_criteria_json;type:text" json:"-"` // JSON map[tier]criteria
+	SuggestionsEmbeddingProvider    *string    `gorm:"type:varchar(255)" json:"-"`                               // anchor: NULL means no embedding block
+	SuggestionsEmbeddingModel       *string    `gorm:"type:varchar(255)" json:"-"`
 
 	ConfigHashesJSON string `gorm:"column:config_hashes_json;type:text" json:"-"` // per-section hashes of the config.json entry last applied
 	ConfigHash       string `gorm:"type:varchar(255)" json:"-"`                   // hash of that entry's name and description

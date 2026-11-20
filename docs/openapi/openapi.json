@@ -153267,20 +153267,97 @@
               ]
             },
             "then": {
-              "required": [
-                "semantic"
-              ],
               "not": {
                 "required": [
                   "classifier"
                 ],
                 "properties": {
                   "classifier": {
-                    "enum": [
-                      "decision",
-                      "llm"
-                    ]
+                    "const": "llm"
                   }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "classifier": {
+                  "const": "semantic"
+                }
+              },
+              "required": [
+                "suggestions"
+              ]
+            },
+            "then": {
+              "required": [
+                "semantic"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "classifier": {
+                  "const": "decision"
+                }
+              },
+              "required": [
+                "suggestions",
+                "classifier"
+              ]
+            },
+            "then": {
+              "properties": {
+                "suggestions": {
+                  "required": [
+                    "embedding"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "required": [
+                    "embedding"
+                  ]
+                }
+              },
+              "required": [
+                "suggestions"
+              ]
+            },
+            "then": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
                 }
               }
             }
@@ -153699,7 +153776,7 @@
           },
           "suggestions": {
             "type": "object",
-            "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Vectors are captured only into the top-level vector_store, and not when that is Chromem, which keeps them in each gateway's memory; with no vector_store, or only the semantic classifier's embedded store, nothing is captured and no run has traffic to read. Captured vectors are deleted with their logs, and become due for deletion after lookback_days or the log retention, whichever is shorter; an hourly cleanup removes them, so one can remain up to an hour past that, and longer while the vector store is unavailable.",
+            "description": "Suggestions for a model router, phrases for a semantic router and tier examples for a decision-model router. For a semantic router, when enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. A decision-model router computes no vectors, so a run embeds a sample of its logged requests with embedding instead and keeps them the same way. Vectors are captured only into the top-level vector_store, and not when that is Chromem, which keeps them in each gateway's memory; with no vector_store, or only the semantic classifier's embedded store, nothing is captured and no run has traffic to read. Captured vectors are deleted with their logs, and become due for deletion after lookback_days or the log retention, whichever is shorter; an hourly cleanup removes them, so one can remain up to an hour past that, and longer while the vector store is unavailable.",
             "additionalProperties": false,
             "required": [
               "enabled"
@@ -153713,7 +153790,7 @@
                 "type": "number",
                 "exclusiveMinimum": 0,
                 "maximum": 1,
-                "description": "Share of classified requests captured; default 0.1."
+                "description": "Share of classified requests captured; default 0.1. For a decision-model router, the share of its logged requests a run embeds."
               },
               "lookback_days": {
                 "type": "integer",
@@ -153906,6 +153983,27 @@
                     "provider"
                   ]
                 }
+              },
+              "embedding": {
+                "type": "object",
+                "description": "Decision classifier only, and required there when suggestions are enabled. The embedding model a run embeds the router's logged requests and current tier examples with, to cluster them and to drop suggested examples that repeat one already configured. A decision-model router computes no vectors per request, so each run embeds the part of its window not embedded before (a sample at sample_rate, at most max_clustered_requests) and keeps those vectors like captured ones. Refused for the semantic classifier, which clusters in its own embedding space.",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider of the embedding model."
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Embedding model name."
+                  }
+                }
               }
             },
             "dependentRequired": {
@@ -154020,20 +154118,97 @@
               ]
             },
             "then": {
-              "required": [
-                "semantic"
-              ],
               "not": {
                 "required": [
                   "classifier"
                 ],
                 "properties": {
                   "classifier": {
-                    "enum": [
-                      "decision",
-                      "llm"
-                    ]
+                    "const": "llm"
                   }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "classifier": {
+                  "const": "semantic"
+                }
+              },
+              "required": [
+                "suggestions"
+              ]
+            },
+            "then": {
+              "required": [
+                "semantic"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "classifier": {
+                  "const": "decision"
+                }
+              },
+              "required": [
+                "suggestions",
+                "classifier"
+              ]
+            },
+            "then": {
+              "properties": {
+                "suggestions": {
+                  "required": [
+                    "embedding"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "suggestions": {
+                  "required": [
+                    "embedding"
+                  ]
+                }
+              },
+              "required": [
+                "suggestions"
+              ]
+            },
+            "then": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
                 }
               }
             }
@@ -154471,7 +154646,7 @@
           },
           "suggestions": {
             "type": "object",
-            "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Vectors are captured only into the top-level vector_store, and not when that is Chromem, which keeps them in each gateway's memory; with no vector_store, or only the semantic classifier's embedded store, nothing is captured and no run has traffic to read. Captured vectors are deleted with their logs, and become due for deletion after lookback_days or the log retention, whichever is shorter; an hourly cleanup removes them, so one can remain up to an hour past that, and longer while the vector store is unavailable.",
+            "description": "Suggestions for a model router, phrases for a semantic router and tier examples for a decision-model router. For a semantic router, when enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. A decision-model router computes no vectors, so a run embeds a sample of its logged requests with embedding instead and keeps them the same way. Vectors are captured only into the top-level vector_store, and not when that is Chromem, which keeps them in each gateway's memory; with no vector_store, or only the semantic classifier's embedded store, nothing is captured and no run has traffic to read. Captured vectors are deleted with their logs, and become due for deletion after lookback_days or the log retention, whichever is shorter; an hourly cleanup removes them, so one can remain up to an hour past that, and longer while the vector store is unavailable.",
             "additionalProperties": false,
             "required": [
               "enabled"
@@ -154485,7 +154660,7 @@
                 "type": "number",
                 "exclusiveMinimum": 0,
                 "maximum": 1,
-                "description": "Share of classified requests captured; default 0.1."
+                "description": "Share of classified requests captured; default 0.1. For a decision-model router, the share of its logged requests a run embeds."
               },
               "lookback_days": {
                 "type": "integer",
@@ -154677,6 +154852,27 @@
                   "model": [
                     "provider"
                   ]
+                }
+              },
+              "embedding": {
+                "type": "object",
+                "description": "Decision classifier only, and required there when suggestions are enabled. The embedding model a run embeds the router's logged requests and current tier examples with, to cluster them and to drop suggested examples that repeat one already configured. A decision-model router computes no vectors per request, so each run embeds the part of its window not embedded before (a sample at sample_rate, at most max_clustered_requests) and keeps those vectors like captured ones. Refused for the semantic classifier, which clusters in its own embedding space.",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider of the embedding model."
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Embedding model name."
+                  }
                 }
               }
             },

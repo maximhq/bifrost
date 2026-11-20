@@ -812,6 +812,7 @@ export function toSuggestionsPayload(
 		},
 		...(saved?.max_clustered_requests !== undefined ? { max_clustered_requests: saved.max_clustered_requests } : {}),
 		...(saved?.min_cluster_requests !== undefined ? { min_cluster_requests: saved.min_cluster_requests } : {}),
+		...(saved?.embedding ? { embedding: saved.embedding } : {}),
 		...(provider && model ? { provider, model } : {}),
 		...(values.instructions.trim() ? { instructions: values.instructions } : {}),
 		tier: {

@@ -1337,6 +1337,9 @@ func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
 
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"samplerate":0.5}`), &cfg), `unknown complexity suggestions field "samplerate"`)
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"sample_rate":0.5}`), &cfg), "requires enabled")
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"embedding":{"provider":"openai","model":"text-embedding-3-small"}}`), &cfg))
+	assert.Equal(t, &ComplexitySuggestionsEmbedding{Provider: "openai", Model: "text-embedding-3-small"}, cfg.Embedding)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"embedding":{"provider":"openai","embedding_model":"x"}}`), &cfg), "embedding_model")
 
 	// An explicit zero is out of range, not a request for the default: the
 	// schema rejects it, and quietly defaulting it would capture at a rate
@@ -1435,10 +1438,11 @@ func TestComplexitySuggestionsRunSettings(t *testing.T) {
 	}
 }
 
-// Enabled suggestions capture the semantic classifier's vectors and ask a
-// model, so they need the semantic classifier as primary and a model: their
-// own provider and model, or the llm block's. Disabled, they need neither.
-func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
+// Enabled suggestions ask a model and need traffic in an embedding space: a
+// semantic router's own (its semantic block), or for a decision-model router
+// its suggestions embedding model. The llm classifier has neither. Disabled,
+// they need none of it.
+func TestComplexitySuggestionsRequireClassifierSpaceAndModel(t *testing.T) {
 	validate := func(mutate func(*ComplexityAnalyzerConfig)) error {
 		cfg := testSemanticAnalyzerConfig()
 		mutate(cfg)
@@ -1447,6 +1451,12 @@ func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
 	}
 	own := func() *ComplexitySuggestionsConfig {
 		return &ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-5"}
+	}
+	embedding := func() *ComplexitySuggestionsEmbedding {
+		return &ComplexitySuggestionsEmbedding{Provider: "openai", Model: "text-embedding-3-small"}
+	}
+	decisionRouter := func(c *ComplexityAnalyzerConfig, s *ComplexitySuggestionsConfig) {
+		c.Classifier, c.Semantic, c.Decision, c.Suggestions = ComplexityClassifierDecision, nil, &ComplexityDecisionConfig{}, s
 	}
 
 	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = own() }), "their own model")
@@ -1466,21 +1476,69 @@ func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
 
 	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
 		c.Semantic, c.Suggestions = nil, own()
-	}), "require the semantic classifier", "no semantic block")
-	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
-		c.Classifier, c.Decision, c.Suggestions = ComplexityClassifierDecision, &ComplexityDecisionConfig{}, own()
-	}), "require the semantic classifier", "decision primary")
+	}), "require a semantic config block", "semantic router without a semantic block")
 	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
 		c.Classifier, c.LLM, c.Suggestions = ComplexityClassifierLLM, testLLMConfig(), own()
-	}), "require the semantic classifier", "llm primary")
+	}), `require the "semantic" or "decision" classifier`, "llm primary")
 
-	// Disabled suggestions keep their settings without either.
+	// A decision-model router embeds its logged requests with its own model.
+	withEmbedding := own()
+	withEmbedding.Embedding = embedding()
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) { decisionRouter(c, withEmbedding) }), "decision router with an embedding model")
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { decisionRouter(c, own()) }), "need an embedding model", "decision router without one")
+	for name, partial := range map[string]*ComplexitySuggestionsEmbedding{
+		"provider only": {Provider: "openai"},
+		"model only":    {Model: "text-embedding-3-small"},
+	} {
+		s := own()
+		s.Embedding = partial
+		assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { decisionRouter(c, s) }), "embedding provider and model must be set together", name)
+	}
+	blank := own()
+	blank.Embedding = &ComplexitySuggestionsEmbedding{Provider: " ", Model: " "}
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { decisionRouter(c, blank) }), "need an embedding model", "a blank embedding block is no block")
+
+	// A semantic router clusters in its own space, so an embedding model
+	// would do nothing; refused whether suggestions are on or not.
+	for _, enabled := range []bool{true, false} {
+		s := own()
+		s.Enabled, s.Embedding = enabled, embedding()
+		assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = s }), "embedding is for the \"decision\" classifier only", "enabled=%v", enabled)
+	}
+
+	// A decision router's tiers cannot be judged by its own decision model,
+	// named or defaulted; another decision model, or the llm judge, can.
+	judged := func(tier *ComplexitySuggestionsTierConfig, decision *ComplexityDecisionConfig) error {
+		return validate(func(c *ComplexityAnalyzerConfig) {
+			s := own()
+			s.Embedding, s.Tier = embedding(), tier
+			decisionRouter(c, s)
+			c.Decision = decision
+		})
+	}
+	own4 := &ComplexityDecisionConfig{Provider: "openai", Model: "gpt-6-luna"}
+	assert.ErrorContains(t, judged(&ComplexitySuggestionsTierConfig{Classifier: "decision"}, &ComplexityDecisionConfig{}), "cannot use the router's own decision model", "the defaulted judge is the router's default model")
+	assert.ErrorContains(t, judged(&ComplexitySuggestionsTierConfig{Classifier: "decision"}, own4), "cannot use the router's own decision model", "the defaulted judge is the router's named model")
+	assert.ErrorContains(t, judged(&ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: "openai", Model: "gpt-6-luna"}, own4), "cannot use the router's own decision model", "named the same")
+	require.NoError(t, judged(&ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: DefaultComplexityDecisionProvider, Model: DefaultComplexityDecisionModel}, own4), "another decision model")
+	require.NoError(t, judged(&ComplexitySuggestionsTierConfig{Classifier: "llm"}, own4), "the llm judge")
+	// A semantic router may judge with any decision model.
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		s := own()
+		s.Tier = &ComplexitySuggestionsTierConfig{Classifier: "decision"}
+		c.Suggestions = s
+	}))
+
+	// Disabled suggestions keep their settings without a space or a model.
 	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
 		c.Semantic, c.Suggestions = nil, &ComplexitySuggestionsConfig{Enabled: false}
 	}))
 	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
 		c.Suggestions = &ComplexitySuggestionsConfig{Enabled: false}
 	}))
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		decisionRouter(c, &ComplexitySuggestionsConfig{Enabled: false})
+	}), "a decision router may keep disabled settings without an embedding model")
 }
 
 // The tier block decodes strictly, defaults to the llm classifier, and every
