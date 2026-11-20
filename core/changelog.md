@@ -1,3 +1,5 @@
+- fix: bedrock - normalize document names to allowed characters and at most 200 characters
+- fix: bedrock - InvokeModel ingress keeps Anthropic-native document blocks (base64 and text sources) instead of silently dropping them
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
