@@ -346911,6 +346911,338 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Voyage AI: text, contextualized and multimodal embeddings and rerank through /v1 (voyage embeddings rerank)",
+      "description": "Voyage AI serves embeddings and reranking through one provider whose models pick the upstream endpoint: text models use /v1/embeddings, voyage-context-* use /v1/contextualizedembeddings, voyage-multimodal-* use /v1/multimodalembeddings and rerank-* use /v1/rerank. This folder pins that routing over HTTP, from the app's side of the gateway.\n\nPinned: a text model honours input_type and a smaller dimension; a contextualized model chunks documents itself (auto-chunking needs a flat list of documents and input_type document) and returns one vector per chunk with the chunk texts, while a query returns one flat vector; a multimodal model embeds interleaved text and a base64 image; a reranker orders documents, honours top_n and returns the documents; usage carries the billed tokens on every reply; and requests that can never succeed (no input_type for a contextualized model, a reranker sent to embeddings, an embedding model sent to rerank) are refused with 400 before they reach Voyage. There is no default model.\n\nPaid live calls: four tiny embedding requests and one rerank, all on small inputs; the three refused requests never leave the gateway. Needs VOYAGE_API_KEY on the gateway.",
+      "item": [
+        {
+          "name": "voyage/voyage-4-lite text embeddings with input_type and a smaller dimension via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"Voyage text embeddings\"\n  ],\n  \"dimensions\": 256,\n  \"input_type\": \"query\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('one vector of the asked dimension', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(1); pm.expect(body.data[0].embedding, pm.response.text()).to.have.lengthOf(256); });",
+                  "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "voyage/voyage-context-4 documents are auto-chunked into one vector per chunk with its text via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-context-4\",\n  \"input\": [\n    \"The harness checks that Voyage chunks a document itself. This is the first document.\",\n    \"A second, separate document for the same request.\"\n  ],\n  \"input_type\": \"document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('one entry per document', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(2); });",
+                  "pm.test('each document holds one numeric vector per chunk, with the chunk texts', function () { body.data.forEach(function (d) { pm.expect(d.embedding, pm.response.text()).to.be.an('array').that.is.not.empty; d.embedding.forEach(function (v) { pm.expect(v, pm.response.text()).to.be.an('array').that.is.not.empty; v.forEach(function (x) { pm.expect(x, pm.response.text()).to.be.a('number'); }); }); pm.expect(d.chunks, pm.response.text()).to.have.lengthOf(d.embedding.length); d.chunks.forEach(function (t) { pm.expect(t, pm.response.text()).to.be.a('string').that.is.not.empty; }); }); });",
+                  "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "voyage/voyage-context-3 query returns one flat vector via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-context-3\",\n  \"input\": [\n    \"which document is chunked\"\n  ],\n  \"input_type\": \"query\",\n  \"dimensions\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('one flat vector of the asked dimension and no chunks', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(1); pm.expect(body.data[0].embedding, pm.response.text()).to.have.lengthOf(512); pm.expect(body.data[0].embedding[0], pm.response.text()).to.be.a('number'); pm.expect(body.data[0]).to.not.have.property('chunks'); });",
+                  "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "voyage/voyage-multimodal-3.5 interleaved text and base64 image via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-multimodal-3.5\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a red square\"\n      },\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=\"\n        }\n      }\n    ]\n  ],\n  \"input_type\": \"document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('one vector for the interleaved input', function () { pm.expect(body.data, pm.response.text()).to.have.lengthOf(1); pm.expect(body.data[0].embedding, pm.response.text()).to.have.lengthOf(1024); });",
+                  "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "voyage/rerank-3 orders documents, honours top_n and returns them via POST /v1/rerank - voyage rerank",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/rerank-3\",\n  \"query\": \"Which animal barks?\",\n  \"documents\": [\n    \"A cat sleeps on the sofa\",\n    \"A dog barks at the mailman\",\n    \"A bird sings in the tree\"\n  ],\n  \"top_n\": 2,\n  \"return_documents\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('top_n results, best first, with the documents', function () { pm.expect(body.results, pm.response.text()).to.have.lengthOf(2); pm.expect(body.results[0].index, pm.response.text()).to.equal(1); pm.expect(body.results[0].relevance_score).to.be.at.least(body.results[1].relevance_score); pm.expect(body.results[0].document.text, pm.response.text()).to.include('dog'); });",
+                  "pm.test('usage reports billed tokens', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] voyage/voyage-context-4 without input_type is refused via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-context-4\",\n  \"input\": [\n    \"no input type given\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('rejected with 400 before reaching Voyage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('names the problem', function () { pm.expect(JSON.stringify(body), pm.response.text()).to.include(\"input_type\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] voyage/rerank-3 sent to embeddings is refused via POST /v1/embeddings - voyage embeddings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/rerank-3\",\n  \"input\": [\n    \"a reranker is not an embedding model\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('rejected with 400 before reaching Voyage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('names the problem', function () { pm.expect(JSON.stringify(body), pm.response.text()).to.include(\"not an embedding model\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] voyage/voyage-4 sent to rerank is refused via POST /v1/rerank - voyage rerank",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"query\": \"q\",\n  \"documents\": [\n    \"a\",\n    \"b\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { throw new Error('reply is not JSON: ' + pm.response.text()); }",
+                  "pm.test('rejected with 400 before reaching Voyage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('names the problem', function () { pm.expect(JSON.stringify(body), pm.response.text()).to.include(\"not a rerank model\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
