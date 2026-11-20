@@ -1,5 +1,6 @@
 - fix: a zero provider usage.cost returns as total_cost 0 instead of an empty cost object (#9000) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 [fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
+- fix: bedrock - an encrypted reasoning detail replays for Claude on Converse too, as an empty-text `reasoningText` carrying the blob in `signature` (the form the Responses path already uses), instead of being dropped silently (#10177) [@PoisonGodv](https://github.com/PoisonGodv)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
