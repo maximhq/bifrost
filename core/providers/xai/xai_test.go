@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -266,6 +267,53 @@ func TestXAITranscriptionLargePayloadDecodesXAIResponse(t *testing.T) {
 	assert.Equal(t, "en", raw["language"])
 }
 
+// xAI ignores every multipart field after the file, and a large-payload body streams to
+// /v1/stt as the client sent it. A field after the file fails the upload with a 400
+// instead of being dropped, including when the delimiter straddles two reads.
+func TestXAITranscriptionLargePayloadFileMustBeLast(t *testing.T) {
+	t.Parallel()
+
+	audio := "RIFF\x00\x00\x00\x00WAVE" + strings.Repeat("-b\r\n--", 20000)
+	modelPart := "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n"
+	languagePart := "--b\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nsv\r\n"
+	filePart := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n" + audio + "\r\n"
+	fileLast := modelPart + languagePart + filePart + "--b--\r\n"
+	fileFirst := modelPart + filePart + languagePart + "--b--\r\n"
+
+	readers := map[string]func(string) io.Reader{
+		"whole":    func(s string) io.Reader { return strings.NewReader(s) },
+		"one byte": func(s string) io.Reader { return iotest.OneByteReader(strings.NewReader(s)) },
+	}
+	for name, newReader := range readers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(xaiSTTResponse))
+			})
+			key := schemas.Key{Value: *schemas.NewSecretVar("xai-test")}
+			stage := func(body string) *schemas.BifrostContext {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				stageLargePayload(ctx, body, "multipart/form-data; boundary=b")
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, newReader(body))
+				return ctx
+			}
+
+			resp, bifrostErr := provider.Transcription(stage(fileLast), key, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp.Text)
+
+			resp, bifrostErr = provider.Transcription(stage(fileFirst), key, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+			assert.Contains(t, bifrostErr.Error.Message, `"language"`)
+		})
+	}
+}
+
 func TestXAISpeechError(t *testing.T) {
 	t.Parallel()
 
@@ -285,6 +333,22 @@ func TestXAISpeechError(t *testing.T) {
 	require.NotNil(t, bifrostErr.StatusCode)
 	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
 	assert.Equal(t, "TTS synthesis failed: Voice 'nope' not found", bifrostErr.Error.Message)
+}
+
+func TestXAISpeechEmptyInputIsBadRequest(t *testing.T) {
+	t.Parallel()
+
+	provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("an empty input must not reach xAI")
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostSpeechRequest{
+		Model: "grok-tts",
+		Input: &schemas.SpeechInput{},
+	})
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
 }
 
 // xaiSTTResponse is a verbatim POST /v1/stt response for a 16 kHz WAV clip.

@@ -312,7 +312,7 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 		return nil, providerUtils.NewBifrostBadRequestError("xAI speech does not support large-payload passthrough: the staged body cannot be converted to the /v1/tts schema")
 	}
 	if request.Input == nil || request.Input.Input == "" {
-		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
+		return nil, providerUtils.NewBifrostBadRequestError("speech input text is required")
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -406,7 +406,13 @@ func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key sche
 	if request != nil && request.Params != nil && (schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) || schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat)) {
 		return nil, providerUtils.NewBifrostBadRequestError("xAI transcription returns JSON only; response_format " + *request.Params.ResponseFormat + " is not supported, use json")
 	}
-	return openai.HandleOpenAITranscriptionRequest(
+	// A large-payload body streams to /v1/stt as the client sent it, so a field placed
+	// after the file would be dropped by xAI. The guard fails the upload when it sees one.
+	var guard *fileLastGuard
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		guard = guardStagedTranscriptionBody(ctx)
+	}
+	response, bifrostErr := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/stt"),
@@ -419,6 +425,10 @@ func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key sche
 		handleXAITranscriptionResponse,
 		provider.logger,
 	)
+	if guard != nil && guard.err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(guard.err.Error())
+	}
+	return response, bifrostErr
 }
 
 // TranscriptionStream is not supported by the xAI provider.
