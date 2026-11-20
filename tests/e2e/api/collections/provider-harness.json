@@ -346506,6 +346506,235 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Root-level union tool schemas reach OpenAI and Gemini as declared (tool-schema-union)",
+      "description": "MCP tools whose inputSchema is a root-level oneOf (a tagged union, allowed by the 2026-07-28 MCP spec) used to lose every parameter at discovery. Bifrost now keeps the union, so these providers receive it as declared instead of an empty object. Anthropic and Bedrock Claude flatten it (folders 99 and 222); these cases pin the providers that receive it unflattened: OpenAI on /v1/chat/completions and /v1/responses, and Gemini on gemini/ and vertex/. A 400 here means that provider rejects a root union and needs schemas.FlattenRootComposition in its converter.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions root oneOf tool - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('the tool reaches the provider with both alternatives', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var branches = (raw.tools[0].function.parameters || {}).oneOf;",
+                  "  pm.expect(branches, 'raw_request: ' + JSON.stringify(raw)).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses root oneOf tool - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('the tool reaches the provider with both alternatives', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var branches = (raw.tools[0].parameters || {}).oneOf;",
+                  "  pm.expect(branches, 'raw_request: ' + JSON.stringify(raw)).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/chat/completions root oneOf tool - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('the tool reaches the provider with both alternatives', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var decl = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; })[0];",
+                  "  pm.expect(decl, 'raw_request: ' + JSON.stringify(raw)).to.be.an('object');",
+                  "  var branches = (decl.parametersJsonSchema || {}).oneOf;",
+                  "  pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-flash /v1/chat/completions root oneOf tool - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('the tool reaches the provider with both alternatives', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var decl = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; })[0];",
+                  "  pm.expect(decl, 'raw_request: ' + JSON.stringify(raw)).to.be.an('object');",
+                  "  var branches = (decl.parametersJsonSchema || {}).oneOf;",
+                  "  pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

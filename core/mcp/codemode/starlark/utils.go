@@ -4,10 +4,12 @@ package starlark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -555,4 +557,419 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 	}
 	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
 	return prefixedToolName
+}
+
+// stubParameters is the parameter list a stub shows. A root-level oneOf/anyOf/allOf (a tagged
+// union) is flattened into one list, since a Python signature cannot branch; when it is too
+// complex to flatten, the root's own properties are shown.
+//
+// The stub is a hint for the model, not a validator: the MCP server checks every argument the
+// script sends, so rendering stays best effort for shapes generators do not emit.
+func stubParameters(params *schemas.ToolFunctionParameters) *schemas.ToolFunctionParameters {
+	flat, err := schemas.FlattenRootComposition(params)
+	if err != nil {
+		return params
+	}
+	return flat
+}
+
+// formatPythonParams formats tool parameters as Python function parameters. Pass them through
+// stubParameters first, so a root-level union shows its arguments.
+func formatPythonParams(params *schemas.ToolFunctionParameters) string {
+	if params == nil || params.Properties == nil || params.Properties.Len() == 0 {
+		return ""
+	}
+
+	props := params.Properties
+	required := make(map[string]bool)
+	if params.Required != nil {
+		for _, req := range params.Required {
+			required[req] = true
+		}
+	}
+
+	// Sort properties: required first, then optional, alphabetically within each group
+	requiredNames := make([]string, 0)
+	optionalNames := make([]string, 0)
+	props.Range(func(name string, _ interface{}) bool {
+		if required[name] {
+			requiredNames = append(requiredNames, name)
+		} else {
+			optionalNames = append(optionalNames, name)
+		}
+		return true
+	})
+	// Simple alphabetical sort for each group
+	for i := 0; i < len(requiredNames)-1; i++ {
+		for j := i + 1; j < len(requiredNames); j++ {
+			if requiredNames[i] > requiredNames[j] {
+				requiredNames[i], requiredNames[j] = requiredNames[j], requiredNames[i]
+			}
+		}
+	}
+	for i := 0; i < len(optionalNames)-1; i++ {
+		for j := i + 1; j < len(optionalNames); j++ {
+			if optionalNames[i] > optionalNames[j] {
+				optionalNames[i], optionalNames[j] = optionalNames[j], optionalNames[i]
+			}
+		}
+	}
+
+	parts := make([]string, 0, props.Len())
+
+	// Add required params first
+	for _, propName := range requiredNames {
+		prop, _ := props.Get(propName)
+		pyType, ok := propertyType(prop)
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", propName, pyType))
+	}
+
+	// Add optional params with default None
+	for _, propName := range optionalNames {
+		prop, _ := props.Get(propName)
+		pyType, ok := propertyType(prop)
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s = None", propName, pyType))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+// jsonSchema is a read-only view of one JSON Schema object.
+type jsonSchema interface {
+	Get(key string) (interface{}, bool)
+}
+
+// plainSchema adapts a decoded map[string]interface{} to jsonSchema.
+type plainSchema map[string]interface{}
+
+func (s plainSchema) Get(key string) (interface{}, bool) {
+	v, ok := s[key]
+	return v, ok
+}
+
+// asJSONSchema returns v as a jsonSchema without copying it. Live discovery keeps property
+// schemas as map[string]interface{}, but a per-call client restores its tools from the config
+// store after a restart, and that decode turns every nested object into *OrderedMap. Both
+// shapes have to render the same stub.
+func asJSONSchema(v interface{}) (jsonSchema, bool) {
+	switch node := v.(type) {
+	case map[string]interface{}:
+		return plainSchema(node), true
+	case *schemas.OrderedMap:
+		if node == nil {
+			return nil, false
+		}
+		return node, true
+	case schemas.OrderedMap:
+		return &node, true
+	}
+	return nil, false
+}
+
+// unionToPython renders an anyOf/oneOf property: Literal[...] when every member is a const or an
+// enum, otherwise the members joined with " | ". Repeated renderings are listed once.
+func unionToPython(prop jsonSchema) (string, bool) {
+	var members []jsonSchema
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		value, ok := prop.Get(keyword)
+		if !ok {
+			continue
+		}
+		var acceptsAnything bool
+		members, acceptsAnything, _ = schemaList(value)
+		if acceptsAnything {
+			return "Any", true
+		}
+		break
+	}
+	if len(members) == 0 {
+		return "", false
+	}
+
+	var literals []string
+	for _, member := range members {
+		values, ok := literalValues(member)
+		if !ok {
+			literals = nil
+			break
+		}
+		literals = appendUnique(literals, values...)
+	}
+	if literals != nil {
+		return "Literal[" + strings.Join(literals, ", ") + "]", true
+	}
+
+	var types []string
+	for _, member := range members {
+		rendered := jsonSchemaToPython(member)
+		if rendered == "Any" {
+			return "Any", true
+		}
+		types = appendUnique(types, rendered)
+	}
+	return strings.Join(types, " | "), true
+}
+
+// literalValues returns the Python literals an enum or const schema allows, or false when there is
+// none or one cannot be a Literal member. With both, only the const is allowed, and only if the
+// enum lists it.
+func literalValues(prop jsonSchema) ([]string, bool) {
+	var values []string
+	enumVal, hasEnum := prop.Get("enum")
+	if hasEnum {
+		enum, _ := enumVal.([]interface{})
+		if len(enum) == 0 {
+			return nil, false
+		}
+		for _, e := range enum {
+			literal, ok := pythonLiteral(e)
+			if !ok {
+				return nil, false
+			}
+			values = appendUnique(values, literal)
+		}
+	}
+	constVal, hasConst := prop.Get("const")
+	if !hasConst {
+		return values, hasEnum
+	}
+	literal, ok := pythonLiteral(constVal)
+	if !ok || hasEnum && !slices.Contains(values, literal) {
+		return nil, false
+	}
+	return []string{literal}, true
+}
+
+// schemaList reads a composition's members in any decoded shape. Boolean members are reported
+// rather than listed: acceptsAnything for a true member, matchesNothing for a false one (or
+// {"not": {}}, its object form), so each operator can apply its own rule.
+func schemaList(value interface{}) (members []jsonSchema, acceptsAnything, matchesNothing bool) {
+	var items []interface{}
+	switch typed := value.(type) {
+	case []interface{}:
+		items = typed
+	case []schemas.OrderedMap:
+		items = make([]interface{}, len(typed))
+		for i := range typed {
+			items[i] = &typed[i]
+		}
+	default:
+		return nil, false, false
+	}
+	members = make([]jsonSchema, 0, len(items))
+	for _, item := range items {
+		if accepts, ok := item.(bool); ok {
+			acceptsAnything = acceptsAnything || accepts
+			matchesNothing = matchesNothing || !accepts
+			continue
+		}
+		member, ok := asJSONSchema(item)
+		if !ok {
+			continue
+		}
+		if neverMatches(member) {
+			matchesNothing = true
+			continue
+		}
+		members = append(members, member)
+	}
+	return members, acceptsAnything, matchesNothing
+}
+
+// neverMatches reports {"not": {}}, a schema no value satisfies.
+func neverMatches(schema jsonSchema) bool {
+	not, ok := schema.Get("not")
+	if !ok || schemaLen(schema) != 1 {
+		return false
+	}
+	inner, ok := asJSONSchema(not)
+	return ok && schemaLen(inner) == 0
+}
+
+// schemaLen is the number of keywords in a schema.
+func schemaLen(schema jsonSchema) int {
+	switch node := schema.(type) {
+	case plainSchema:
+		return len(node)
+	case *schemas.OrderedMap:
+		return node.Len()
+	}
+	return -1
+}
+
+// appendUnique appends each value not already in list, keeping first-seen order.
+func appendUnique(list []string, values ...string) []string {
+	for _, value := range values {
+		if !slices.Contains(list, value) {
+			list = append(list, value)
+		}
+	}
+	return list
+}
+
+// jsonSchemaToPython converts a JSON Schema type definition to a Python type string.
+func jsonSchemaToPython(prop jsonSchema) string {
+	// Allowed values take precedence over the type, so the model sees them.
+	if values, ok := literalValues(prop); ok {
+		return "Literal[" + strings.Join(values, ", ") + "]"
+	}
+
+	if union, ok := unionToPython(prop); ok {
+		return union
+	}
+
+	if narrowed, ok := allOfToPython(prop); ok {
+		return narrowed
+	}
+
+	return typeToPython(prop)
+}
+
+// typeToPython renders a schema's own "type"; a list of types is their union, and a missing or
+// unknown type is Any.
+func typeToPython(prop jsonSchema) string {
+	typeField, _ := prop.Get("type")
+	switch typeVal := typeField.(type) {
+	case string:
+		if name := pythonTypeName(typeVal, prop); name != "" {
+			return name
+		}
+	case []interface{}:
+		var names []string
+		for _, t := range typeVal {
+			typeName, _ := t.(string)
+			name := pythonTypeName(typeName, prop)
+			if name == "" {
+				return "Any"
+			}
+			names = appendUnique(names, name)
+		}
+		if len(names) > 0 {
+			return strings.Join(names, " | ")
+		}
+	}
+
+	return "Any"
+}
+
+// propertyType renders one property's schema. A true schema accepts anything (Any); a false one,
+// or a value that is not a schema, is never a valid argument and is left out.
+func propertyType(prop interface{}) (string, bool) {
+	if accepts, ok := prop.(bool); ok {
+		return "Any", accepts
+	}
+	propSchema, ok := asJSONSchema(prop)
+	if !ok {
+		return "", false
+	}
+	return jsonSchemaToPython(propSchema), true
+}
+
+// allOfToPython renders a property-level allOf as its narrowest member, since Python has no
+// intersection type: the values every fixed-value member allows, else the one type the property
+// and its typed members agree on. Members that say nothing about the type are ignored, and false
+// means the allOf adds nothing, so the property's own type applies.
+func allOfToPython(prop jsonSchema) (string, bool) {
+	value, ok := prop.Get("allOf")
+	if !ok {
+		return "", false
+	}
+	members, _, matchesNothing := schemaList(value)
+	if matchesNothing {
+		return "Any", true // no value satisfies every member
+	}
+	if len(members) == 0 {
+		return "", false
+	}
+
+	var literals, types []string
+	fixed := false
+	if own := typeToPython(prop); own != "Any" {
+		types = append(types, own)
+	}
+	for _, member := range members {
+		if values, ok := literalValues(member); ok {
+			if !fixed {
+				literals, fixed = values, true
+			} else {
+				literals = slices.DeleteFunc(literals, func(v string) bool { return !slices.Contains(values, v) })
+			}
+			continue
+		}
+		if rendered := jsonSchemaToPython(member); rendered != "Any" {
+			types = appendUnique(types, rendered)
+		}
+	}
+
+	// Every integer is a number, so number and integer together narrow to int.
+	if slices.Contains(types, "int") {
+		types = slices.DeleteFunc(types, func(t string) bool { return t == "float" })
+	}
+
+	switch {
+	case fixed && len(literals) > 0:
+		return "Literal[" + strings.Join(literals, ", ") + "]", true
+	case fixed:
+		return "Any", true // no value satisfies every member
+	case len(types) == 1:
+		return types[0], true
+	case len(types) > 1:
+		return "Any", true // types that cannot both hold
+	}
+	return "", false
+}
+
+// pythonTypeName maps one JSON Schema type name to Python, or "" for an unknown name.
+func pythonTypeName(typeName string, prop jsonSchema) string {
+	switch typeName {
+	case "string":
+		return "str"
+	case "number":
+		return "float"
+	case "integer":
+		return "int"
+	case "boolean":
+		return "bool"
+	case "array":
+		itemsType := "Any"
+		itemsVal, _ := prop.Get("items")
+		if items, ok := asJSONSchema(itemsVal); ok {
+			itemsType = jsonSchemaToPython(items)
+		}
+		return fmt.Sprintf("list[%s]", itemsType)
+	case "object":
+		return "dict"
+	case "null":
+		return "None"
+	}
+	return ""
+}
+
+// pythonLiteral renders a JSON value as a Python literal Literal[...] can hold: a quoted string,
+// a bare number, True/False or None. Objects and lists cannot be Literal members.
+func pythonLiteral(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case nil:
+		return "None", true
+	case string:
+		return strconv.Quote(v), true
+	case bool:
+		if v {
+			return "True", true
+		}
+		return "False", true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case json.Number:
+		return v.String(), true
+	case int, int64, int32, uint, uint64, uint32:
+		return fmt.Sprint(v), true
+	}
+	return "", false
 }
