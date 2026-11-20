@@ -47,6 +47,7 @@ type BackfillJobMeta struct {
 	EndTime         time.Time  `json:"end_time"`
 	ConfigSignature string     `json:"config_signature"`
 	Namespace       string     `json:"namespace"`
+	VectorStore     string     `json:"vector_store,omitempty"` // fingerprint of the store indexed into; empty for the shared store
 	CursorTime      *time.Time `json:"cursor_time,omitempty"`
 	CursorOffset    int        `json:"cursor_offset,omitempty"`
 	Total           int64      `json:"total"`
@@ -178,7 +179,7 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	if result.Pagination.TotalCount > total {
 		total = result.Pagination.TotalCount
 	}
-	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), Total: total}
+	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), VectorStore: s.vectorSource.Fingerprint, Total: total}
 	return marshalBackfillMeta(meta)
 }
 
@@ -206,6 +207,20 @@ func (s *Service) BackfillMatchesConfig(ctx context.Context, metadata string) bo
 	return meta.ConfigSignature == embeddingConfigSignature(config)
 }
 
+// BackfillMatchesStore reports whether a backfill indexed into the store Warp
+// uses now. The embedding signature cannot carry this: topics are keyed by it
+// in the log store and stay valid when the vectors move, so a store switch
+// changes only whether the index is built. A job from before the field, or from
+// the shared store, carries none and matches only the shared store; metadata
+// that does not parse is left to BackfillMatchesConfig to judge.
+func (s *Service) BackfillMatchesStore(metadata string) bool {
+	var meta BackfillJobMeta
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return true
+	}
+	return meta.VectorStore == s.vectorSource.Fingerprint
+}
+
 // resumableBackfillMeta looks for the most recent backfill job that stopped
 // partway through this exact frozen window under this exact embedding
 // configuration, and returns its checkpoint. A job that ran to completion
@@ -230,7 +245,7 @@ func (s *Service) resumableBackfillMeta(ctx context.Context, start, end time.Tim
 	if sonic.Unmarshal([]byte(last.Metadata), &meta) != nil {
 		return BackfillJobMeta{}, false, nil
 	}
-	if meta.CursorTime == nil || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature {
+	if meta.CursorTime == nil || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature || meta.VectorStore != s.vectorSource.Fingerprint {
 		return BackfillJobMeta{}, false, nil
 	}
 	meta.LastError = ""

@@ -81,15 +81,15 @@ func (handlerVectorStore) DeleteAll(context.Context, string, []vectorstore.Query
 }
 func (handlerVectorStore) Close(context.Context, string) error { return nil }
 
-func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func()) {
+func newBackfillTestHandler(t *testing.T, extra ...warp.Option) (*WarpHandler, *fakeSidekiqStore, func()) {
 	t.Helper()
-	handler, jobs, _, cleanup := newTopicsTestHandler(t)
+	handler, jobs, _, cleanup := newTopicsTestHandler(t, extra...)
 	return handler, jobs, cleanup
 }
 
 // newTopicsTestHandler is newBackfillTestHandler with the log store the
 // topics live in, for a test that writes them.
-func newTopicsTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, logstore.LogStore, func()) {
+func newTopicsTestHandler(t *testing.T, extra ...warp.Option) (*WarpHandler, *fakeSidekiqStore, logstore.LogStore, func()) {
 	t.Helper()
 	topics := handlerTopicStore(t)
 	config := &recordingWarpStore{row: &tables.TableWarpConfig{
@@ -98,9 +98,10 @@ func newTopicsTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, logsto
 	}}
 	jobs := newFakeSidekiqStore()
 	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
-	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	opts := []warp.Option{warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
-	}))
+	})}
+	service := warp.NewService(nil, append(opts, extra...)...)
 	service.RegisterBackfill(runner)
 	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
 	return handler, jobs, topics, func() { runner.Shutdown(); service.Shutdown() }
@@ -1452,4 +1453,60 @@ func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
 	require.Empty(t, calls)
+}
+
+// Warp's own store failing at startup is reported as such: the save is refused
+// with the no_vector_store reason and a message naming the setting to fix, not
+// the generic "requires a connected vector store".
+func TestWarpConfigPutWithFailedDedicatedVectorStoreSaysWhy(t *testing.T) {
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(&recordingWarpStore{}),
+		warp.WithVectorStoreSource(warp.VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc", Failed: true}))}
+	ctx := adminCtx(validWarpConfigJSON)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, string(schemas.WarpUnavailableNoVectorStore))
+	require.Contains(t, body, "Warp's own vector store (warp.vector_store in config.json) could not be reached")
+
+	getCtx := adminCtx("")
+	handler.getConfig(getCtx)
+	require.Equal(t, fasthttp.StatusOK, getCtx.Response.StatusCode())
+	got := string(getCtx.Response.Body())
+	require.Contains(t, got, `"vector_store_dedicated":true`)
+	require.Contains(t, got, `"vector_store_type":"weaviate"`)
+	require.Contains(t, got, `"vector_store_failed":true`)
+}
+
+// After warp.vector_store is added or moved, a backfill that indexed into the
+// previous store says nothing about the new, empty one: the settings page and
+// the tray show no completed run, so the admin starts a backfill from the
+// existing button. A job into the store in use is still shown.
+func TestWarpBackfillStatusHidesJobFromAnotherVectorStore(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t, warp.WithVectorStoreSource(warp.VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc"}))
+	defer cleanup()
+	current, err := handler.service.BuildBackfillJobMeta(context.Background(), time.Unix(1, 0), time.Unix(2, 0), false)
+	require.NoError(t, err)
+	var meta warp.BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(current), &meta))
+	meta.VectorStore = ""
+	sharedStore, err := sonic.Marshal(meta)
+	require.NoError(t, err)
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-shared-store", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted, Metadata: string(sharedStore)}
+
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+	require.NotContains(t, string(statusCtx.Response.Body()), "job-shared-store")
+	trayCtx := adminCtx("")
+	handler.logIndexStatus(trayCtx)
+	require.NotContains(t, string(trayCtx.Response.Body()), "job-shared-store")
+
+	jobs.latest.Metadata = current
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-shared-store"`)
+	trayCtx = adminCtx("")
+	handler.logIndexStatus(trayCtx)
+	require.Contains(t, string(trayCtx.Response.Body()), `"id":"job-shared-store"`)
 }

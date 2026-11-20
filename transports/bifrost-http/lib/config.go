@@ -51,6 +51,7 @@ import (
 	"github.com/maximhq/bifrost/framework/openapimcp"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -727,7 +728,11 @@ type Config struct {
 	// Stores
 	ConfigStore configstore.ConfigStore
 	VectorStore vectorstore.VectorStore
-	LogsStore   logstore.LogStore
+	// WarpVectorStore is Warp's own store (warp.vector_store in config.json), nil when Warp
+	// uses VectorStore or when its own store failed at startup; WarpVectorStoreSource says which.
+	WarpVectorStore       vectorstore.VectorStore
+	WarpVectorStoreSource warp.VectorStoreSource
+	LogsStore             logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
 	LogsStoreConfig *logstore.Config
 	// ConfigStoreConfig is the config.json config store configuration used to
@@ -1495,6 +1500,7 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 			}
 		}
 	}
+	initWarpVectorStore(ctx, config, configData)
 	return nil
 }
 
@@ -9065,6 +9071,9 @@ func (c *Config) Close(ctx context.Context) {
 	}
 	if c.VectorStore != nil {
 		c.VectorStore.Close(ctx, "")
+	}
+	if c.WarpVectorStore != nil {
+		c.WarpVectorStore.Close(ctx, "")
 	}
 }
 

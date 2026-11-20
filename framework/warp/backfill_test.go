@@ -941,3 +941,71 @@ func TestRegisterBackfillRegistersTopicsWithoutAnIndexer(t *testing.T) {
 	require.NoError(t, runner.Enqueue(context.Background(), "topics-1", TopicsJobKind, "{}", ""))
 	require.Error(t, runner.Enqueue(context.Background(), "backfill-1", BackfillJobKind, "{}", ""), "the backfill does need the indexer")
 }
+
+// A backfill records the store it indexed into, so one that ran against the
+// shared store (or another dedicated store) is not taken for the index of the
+// store Warp uses now. A job from before the field matches only the shared
+// store; unreadable metadata is left to BackfillMatchesConfig.
+func TestWarpBackfillMatchesOnlyTheStoreItIndexedInto(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	newService := func(source VectorStoreSource) *Service {
+		service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+			WithLogReader(&backfillLogReader{}), WithVectorStore(newFakeWarpVectorStore()),
+			WithEmbeddingExecutor(backfillEmbeddingExecutor), WithVectorStoreSource(source))
+		t.Cleanup(service.Shutdown)
+		return service
+	}
+	shared := newService(VectorStoreSource{})
+	dedicated := newService(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc"})
+	moved := newService(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "def"})
+
+	metaJSON, err := dedicated.BuildBackfillJobMeta(context.Background(), start, start.Add(time.Hour), false)
+	require.NoError(t, err)
+	var meta BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+	require.Equal(t, "abc", meta.VectorStore)
+
+	require.True(t, dedicated.BackfillMatchesStore(metaJSON))
+	require.False(t, shared.BackfillMatchesStore(metaJSON), "the shared store was not indexed")
+	require.False(t, moved.BackfillMatchesStore(metaJSON), "a moved dedicated store is empty")
+
+	legacy := `{"config_signature":"x","namespace":"BifrostWarpLogs"}`
+	require.True(t, shared.BackfillMatchesStore(legacy), "a job from before the field indexed the shared store")
+	require.False(t, dedicated.BackfillMatchesStore(legacy))
+	require.True(t, dedicated.BackfillMatchesStore("not json"))
+}
+
+// A stopped backfill resumes from its checkpoint only into the store it was
+// indexing: after warp.vector_store is added, resuming would skip every log the
+// old run had already put in the shared store, leaving the new one with gaps.
+func TestWarpBackfillDoesNotResumeIntoAnotherStore(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	cursor := start.Add(30 * time.Minute)
+	probe := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
+	t.Cleanup(probe.Shutdown)
+	config, err := probe.Config(context.Background())
+	require.NoError(t, err)
+	stopped := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: embeddingConfigSignature(config),
+		Namespace: schemas.WarpDefaultLogVectorStoreNamespace, CursorTime: &cursor, Total: 10, Scanned: 5}
+	stoppedJSON, err := marshalBackfillMeta(stopped)
+	require.NoError(t, err)
+	jobs := activeBackfillStore{active: &tables.TableSidekiqJob{ID: "stopped", Status: tables.SidekiqStatusFailed, Metadata: stoppedJSON}}
+	build := func(source VectorStoreSource) BackfillJobMeta {
+		service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+			WithLogReader(&backfillLogReader{}), WithVectorStore(newFakeWarpVectorStore()),
+			WithEmbeddingExecutor(backfillEmbeddingExecutor), WithBackfillJobStore(jobs), WithVectorStoreSource(source))
+		t.Cleanup(service.Shutdown)
+		metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, end, false)
+		require.NoError(t, err)
+		var meta BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+		return meta
+	}
+
+	require.Equal(t, 5, build(VectorStoreSource{}).Scanned, "the same store resumes from the checkpoint")
+	fresh := build(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc"})
+	require.Zero(t, fresh.Scanned, "another store starts a clean scan")
+	require.Nil(t, fresh.CursorTime)
+	require.Equal(t, "abc", fresh.VectorStore)
+}

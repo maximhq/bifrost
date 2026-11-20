@@ -1317,7 +1317,7 @@ func (s *Service) HasIndexedRequests(ctx context.Context) (bool, error) {
 	vectors := s.vectorStore
 	s.mu.RUnlock()
 	if vectors == nil {
-		return false, ErrNoVectorStore
+		return false, s.noVectorStore()
 	}
 	config, err := s.Config(ctx)
 	if err != nil {

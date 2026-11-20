@@ -62,6 +62,12 @@ export interface WarpConfig {
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
+	/** Whether Warp has its own vector store (warp.vector_store in config.json) rather than the shared one. */
+	vector_store_dedicated: boolean;
+	/** Type of Warp's own vector store, when vector_store_dedicated. */
+	vector_store_type?: string;
+	/** Warp's own vector store could not be reached at startup, so Warp is unavailable until it is fixed and Bifrost restarts. */
+	vector_store_failed?: boolean;
 	/** Whether the gateway's Bifrost MCP is loaded. While bifrost_mcp_enabled, Warp does not answer without it. */
 	bifrost_mcp_available: boolean;
 	/** Whether Warp uses the Bifrost MCP at all. Off for now: no setup step, no management tools section. */

@@ -346593,6 +346593,50 @@
           }
         }
       ]
+    },
+    {
+      "name": "366. Warp reports which vector store holds its log index (warp vector store)",
+      "description": "Warp can keep its log index in its own vector store (warp.vector_store in config.json, read at startup) instead of the shared one. GET /api/warp/config reports vector_store_dedicated on every response so the settings page can say which store Warp uses; the harness profile declares no warp.vector_store, so it is false and vector_store_failed is absent. The openai keyword is only a harness filter label; no provider calls are made and nothing is persisted.",
+      "item": [
+        {
+          "name": "openai warp vector store: GET /api/warp/config reports the shared store",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('warp vector store: GET /api/warp/config answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('warp vector store: vector_store_dedicated is false without warp.vector_store', function () {",
+                  "  var body = pm.response.json() || {};",
+                  "  pm.expect(body, 'body: ' + txt.slice(0, 400)).to.have.property('vector_store_dedicated');",
+                  "  pm.expect(body.vector_store_dedicated, 'body: ' + txt.slice(0, 400)).to.eql(false);",
+                  "  pm.expect(body, 'a shared store never reports a dedicated-store failure').to.not.have.property('vector_store_failed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/warp/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

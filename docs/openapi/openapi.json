@@ -161322,7 +161322,22 @@
           "vector_store_connected": {
             "type": "boolean",
             "readOnly": true,
-            "description": "Whether the shared runtime vector store is connected."
+            "description": "Whether Warp's vector store is connected - its own store when vector_store_dedicated, otherwise the shared runtime vector store."
+          },
+          "vector_store_dedicated": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Whether Warp has its own vector store (warp.vector_store in config.json) rather than the shared one."
+          },
+          "vector_store_type": {
+            "type": "string",
+            "readOnly": true,
+            "description": "Type of Warp's own vector store, when vector_store_dedicated."
+          },
+          "vector_store_failed": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Warp's own vector store could not be reached at startup, so Warp is unavailable until it is fixed and Bifrost restarts. Absent otherwise."
           }
         },
         "required": [
@@ -161340,7 +161355,8 @@
           "semantic_search_threshold",
           "semantic_search_limit",
           "topic_discovery_min_requests",
-          "vector_store_connected"
+          "vector_store_connected",
+          "vector_store_dedicated"
         ]
       },
       "WarpConfigInput": {

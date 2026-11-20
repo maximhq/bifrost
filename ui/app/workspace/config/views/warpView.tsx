@@ -612,7 +612,8 @@ export default function WarpView() {
 							)}
 							{!config?.vector_store_connected && (
 								<p className="text-destructive flex items-center gap-1.5 text-xs" data-testid="warp-vector-store-required">
-									<AlertTriangle className="h-3.5 w-3.5" /> {t("warp.vectorRequired")}
+									<AlertTriangle className="h-3.5 w-3.5" />{" "}
+									{config?.vector_store_failed ? t("warp.dedicatedVectorFailed") : t("warp.vectorRequired")}
 								</p>
 							)}
 						</div>
@@ -825,10 +826,21 @@ export default function WarpView() {
 									) : (
 										<Database className="mr-1 h-3.5 w-3.5" />
 									)}
-									{config?.vector_store_connected ? t("warp.vectorConnected") : t("warp.vectorDisconnected")}
+									{config?.vector_store_dedicated
+										? config.vector_store_connected
+											? t("warp.dedicatedVectorConnected", { type: config.vector_store_type ?? "" })
+											: t("warp.dedicatedVectorUnavailable")
+										: config?.vector_store_connected
+											? t("warp.vectorConnected")
+											: t("warp.vectorDisconnected")}
 								</Badge>
 							}
 						>
+							{config?.vector_store_dedicated && config.vector_store_connected && (
+								<p className="text-muted-foreground mb-4 text-xs" data-testid="warp-dedicated-vector-store-note">
+									{t("warp.dedicatedVectorHelp", { type: config.vector_store_type ?? "" })}
+								</p>
+							)}
 							<div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
 								<WarpField label={t("warp.embeddingProvider")} htmlFor="warp-embedding-provider">
 									<ProviderSelector

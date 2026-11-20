@@ -49,7 +49,7 @@ async function acknowledgeMCPNotice(page: Page) {
 // The warp flag is shared server state that other suites toggle in parallel,
 // and it only gates the UI. Turning it on in this page's view of the flags
 // leaves the server's copy alone, so no suite races another over it.
-async function mockWarpBackfill(page: Page, job: object) {
+async function mockWarpBackfill(page: Page, job: object, config: object = configuredWarp) {
   await acknowledgeMCPNotice(page)
   await page.route('**/api/feature-flags', async (route) => {
     if (route.request().method() !== 'GET') return route.continue()
@@ -59,7 +59,7 @@ async function mockWarpBackfill(page: Page, job: object) {
     await route.fulfill({ response, json: body })
   })
   await page.route('**/api/warp/config', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(configuredWarp) }),
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) }),
   )
   await page.route('**/api/warp/log-index/backfill/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(job) }),
@@ -207,5 +207,46 @@ test.describe('Warp semantic search threshold', () => {
     threshold = 0.62
     await page.reload()
     await expect(page.getByTestId('warp-search-threshold-input')).toHaveValue('0.62')
+  })
+})
+
+// warp.vector_store in config.json gives Warp its own store. The page names it,
+// says a new or moved store needs a backfill, and when it could not be reached
+// at startup says exactly that instead of the generic "connect a vector store".
+// The config endpoint is mocked: the store is only set at startup.
+test.describe("Warp's own vector store", () => {
+  const idle = { status: 'idle' }
+
+  test('names a connected dedicated store and points at the backfill', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: true, vector_store_type: 'qdrant' })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText("Warp's own qdrant store connected")
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toContainText('start a backfill')
+    await expect(page.getByTestId('warp-vector-store-required')).toHaveCount(0)
+  })
+
+  test('says why Warp is unavailable when its own store failed at startup', async ({ page }) => {
+    await mockWarpBackfill(page, idle, {
+      ...configuredWarp,
+      enabled: false,
+      vector_store_connected: false,
+      vector_store_dedicated: true,
+      vector_store_type: 'qdrant',
+      vector_store_failed: true,
+    })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-required')).toContainText('warp.vector_store in config.json')
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText("Warp's own vector store unavailable")
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toHaveCount(0)
+  })
+
+  test('keeps the shared-store wording without warp.vector_store', async ({ page }) => {
+    await mockWarpBackfill(page, idle, { ...configuredWarp, vector_store_dedicated: false })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText('Vector store connected')
+    await expect(page.getByTestId('warp-dedicated-vector-store-note')).toHaveCount(0)
   })
 })

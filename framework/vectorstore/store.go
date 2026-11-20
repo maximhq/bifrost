@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -275,6 +276,39 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// Location names where a store keeps its data: its type and endpoint, never its
+// credentials. Two configurations with the same Location reach the same data, so
+// a caller can tell a moved store from a rotated key. An unknown type, or a config
+// that does not match its type, has no location.
+func (c *Config) Location() string {
+	if c == nil {
+		return ""
+	}
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.GetValue())
+	}
+	switch cfg := c.Config.(type) {
+	case WeaviateConfig:
+		return "weaviate://" + value(cfg.Host)
+	case QdrantConfig:
+		return "qdrant://" + value(&cfg.Host) + ":" + value(&cfg.Port)
+	case RedisConfig:
+		return "redis://" + value(cfg.Addr)
+	case PineconeConfig:
+		return "pinecone://" + value(&cfg.IndexHost)
+	case ChromemConfig:
+		return "chromem://" + strings.TrimSpace(cfg.Path)
+	case nil:
+		if c.Type == VectorStoreTypeChromem {
+			return "chromem://"
+		}
+	}
+	return ""
 }
 
 // NewVectorStore returns a new vector store based on the configuration.
