@@ -229,6 +229,7 @@
 			"descriptionHint": "Nota per gli utenti. Non usata da Bifrost.",
 			"descriptionPlaceholder": "A cosa serve questo deployment?",
 			"useKeySetting": "Usa l'impostazione della chiave",
+			"serviceTierHint": "Sostituisce il livello di servizio della chiave per questo deployment.",
 			"on": "Attivo",
 			"off": "Disattivo",
 			"deploymentName": "Nome deployment",
@@ -573,6 +574,9 @@
 		"keys": {
 			"useForBatch": "Usa per API Batch",
 			"useForBatchHelp": "Abilita questa chiave per le operazioni batch API. Solo le chiavi con questa opzione attiva saranno usate per le richieste batch.",
+			"serviceTier": "Livello di servizio",
+			"serviceTierHelp": "Inviato con le richieste chat e responses al posto di qualsiasi livello di servizio indicato dalla richiesta. Ogni provider inoltra solo i livelli supportati dal suo modello.",
+			"serviceTierNotSet": "Non impostato",
 			"vpcEndpointsOptional": "Endpoint VPC (opzionale)",
 			"vpcEndpointsHelp": "Instrada il traffico tramite interface VPC endpoint invece degli endpoint regionali pubblici. Usa il nome DNS di ciascun endpoint dalla console VPC, non l'ID. La region è comunque obbligatoria: imposta lo scope di firma della richiesta.",
 			"vpc": {

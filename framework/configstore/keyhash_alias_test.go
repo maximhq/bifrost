@@ -74,3 +74,34 @@ func TestGenerateKeyHash_RichAliasesProduceDifferentHash(t *testing.T) {
 
 	assert.NotEqual(t, legacyHash, richHash, "enriching an alias must change the key hash so config diffs are detected")
 }
+
+// TestGenerateKeyHash_ServiceTier pins that a key or alias service_tier changes the key hash, so a
+// config.json edit is detected, while a key without one keeps its existing hash.
+func TestGenerateKeyHash_ServiceTier(t *testing.T) {
+	priority := schemas.BifrostServiceTierPriority
+	flex := schemas.BifrostServiceTierFlex
+	base := schemas.Key{Name: "k", Value: *schemas.NewSecretVar("sk"), Weight: 1.0, Aliases: schemas.KeyAliases{"x": {ModelID: "y"}}}
+
+	baseHash, err := GenerateKeyHash(base)
+	require.NoError(t, err)
+
+	keyTier := base
+	keyTier.ServiceTier = &priority
+	keyTierHash, err := GenerateKeyHash(keyTier)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, keyTierHash, "a key service_tier must change the hash")
+
+	keyTier.ServiceTier = &flex
+	flexHash, err := GenerateKeyHash(keyTier)
+	require.NoError(t, err)
+	assert.NotEqual(t, keyTierHash, flexHash, "changing the key service_tier must change the hash")
+
+	aliasTier := base
+	aliasTier.Aliases = schemas.KeyAliases{"x": {ModelID: "y", ServiceTier: &flex}}
+	aliasMarshal, err := sonic.Marshal(aliasTier.Aliases)
+	require.NoError(t, err)
+	assert.Equal(t, `{"x":{"model_id":"y","service_tier":"flex"}}`, string(aliasMarshal), "an alias carrying only a tier must not collapse to the legacy string shape")
+	aliasTierHash, err := GenerateKeyHash(aliasTier)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, aliasTierHash, "an alias service_tier must change the hash")
+}

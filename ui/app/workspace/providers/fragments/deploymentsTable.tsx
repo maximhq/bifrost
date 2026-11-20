@@ -7,7 +7,7 @@ import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config";
+import { AliasConfig, ModelFamily, ModelFamilyValues, ServiceTier } from "@/lib/types/config";
 import { isLiteralHTTPSURL, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { parseVertexEndpointURL } from "@/lib/vertexEndpoint";
@@ -21,6 +21,7 @@ interface Props {
 	value: DeploymentsValue;
 	onChange: (next: Record<string, AliasConfig>) => void;
 	providerName: string;
+	serviceTiers?: ServiceTier[]; // tiers the key's provider takes; the setting is hidden when empty
 	disabled?: boolean;
 }
 
@@ -537,14 +538,17 @@ function ExpandedConfigPanel({
 	providerName,
 	disabled,
 	isPattern,
+	serviceTiers,
 }: {
 	config: AliasConfig;
 	onChange: (patch: Partial<AliasConfig>) => void;
 	providerName: string;
 	disabled?: boolean;
 	isPattern?: boolean;
+	serviceTiers: ServiceTier[];
 }) {
 	const { t } = useTranslation("models");
+	const serviceTierId = useId();
 	return (
 		<div className="space-y-6 border-t p-4">
 			<div className="space-y-4">
@@ -580,6 +584,27 @@ function ExpandedConfigPanel({
 						</SelectContent>
 					</Select>
 				</FieldRow>
+				{serviceTiers.length > 0 && (
+					<FieldRow htmlFor={serviceTierId} label={t("providers.keys.serviceTier")} hint={t("providers.deployments.serviceTierHint")}>
+						<Select
+							value={config.service_tier ?? "__inherit__"}
+							onValueChange={(v) => onChange({ service_tier: v === "__inherit__" ? undefined : (v as ServiceTier) })}
+							disabled={disabled}
+						>
+							<SelectTrigger id={serviceTierId} className="w-full" data-testid="deployment-service-tier-select">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="__inherit__">{t("providers.deployments.useKeySetting")}</SelectItem>
+								{serviceTiers.map((tier) => (
+									<SelectItem key={tier} value={tier} data-testid={`deployment-service-tier-option-${tier}`}>
+										{tier}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</FieldRow>
+				)}
 				<FieldRow label={t("modelCatalog.description")} hint={t("providers.deployments.descriptionHint")}>
 					<Textarea
 						value={config.description ?? ""}
@@ -598,7 +623,7 @@ function ExpandedConfigPanel({
 	);
 }
 
-export function DeploymentsTable({ value, onChange, providerName, disabled = false }: Props) {
+export function DeploymentsTable({ value, onChange, providerName, serviceTiers = [], disabled = false }: Props) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const normalized = useMemo(() => normalize(value), [value]);
@@ -803,6 +828,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										providerName={providerName}
 										disabled={disabled}
 										isPattern={isPattern}
+										serviceTiers={serviceTiers}
 									/>
 								</CollapsibleContent>
 							</div>
@@ -867,6 +893,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 								providerName={providerName}
 								disabled={disabled}
 								isPattern={isRegexEntry(draftRow.name.trim())}
+								serviceTiers={serviceTiers}
 							/>
 						</CollapsibleContent>
 					</div>

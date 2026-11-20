@@ -105,6 +105,42 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
 }
 
+// setRawServiceTier writes the attempt's service tier into a raw generateContent body, so a key
+// or alias tier also reaches client bytes sent as-is. flex and priority set service_tier; default
+// removes it, since Google documents an omitted tier as Standard. A camelCase serviceTier is
+// replaced so the body carries one value. The typed path, a request with no tier, and a body
+// already in that state are returned unchanged.
+func setRawServiceTier(ctx *schemas.BifrostContext, body []byte, tier *schemas.BifrostServiceTier) []byte {
+	if tier == nil || len(body) == 0 {
+		return body
+	}
+	if raw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !ok || !raw {
+		return body
+	}
+	out := body
+	if providerUtils.JSONFieldExists(out, "serviceTier") {
+		if updated, err := providerUtils.DeleteJSONField(out, "serviceTier"); err == nil {
+			out = updated
+		}
+	}
+	want := mapBifrostServiceTierToGemini(*tier)
+	if want != ServiceTierFlex && want != ServiceTierPriority {
+		if providerUtils.JSONFieldExists(out, "service_tier") {
+			if updated, err := providerUtils.DeleteJSONField(out, "service_tier"); err == nil {
+				out = updated
+			}
+		}
+		return out
+	}
+	if providerUtils.GetJSONField(out, "service_tier").String() == string(want) {
+		return out
+	}
+	if updated, err := providerUtils.SetJSONField(out, "service_tier", string(want)); err == nil {
+		out = updated
+	}
+	return out
+}
+
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
 // preserving JSON key order with gjson/sjson-style byte edits. model is the target

@@ -50,6 +50,9 @@ export const ModelFamilyValues: ModelFamily[] = [
 	"titan",
 ];
 
+// ServiceTier matching the request-side values of Go's schemas.BifrostServiceTier.
+export type ServiceTier = "auto" | "default" | "flex" | "priority" | "fast" | "ultrafast";
+
 // AliasConfig matching Go's schemas.AliasConfig.
 // Go embeds AzureAliasCfg/VertexAliasCfg/BedrockAliasCfg/ReplicateAliasCfg as
 // pointer structs which flatten on the wire — sub-config fields live at the
@@ -82,6 +85,7 @@ export interface AliasConfig {
 	deployment_url?: SecretVar;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
+	service_tier?: ServiceTier;
 }
 
 export interface VertexEndpoint {
@@ -449,6 +453,7 @@ export interface ModelProviderKey {
 	use_for_batch_api?: boolean;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
+	service_tier?: ServiceTier | null;
 	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;

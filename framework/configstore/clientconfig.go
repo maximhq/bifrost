@@ -845,6 +845,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
 		}
+		redactedConfig.Keys[i].ServiceTier = key.ServiceTier
 
 		// Add model discovery status and error
 		redactedConfig.Keys[i].Status = key.Status
@@ -1596,6 +1597,9 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	}
 	if useAnthropicEndpoints {
 		hash.Write([]byte("useAnthropicEndpoints:true"))
+	}
+	if key.ServiceTier != nil {
+		hash.Write([]byte("serviceTier:" + string(*key.ServiceTier)))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

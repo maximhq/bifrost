@@ -576,6 +576,145 @@ test.describe("Providers", () => {
       expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
     });
 
+    test("should save a key service tier, its deployment override, and clear both", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("openai"))) {
+        await providersPage.addKnownProviderFromDropdown("openai");
+        createdProviders.push("openai");
+      }
+      const keyName = `OpenAI-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "openai", keyName });
+      const created = await page.request.post("/api/providers/openai/keys", {
+        data: {
+          name: keyName,
+          value: "sk-e2e-service-tier",
+          models: ["*"],
+          weight: 0,
+          aliases: { "tier-model": { model_id: "gpt-4o-mini", description: "service tier e2e" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("openai");
+      const keyTier = page.getByTestId("apikey-service-tier-select");
+      const override = page.getByTestId("deployment-service-tier-select");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-tier-model").click();
+      };
+      const choose = async (select: typeof keyTier, label: string) => {
+        await select.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedKey = async () => {
+        const response = await page.request.get("/api/providers/openai/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key;
+      };
+
+      await edit();
+      await expect(keyTier).toContainText("Not set");
+      await expect(override).toContainText("Use key setting");
+      await choose(keyTier, "priority");
+      await choose(override, "flex");
+      await save();
+      let key = await savedKey();
+      expect(key.service_tier).toBe("priority");
+      expect(key.weight).toBe(0);
+      expect(key.aliases["tier-model"].service_tier).toBe("flex");
+
+      await edit();
+      await expect(keyTier).toContainText("priority");
+      await expect(override).toContainText("flex");
+      await choose(keyTier, "Not set");
+      await choose(override, "Use key setting");
+      await save();
+      key = await savedKey();
+      expect(key.service_tier).toBeUndefined();
+      expect(key.aliases["tier-model"].service_tier).toBeUndefined();
+    });
+
+    test("should offer only the service tiers a provider takes, and none where it takes no tier", async ({ providersPage, page }) => {
+      const openKeyForm = async (provider: string, keyName: string, alias: string) => {
+        await page.reload();
+        await providersPage.selectProvider(provider);
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId(`deployment-expand-${alias}`).click();
+      };
+      const closeKeyForm = async () => {
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+
+      for (const provider of ["anthropic", "groq"]) {
+        if (!(await providersPage.providerExists(provider))) {
+          await providersPage.addKnownProviderFromDropdown(provider);
+          createdProviders.push(provider);
+        }
+      }
+
+      const anthropicKey = `Anthropic-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "anthropic", keyName: anthropicKey });
+      const rejected = await page.request.post("/api/providers/anthropic/keys", {
+        data: { name: anthropicKey, value: "sk-e2e-service-tier", models: ["*"], weight: 1, service_tier: "flex" },
+      });
+      expect(rejected.status(), await rejected.text()).toBe(400);
+      expect(await rejected.text()).toContain("service_tier");
+      const anthropicCreated = await page.request.post("/api/providers/anthropic/keys", {
+        data: {
+          name: anthropicKey,
+          value: "sk-e2e-service-tier",
+          models: ["*"],
+          weight: 1,
+          aliases: { "tier-model": { model_id: "claude-sonnet-4-6", description: "service tier e2e" } },
+        },
+      });
+      expect(anthropicCreated.ok(), await anthropicCreated.text()).toBe(true);
+      await openKeyForm("anthropic", anthropicKey, "tier-model");
+      for (const select of [page.getByTestId("apikey-service-tier-select"), page.getByTestId("deployment-service-tier-select")]) {
+        await select.click();
+        const options = (await page.getByRole("option").allTextContents()).map((text) => text.trim());
+        expect(options.filter((text) => !["Not set", "Use key setting"].includes(text))).toEqual(["auto", "default"]);
+        await page.keyboard.press("Escape");
+      }
+      await closeKeyForm();
+
+      const groqKey = `Groq-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "groq", keyName: groqKey });
+      const groqRejected = await page.request.post("/api/providers/groq/keys", {
+        data: { name: groqKey, value: "gsk-e2e-service-tier", models: ["*"], weight: 1, service_tier: "priority" },
+      });
+      expect(groqRejected.status(), await groqRejected.text()).toBe(400);
+      const groqCreated = await page.request.post("/api/providers/groq/keys", {
+        data: {
+          name: groqKey,
+          value: "gsk-e2e-service-tier",
+          models: ["*"],
+          weight: 1,
+          aliases: { "tier-model": { model_id: "llama-3.3-70b-versatile", description: "service tier e2e" } },
+        },
+      });
+      expect(groqCreated.ok(), await groqCreated.text()).toBe(true);
+      await openKeyForm("groq", groqKey, "tier-model");
+      await expect(page.getByTestId("deployment-expand-tier-model")).toBeVisible();
+      await expect(page.getByTestId("apikey-service-tier-select")).toHaveCount(0);
+      await expect(page.getByTestId("deployment-service-tier-select")).toHaveCount(0);
+      await closeKeyForm();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,

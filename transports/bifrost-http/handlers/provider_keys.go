@@ -191,6 +191,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
+	if err := schemas.ValidateKeyServiceTier(baseProvider, key.ServiceTier); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid service_tier: %v", err))
+		return
+	}
 
 	if key.ID == "" {
 		key.ID = uuid.NewString()
@@ -322,6 +326,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := validateWeight(mergedKey.Weight); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+	if err := schemas.ValidateKeyServiceTier(baseProvider, mergedKey.ServiceTier); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid service_tier: %v", err))
 		return
 	}
 
@@ -541,6 +549,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
 		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
+		"service_tier":              func() { updateKey.ServiceTier = oldRawKey.ServiceTier },
 		"description":               func() { updateKey.Description = oldRawKey.Description },
 	} {
 		if !gjson.GetBytes(body, field).Exists() {

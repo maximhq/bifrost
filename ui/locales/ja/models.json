@@ -229,6 +229,7 @@
 			"descriptionHint": "ユーザーへの注意。Bifrostでは使用されていません。",
 			"descriptionPlaceholder": "このデプロイメントは何に使われますか？",
 			"useKeySetting": "キー設定を使用",
+			"serviceTierHint": "この展開でキーのサービスティアを上書きします。",
 			"on": "オン",
 			"off": "オフ",
 			"deploymentName": "デプロイメント名",
@@ -573,6 +574,9 @@
 		"keys": {
 			"useForBatch": "バッチAPI用に使用",
 			"useForBatchHelp": "このキーをバッチAPI操作に使用できるようにします。これが有効になっているキーのみがバッチリクエストに使用されます。",
+			"serviceTier": "サービスティア",
+			"serviceTierHelp": "チャットおよび Responses リクエストで、リクエストが指定したサービスティアの代わりに送信されます。各プロバイダーは、そのモデルがサポートするティアのみを転送します。",
+			"serviceTierNotSet": "未設定",
 			"vpcEndpointsOptional": "VPCエンドポイント（オプション）",
 			"vpcEndpointsHelp": "ルートトラフィックをパブリックなリージョンエンドポイントの代わりに、インターフェイス VPC エンドポイントを通してルーティングします。VPC コンソールから各エンドポイントの DNS 名を使用し、その ID は使用しないでください。リージョンは依然として必要です — これはリクエスト署名のスコープを設定します。",
 			"vpc": {

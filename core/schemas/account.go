@@ -161,6 +161,7 @@ type Key struct {
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	UseOpenAIEndpoints     *bool                   `json:"use_openai_endpoints,omitempty"`      // Whether to use OpenAI-compatible endpoints for this key
+	ServiceTier            *BifrostServiceTier     `json:"service_tier,omitempty"`              // Tier enforced on chat and responses requests over the request's own; an alias's service_tier wins
 	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
 	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
 	Description            string                  `json:"description,omitempty"`               // Description of key
@@ -333,6 +334,8 @@ type AliasConfig struct {
 	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
 	UseOpenAIEndpoints    *bool      `json:"use_openai_endpoints,omitempty"`    // Whether to use OpenAI-compatible endpoints for this alias
 
+	ServiceTier *BifrostServiceTier `json:"service_tier,omitempty"` // Overrides the key's service_tier for this alias
+
 	*AzureAliasCfg
 	*VertexAliasCfg
 	*BedrockAliasCfg
@@ -386,6 +389,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.ProjectID == nil &&
 		ac.UseAnthropicEndpoints == nil &&
 		ac.UseOpenAIEndpoints == nil &&
+		ac.ServiceTier == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -426,6 +430,24 @@ func (ac AliasConfig) MarshalJSON() ([]byte, error) {
 // ModelName / ModelFamily / provider sub-configs are populated explicitly.
 type KeyAliases map[string]AliasConfig
 
+// keyServiceTiers lists the service_tier values a key or alias may set, by base provider.
+// Each provider's converter sends or maps these; a provider not listed takes no key tier.
+var keyServiceTiers = map[ModelProvider][]BifrostServiceTier{
+	OpenAI:    {BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierFast, BifrostServiceTierUltrafast},
+	Azure:     {BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority},
+	Anthropic: {BifrostServiceTierAuto, BifrostServiceTierDefault},
+	Vertex:    {BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority},
+	Gemini:    {BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority},
+}
+
+// ValidateKeyServiceTier rejects a key or alias service_tier that provider does not take.
+func ValidateKeyServiceTier(provider ModelProvider, tier *BifrostServiceTier) error {
+	if tier == nil || slices.Contains(keyServiceTiers[provider], *tier) {
+		return nil
+	}
+	return fmt.Errorf("service_tier %q is not supported for %s keys", *tier, provider)
+}
+
 // Validate checks that every entry in the alias map is well-formed and that
 // any provider-specific sub-configs (AzureAliasCfg, VertexAliasCfg,
 // BedrockAliasCfg, ReplicateAliasCfg) are only set when the owning Key
@@ -454,6 +476,9 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		}
 		if ac.ModelFamily != nil && !ac.ModelFamily.IsValid() {
 			return fmt.Errorf("alias %q: invalid model_family %q", from, *ac.ModelFamily)
+		}
+		if err := ValidateKeyServiceTier(providerKey, ac.ServiceTier); err != nil {
+			return fmt.Errorf("alias %q: %w", from, err)
 		}
 		if IsRegexEntry(from) {
 			if err := ValidateRegexTemplate(from, ac.ModelID); err != nil {

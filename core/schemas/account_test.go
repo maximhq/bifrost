@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -518,6 +519,29 @@ func TestKeyAliasesValidate(t *testing.T) {
 			provider: OpenAI,
 			ka:       KeyAliases{"k": {ModelID: "v", ModelFamily: &madeUp}},
 			wantErr:  "invalid model_family",
+		},
+		{
+			name:     "unknown service_tier",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", ServiceTier: Ptr(BifrostServiceTier("prioroty"))}},
+			wantErr:  `service_tier "prioroty" is not supported for openai keys`,
+		},
+		{
+			name:     "service_tier the provider does not offer",
+			provider: Anthropic,
+			ka:       KeyAliases{"k": {ModelID: "v", ServiceTier: Ptr(BifrostServiceTierFlex)}},
+			wantErr:  `service_tier "flex" is not supported for anthropic keys`,
+		},
+		{
+			name:     "service_tier on a provider without key tiers",
+			provider: Bedrock,
+			ka:       KeyAliases{"k": {ModelID: "v", ServiceTier: Ptr(BifrostServiceTierPriority)}},
+			wantErr:  `service_tier "priority" is not supported for bedrock keys`,
+		},
+		{
+			name:     "supported service_tier",
+			provider: Vertex,
+			ka:       KeyAliases{"k": {ModelID: "v", ServiceTier: Ptr(BifrostServiceTierPriority)}},
 		},
 		{
 			name:     "azure sub-config on azure key — ok",
@@ -1165,5 +1189,31 @@ func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
 				_ = c.aliases.ResolveConfig(c.model)
 			}
 		})
+	}
+}
+
+// TestValidateKeyServiceTier pins which service_tier values a key or alias may set on each
+// provider: only the ones that provider's converter sends or maps, and none elsewhere.
+func TestValidateKeyServiceTier(t *testing.T) {
+	allowed := map[ModelProvider][]BifrostServiceTier{
+		OpenAI:    {"auto", "default", "flex", "priority", "fast", "ultrafast"},
+		Azure:     {"auto", "default", "flex", "priority"},
+		Anthropic: {"auto", "default"},
+		Vertex:    {"default", "flex", "priority"},
+		Gemini:    {"default", "flex", "priority"},
+	}
+	all := []BifrostServiceTier{"auto", "default", "flex", "priority", "fast", "ultrafast", "provisioned", "prioroty"}
+	providers := []ModelProvider{OpenAI, Azure, Anthropic, Vertex, Gemini, Bedrock, BedrockMantle, OpenRouter, Groq, Mistral}
+	for _, p := range providers {
+		for _, tier := range all {
+			want := slices.Contains(allowed[p], tier)
+			err := ValidateKeyServiceTier(p, &tier)
+			if (err == nil) != want {
+				t.Errorf("ValidateKeyServiceTier(%s, %q) err = %v, want allowed = %v", p, tier, err, want)
+			}
+		}
+		if err := ValidateKeyServiceTier(p, nil); err != nil {
+			t.Errorf("ValidateKeyServiceTier(%s, nil) = %v, want nil", p, err)
+		}
 	}
 }

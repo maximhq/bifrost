@@ -229,6 +229,7 @@
 			"descriptionHint": "Hinweis für Benutzer. Wird von Bifrost nicht verwendet.",
 			"descriptionPlaceholder": "Wofür wird dieses Deployment verwendet?",
 			"useKeySetting": "Schlüsseleinstellung verwenden",
+			"serviceTierHint": "Überschreibt den Service-Tier des Schlüssels für diese Bereitstellung.",
 			"on": "Ein",
 			"off": "Aus",
 			"deploymentName": "Deployment-Name",
@@ -573,6 +574,9 @@
 		"keys": {
 			"useForBatch": "Für Batch-APIs verwenden",
 			"useForBatchHelp": "Aktiviere diesen Schlüssel für Batch-API-Operationen. Nur Schlüssel mit dieser aktivierten Option werden für Batch-Anfragen verwendet.",
+			"serviceTier": "Service-Tier",
+			"serviceTierHelp": "Wird bei Chat- und Responses-Anfragen gesendet und ersetzt jeden Service-Tier, den die Anfrage festlegt. Jeder Anbieter leitet nur die Tiers weiter, die sein Modell unterstützt.",
+			"serviceTierNotSet": "Nicht festgelegt",
 			"vpcEndpointsOptional": "VPC-Endpunkte (Optional)",
 			"vpcEndpointsHelp": "Leite Datenverkehr über Interface-VPC-Endpunkte anstelle der öffentlichen regionalen Endpunkte weiter. Verwende den DNS-Namen jedes Endpunkts aus der VPC-Konsole, nicht dessen ID. Die Region ist weiterhin erforderlich – sie legt den Bereich für die Anfrage-Signierung fest.",
 			"vpc": {

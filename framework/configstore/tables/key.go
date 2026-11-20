@@ -127,6 +127,8 @@ type TableKey struct {
 	// split OpenAI the way the JSON tag does.
 	UseOpenAIEndpoints *bool `gorm:"column:use_openai_endpoints;default:false" json:"use_openai_endpoints,omitempty"`
 
+	ServiceTier *schemas.BifrostServiceTier `gorm:"type:varchar(50)" json:"service_tier,omitempty"` // tier sent on requests that set none
+
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 

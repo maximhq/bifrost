@@ -756,6 +756,9 @@ export const databricksKeyConfigSchema = z
 	});
 
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
+// Request-side values of Go's schemas.BifrostServiceTier.
+export const serviceTierSchema = z.enum(["auto", "default", "flex", "priority", "fast", "ultrafast"]);
+
 export const modelFamilySchema = z.enum([
 	"anthropic",
 	"openai",
@@ -805,6 +808,7 @@ const aliasConfigObjectSchema = z.object({
 	deployment_url: secretVarSchema.optional().refine(isLiteralHTTPSURL, msg("validation.basetenDeploymentUrl")),
 	use_anthropic_endpoints: z.boolean().optional(),
 	use_openai_endpoints: z.boolean().optional(),
+	service_tier: serviceTierSchema.optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -866,6 +870,8 @@ export const modelProviderKeySchema = z
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
+		// null clears a stored tier: the key update API keeps every field the payload omits.
+		service_tier: serviceTierSchema.nullable().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
