@@ -1,8 +1,8 @@
 import { PricingFieldSelector } from "@/app/workspace/custom-pricing/overrides/pricingFieldSelector";
 import {
+	pricingFieldError,
 	type FieldErrors as PricingFieldErrors,
 	type PricingFieldKey,
-	pricingFieldError,
 } from "@/app/workspace/custom-pricing/overrides/pricingFields";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
@@ -130,6 +130,8 @@ function DatasheetEntryForm({ target, detail, canEdit, onClose }: DatasheetEntry
 	const [saveOverride, { isLoading: isSaving }] = useSaveDatasheetOverrideMutation();
 	const [deleteOverride, { isLoading: isDeleting }] = useDeleteDatasheetOverrideMutation();
 	const pricingValues = watch("pricingValues");
+	const limitValues = watch("limits");
+	const preservedPricing = watch("preservedPricing");
 
 	const onSubmit = async (values: DatasheetFormState) => {
 		const nextPricingErrors: PricingFieldErrors = {};
@@ -179,7 +181,9 @@ function DatasheetEntryForm({ target, detail, canEdit, onClose }: DatasheetEntry
 
 	const triStateLabel = (state: TriState, current: unknown) =>
 		state === "upstream"
-			? t("datasheet.followUpstream", { value: formatDatasheetValue(current, getLocale()) })
+			? current == null
+				? t("datasheet.followUpstreamNoValue")
+				: t("datasheet.followUpstream", { value: formatDatasheetValue(current, getLocale()) })
 			: state === "on"
 				? t("datasheet.on")
 				: t("datasheet.off");
@@ -270,47 +274,49 @@ function DatasheetEntryForm({ target, detail, canEdit, onClose }: DatasheetEntry
 					</div>
 					<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
 						{LIMIT_FIELDS.map((field) => (
-							<div key={field}>
+							<div key={field} className="flex flex-col gap-2">
 								<Label className="text-sm" htmlFor={`datasheet-limit-${field}`}>
 									{t(LIMIT_LABEL_KEYS[field])}
 								</Label>
-								<div className="mt-1 flex items-center gap-1">
+								<div className="flex items-center gap-1">
 									<Input
 										id={`datasheet-limit-${field}`}
 										inputMode="numeric"
-										className="h-8 font-mono"
+										className="h-9 font-mono"
 										placeholder={isCustom ? "" : formatDatasheetValue(upstream[field], getLocale())}
 										{...register(`limits.${field}`)}
 										data-testid={`datasheet-limit-input-${field}`}
 									/>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										className="h-8 w-8 shrink-0"
-										onClick={() => {
-											setValue(`limits.${field}`, "", { shouldDirty: true });
-											setValue("preservedPricing", withoutPreservedPricing(getValues("preservedPricing"), field), { shouldDirty: true });
-										}}
-										aria-label={t("datasheet.resetField")}
-										data-testid={`datasheet-limit-reset-${field}`}
-									>
-										<RotateCcw className="h-3.5 w-3.5" />
-									</Button>
+									{limitValues?.[field] || field in (preservedPricing ?? {}) ? (
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="h-9 w-9 shrink-0"
+											onClick={() => {
+												setValue(`limits.${field}`, "", { shouldDirty: true });
+												setValue("preservedPricing", withoutPreservedPricing(getValues("preservedPricing"), field), { shouldDirty: true });
+											}}
+											aria-label={t("datasheet.resetField")}
+											data-testid={`datasheet-limit-reset-${field}`}
+										>
+											<RotateCcw className="h-3.5 w-3.5" />
+										</Button>
+									) : null}
 								</div>
 								{hint("pricing", field, upstream[field])}
 								{errors.limits?.[field] && <p className="text-destructive mt-1 text-xs">{errors.limits[field]?.message}</p>}
 							</div>
 						))}
 					</div>
-					<div className="max-w-xs">
+					<div className="flex max-w-xs flex-col gap-2">
 						<Label className="text-sm">{t("datasheet.deprecated")}</Label>
 						<Controller
 							control={control}
 							name="deprecated"
 							render={({ field }) => (
 								<Select value={field.value} onValueChange={field.onChange}>
-									<SelectTrigger className="mt-1 h-8 w-full" data-testid="datasheet-deprecated-select">
+									<SelectTrigger className="h-9 w-full" data-testid="datasheet-deprecated-select">
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
@@ -348,17 +354,17 @@ function DatasheetEntryForm({ target, detail, canEdit, onClose }: DatasheetEntry
 						<h3 className="text-sm font-medium">{t("datasheet.capabilities")}</h3>
 						<p className="text-muted-foreground text-xs">{t("datasheet.capabilitiesDescription")}</p>
 					</div>
-					<div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2">
+					<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 						{CAPABILITY_FLAGS.map((flag) => (
-							<div key={flag}>
+							<div key={flag} className="flex flex-col gap-1">
 								{/* i18n-ignore: model-parameters field names are API identifiers */}
-								<Label className="font-mono text-xs">{flag}</Label>
+								<Label className="text-sm">{flag}</Label>
 								<Controller
 									control={control}
 									name={`flags.${flag}`}
 									render={({ field }) => (
 										<Select value={field.value} onValueChange={field.onChange}>
-											<SelectTrigger className="mt-1 h-8 w-full" data-testid={`datasheet-flag-select-${flag}`}>
+											<SelectTrigger className="h-9 w-full" data-testid={`datasheet-flag-select-${flag}`}>
 												<SelectValue />
 											</SelectTrigger>
 											<SelectContent>

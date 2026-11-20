@@ -6,7 +6,8 @@ import { writeFileSync } from "node:fs";
 import { generatedCharsInData, cancelledUsageFailure, charThresholdFor } from "./lib/cancel-stream-usage.mjs";
 import { createRequire } from "node:module";
 import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
-import { evaluateNonStreamCancel } from "./lib/nonstream-cancel-verdict.mjs";
+import { evaluateNonStreamCancel, TERMINAL_STATUSES } from "./lib/nonstream-cancel-verdict.mjs";
+import { evaluatePreStreamCancel } from "./lib/prestream-cancel-verdict.mjs";
 import { resolveVariables } from "./lib/resolve-variables.mjs";
 
 const require = createRequire(import.meta.url);
@@ -56,6 +57,21 @@ if (!Number.isSafeInteger(parsedNonStreamTrials) || parsedNonStreamTrials < 1) {
   throw new Error(`--nonstream-trials must be a positive integer, got ${JSON.stringify(args["nonstream-trials"])}`);
 }
 const nonStreamTrials = parsedNonStreamTrials;
+// Pre-header stream cancellation: abort this many ms after dispatch, before the
+// upstream's first chunk lets Bifrost send headers. That path has no provider
+// goroutine to end the request, so it leaked bifrost_active_requests and left
+// the log row in `processing`. Trials are per route and provider. The telemetry
+// transport hook alone balances the gauge, so only the log-row check proves the core fix.
+const preStreamAbortMs = Number(args["prestream-abort-ms"] || 150);
+if (!Number.isSafeInteger(preStreamAbortMs) || preStreamAbortMs < 1) {
+  // NaN makes setTimeout fire at once, aborting before the request reaches Bifrost.
+  throw new Error(`--prestream-abort-ms must be a positive integer, got ${JSON.stringify(args["prestream-abort-ms"])}`);
+}
+const parsedPreStreamTrials = Number(args["prestream-trials"] || 4);
+if (!Number.isSafeInteger(parsedPreStreamTrials) || parsedPreStreamTrials < 1) {
+  throw new Error(`--prestream-trials must be a positive integer, got ${JSON.stringify(args["prestream-trials"])}`);
+}
+const preStreamTrials = parsedPreStreamTrials;
 // Cost verification: after aborting a stream mid-flight, confirm the logs DB row
 // for that request carries a cost (#3357). Needs a logs DB. Skip with --no-cost-check.
 const skipCostCheck = args["no-cost-check"] === "true";
@@ -87,6 +103,42 @@ async function scrapeProviderCounters(provider) {
     if (m && m[1] in sums && providerLabel.test(m[2])) sums[m[1]] += Number(m[3]);
   }
   return sums;
+}
+
+// Reads bifrost_active_requests for one method label; undefined when the series does not exist yet.
+async function scrapeActiveRequests(method) {
+  const res = await fetch(`${baseUrl}/metrics`, { headers: metricsHeaders });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET /metrics returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const methodLabel = new RegExp(`(^|,)method="${method}"(,|$)`);
+  let value;
+  for (const line of text.split("\n")) {
+    const m = /^bifrost_active_requests\{([^}]*)\}\s+(\S+)/.exec(line);
+    if (m && methodLabel.test(m[1])) value = (value ?? 0) + Number(m[2]);
+  }
+  return value;
+}
+
+// Waits up to ~10s for the gauge to go idle (0, or no series yet) and returns the last reading.
+// A slot still held by an earlier case or other traffic fails the verdict rather than becoming the baseline.
+async function idleActiveRequests(method) {
+  let value = await scrapeActiveRequests(method);
+  for (let i = 0; i < 20 && (value ?? 0) > 0; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    value = await scrapeActiveRequests(method);
+  }
+  return value;
+}
+
+// Polls the gauge until it settles back to before (abandoned streams end asynchronously in the worker).
+async function pollActiveRequests(method, before) {
+  let value;
+  for (const ms of [300, 700, 1200, 2000, 3000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    value = await scrapeActiveRequests(method);
+    if (value !== undefined && value === (before ?? 0)) return value;
+  }
+  return value;
 }
 
 // Polls /metrics until the cancel's input tokens and cost land (the telemetry
@@ -126,6 +178,20 @@ async function connectLogsDb(url) {
       } catch (_) {}
     },
   };
+}
+
+// Polls until the row reaches a terminal status; returns the last row seen.
+async function pollTerminalLogRow(db, id) {
+  let last = null;
+  for (const ms of [300, 700, 1200, 2000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    const rows = await db.query("SELECT status FROM logs WHERE id = $1", [id]);
+    if (rows && rows.length) {
+      last = rows[0];
+      if (TERMINAL_STATUSES.has(last.status)) return last;
+    }
+  }
+  return last;
 }
 
 async function pollLogRow(db, id) {
@@ -270,7 +336,19 @@ const nativeAnthropicStreamCase = {
   provider:"anthropic", name:"Anthropic native messages cancelled usage", path:"/anthropic/v1/messages",
   body:{model:"claude-haiku-4-5",messages:[{role:"user",content:"Count from 1 to 200, one number per line."}],stream:true,max_tokens:1024},
 };
-const cases = [...streamCases, ...responsesStreamCases, nativeAnthropicStreamCase, ...nonStreamCases].filter(
+// One pre-header abort group per provider and route; the customer-visible leak was mostly responses_stream.
+const preStreamCases = [
+  ...streamCases.map((c) => ({ ...c, method: "chat_completion_stream" })),
+  ...responsesStreamCases.map((c) => ({ ...c, method: "responses_stream" })),
+].map((c) => ({
+  provider: c.provider,
+  name: `${c.body.model} ${c.path} pre-header cancel x${preStreamTrials}`,
+  path: c.path,
+  body: c.body,
+  method: c.method,
+  preStream: true,
+}));
+const cases = [...streamCases, ...responsesStreamCases, nativeAnthropicStreamCase, ...nonStreamCases, ...preStreamCases].filter(
   (c) => !providerFilter || c.provider === providerFilter,
 );
 
@@ -324,8 +402,78 @@ async function runNonStreamCase(testCase) {
   }
 }
 
+// Pre-header stream cancel: abort each trial before the response headers arrive,
+// then require bifrost_active_requests for the route's method to go from idle back
+// to idle. A trial whose headers win the race is aborted anyway and still counts
+// toward the gauge, but does not exercise the pre-header path.
+async function runPreStreamCase(testCase) {
+  const requestIds = [];
+  const errors = [];
+  let abortedBeforeHeaders = 0;
+  let gaugeBefore;
+  try {
+    gaugeBefore = await idleActiveRequests(testCase.method);
+  } catch (err) {
+    return { ...testCase, ok: false, error: err?.message || String(err) };
+  }
+  for (let i = 0; i < preStreamTrials; i++) {
+    const controller = new AbortController();
+    const requestId = `prestream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
+    const timer = setTimeout(
+      () => controller.abort(new Error("intentional stream abort before headers")),
+      preStreamAbortMs,
+    );
+    try {
+      const response = await fetch(`${baseUrl}${testCase.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-request-id": requestId },
+        body: JSON.stringify(resolveVariables(testCase.body)),
+        signal: controller.signal,
+      });
+      // Headers beat the abort: disconnect now, outside the path under test.
+      clearTimeout(timer);
+      if (!response.ok) errors.push(`trial ${i + 1}: HTTP ${response.status}`);
+      controller.abort(new Error("headers arrived before the abort"));
+      await response.body?.cancel().catch(() => {});
+    } catch (err) {
+      if (controller.signal.aborted) {
+        abortedBeforeHeaders++;
+        requestIds.push(requestId);
+      } else {
+        errors.push(`trial ${i + 1}: ${err?.message || String(err)}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  let gaugeAfter;
+  try {
+    gaugeAfter = await pollActiveRequests(testCase.method, gaugeBefore);
+  } catch (err) {
+    errors.push(err?.message || String(err));
+  }
+  const v = evaluatePreStreamCancel({
+    method: testCase.method,
+    trials: preStreamTrials,
+    abortedBeforeHeaders,
+    gaugeBefore,
+    gaugeAfter,
+  });
+  const ok = v.verdict === "PASS" && errors.length === 0;
+  return {
+    ...testCase,
+    requestIds,
+    abortedBeforeHeaders,
+    gaugeBefore,
+    gaugeAfter,
+    ok,
+    error: ok ? undefined : [v.verdict === "PASS" ? undefined : v.detail, ...errors].filter(Boolean).join("; "),
+  };
+}
+
 async function runCase(testCase) {
   if (testCase.nonStream) return runNonStreamCase(testCase);
+  if (testCase.preStream) return runPreStreamCase(testCase);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("stream read timeout")), readTimeoutMs);
   let bytesRead = 0;
@@ -577,6 +725,21 @@ if (skipCostCheck) {
           `[stream-cancel] pricing datasheet (${pricingUrl}) unavailable; cost-accuracy checks skipped`,
         );
       for (const r of results) {
+        if (r.preStream) {
+          // Each stream aborted before headers must still reach a terminal log status.
+          const stuck = [];
+          for (const id of r.requestIds || []) {
+            const v = evaluateNonStreamCancel({ row: await pollTerminalLogRow(db, id), aborted: true });
+            if (v.verdict === "FAIL") stuck.push(`${id}: ${v.detail}`);
+          }
+          r.costCheck = stuck.length ? "FAIL" : (r.requestIds || []).length ? "PASS" : "SKIP";
+          r.costDetail = stuck.length
+            ? `${stuck.length}/${(r.requestIds || []).length} pre-header abort(s) without a terminal log row - ${stuck[0]}`
+            : `${(r.requestIds || []).length} pre-header abort(s) logged with a terminal status`;
+          if (stuck.length) costFailures++;
+          console.error(`[stream-cancel] log status ${r.provider} (pre-header): ${r.costCheck} — ${r.costDetail}`);
+          continue;
+        }
         const kind = r.nonStream ? "non-stream" : "stream";
         if (r.nonStream) {
           // Every abandoned non-streaming request must reach a terminal log status,

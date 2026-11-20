@@ -105,7 +105,7 @@ func TestGrantedProvidersShapeMatchesWhatTheRouterPublishes(t *testing.T) {
 		// serve the request, and the response is filtered per model afterwards.
 		{Provider: "anthropic"},
 	}, nil)
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	granted := access.GrantedProvidersForModel("")
 	want := []string{"openai", "anthropic"}

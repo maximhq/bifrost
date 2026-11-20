@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -425,6 +426,35 @@ func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
 
 	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
 		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+// Values longer than their columns (and the schema's maxLength) are a client
+// fault, refused before they reach the store; limits count characters, as
+// varchar does.
+func TestValidateUserAgentMappingRejectsOversizedValues(t *testing.T) {
+	mime := func(s string) *string { return &s }
+	cases := []struct {
+		name    string
+		mapping logstore.UserAgentMapping
+		wantErr bool
+	}{
+		{"pattern at limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 512), MatchType: "contains", App: "a"}, false},
+		{"pattern over limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 513), MatchType: "contains", App: "a"}, true},
+		{"app at limit in characters", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("é", 128)}, false},
+		{"app over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("a", 129)}, true},
+		{"logo_mime at limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 128))}, false},
+		{"logo_mime over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 129))}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateUserAgentMapping(&tc.mapping)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidUserAgentMapping)
+		})
 	}
 }
 
@@ -4552,7 +4582,7 @@ func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	if metadata == nil || len(metadata.JudgeCalls) != 1 {
 		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if metadata.JudgeCalls[0] != requireCall {
+	if !reflect.DeepEqual(metadata.JudgeCalls[0], requireCall) {
 		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }

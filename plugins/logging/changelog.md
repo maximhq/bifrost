@@ -1,2 +1,5 @@
-- chore: upgraded core to v1.15.2 and framework to v1.12.2
+- feat: speech sessions are logged with their full input text
+- feat: streamed multipart passthrough uploads are summarized with each part's content type
 - feat: code mode - each decision call the discovery ranker makes for `listToolFiles` is written as its own `decision` row with the serving model, tokens, latency and cost, without the caller's virtual key (thanks [@Xytronix](https://github.com/Xytronix)!)
+- fix: log previews for agent-loop requests use the latest tool call or result
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
