@@ -837,3 +837,73 @@ func TestRelayLogContentSearchUsesFTSOnPostgres(t *testing.T) {
 		assert.True(t, valid, "%s is built", index)
 	}
 }
+
+// TestDimensionVirtualKeyHistograms checks virtual_key_id is a servable histogram
+// dimension: one read returns cost and the full token split per vkey, and an
+// owner-less row is bucketed as unassigned so the parts still sum to the whole.
+func TestDimensionVirtualKeyHistograms(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	store.logger = testLogger{}
+
+	col, ok := histogramDimensionColumn(DimensionVirtualKey)
+	require.True(t, ok, "virtual_key_id must be a servable histogram dimension")
+	require.Equal(t, "virtual_key_id", col)
+	require.True(t, ValidHistogramDimensions[DimensionVirtualKey])
+
+	start := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	end := start.Add(2 * time.Hour)
+	insert := func(id string, ts time.Time, vk any, cost float64, prompt, completion, total int64) {
+		require.NoError(t, db.Exec(`
+			INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+				virtual_key_id, created_at, latency, cost,
+				prompt_tokens, completion_tokens, total_tokens)
+			VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4o', 'success',
+				?, ?, 100, ?, ?, ?, ?)`,
+			id, ts, vk, ts, cost, prompt, completion, total).Error)
+	}
+	insert("l1", start.Add(5*time.Minute), "vk1", 0.10, 100, 10, 110)
+	insert("l2", start.Add(65*time.Minute), "vk1", 0.20, 200, 20, 220)
+	insert("l3", start.Add(10*time.Minute), "vk2", 0.30, 300, 30, 330)
+	insert("l4", start.Add(15*time.Minute), nil, 0.40, 400, 40, 440)
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+
+	costAgg := map[string]float64{}
+	costRes, err := store.GetDimensionCostHistogram(context.Background(), filters, 3600, DimensionVirtualKey)
+	require.NoError(t, err)
+	for _, b := range costRes.Buckets {
+		for k, v := range b.ByDimension {
+			costAgg[k] += v
+		}
+	}
+
+	tokAgg := map[string]DimensionTokenStats{}
+	tokRes, err := store.GetDimensionTokenHistogram(context.Background(), filters, 3600, DimensionVirtualKey)
+	require.NoError(t, err)
+	for _, b := range tokRes.Buckets {
+		for k, v := range b.ByDimension {
+			acc := tokAgg[k]
+			acc.PromptTokens += v.PromptTokens
+			acc.CompletionTokens += v.CompletionTokens
+			acc.TotalTokens += v.TotalTokens
+			tokAgg[k] = acc
+		}
+	}
+
+	assert.InDelta(t, 0.30, costAgg["vk1"], 1e-9)
+	assert.InDelta(t, 0.30, costAgg["vk2"], 1e-9)
+	assert.InDelta(t, 0.40, costAgg[unassignedDimensionID], 1e-9)
+
+	assert.Equal(t, int64(300), tokAgg["vk1"].PromptTokens)
+	assert.Equal(t, int64(330), tokAgg["vk1"].TotalTokens)
+	assert.Equal(t, int64(300), tokAgg["vk2"].PromptTokens)
+	assert.Equal(t, int64(400), tokAgg[unassignedDimensionID].PromptTokens)
+
+	// Parts must reconcile to the whole, which is what the Unassigned bucket
+	// exists to guarantee.
+	var total float64
+	for _, v := range costAgg {
+		total += v
+	}
+	assert.InDelta(t, 1.00, total, 1e-9, "per-vkey cost must sum to the org total")
+}

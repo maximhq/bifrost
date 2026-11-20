@@ -346506,6 +346506,269 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Virtual key is a histogram dimension (virtual-key-dimension)",
+      "description": "virtual_key_id is now a servable histogram dimension. Before this, GET /api/logs/histogram/tokens/by-dimension?dimension=virtual_key_id and its cost and latency siblings answered 400 because HistogramDimension had no virtual_key_id value, even though mv_logs_hourly carries the column, its unique index includes it, and applyMatViewFilters already filtered on it. This folder creates a throwaway virtual key, sends two inference requests through it under x-bf-vk, then reads the token and cost histograms filtered to that key and asserts the key is a bucket with prompt tokens and a non-negative cost. Red before the change: both reads fail with 400.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini vk-dim seed: request through the throwaway virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh virtual key per run keeps the read below scoped to this run's rows.",
+                  "// The collection-level prerequest has already upserted the setup token header.",
+                  "pm.collectionVariables.set('vkDimRetry', '0');",
+                  "var guid = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys',",
+                  "  method: 'POST',",
+                  "  header: [{ key: 'Content-Type', value: 'application/json' }],",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ name: 'harness-vk-dim-' + guid, description: 'vk histogram dimension' }) }",
+                  "}, function (err, res) {",
+                  "  pm.test('vk-dim prerequest: virtual key created', function () {",
+                  "    pm.expect(err, 'request error').to.equal(null);",
+                  "    pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "  });",
+                  "  if (res.code === 200) { pm.collectionVariables.set('vkDimVirtualKey', res.json().virtual_key.id); }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-dim seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkDimVirtualKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini vk-dim seed: second request through the same virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vkDimVirtualKey')) { postman.setNextRequest(null); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-dim seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkDimVirtualKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai vk-dim: token histogram groups by virtual_key_id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('vkDimRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches; newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// virtual_key_id must be an accepted histogram dimension. Before the change the",
+                  "// endpoint rejected it with 400: HistogramDimension had no virtual_key_id value,",
+                  "// so the query never ran even though the column and its filter both existed.",
+                  "pm.test('vk-dim histogram responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var vk = pm.collectionVariables.get('vkDimVirtualKey');",
+                  "var buckets = pm.response.json().buckets || [];",
+                  "var entries = 0, prompt = 0;",
+                  "buckets.forEach(function (b) {",
+                  "  var byDim = b.by_dimension || {};",
+                  "  Object.keys(byDim).forEach(function (k) {",
+                  "    if (k !== vk) { return; }",
+                  "    entries++;",
+                  "    prompt += byDim[k].prompt_tokens || 0;",
+                  "  });",
+                  "});",
+                  "var retry = Number(pm.collectionVariables.get('vkDimRetry') || 0);",
+                  "if (entries === 0 && retry < 10) {",
+                  "  pm.collectionVariables.set('vkDimRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('vkDimRetry');",
+                  "pm.test('vk-dim histogram buckets the run traffic under its virtual key', function () {",
+                  "  pm.expect(entries, 'no bucket for the run vkey in ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('vk-dim histogram reports prompt tokens for the vkey', function () {",
+                  "  pm.expect(prompt, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/histogram/tokens/by-dimension?dimension=virtual_key_id&virtual_key_ids={{vkDimVirtualKey}}&bucket_size=3600"
+          }
+        },
+        {
+          "name": "openai vk-dim: cost histogram groups by virtual_key_id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('vkDimRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches; newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-dim cost histogram responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var vk = pm.collectionVariables.get('vkDimVirtualKey');",
+                  "var buckets = pm.response.json().buckets || [];",
+                  "var entries = 0, cost = 0;",
+                  "buckets.forEach(function (b) {",
+                  "  var byDim = b.by_dimension || {};",
+                  "  Object.keys(byDim).forEach(function (k) {",
+                  "    if (k !== vk) { return; }",
+                  "    entries++;",
+                  "    cost += byDim[k] || 0;",
+                  "  });",
+                  "});",
+                  "var retry = Number(pm.collectionVariables.get('vkDimRetry') || 0);",
+                  "if (entries === 0 && retry < 10) {",
+                  "  pm.collectionVariables.set('vkDimRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('vkDimRetry');",
+                  "pm.test('vk-dim cost histogram buckets the run traffic under its virtual key', function () {",
+                  "  pm.expect(entries, 'no cost bucket for the run vkey in ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('vk-dim cost histogram reports a non-negative cost for the vkey', function () {",
+                  "  pm.expect(cost, pm.response.text()).to.be.at.least(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/histogram/cost/by-dimension?dimension=virtual_key_id&virtual_key_ids={{vkDimVirtualKey}}&bucket_size=3600"
+          }
+        },
+        {
+          "name": "vk-dim cleanup: delete the seeded virtual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-dim cleanup: delete responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.collectionVariables.unset('vkDimVirtualKey');",
+                  "pm.collectionVariables.unset('vkDimRetry');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkDimVirtualKey}}"
+          }
+        }
+      ]
     }
   ]
 }

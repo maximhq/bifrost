@@ -2874,6 +2874,7 @@ const (
 	DimensionProject      HistogramDimension = "project_id"
 	DimensionApp          HistogramDimension = "app"
 	DimensionUserAgent    HistogramDimension = "user_agent"
+	DimensionVirtualKey   HistogramDimension = "virtual_key_id"
 )
 
 // ValidHistogramDimensions is the set of allowed dimension values
@@ -2886,6 +2887,7 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionProject:      true,
 	DimensionApp:          true,
 	DimensionUserAgent:    true,
+	DimensionVirtualKey:   true,
 }
 
 // histogramDimensionColumn maps a validated dimension to its SQL column name.
@@ -2906,6 +2908,8 @@ func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
 		return "business_unit_id", true
 	case DimensionProject:
 		return "project_id", true
+	case DimensionVirtualKey:
+		return "virtual_key_id", true
 	}
 	return "", false
 }
