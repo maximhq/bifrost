@@ -28115,6 +28115,42 @@ func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
 	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
 }
 
+// TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate verifies that registering a client
+// named only by a later duplicate declaration leaves the first declaration in place, as the load
+// did, while a unique declaration naming the client still re-links.
+func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}}},
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+		{Name: "Jira Only", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+	}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+
+	shared, err := store.GetVirtualMCPByName(ctx, "Shared")
+	require.NoError(t, err)
+	require.Len(t, shared.ParsedTools, 1)
+	assert.Equal(t, "client-github", shared.ParsedTools[0].MCPClientID, "the skipped duplicate must not overwrite the first declaration")
+	jiraOnly, err := store.GetVirtualMCPByName(ctx, "Jira Only")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{jiraOnly.ID}, ids, "the unique declaration still re-links")
+	require.Len(t, jiraOnly.ParsedTools, 1)
+	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
+}
+
 func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 	SetLogger(&testLogger{})
 	t.Setenv(envCodeModeDiscoveryRankerDecisionModel, "")
@@ -28222,40 +28258,4 @@ func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 			t.Fatalf("expected the conflict to be rejected, got %+v", got)
 		}
 	})
-}
-
-// TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate verifies that registering a client
-// named only by a later duplicate declaration leaves the first declaration in place, as the load
-// did, while a unique declaration naming the client still re-links.
-func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
-	initTestLogger()
-	ctx := context.Background()
-	store := createTestSQLiteConfigStore(t, createTempDir(t))
-	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
-		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
-	}))
-	fileVMCPs := []schemas.VirtualMCPConfig{
-		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}}},
-		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
-		{Name: "Jira Only", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
-	}
-	cfg := &Config{ConfigStore: store}
-	cfg.rememberFileVirtualMCPs(fileVMCPs)
-	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
-
-	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
-		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
-	}))
-	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
-	require.NoError(t, err)
-
-	shared, err := store.GetVirtualMCPByName(ctx, "Shared")
-	require.NoError(t, err)
-	require.Len(t, shared.ParsedTools, 1)
-	assert.Equal(t, "client-github", shared.ParsedTools[0].MCPClientID, "the skipped duplicate must not overwrite the first declaration")
-	jiraOnly, err := store.GetVirtualMCPByName(ctx, "Jira Only")
-	require.NoError(t, err)
-	assert.Equal(t, []uint{jiraOnly.ID}, ids, "the unique declaration still re-links")
-	require.Len(t, jiraOnly.ParsedTools, 1)
-	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
 }

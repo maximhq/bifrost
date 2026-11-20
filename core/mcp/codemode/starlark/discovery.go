@@ -15,7 +15,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -117,10 +116,10 @@ func parseListToolFilesArgs(raw string) (string, int, error) {
 		if !isString {
 			return "", limit, fmt.Errorf("query must be a string")
 		}
-		if utf8.RuneCountInString(text) > discoveryMaxQueryRunes {
+		query = strings.TrimSpace(text)
+		if query != "" && utf8.RuneCountInString(text) > discoveryMaxQueryRunes {
 			return "", limit, fmt.Errorf("query must be at most %d characters", discoveryMaxQueryRunes)
 		}
-		query = strings.TrimSpace(text)
 	}
 	if query == "" {
 		return "", limit, nil
@@ -147,7 +146,7 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 	entries := make([]entry, 0)
 	for clientName, tools := range toolsPerClient {
 		client := s.clientManager.GetClientByName(clientName)
-		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.IsCodeModeClient {
+		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		for _, tool := range tools {
@@ -212,6 +211,32 @@ func boundedDiscoveryText(text string, limit int) string {
 	return string([]rune(clean)[:limit])
 }
 
+// containsDiscoveryReference reports whether text holds ref as a whole
+// reference: the characters on either side of it are not part of a name, so
+// "slack.search" does not match inside "slack.search_a".
+func containsDiscoveryReference(text, ref string) bool {
+	for start := 0; start <= len(text)-len(ref); {
+		i := strings.Index(text[start:], ref)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(ref)
+		before, _ := utf8.DecodeLastRuneInString(text[:i])
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		if (i == 0 || !isDiscoveryNameRune(before)) && (end == len(text) || !isDiscoveryNameRune(after)) {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[i:])
+		start = i + size
+	}
+	return false
+}
+
+func isDiscoveryNameRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
+}
+
 // discoveryWords splits text into lowercase letter/digit words.
 func discoveryWords(text string) []string {
 	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
@@ -254,8 +279,8 @@ func scoreDiscovery(items []discoveryTool, query string) []discoveryTool {
 				score += discoveryDescriptionWeight
 			}
 		}
-		explicit := strings.Contains(lowerQuery, strings.ToLower(c.ID)) ||
-			strings.Contains(lowerQuery, strings.ToLower(c.Server+"."+c.Name))
+		explicit := containsDiscoveryReference(lowerQuery, strings.ToLower(c.ID)) ||
+			containsDiscoveryReference(lowerQuery, strings.ToLower(c.Server+"."+c.Name))
 		if explicit {
 			score += discoveryExplicitWeight
 		}
@@ -342,8 +367,8 @@ func validDiscoveryProbability(n float64) bool {
 
 // handleRankedToolFiles answers listToolFiles(query=...).
 func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall, query string, limit int) (*schemas.ChatMessage, error) {
-	// Read once: the revision and the rendered shortlist must use the same
-	// binding level even when a config update lands while the ranker runs.
+	// One binding level for the whole call: the revision sent to the ranker
+	// and the shortlist layout must agree even if the config changes meanwhile.
 	bindingLevel := s.GetBindingLevel()
 	catalogue, revision := s.discoveryCatalogue(ctx, bindingLevel)
 	if len(catalogue) == 0 {
@@ -617,22 +642,21 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 }
 
 // readDiscoveryToken reads the bearer token on every call, so a rotated token
-// is picked up without a restart. The path is opened without blocking and must
-// be a regular file: opening a named pipe with no writer would otherwise block
-// past the ranker deadline.
+// is picked up without a restart. Only a regular file is opened: opening a
+// named pipe with no writer would block past the request deadline.
 func readDiscoveryToken(path string) (string, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return "", fmt.Errorf("read token file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
+	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", errors.New("token file must be a regular file")
 	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read token file: %w", err)
+	}
+	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, discoveryMaxTokenBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)
