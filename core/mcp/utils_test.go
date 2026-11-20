@@ -216,6 +216,70 @@ func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
 	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
 }
 
+// fetchReportBranches is a tagged union a schema generator emits for one tool's arguments.
+const fetchReportBranches = `[
+	{"type": "object", "properties": {"kind": {"type": "string", "const": "sales"}, "region": {"type": "string"}}, "required": ["kind"]},
+	{"type": "object", "properties": {"kind": {"type": "string", "const": "inventory"}, "warehouse": {"type": "string"}}, "required": ["kind"]}
+]`
+
+// A root-level oneOf/anyOf/allOf (allowed by the 2026-07-28 spec) must survive discovery, or the
+// tool is left with no parameters at all.
+func TestConvertMCPToolToBifrostSchema_PreservesRootComposition(t *testing.T) {
+	var want []any
+	require.NoError(t, json.Unmarshal([]byte(fetchReportBranches), &want))
+
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		t.Run(keyword, func(t *testing.T) {
+			var mcpTool mcp.Tool
+			require.NoError(t, json.Unmarshal([]byte(`{"name": "fetch_report", "description": "Fetch a report.",
+				"inputSchema": {"type": "object", "`+keyword+`": `+fetchReportBranches+`}}`), &mcpTool))
+
+			params := convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters
+			require.NotNil(t, params)
+
+			data, err := json.Marshal(params)
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, want, got[keyword], "the %s branches must reach consumers unchanged", keyword)
+			assert.Equal(t, "object", got["type"])
+		})
+	}
+
+	t.Run("boolean members keep their meaning", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "rec", "inputSchema": {"type": "object",
+			"allOf": [true, {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}],
+			"oneOf": [false, {"type": "object"}]}}`), &mcpTool))
+		data, err := json.Marshal(convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters)
+		require.NoError(t, err)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(data, &got))
+		require.Len(t, got["allOf"], 2, "a true member must not drop the allOf: %s", data)
+		assert.Equal(t, map[string]any{}, got["allOf"].([]any)[0], "true is kept as {}")
+		assert.Equal(t, []any{"id"}, got["allOf"].([]any)[1].(map[string]any)["required"])
+		require.Len(t, got["oneOf"], 2, "a false member must not drop the oneOf: %s", data)
+		assert.Equal(t, map[string]any{"not": map[string]any{}}, got["oneOf"].([]any)[0], "false is kept as {\"not\": {}}")
+	})
+
+	t.Run("arrays inside a branch's own composition get items", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "tagged", "inputSchema": {"type": "object", "oneOf": [
+			{"allOf": [{"type": "object", "properties": {"tags": {"type": "array"}}}]}]}}`), &mcpTool))
+		data, err := json.Marshal(convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"tags":{"items":{},"type":"array"}`)
+	})
+
+	t.Run("a malformed composition is skipped", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "odd", "inputSchema": {"type": "object", "oneOf": "not-a-list"}}`), &mcpTool))
+		params := convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters
+		require.NotNil(t, params)
+		assert.Empty(t, params.OneOf)
+	})
+}
+
 // TestCanAutoExecuteTool covers the allow-list check that is now the sole enforcement
 // point for whether Code Mode may run a tool without human approval (see the call site
 // in codemode/starlark/executecode.go's callMCPTool). A tool must be on BOTH

@@ -93,7 +93,7 @@ func TestNormalizeAnthropicToolInputSchemaRootOneOf(t *testing.T) {
 		t.Fatal("expected merged schema to retain additionalProperties:false")
 	}
 	mode, _ := normalized.Properties.Get("mode")
-	modeSchema := anthropicOrderedMap(mode)
+	modeSchema := testOrderedMap(mode)
 	if modeSchema == nil {
 		t.Fatal("expected merged mode schema")
 	}
@@ -101,7 +101,7 @@ func TestNormalizeAnthropicToolInputSchemaRootOneOf(t *testing.T) {
 		t.Fatal("expected conflicting mode definitions to become a nested anyOf")
 	}
 	notification, _ := normalized.Properties.Get("notificationPolicy")
-	notificationSchema := anthropicOrderedMap(notification)
+	notificationSchema := testOrderedMap(notification)
 	if notificationSchema == nil {
 		t.Fatal("expected notificationPolicy schema")
 	}
@@ -224,7 +224,7 @@ func TestNormalizeAnthropicToolInputSchemaRejectsExcessiveComplexity(t *testing.
 
 	t.Run("recursion depth", func(t *testing.T) {
 		branch := `{"type":"object","properties":{}}`
-		for range maxAnthropicSchemaExpansionDepth + 1 {
+		for range 32 + 1 { // one past schemas.FlattenRootComposition's depth limit
 			branch = `{"anyOf":[` + branch + `]}`
 		}
 		var schema schemas.ToolFunctionParameters
@@ -295,17 +295,45 @@ func assertAnthropicPropertyComposition(t *testing.T, schema *schemas.ToolFuncti
 	if !ok {
 		t.Fatalf("property %q missing", property)
 	}
-	propertySchema := anthropicOrderedMap(value)
+	propertySchema := testOrderedMap(value)
 	members, ok := propertySchema.Get(keyword)
 	if !ok {
 		t.Fatalf("property %q does not contain %s", property, keyword)
 	}
-	if got := len(anthropicOrderedMapSlice(members)); got != wantMembers {
+	if got := len(testSchemaList(members)); got != wantMembers {
 		t.Fatalf("property %q %s has %d members, want %d", property, keyword, got, wantMembers)
 	}
 	if _, ok := propertySchema.Get("anyOf"); keyword == "allOf" && ok {
 		t.Fatalf("property %q conjunction was broadened to anyOf", property)
 	}
+}
+
+// testOrderedMap reads a property schema in either decoded shape.
+func testOrderedMap(value interface{}) *schemas.OrderedMap {
+	switch typed := value.(type) {
+	case *schemas.OrderedMap:
+		return typed
+	case schemas.OrderedMap:
+		return &typed
+	case map[string]interface{}:
+		return schemas.OrderedMapFromMap(typed)
+	}
+	return nil
+}
+
+// testSchemaList reads a composition's members in either decoded shape.
+func testSchemaList(value interface{}) []interface{} {
+	switch typed := value.(type) {
+	case []interface{}:
+		return typed
+	case []schemas.OrderedMap:
+		members := make([]interface{}, len(typed))
+		for i := range typed {
+			members[i] = typed[i]
+		}
+		return members
+	}
+	return nil
 }
 
 func assertAnthropicBadRequest(t *testing.T, err *schemas.BifrostError) {

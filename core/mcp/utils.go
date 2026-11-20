@@ -1632,10 +1632,65 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Properties: properties,
 				Required:   mcpTool.InputSchema.Required,
 				Defs:       defs,
+				OneOf:      rootComposition(mcpTool.InputSchema, "oneOf", logger),
+				AnyOf:      rootComposition(mcpTool.InputSchema, "anyOf", logger),
+				AllOf:      rootComposition(mcpTool.InputSchema, "allOf", logger),
 			},
 		},
 		Annotations: annotations,
 		MCP:         toolMetadata(mcpTool),
+	}
+}
+
+// rootComposition returns the root-level oneOf, anyOf or allOf of an MCP input schema, which mcp-go
+// keeps in AdditionalFields. A tagged union declares its arguments this way, so dropping it would
+// leave the tool with no parameters. Boolean members become their object forms (true as {}, false
+// as {"not": {}}), since the branches are objects; a value that is not a list of schemas is skipped.
+func rootComposition(schema mcp.ToolInputSchema, keyword string, logger schemas.Logger) []schemas.OrderedMap {
+	value, ok := schema.AdditionalFields[keyword]
+	if !ok {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		logger.Debug("%s Ignoring root %s that is not an array", MCPLogPrefix, keyword)
+		return nil
+	}
+	branches := make([]schemas.OrderedMap, 0, len(items))
+	for _, item := range items {
+		var branch map[string]any
+		switch member := item.(type) {
+		case bool:
+			branch = map[string]any{}
+			if !member {
+				branch["not"] = map[string]any{}
+			}
+		case map[string]any:
+			branch = member
+			fixBranchArraySchemas(branch, logger)
+		default:
+			logger.Debug("%s Ignoring root %s with a member that is not a schema", MCPLogPrefix, keyword)
+			return nil
+		}
+		// Keys sorted for the same reason as properties: a stable tool JSON and tools hash.
+		branches = append(branches, *schemas.OrderedMapFromMap(branch))
+	}
+	return branches
+}
+
+// fixBranchArraySchemas repairs array schemas in a composition branch's properties and in the
+// branches of its own oneOf, anyOf and allOf, which the flattener can merge into the root.
+func fixBranchArraySchemas(branch map[string]any, logger schemas.Logger) {
+	if properties, ok := branch["properties"].(map[string]any); ok {
+		FixArraySchemas(properties, logger)
+	}
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		members, _ := branch[keyword].([]any)
+		for _, member := range members {
+			if nested, ok := member.(map[string]any); ok {
+				fixBranchArraySchemas(nested, logger)
+			}
+		}
 	}
 }
 
