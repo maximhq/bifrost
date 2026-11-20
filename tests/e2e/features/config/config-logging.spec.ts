@@ -26,7 +26,7 @@ test.describe('Logging Settings', () => {
   test('should display logging settings controls', async ({ configSettingsPage }) => {
     // Check for main logging controls
     await expect(configSettingsPage.page.getByText(/Enable Logs/i)).toBeVisible()
-    await expect(configSettingsPage.page.getByText(/Log Retention/i)).toBeVisible()
+    await expect(configSettingsPage.page.getByText('Log Retention Days', { exact: true })).toBeVisible()
     await expect(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch).toBeVisible()
   })
 
@@ -180,5 +180,34 @@ test.describe('Logging Settings', () => {
 
     await configSettingsPage.goto('logging')
     await expect(vectorInput).toHaveValue('')
+  })
+
+  test('should save, persist and clear the vector storage limit', async ({ configSettingsPage }) => {
+    const capInput = configSettingsPage.vectorMaxSizeInput
+    await expect(capInput).toBeVisible()
+    await expect(capInput).toHaveAttribute('placeholder', 'No limit')
+
+    const newValue = (await capInput.inputValue()) === '2048' ? '4096' : '2048'
+    await capInput.fill(newValue)
+    expect(await configSettingsPage.hasPendingChanges()).toBe(true)
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(capInput).toHaveValue(newValue)
+
+    // A fraction is refused with an error, not stored as 0, which would turn
+    // the limit off.
+    await capInput.fill('1.5')
+    await expect(configSettingsPage.page.getByTestId('workspace-vector-max-size-mb-error')).toBeVisible()
+    await expect(configSettingsPage.page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+    await capInput.fill(newValue)
+    await expect(configSettingsPage.page.getByTestId('workspace-vector-max-size-mb-error')).toHaveCount(0)
+
+    // A blank field means no limit and is stored as 0, which renders blank again.
+    await capInput.fill('')
+    await configSettingsPage.saveSettings()
+
+    await configSettingsPage.goto('logging')
+    await expect(capInput).toHaveValue('')
   })
 })

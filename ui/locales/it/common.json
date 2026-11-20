@@ -355,6 +355,7 @@
 		"modeIsRequired": "La modalità è obbligatoria",
 		"valueMustBeAPositiveWholeNumber": "Deve essere un numero intero positivo",
 		"vectorRetentionDaysAtMost106751": "La conservazione dei vettori può essere al massimo di 106751 giorni.",
+		"vectorMaxSizeMustBeAWholeNumber": "Il limite di archiviazione deve essere un numero intero di MB.",
 		"mustBeAJsonObject": "Deve essere un oggetto JSON",
 		"providerCannotBePatched": "provider non può essere modificato; identifica la voce",
 		"customProviderNameIsRequired": "Il nome del provider personalizzato è obbligatorio",

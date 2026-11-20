@@ -16,6 +16,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	vector_retention_days: 0,
+	vector_max_size_mb: 0,
 	enforce_auth_on_inference: true,
 	dual_credential_conflict_behavior: "prefer_idp",
 	extra_fields_placement: "body",

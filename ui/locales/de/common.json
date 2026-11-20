@@ -355,6 +355,7 @@
 		"modeIsRequired": "Modus ist erforderlich",
 		"valueMustBeAPositiveWholeNumber": "Muss eine positive ganze Zahl sein",
 		"vectorRetentionDaysAtMost106751": "Die Vektoraufbewahrung darf höchstens 106751 Tage betragen.",
+		"vectorMaxSizeMustBeAWholeNumber": "Das Speicherlimit muss eine ganze Zahl in MB sein.",
 		"mustBeAJsonObject": "Muss ein JSON-Objekt sein",
 		"providerCannotBePatched": "provider kann nicht gepatcht werden; er identifiziert den Eintrag",
 		"customProviderNameIsRequired": "Name des benutzerdefinierten Anbieters ist erforderlich",

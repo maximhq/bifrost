@@ -439,6 +439,10 @@ bifrost:
     # router still drops its captured requests after its own suggestions lookback (7 days unless set).
     # Renders into client.vector_retention_days.
     # vectorRetentionDays: 30
+    # vectorMaxSizeMB -- Size budget in MB for all log-derived vectors together (estimated). Past 80%
+    # of it, the hourly sweep deletes the oldest down to 65%. 0 sets no budget. Renders into
+    # client.vector_max_size_mb.
+    # vectorMaxSizeMB: 2048
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.

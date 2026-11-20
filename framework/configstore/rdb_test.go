@@ -3240,6 +3240,36 @@ func TestUpdateClientConfig_VectorRetentionDaysRoundTrip(t *testing.T) {
 	assert.Zero(t, cfg.VectorRetentionDays, "0 is stored as 0, meaning same as logs")
 }
 
+func TestGenerateClientConfigHash_VectorMaxSizeMB(t *testing.T) {
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	// Unset leaves the hash alone, so an upgrade shows no config drift.
+	zeroHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VectorMaxSizeMB: 0}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, zeroHash)
+	setHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VectorMaxSizeMB: 2048}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+	negativeHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VectorMaxSizeMB: -5}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, negativeHash, "a negative value is a change, so it reaches validation")
+}
+
+func TestUpdateClientConfig_VectorMaxSizeMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30, VectorMaxSizeMB: 2048}))
+	cfg, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2048, cfg.VectorMaxSizeMB)
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30}))
+	cfg, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, cfg.VectorMaxSizeMB, "0 is stored as 0, meaning no cap")
+}
+
 func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()

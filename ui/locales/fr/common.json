@@ -355,6 +355,7 @@
 		"modeIsRequired": "Le mode est obligatoire",
 		"valueMustBeAPositiveWholeNumber": "Doit être un nombre entier positif",
 		"vectorRetentionDaysAtMost106751": "La rétention des vecteurs ne peut pas dépasser 106751 jours.",
+		"vectorMaxSizeMustBeAWholeNumber": "La limite de stockage doit être un nombre entier de Mo.",
 		"mustBeAJsonObject": "Doit être un objet JSON",
 		"providerCannotBePatched": "provider ne peut pas être modifié ; il identifie l'entrée",
 		"customProviderNameIsRequired": "Le nom du fournisseur personnalisé est obligatoire",

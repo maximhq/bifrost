@@ -9,8 +9,10 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/pinecone-io/go-pinecone/v5/pinecone"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -758,4 +760,54 @@ func TestPineconeDeleteMatchingReportsAnExhaustedBound(t *testing.T) {
 	_, err := deleteMatchingRounds(context.Background(), func() ([]SearchResult, error) { return index.page(), nil }, index.remove, 10, time.Millisecond)
 	require.Error(t, err)
 	assert.NotEmpty(t, index.live)
+}
+
+// A filtered Count reads every matching vector: Pinecone's plain GetAll is one
+// query capped at a thousand matches, with no way to continue, so a count over
+// it stopped there. Fifty vectors the filter excludes must stay uncounted.
+func TestPineconeFilteredCountReadsPastAThousand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewPineconeTestSetup(t)
+	t.Cleanup(func() { setup.Cleanup(t) })
+	// Longer than the setup's context: a thousand writes, then reads to settle.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	namespace := PineconeTestNamespace + "-count-paging"
+	require.NoError(t, setup.Store.CreateNamespace(ctx, namespace, PineconeTestDimension, nil))
+	t.Cleanup(func() { _ = setup.Store.DeleteNamespace(context.Background(), namespace) })
+	conn, err := setup.Store.getNamespaceConnection(namespace)
+	require.NoError(t, err)
+
+	const matching, other = 1100, 50
+	var batch []*pinecone.Vector
+	flush := func() {
+		if len(batch) > 0 {
+			_, err := conn.UpsertVectors(ctx, batch)
+			require.NoError(t, err)
+			batch = batch[:0]
+		}
+	}
+	for i := 0; i < matching+other; i++ {
+		kind := "request"
+		if i >= matching {
+			kind = "other"
+		}
+		metadata, err := structpb.NewStruct(map[string]interface{}{"kind": kind, "timestamp": float64(i)})
+		require.NoError(t, err)
+		values := generateTestEmbedding(PineconeTestDimension)
+		batch = append(batch, &pinecone.Vector{Id: generateUUID(), Values: &values, Metadata: metadata})
+		if len(batch) == 100 {
+			flush()
+		}
+	}
+	flush()
+
+	filter := []Query{{Field: "kind", Operator: QueryOperatorEqual, Value: "request"}}
+	var count int64
+	require.Eventually(t, func() bool {
+		count, err = Count(ctx, setup.Store, namespace, filter)
+		return err == nil && count == matching
+	}, 30*time.Second, 500*time.Millisecond, "the filtered count reaches %d", matching)
 }

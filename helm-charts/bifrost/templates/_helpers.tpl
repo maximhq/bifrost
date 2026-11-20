@@ -433,6 +433,9 @@ false
 {{- if hasKey .Values.bifrost.client "vectorRetentionDays" }}
 {{- $_ := set $client "vector_retention_days" (.Values.bifrost.client.vectorRetentionDays | int) }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "vectorMaxSizeMB" }}
+{{- $_ := set $client "vector_max_size_mb" (.Values.bifrost.client.vectorMaxSizeMB | int) }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "disableDbPingsInHealth" }}
 {{- $_ := set $client "disable_db_pings_in_health" .Values.bifrost.client.disableDbPingsInHealth }}
 {{- end }}

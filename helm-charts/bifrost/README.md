@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added `bifrost.client.vectorRetentionDays`, rendered into `client.vector_retention_days`: an upper bound on how long log-derived vectors (Warp's log index, the complexity router's captured requests) are kept. With a logs store, `0` follows `logRetentionDays` and a larger value is capped at it; without one, the value applies on its own.
+- Added `bifrost.client.vectorMaxSizeMB`, rendered into `client.vector_max_size_mb`: a size budget for all log-derived vectors together, trimmed oldest first by the hourly sweep. `0` sets no budget.
 
 ### 2.1.49
 

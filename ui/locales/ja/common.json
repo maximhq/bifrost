@@ -355,6 +355,7 @@
 		"modeIsRequired": "モードは必須です",
 		"valueMustBeAPositiveWholeNumber": "正の整数である必要があります",
 		"vectorRetentionDaysAtMost106751": "ベクトルの保持期間は最大 106751 日です。",
+		"vectorMaxSizeMustBeAWholeNumber": "ストレージの上限は MB 単位の整数で指定してください。",
 		"mustBeAJsonObject": "JSON オブジェクトである必要があります",
 		"providerCannotBePatched": "provider はエントリを識別するため変更できません",
 		"customProviderNameIsRequired": "カスタムプロバイダー名は必須です",
