@@ -2534,6 +2534,130 @@ func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions pins that every host
+// drops prompt_cache_options below gpt-5.6, the first generation documented to accept
+// it, and keeps it on any host serving gpt-5.6 or later.
+func TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		keep     bool
+	}{
+		{schemas.OpenAI, "gpt-5-mini", false},
+		{schemas.OpenAI, "gpt-5.5", false},
+		{schemas.Azure, "gpt-4o", false},
+		{schemas.OpenAI, "gpt-5.6-luna", true},
+		{schemas.Azure, "gpt-6-luna", true},
+		{schemas.OpenRouter, "openai/gpt-4o-mini", false},
+		{schemas.BedrockMantle, "openai.gpt-5.6-luna", true},
+		{schemas.BedrockMantle, "openai.gpt-oss-120b", false},
+		{schemas.Bedrock, "openai.gpt-oss-120b", false},
+		{schemas.Groq, "openai/gpt-oss-20b", false},
+		{schemas.XAI, "grok-4", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			opts := &schemas.PromptCacheOptions{Mode: new("implicit")}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options").Exists(); got != tc.keep {
+				t.Errorf("prompt_cache_options present = %v, want %v; raw=%s", got, tc.keep, raw)
+			}
+			if req.Params.PromptCacheOptions != opts {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+
+	// A custom provider reports its own name; the model gate applies all the same.
+	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq} {
+		t.Run("custom "+string(base)+" base", func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			for _, tc := range []struct {
+				model string
+				keep  bool
+			}{{"gpt-5-mini", false}, {"gpt-5.6-luna", true}} {
+				out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+					Provider: "my-" + base,
+					Model:    tc.model,
+					Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+					Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+				})
+				if got := out.PromptCacheOptions != nil; got != tc.keep {
+					t.Errorf("%s: prompt_cache_options present = %v, want %v", tc.model, got, tc.keep)
+				}
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow is the Responses counterpart
+// of TestToOpenAIChatRequest_PromptCacheOptionsCatalogRow.
+func TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow(t *testing.T) {
+	installCapabilityRecord(t, "gpt-5.6-luna", &schemas.ModelCapabilities{
+		UnsupportedFields: map[string]bool{schemas.FieldPromptCacheOptions: true},
+	})
+	_, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-luna",
+		Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+		Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+	})
+	if gjson.Get(raw, "prompt_cache_options").Exists() {
+		t.Errorf("catalog row ignored; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode pins that OpenRouter's
+// Responses endpoint, which accepts only mode "explicit" (live 400 "expected
+// \"explicit\""), never receives mode "implicit". Implicit is OpenAI's default when
+// mode is absent, so omitting it is lossless; ttl and explicit mode still pass through.
+func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts *schemas.PromptCacheOptions
+		want string
+	}{
+		{"implicit only", &schemas.PromptCacheOptions{Mode: new("implicit")}, ""},
+		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, `{"ttl":"30m"}`},
+		{"explicit", &schemas.PromptCacheOptions{Mode: new("explicit")}, `{"mode":"explicit"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenRouter,
+				Model:    "openai/gpt-5.6",
+				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: tc.opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options").Raw; got != tc.want {
+				t.Errorf("prompt_cache_options = %s, want %s; raw=%s", got, tc.want, raw)
+			}
+			if req.Params.PromptCacheOptions != tc.opts || tc.opts.Mode == nil {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+
+	// OpenAI itself keeps the explicit default it was sent.
+	_, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-luna",
+		Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+		Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+	})
+	if got := gjson.Get(raw, "prompt_cache_options.mode").String(); got != "implicit" {
+		t.Errorf("openai: mode = %q, want implicit; raw=%s", got, raw)
+	}
+}
+
 // TestToOpenAIResponsesRequest_PreGPT56Unaffected pins the negative. Earlier OpenAI
 // models have no prompt_cache_breakpoint field at all, so translating into it would
 // send an unknown key; the serializer's existing strip is the right behaviour there.

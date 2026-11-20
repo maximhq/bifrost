@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
@@ -12,7 +13,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net"
+	"net/textproto"
+	"os"
 	"reflect"
 	"runtime"
 	"slices"
@@ -771,6 +776,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/v1/realtime",
 		"/openai/realtime",
 		"/openai/openai/realtime",
+		"/v1/audio/speech/stream",
+		"/elevenlabs/v1/text-to-dialogue/stream-input",
+		"/chatgpt_passthrough/backend-api/codex/responses",
 	}
 
 	for _, path := range paths {
@@ -784,6 +792,9 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 	}
 	if isInferenceWSEndpoint("/openai/chat/completions") {
 		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/chatgpt_passthrough/backend-api/codex/models") {
+		t.Fatal("the Codex model list is not a websocket path")
 	}
 }
 
@@ -800,6 +811,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
 		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+		"/elevenlabs/v1/speech-to-text/realtime",
 	}
 
 	for _, path := range paths {
@@ -1816,6 +1828,34 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin pins that the admin's username and
+// password sent as Basic authenticate the request without marking it the local admin, so
+// admin-only handlers (Warp's settings, publishing notifications) and deployments that skip
+// their access checks for the local admin still require a session or the Bearer form.
+func TestAPIMiddleware_BasicAdminCredentialsAreNotLocalAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hash, err := encrypt.Hash("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := newSetupLockedAuthMiddleware("", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	})
+	encoded := base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	for _, header := range []string{"Basic " + encoded} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.Header.Set("Authorization", header)
+		if !runOSSAPIChain(am, ctx) {
+			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+		assert.False(t, admin, "%s admin credentials should not run as the local admin", strings.Fields(header)[0])
 	}
 }
 
@@ -3266,6 +3306,284 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 	}
 }
 
+// trickleThenFail returns data, then err, as a client that declared a long body and stopped.
+type trickleThenFail struct {
+	data []byte
+	err  error
+}
+
+func (r *trickleThenFail) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// TestReadCompressedBodyAllocatesAsBytesArrive asserts a compressed body of known length is held
+// in pooled chunks: a client that declares a near-cap Content-Length and sends little pins at most
+// one chunk, not a buffer of the declared size. Bodies read back exactly, including when chunks are
+// reused across bodies and when the last chunk is only partly filled; a drained reader stays at
+// EOF; a short body fails as an unexpected EOF; an over-cap length is refused before any read.
+func TestReadCompressedBodyAllocatesAsBytesArrive(t *testing.T) {
+	const declared = 64 << 20
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := readCompressedBody(&trickleThenFail{data: bytes.Repeat([]byte("z"), 1024), err: io.ErrUnexpectedEOF}, declared, 128<<20)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a body that stops short must fail")
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > compressedBodyChunkSize+64<<10 {
+		t.Errorf("a %d-byte declared body that sent 1 KB allocated %d bytes; it must pin at most one %d-byte chunk", declared, allocated, compressedBodyChunkSize)
+	}
+
+	// Two bodies of different content and size, the second reusing the first's chunks: the
+	// second's last chunk is partly filled over bytes the first wrote.
+	first := bytes.Repeat([]byte("A"), 3*compressedBodyChunkSize)
+	second := append(bytes.Repeat([]byte("b"), compressedBodyChunkSize), bytes.Repeat([]byte("c"), 1000)...)
+	for _, body := range [][]byte{first, second, first} {
+		r, err := readCompressedBody(bytes.NewReader(body), len(body), 128<<20)
+		if err != nil {
+			t.Fatalf("read %d-byte body: %v", len(body), err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("%d-byte body: err %v, %d bytes back, equal %v", len(body), err, len(got), bytes.Equal(got, body))
+		}
+		if n, err := r.Read(make([]byte, 16)); n != 0 || err != io.EOF {
+			t.Errorf("read after the end: %d, %v; want 0, EOF", n, err)
+		}
+	}
+	r, err := readCompressedBody(bytes.NewReader(second), len(second), 128<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var drained bytes.Buffer
+	if n, err := io.Copy(&drained, r); err != nil || n != int64(len(second)) || !bytes.Equal(drained.Bytes(), second) {
+		t.Errorf("WriteTo drain: %d bytes, err %v, equal %v", n, err, bytes.Equal(drained.Bytes(), second))
+	}
+
+	if _, err := readCompressedBody(bytes.NewReader(first[:compressedBodyChunkSize+100]), len(first), 128<<20); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("short body: err %v, want io.ErrUnexpectedEOF", err)
+	}
+	if _, err := readCompressedBody(bytes.NewReader(first), 129<<20, 128<<20); !errors.Is(err, errCompressedBodyTooLarge) {
+		t.Errorf("over-cap length: err %v, want errCompressedBodyTooLarge", err)
+	}
+	if r, err := readCompressedBody(bytes.NewReader(nil), 0, 128<<20); err != nil {
+		t.Errorf("empty body: %v", err)
+	} else if got, _ := io.ReadAll(r); len(got) != 0 {
+		t.Errorf("empty body: %q", got)
+	}
+}
+
+// BenchmarkReadCompressedBody measures reading a compressed body of known length as the
+// streaming decompression path does (bodies over the large-payload threshold, 10 MB by default):
+// complete bodies are read and drained like the decompressor reads them, and stalled bodies
+// declare a large Content-Length, send 1 KB and stop, which is the memory a client that never
+// finishes its upload pins until the read timeout.
+func BenchmarkReadCompressedBody(b *testing.B) {
+	for _, size := range []int{1 << 20, 10 << 20, 16 << 20, 64 << 20, 128 << 20} {
+		body := bytes.Repeat([]byte("z"), size)
+		b.Run(fmt.Sprintf("complete/%dMB", size>>20), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				r, err := readCompressedBody(bytes.NewReader(body), size, 256<<20)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := io.Copy(io.Discard, r); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+	sent := bytes.Repeat([]byte("z"), 1024)
+	for _, declared := range []int{16 << 20, 64 << 20, 128 << 20} {
+		b.Run(fmt.Sprintf("stalled/%dMB-declared-1KB-sent", declared>>20), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := readCompressedBody(&trickleThenFail{data: sent, err: io.ErrUnexpectedEOF}, declared, 256<<20); err == nil {
+					b.Fatal("a stalled body must fail")
+				}
+			}
+		})
+	}
+}
+
+// serveStreamingRequest sends req to handler through a real fasthttp server with
+// StreamRequestBody on (as enterprise runs with large payloads enabled, and the gateway runs by
+// default), so the handler sees fasthttp's own connection-backed body stream. Cleanup closes the
+// client's kept-alive connection, shuts the server down and waits for Serve to return before the
+// listener is closed, so nothing the test started outlives it.
+func serveStreamingRequest(tb testing.TB, handler fasthttp.RequestHandler, maxBodyBytes int, req *fasthttp.Request) *fasthttp.Response {
+	tb.Helper()
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler, StreamRequestBody: true, DisablePreParseMultipartForm: true, MaxRequestBodySize: maxBodyBytes}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		srv.Serve(ln) //nolint:errcheck
+	}()
+	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
+	tb.Cleanup(func() {
+		client.CloseIdleConnections()
+		srv.Shutdown() //nolint:errcheck
+		<-served
+		ln.Close()
+	})
+	resp := &fasthttp.Response{}
+	if err := client.Do(req, resp); err != nil {
+		tb.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+// TestServeStreamingRequestTearsDownServer asserts serveStreamingRequest's cleanup stops the server
+// it started: no goroutine is left in Server.Serve or serving the kept-alive connection
+// (Server.serveConn) when the test ends, instead of waiting for the client's idle timeout to close
+// the connection. fasthttp's own background loops (worker and connection cleaners, the server date
+// ticker) exit on their own timers and are not counted.
+func TestServeStreamingRequestTearsDownServer(t *testing.T) {
+	serverGoroutines := func() int {
+		buf := make([]byte, 1<<20)
+		stacks := string(buf[:runtime.Stack(buf, true)])
+		return strings.Count(stacks, "fasthttp.(*Server).serveConn(") + strings.Count(stacks, "fasthttp.(*Server).Serve(")
+	}
+	before := serverGoroutines()
+	t.Run("serve", func(t *testing.T) {
+		req := &fasthttp.Request{}
+		req.SetRequestURI("http://bifrost/v1/chat/completions")
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetBodyString(`{"model":"openai/gpt-4o-mini"}`)
+		resp := serveStreamingRequest(t, func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusOK) }, 1<<20, req)
+		if resp.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d, want 200", resp.StatusCode())
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for serverGoroutines() > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := serverGoroutines(); n > before {
+		t.Errorf("%d goroutines still in Server.Serve or Server.serveConn after cleanup, %d before: the test server was not shut down", n, before)
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream pins the streaming
+// decompression path against fasthttp's real request stream. The middleware wrapped that stream
+// and then called SetBodyStream, which releases it, so the first read of the decompressed body
+// panicked with "BUG: reading released body stream" for any compressed body over the 10 MB
+// streaming threshold. The other streaming-path tests set a bytes.Reader as the stream, which
+// fasthttp does not release, so they never saw it.
+func TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	raw := make([]byte, 9<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte(base64.StdEncoding.EncodeToString(raw)) // ~12 MB; compresses to ~9 MB
+	compressed, err := gzipCompress(append(plain, plain[:4<<20]...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(compressed)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Fatalf("compressed body %d bytes must exceed the %d-byte streaming threshold", len(compressed), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+	wantLen := len(plain) + 4<<20
+
+	var gotLen int
+	var readPanic any
+	handler := RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		defer func() { readPanic = recover() }()
+		gotLen = len(ctx.Request.Body())
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/chat/completions")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBody(compressed)
+	resp := serveStreamingRequest(t, handler, 100<<20, req)
+
+	if readPanic != nil {
+		t.Fatalf("reading the decompressed body panicked: %v", readPanic)
+	}
+	if resp.StatusCode() != fasthttp.StatusOK || gotLen != wantLen {
+		t.Errorf("status=%d decompressed=%d bytes, want 200 and %d bytes; body: %.200s", resp.StatusCode(), gotLen, wantLen, resp.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit asserts a compressed body
+// over the request limit is refused with 413 before it is read, now that the streaming path reads
+// the compressed bytes into memory.
+func TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit(t *testing.T) {
+	const limitMB = 1
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	config.StreamingDecompressThreshold = 1024
+	raw := make([]byte, 2<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := gzipCompress(raw) // random: stays ~2 MB compressed
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { called = true })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyStream(bytes.NewReader(compressed), -1)
+	handler(ctx)
+
+	if called {
+		t.Error("handler ran for a compressed body over the request limit")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413; body: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_OverLimitClosesConnection asserts that refusing
+// a compressed body over the request limit on a streaming server closes the connection. The body
+// is refused from its Content-Length without being read, so on a kept-alive connection its bytes
+// would be parsed as the next request.
+func TestRequestDecompressionMiddleware_StreamingPath_OverLimitClosesConnection(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	config.StreamingDecompressThreshold = 1024
+	raw := make([]byte, 2<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := gzipCompress(raw) // random: stays ~2 MB compressed, over the 1 MB limit
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlerRan := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { handlerRan = true })
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/chat/completions")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBody(compressed)
+	resp := serveStreamingRequest(t, handler, 100<<20, req)
+
+	if resp.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413: %s", resp.StatusCode(), resp.Body())
+	}
+	if handlerRan {
+		t.Error("handler ran for a compressed body over the limit")
+	}
+	if !resp.ConnectionClose() {
+		t.Error("413 for an unread compressed body must close the connection")
+	}
+}
+
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
@@ -3676,6 +3994,61 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 }
 
+// TestTracingMiddleware_StoresDimAttributesOnTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on TraceAttrDimensions so
+// observability plugins can propagate them onto child spans when enabled.
+func TestTracingMiddleware_StoresDimAttributesOnTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedDims map[string]string
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok {
+				capturedDims = dims
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedDims == nil {
+		t.Fatal("trace.Attributes[bifrost.dimensions] was missing")
+	}
+	if got := capturedDims["customer_id"]; got != "acme" {
+		t.Errorf("dims[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedDims["environment"]; got != "prod" {
+		t.Errorf("dims[environment] = %v, want %q", got, "prod")
+	}
+	// Reserved suffixes stay in the nested map for connectors; OTEL export
+	// skips them so they never become child-span attributes.
+	if _, ok := capturedDims["method"]; !ok {
+		t.Error("expected reserved dim 'method' to be stored on TraceAttrDimensions")
+	}
+	if _, ok := capturedDims["path"]; !ok {
+		t.Error("expected reserved dim 'path' to be stored on TraceAttrDimensions")
+	}
+}
+
 func TestCollectDimensionHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
@@ -3818,6 +4191,11 @@ type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
 	errors []string
+	debugs []string
+}
+
+func (l *captureLogger) Debug(format string, args ...any) {
+	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) Error(format string, args ...any) {
@@ -4083,6 +4461,357 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}
+
+// fakeBodyPlugin is an HTTPTransportPlugin whose pre-auth and pre hooks are supplied per test,
+// so one plugin can drive either transport phase.
+type fakeBodyPlugin struct {
+	preAuth func(req *schemas.HTTPRequest)
+	pre     func(req *schemas.HTTPRequest)
+}
+
+func (p *fakeBodyPlugin) GetName() string { return "body-plugin" }
+
+func (p *fakeBodyPlugin) Cleanup() error { return nil }
+
+func (p *fakeBodyPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p.preAuth != nil {
+		p.preAuth(req)
+	}
+	return nil, nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p.pre != nil {
+		p.pre(req)
+	}
+	return nil, nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponse) error {
+	return nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
+// bodyTestPhases runs a body test through both transport phases that expose the request body.
+var bodyTestPhases = []struct {
+	name       string
+	middleware func(*lib.Config) schemas.BifrostHTTPMiddleware
+	plugin     func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin
+}{
+	{"pre-auth", TransportPreAuthInterceptorMiddleware, func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin {
+		return &fakeBodyPlugin{preAuth: hook}
+	}},
+	{"pre-hook", TransportInterceptorMiddleware, func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin {
+		return &fakeBodyPlugin{pre: hook}
+	}},
+}
+
+// multipartUploadTestRequest returns a raw Files API upload carrying a fileSize-byte file.
+func multipartUploadTestRequest(tb testing.TB, fileSize int) []byte {
+	tb.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("purpose", "batch"); err != nil {
+		tb.Fatal(err)
+	}
+	part, err := w.CreateFormFile("file", "batch.jsonl")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("a"), fileSize)); err != nil {
+		tb.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		tb.Fatal(err)
+	}
+	head := fmt.Sprintf("POST /v1/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())
+	return append([]byte(head), body.Bytes()...)
+}
+
+// multipartUploadTestCtx reads raw the way the server does, so the multipart form is parsed
+// while reading and a file over fasthttp's 16 MB in-memory limit lands in a temp file.
+func multipartUploadTestCtx(tb testing.TB, raw []byte) *fasthttp.RequestCtx {
+	tb.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	if err := ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))); err != nil {
+		tb.Fatal(err)
+	}
+	return ctx
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodyNotCopied pins the Files API upload fix: with a
+// transport plugin loaded, a multipart body must not be copied into HTTPRequest.Body or written
+// back, so the handler finds the form fasthttp parsed while reading, its large file still in a
+// temp file. Before the fix the body was rebuilt in memory, copied, and written back, which
+// deleted the temp file and made the handler parse the whole file again in memory.
+func TestTransportInterceptorMiddleware_MultipartBodyNotCopied(t *testing.T) {
+	const fileSize = 17 << 20 // over fasthttp's 16 MB in-memory limit, so it goes to a temp file
+	raw := multipartUploadTestRequest(t, fileSize)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			var pluginBodyLen int
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				pluginBodyLen = len(req.Body)
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			parsed, err := ctx.Request.MultipartForm()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var handlerForm *multipart.Form
+			var fileOnDisk bool
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				form, err := ctx.MultipartForm()
+				if err != nil {
+					t.Errorf("handler could not read the multipart form: %v", err)
+					return
+				}
+				handlerForm = form
+				f, err := form.File["file"][0].Open()
+				if err != nil {
+					t.Errorf("handler could not open the uploaded file: %v", err)
+					return
+				}
+				defer f.Close()
+				_, fileOnDisk = f.(*os.File)
+			})(ctx)
+
+			if pluginBodyLen != 0 {
+				t.Errorf("plugin got a %d-byte copy of the multipart body in req.Body, want none", pluginBodyLen)
+			}
+			if handlerForm != parsed {
+				t.Error("handler got a re-parsed multipart form, want the one fasthttp parsed while reading the request")
+			}
+			if !fileOnDisk {
+				t.Error("handler read the uploaded file from memory, want it still in its temp file")
+			}
+		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodySourceReadable asserts plugins still see a
+// multipart body: through req.BodySource, as a stream of the whole form, in both phases.
+func TestTransportInterceptorMiddleware_MultipartBodySourceReadable(t *testing.T) {
+	const fileSize = 17 << 20
+	raw := multipartUploadTestRequest(t, fileSize)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			var purpose string
+			var gotFileSize int64
+			var readErr error
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				if req.BodySource == nil {
+					readErr = errors.New("req.BodySource is nil")
+					return
+				}
+				rc, err := req.BodySource.Open()
+				if err != nil {
+					readErr = err
+					return
+				}
+				defer rc.Close()
+				form, err := multipart.NewReader(rc, string(ctxBoundary(req))).ReadForm(1 << 20)
+				if err != nil {
+					readErr = err
+					return
+				}
+				defer form.RemoveAll()
+				purpose = form.Value["purpose"][0]
+				gotFileSize = form.File["file"][0].Size
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			phase.middleware(config)(func(*fasthttp.RequestCtx) {})(ctx)
+
+			if readErr != nil {
+				t.Fatalf("plugin could not read the multipart body: %v", readErr)
+			}
+			if purpose != "batch" || gotFileSize != fileSize {
+				t.Errorf("plugin read purpose=%q file size=%d, want purpose=batch file size=%d", purpose, gotFileSize, fileSize)
+			}
+		})
+	}
+}
+
+// ctxBoundary returns the multipart boundary from a transport request's Content-Type header.
+func ctxBoundary(req *schemas.HTTPRequest) string {
+	_, params, _ := mime.ParseMediaType(req.CaseInsensitiveHeaderLookup("Content-Type"))
+	return params["boundary"]
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodySetByPluginApplied asserts a plugin can still
+// replace a multipart body: setting req.Body writes it over the request.
+func TestTransportInterceptorMiddleware_MultipartBodySetByPluginApplied(t *testing.T) {
+	raw := multipartUploadTestRequest(t, 1024)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				req.Body = []byte("replaced")
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			var handlerBody string
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				handlerBody = string(ctx.Request.Body())
+			})(ctx)
+			if handlerBody != "replaced" {
+				t.Errorf("handler body = %q, want the plugin's replacement", handlerBody)
+			}
+		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_MultipartReplacedFormReachesPassthrough asserts that when a
+// plugin reads a multipart body (which parses and caches form A) and then replaces it with form B,
+// the passthrough route parses B: the cached form A is dropped with the body it came from. B's
+// value types are read from its bytes. On a passthrough route (marked, as the router registers it)
+// form A is the passthrough parse Bifrost owns, so replacing it also removes its temp files.
+func TestTransportInterceptorMiddleware_MultipartReplacedFormReachesPassthrough(t *testing.T) {
+	raw := multipartUploadTestRequest(t, 1024)
+	head, upload, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
+	boundary := ""
+	for _, line := range strings.Split(string(head), "\r\n") {
+		if v, ok := strings.CutPrefix(line, "Content-Type: "); ok {
+			_, params, _ := mime.ParseMediaType(v)
+			boundary = params["boundary"]
+		}
+	}
+	var replacement bytes.Buffer
+	w := multipart.NewWriter(&replacement)
+	if err := w.SetBoundary(boundary); err != nil {
+		t.Fatal(err)
+	}
+	w.WriteField("purpose", "assistants") //nolint:errcheck
+	part, _ := w.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}})
+	part.Write([]byte("replaced mask bytes")) //nolint:errcheck
+	w.Close()                                 //nolint:errcheck
+
+	for _, phase := range bodyTestPhases {
+		for _, streamed := range []bool{true, false} {
+			for _, marked := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/streamed=%v/passthrough-route=%v", phase.name, streamed, marked), func(t *testing.T) {
+					var readFormA string
+					config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+						rc, err := req.BodySource.Open()
+						if err != nil {
+							t.Errorf("open body: %v", err)
+							return
+						}
+						a, _ := io.ReadAll(rc)
+						rc.Close()
+						readFormA = string(a)
+						req.Body = replacement.Bytes()
+					}))
+					var ctx *fasthttp.RequestCtx
+					if streamed {
+						ctx = &fasthttp.RequestCtx{}
+						ctx.Init(&fasthttp.Request{}, nil, nil)
+						ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+						ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+						ctx.Request.Header.SetContentType("multipart/form-data; boundary=" + boundary)
+						ctx.Request.SetBodyStream(bytes.NewReader(upload), len(upload))
+					} else {
+						ctx = multipartUploadTestCtx(t, raw)
+					}
+					defer ctx.Request.Reset()
+					var form *multipart.Form
+					var types map[string][]string
+					var formErr error
+					chain := phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+						form, types, formErr = lib.PassthroughMultipartForm(ctx)
+					})
+					if marked {
+						chain = lib.MarkPassthroughRoute(chain)
+					}
+					chain(ctx)
+					if !strings.Contains(readFormA, "batch") {
+						t.Fatalf("the plugin did not read form A: %q", readFormA)
+					}
+					if formErr != nil {
+						t.Fatalf("passthrough form after the plugin replaced the body: %v", formErr)
+					}
+					if got := form.Value["purpose"]; len(got) != 1 || got[0] != "assistants" {
+						t.Errorf("passthrough got purpose %q, want the replacement's %q (form A was still cached)", got, "assistants")
+					}
+					if len(form.File["file"]) != 0 {
+						t.Errorf("passthrough still sees form A's file part")
+					}
+					if got := types["mask"]; len(got) != 1 || got[0] != "application/octet-stream" {
+						t.Errorf("replacement value types = %v, want mask typed application/octet-stream", types)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestTransportInterceptorMiddleware_MultipartReplacedWithJSONNotRebuilt asserts that when a plugin
+// turns a multipart upload into a JSON request (new Content-Type and a new Body together), the
+// write-back applies the replacement without rebuilding the upload. The write-back decided by the
+// body mode after the plugin's headers were applied, saw JSON, and compared against
+// ctx.Request.Body(), which re-marshals the parsed 17 MB form in memory just to be discarded.
+func TestTransportInterceptorMiddleware_MultipartReplacedWithJSONNotRebuilt(t *testing.T) {
+	const fileSize = 17 << 20
+	raw := multipartUploadTestRequest(t, fileSize)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				req.Headers["Content-Type"] = "application/json"
+				req.Body = []byte(`{"model":"gpt-4o"}`)
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			var handlerBody, handlerType string
+			handler := phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				handlerBody = string(ctx.Request.Body())
+				handlerType = string(ctx.Request.Header.ContentType())
+			})
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			handler(ctx)
+			runtime.ReadMemStats(&after)
+
+			if handlerBody != `{"model":"gpt-4o"}` || handlerType != "application/json" {
+				t.Fatalf("handler got Content-Type %q body %q, want the plugin's JSON replacement", handlerType, handlerBody)
+			}
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 4<<20 {
+				t.Errorf("replacing a %d-byte upload allocated %d bytes; the write-back must not rebuild the original form", fileSize, allocated)
+			}
+		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_InPlaceBodyEditApplied asserts the write-back still catches
+// a plugin that edits req.Body in place rather than assigning a new slice: the body is written
+// back when its bytes differ, not when the slice header does.
+func TestTransportInterceptorMiddleware_InPlaceBodyEditApplied(t *testing.T) {
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				copy(req.Body[len(`{"model":"`):], "GPT")
+			}))
+			var handlerBody string
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				handlerBody = string(ctx.Request.Body())
+			})(preAuthTestCtx())
+			if handlerBody != `{"model":"GPT-4"}` {
+				t.Errorf("handler body = %q, want the in-place edit applied", handlerBody)
+			}
+		})
 	}
 }
 
@@ -5432,6 +6161,20 @@ func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyFromHeadersXiAPIKey pins that an ElevenLabs client's xi-api-key is a virtual key only with the sk-bf- prefix.
+func TestVirtualKeyFromHeadersXiAPIKey(t *testing.T) {
+	for value, want := range map[string]string{"sk-bf-elevenlabs-vk": "sk-bf-elevenlabs-vk", "real-elevenlabs-key": ""} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("xi-api-key", value)
+		if got := virtualKeyFromHeaders(ctx); got != want {
+			t.Errorf("virtualKeyFromHeaders(xi-api-key %q) = %q, want %q", value, got, want)
+		}
+		if got := hasVirtualKeyCredential(ctx); got != (want != "") {
+			t.Errorf("hasVirtualKeyCredential(xi-api-key %q) = %v, want %v", value, got, want != "")
+		}
+	}
+}
+
 // TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
 // the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
 func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
@@ -5801,6 +6544,105 @@ func BenchmarkBasePathMiddleware(b *testing.B) {
 			ctx.Request.SetRequestURI("/v1/chat/completions?stream=true")
 			_ = ctx.Request.URI()
 			noop(ctx)
+		}
+	})
+}
+
+// encodedTraversalPath is routed by fasthttp/router as one opaque segment of
+// /api/providers/{provider}, but ctx.Path() decodes it to the whitelisted
+// /api/skills/serve/x.
+const encodedTraversalPath = "/api/providers/..%2Fskills%2Fserve%2Fx"
+
+// TestPluginRequestPathIsRawPath verifies plugins receive the raw path the router
+// dispatched on, not the decoded and normalized ctx.Path(), so a plugin deciding by
+// path cannot be fooled by an encoded traversal.
+func TestPluginRequestPathIsRawPath(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI(encodedTraversalPath)
+	if got := string(ctx.Path()); got == encodedTraversalPath {
+		t.Fatalf("test premise broken: ctx.Path() did not normalize, got %q", got)
+	}
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if req.Path != encodedTraversalPath {
+		t.Errorf("fasthttpToHTTPRequest Path = %q, want raw %q", req.Path, encodedTraversalPath)
+	}
+
+	streamReq := lib.BuildHTTPRequestFromFastHTTP(ctx)
+	defer schemas.ReleaseHTTPRequest(streamReq)
+	if streamReq.Path != encodedTraversalPath {
+		t.Errorf("BuildHTTPRequestFromFastHTTP Path = %q, want raw %q", streamReq.Path, encodedTraversalPath)
+	}
+}
+
+// TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath verifies the plugin rewrite
+// check compares like with like: an encoded path no plugin touched is not mistaken
+// for a rewrite, while a real rewrite is still refused.
+func TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(encodedTraversalPath)
+		return ctx
+	}
+
+	ctx := newCtx()
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if !applyHTTPRequestToCtx(ctx, req) {
+		t.Fatalf("unchanged encoded path was treated as a rewrite, status=%d", ctx.Response.StatusCode())
+	}
+
+	ctx = newCtx()
+	req.Path = "/api/skills/serve/x"
+	if applyHTTPRequestToCtx(ctx, req) {
+		t.Fatal("a plugin rewrite to the normalized path must be refused")
+	}
+}
+
+// BenchmarkTransportInterceptorMiddlewareBody measures what the transport plugin phases cost per
+// request body: a 17 MB multipart upload (over fasthttp's in-memory limit, so its file sits in a
+// temp file) and a small JSON body, the common case. The handler reads the uploaded file the way
+// the Files API parser does. Request setup runs with the timer stopped.
+func BenchmarkTransportInterceptorMiddlewareBody(b *testing.B) {
+	config := preAuthTestConfig(&fakeBodyPlugin{})
+	chain := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return
+		}
+		f, err := form.File["file"][0].Open()
+		if err != nil {
+			b.Fatal(err)
+		}
+		f.Close()
+	}))
+	b.Run("multipart-17MB", func(b *testing.B) {
+		raw := multipartUploadTestRequest(b, 17<<20)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			ctx := multipartUploadTestCtx(b, raw)
+			b.StartTimer()
+			chain(ctx)
+			b.StopTimer()
+			ctx.Request.Reset()
+			b.StartTimer()
+		}
+	})
+	b.Run("json-small", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			ctx := preAuthTestCtx()
+			b.StartTimer()
+			chain(ctx)
 		}
 	})
 }

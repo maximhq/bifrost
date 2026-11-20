@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,13 +93,15 @@ type MCPServerHandler struct {
 	// each caller sees of it is decided per request, from the tool list stamped on the request
 	// context, so nothing about it is per caller. Its tools are replaced in place on a registry change.
 	mcpServer *server.MCPServer
-	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer.
-	transport   *server.StreamableHTTPServer
-	served      MCPResourcesAndPromptsServer     // nil serves tools only
-	perCaller   atomic.Pointer[perCallerEntries] // placeholders for clients with per_user_discovery on; nil when none (see mcpserverpercaller.go)
-	syncMu      sync.Mutex                       // orders syncs, so the newest read of the server's lists is the one installed
-	toolIndex   atomic.Pointer[gatewayToolIndex] // MCP Apps facts and server-given names of the installed tools
-	uiResources atomic.Bool                      // the server installed namespaced ui:// resources or templates
+	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer. It is
+	// never replaced: sessions are registered on mcpServer, so a new transport would refuse their streams.
+	transport       *server.StreamableHTTPServer
+	allowedVersions atomic.Pointer[[]string]         // versions /mcp serves, newest first; nil is uncapped
+	served          MCPResourcesAndPromptsServer     // nil serves tools only
+	perCaller       atomic.Pointer[perCallerEntries] // placeholders for clients with per_user_discovery on; nil when none (see mcpserverpercaller.go)
+	syncMu          sync.Mutex                       // orders syncs, so the newest read of the server's lists is the one installed
+	toolIndex       atomic.Pointer[gatewayToolIndex] // MCP Apps facts and server-given names of the installed tools
+	uiResources     atomic.Bool                      // the server installed namespaced ui:// resources or templates
 	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
 	tokenValidator MCPTokenValidator
 }
@@ -169,6 +172,7 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 	handler.served, _ = toolManager.(MCPResourcesAndPromptsServer)
 	handler.mcpServer = handler.buildServer()
 	handler.transport = newMCPTransport(handler.mcpServer)
+	handler.UpdateServerMaxProtocolVersion(config.ClientConfig.MCPServerMaxProtocolVersion)
 	if err := handler.SyncMCPServer(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -212,6 +216,10 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	if refusal := h.admit(ctx, bifrostCtx); refusal != nil {
 		cancel()
 		sendMCPRefusal(ctx, refusal)
+		return
+	}
+	if h.refuseVersionAboveCap(ctx) {
+		cancel()
 		return
 	}
 
@@ -372,8 +380,10 @@ func (h *MCPServerHandler) install(perCaller *perCallerEntries) {
 	ctx := context.Background()
 	h.perCaller.Store(h.perCaller.Load().union(perCaller))
 	// App-only tools are installed too; who may see and call them is decided per request.
-	availableTools := h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx))
+	// Installs every tool /mcp or a client's /mcp/<slug> may serve; code mode is decided per request.
+	availableTools := h.toolManager.GetAvailableMCPTools(coremcp.WithGatewayTools(ctx))
 	tools, index := h.serverTools(availableTools)
+	index = h.indexServerTypesOnSlug(ctx, index, availableTools)
 	tools = append(tools, h.perCallerServerTools(perCaller, tools)...)
 	// Refusal tools go in last, so every exact name, per-caller placeholders included, wins over them.
 	index = indexPerCallerNames(index, perCaller)
@@ -426,6 +436,7 @@ func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks.AddAfterListTools(h.narrowListedTools)
 	hooks.AddBeforeCallTool(h.resolveCallToolName)
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
+	hooks.AddAfterInitialize(h.capInitializeVersion)
 	hooks.AddAfterDiscover(h.forwardDiscoverInstructions)
 
 	// No WithToolFilter: mcp-go also applies a tool filter to tools/call and answers "not found" before
@@ -460,6 +471,14 @@ func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) ([]ser
 		declaresOutputSchema := tool.MCP != nil && len(tool.MCP.OutputSchema) > 0
 
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			index, perCaller := h.toolIndex.Load(), h.perCaller.Load()
+			if index.hiddenByCodeMode(ctx, perCaller, toolName) {
+				return nil, toolNotFoundError(toolName)
+			}
+			if index.codeModeLeftToCaller(ctx, perCaller, toolName) {
+				// This tool holds the name the caller's placeholder would; check the caller as it does.
+				return h.perCallerToolHandler(toolName, false)(ctx, request)
+			}
 			return h.runTool(ctx, toolName, declaresOutputSchema, request), nil
 		}
 		_, aggregateMeta := toolMeta(tool)
@@ -642,6 +661,7 @@ func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.
 		return
 	}
 	index, perCaller := h.toolIndex.Load(), h.perCaller.Load()
+	dropHiddenByCodeMode(ctx, index, perCaller, result)
 	narrowed := requestNarrowed(ctx)
 	if !narrowed {
 		dropRefusalTools(index, result) // a narrowed list keeps only Bifrost's own names
@@ -675,6 +695,77 @@ func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.
 		result.Tools = kept
 	}
 	applyAppTools(callerCtx, index, result)
+}
+
+// indexServerTypesOnSlug records the clients whose own /mcp/<slug> overrides code mode, and whether the
+// code-mode tools were installed only for such a slug.
+func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *gatewayToolIndex, installed []schemas.ChatTool) *gatewayToolIndex {
+	if h.config == nil {
+		return index
+	}
+	modes := h.config.GetMCPServerTypesOnSlug()
+	if len(modes) == 0 {
+		return index
+	}
+	if index == nil {
+		index = &gatewayToolIndex{}
+	}
+	index.serverTypesOnSlug = modes
+	index.codeModeOnlyOnSlug = listsCodeModeTools(installed) && !listsCodeModeTools(h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx)))
+	return index
+}
+
+// listsCodeModeTools reports whether tools include the code-mode tools.
+func listsCodeModeTools(tools []schemas.ChatTool) bool {
+	return slices.ContainsFunc(tools, func(tool schemas.ChatTool) bool {
+		return tool.Function != nil && tool.Function.Name == coremcp.ToolTypeExecuteToolCode
+	})
+}
+
+// hiddenByCodeMode reports whether a server_type_on_slug override hides the installed tool from ctx's request:
+// a client's own tools where it runs in code mode, and the code-mode tools off the slugs that need them.
+// A caller's own per-user tools are decided by its discovery instead.
+func (index *gatewayToolIndex) hiddenByCodeMode(ctx context.Context, perCaller *perCallerEntries, name string) bool {
+	if index == nil || len(index.serverTypesOnSlug) == 0 {
+		return false
+	}
+	gatewayClient, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	if coremcp.IsCodeModeTool(name) {
+		return index.codeModeOnlyOnSlug && gatewayClient == "" && !perCaller.holdsTool(name)
+	}
+	client := coremcp.ToolClientName(name)
+	mode, ok := index.serverTypesOnSlug[client]
+	if !ok || name == coremcp.ConnectToolName(client) {
+		return false
+	}
+	if gatewayClient == client {
+		return mode.OnSlug
+	}
+	return mode.Global
+}
+
+// codeModeLeftToCaller reports whether a code-mode tool installed only for a slug is called on /mcp
+// under a per-caller name, so the caller's own discovery decides it, as it does for listing.
+func (index *gatewayToolIndex) codeModeLeftToCaller(ctx context.Context, perCaller *perCallerEntries, name string) bool {
+	if index == nil || !index.codeModeOnlyOnSlug || !coremcp.IsCodeModeTool(name) || !perCaller.holdsTool(name) {
+		return false
+	}
+	gatewayClient, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	return gatewayClient == ""
+}
+
+// dropHiddenByCodeMode leaves the tools a server_type_on_slug override hides out of a tools/list answer.
+func dropHiddenByCodeMode(ctx context.Context, index *gatewayToolIndex, perCaller *perCallerEntries, result *mcp.ListToolsResult) {
+	if index == nil || len(index.serverTypesOnSlug) == 0 {
+		return
+	}
+	kept := result.Tools[:0]
+	for _, tool := range result.Tools {
+		if !index.hiddenByCodeMode(ctx, perCaller, tool.Name) {
+			kept = append(kept, tool)
+		}
+	}
+	result.Tools = kept
 }
 
 // Admission
@@ -1084,8 +1175,82 @@ func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionP
 // Streamable HTTP transport over fasthttp
 
 // newMCPTransport serves srv with the Streamable HTTP rules of every protocol revision mcp-go knows.
+// The version cap is applied in front of it (refuseVersionAboveCap) and on initialize (capInitializeVersion).
 func newMCPTransport(srv *server.MCPServer) *server.StreamableHTTPServer {
 	return server.NewStreamableHTTPServer(srv, server.WithSessionIdManager(&mcpSessionIDManager{}))
+}
+
+// UpdateServerMaxProtocolVersion caps the protocol version /mcp serves, from the next request on.
+// server/discover needs no list of its own: it is reached only while 2026-07-28 is allowed, and then every
+// version mcp-go knows is too. A version newer than 2026-07-28 would need it set per request.
+func (h *MCPServerHandler) UpdateServerMaxProtocolVersion(version string) {
+	allowed := schemas.MCPProtocolVersionsUpTo(version)
+	h.allowedVersions.Store(&allowed)
+}
+
+// refuseVersionAboveCap answers 400 to a request whose MCP-Protocol-Version header is above the cap, as the
+// Streamable HTTP transport requires for an unsupported version: a 2026-07-28 POST with the JSON-RPC
+// -32022 error and the supported versions, so the client can fall back, and anything else as plain text,
+// as mcp-go does. initialize passes so capInitializeVersion can lower it, and a 2026-07-28 GET or DELETE
+// passes for the transport's 405. Uncapped, it returns at the first check.
+func (h *MCPServerHandler) refuseVersionAboveCap(ctx *fasthttp.RequestCtx) bool {
+	allowed := h.allowedVersions.Load()
+	if allowed == nil || *allowed == nil {
+		return false
+	}
+	header := ctx.Request.Header.Peek("MCP-Protocol-Version")
+	if len(header) == 0 {
+		return false
+	}
+	version := string(header)
+	if slices.Contains(*allowed, version) {
+		return false
+	}
+	if mcp.IsModernProtocol(version) {
+		if !ctx.IsPost() {
+			return false
+		}
+		refusal := mcp.UnsupportedProtocolVersionError{Version: version, Supported: *allowed}.JSONRPCError()
+		refusal.ID = mcp.NewRequestId(gjson.GetBytes(ctx.PostBody(), "id").Value())
+		body, err := sonic.Marshal(refusal)
+		if err != nil {
+			return false
+		}
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetContentType("application/json")
+		ctx.SetBody(body)
+		return true
+	}
+	if gjson.GetBytes(ctx.PostBody(), "method").Str == string(mcp.MethodInitialize) {
+		return false
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("text/plain; charset=utf-8")
+	ctx.Response.Header.Set("X-Content-Type-Options", "nosniff")
+	ctx.SetBodyString("Unsupported protocol version: " + version + "\n")
+	return true
+}
+
+// capInitializeVersion lowers the version initialize agreed on to the cap. mcp-go negotiates
+// initialize without the transport's version list, and records the result on the session before
+// this hook runs, so the session is corrected too.
+func (h *MCPServerHandler) capInitializeVersion(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	var allowed []string
+	if p := h.allowedVersions.Load(); p != nil {
+		allowed = *p
+	}
+	if result == nil || allowed == nil || slices.Contains(allowed, result.ProtocolVersion) {
+		return
+	}
+	for _, v := range allowed {
+		if v < result.ProtocolVersion {
+			result.ProtocolVersion = v
+			break
+		}
+	}
+	if session, ok := server.ClientSessionFromContext(ctx).(interface{ SetProtocolVersion(string) }); ok {
+		session.SetProtocolVersion(result.ProtocolVersion)
+	}
 }
 
 // mcpSessionIDManager hands legacy clients a session id at initialize but never requires one back.

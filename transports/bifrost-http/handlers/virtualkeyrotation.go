@@ -79,13 +79,19 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	// retired value itself, not to what was minted from it. Revoking the grants
 	// and storing the new value commit in one transaction: if either fails,
 	// neither happens, and in-memory governance is reloaded only after commit.
+	var revokedGrants int64
 	if err := r.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		if err := r.configStore.RevokeOAuth2GrantsBySubject(ctx, string(schemas.MCPAuthModeVK), vk.ID, tx); err != nil {
+		var err error
+		if revokedGrants, err = r.configStore.RevokeOAuth2GrantsBySubject(ctx, string(schemas.MCPAuthModeVK), vk.ID, tx); err != nil {
 			return fmt.Errorf("failed to revoke the virtual key's MCP OAuth grants, rotation aborted: %w", err)
 		}
 		return r.configStore.UpdateVirtualKey(ctx, vk, tx)
 	}); err != nil {
 		return nil, err
+	}
+	if revokedGrants > 0 {
+		logger.Debug(oauth2TokenLogPrefix+" event=family.revoked at=%s reason=virtual_key_rotated virtual_key_id=%s revoked_rows=%d",
+			time.Now().UTC().Format(time.RFC3339Nano), vk.ID, revokedGrants)
 	}
 	preloadedVk, err := r.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {

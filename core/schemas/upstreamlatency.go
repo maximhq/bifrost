@@ -47,6 +47,7 @@ type upstreamAccumulator struct {
 	attemptStartNanos atomic.Int64                      // unix nanos when the current attempt began; 0 = unmarked
 	attemptUpstream   atomic.Int64                      // total at the moment the current attempt began
 	attempts          atomic.Int64                      // attempts marked so far in this request
+	queueWait         atomic.Int64                      // nanoseconds the current attempt's message sat in the provider queue; cleared when an attempt is marked
 	wait              atomic.Pointer[upstreamWaitState] // set on the first BeginUpstreamWait
 }
 
@@ -75,6 +76,21 @@ func (bc *BifrostContext) MarkAttemptStart() {
 	acc.attemptUpstream.Store(acc.total.Load())
 	acc.attemptStartNanos.Store(time.Now().UnixNano())
 	acc.attempts.Add(1)
+	acc.queueWait.Store(0)
+}
+
+// RecordQueueWait records how long the current attempt's message waited in the provider
+// queue, from the start of its enqueue (which blocks while the queue is full) to the moment
+// a worker took it. An attempt enqueues once, so this replaces rather than adds. It is
+// cleared by MarkAttemptStart, so an attempt that never reaches a worker reports zero.
+// No-op without an accumulator.
+func RecordQueueWait(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if acc := upstreamAccumulatorFrom(ctx); acc != nil {
+		acc.queueWait.Store(int64(d))
+	}
 }
 
 // AttemptWindow is the span of one attempt on the request's upstream clock.
@@ -84,6 +100,7 @@ type AttemptWindow struct {
 	End           time.Time
 	UpstreamStart time.Duration // request upstream total when the attempt began
 	UpstreamEnd   time.Duration // request upstream total when the window was read
+	QueueWait     time.Duration // time this attempt's message waited in the provider queue; zero if it never reached a worker
 	StreamBefore  StreamTotals  // stream counters when the attempt began; set for stream rows only
 }
 
@@ -112,6 +129,7 @@ func GetAttemptWindow(ctx context.Context) (AttemptWindow, bool) {
 		End:           time.Now(),
 		UpstreamStart: time.Duration(acc.attemptUpstream.Load()),
 		UpstreamEnd:   time.Duration(acc.total.Load()),
+		QueueWait:     time.Duration(acc.queueWait.Load()),
 	}, true
 }
 

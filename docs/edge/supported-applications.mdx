@@ -28,6 +28,7 @@ Bifrost Edge governs a growing list of AI applications and surfaces out of the b
 | ChatGPT (desktop) | Routes and governs AI traffic from the ChatGPT desktop app. |
 | Cursor | Routes and governs AI requests from the Cursor editor. |
 | Codex (desktop) | Routes and governs AI traffic from the Codex desktop app. |
+| Antigravity (desktop) | Routes and governs AI traffic from the Antigravity desktop app. |
 
 ## Coding agents
 
@@ -36,6 +37,11 @@ Bifrost Edge governs a growing list of AI applications and surfaces out of the b
 | Claude Code | Routes and governs AI traffic from the Claude Code CLI agent. |
 | Codex CLI | Routes and governs AI traffic from the Codex command-line agent. |
 | OpenCode | Routes and governs AI traffic from the OpenCode agent. |
+| Antigravity CLI | Routes and governs AI traffic from the Antigravity command-line agent. |
+
+<Warning>
+Gemini CLI support is deprecated. Move Gemini CLI users to Antigravity CLI, which Edge routes and governs the same way.
+</Warning>
 
 ## AI in the browser
 
@@ -83,7 +89,8 @@ Edge inventories the MCP servers configured inside these apps so you can allow o
 | --- | --- |
 | Claude Code | Discovers and enforces MCP server policy. |
 | Claude Desktop | Discovers and enforces MCP server policy. |
-| Gemini CLI | Discovers and enforces MCP server policy. |
+| Antigravity CLI | Discovers and enforces MCP server policy. |
+| Antigravity (desktop) | Discovers and enforces MCP server policy. |
 | OpenCode | Discovers and enforces MCP server policy. |
 | Codex | Discovers and enforces MCP server policy. |
 | Cursor | Discovers and enforces MCP server policy. |

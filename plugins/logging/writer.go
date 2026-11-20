@@ -1496,6 +1496,18 @@ func applyUserEmail(ctx *schemas.BifrostContext, entry *logstore.Log) {
 	}
 }
 
+// applyModelRoutingFields records the model router that took the request,
+// when one did. It is called where the complexity fields are, so intermediate
+// stream chunks skip the lookups. A name is published with its id, so it is
+// read only when the id is set, and a request no router took costs one lookup
+// and no allocation.
+func applyModelRoutingFields(ctx context.Context, entry *logstore.Log) {
+	if routerID, _ := ctx.Value(schemas.BifrostContextKeyModelRouterID).(string); routerID != "" {
+		routerName, _ := ctx.Value(schemas.BifrostContextKeyModelRouterName).(string)
+		entry.ModelRouterID, entry.ModelRouterName = schemas.Ptr(routerID), schemas.Ptr(routerName)
+	}
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,

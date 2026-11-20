@@ -22,11 +22,13 @@ import {
 	COMPLEXITY_TIER_VALUES,
 	LEGACY_COMPLEXITY_TIER_VALUES,
 } from "@/lib/types/complexityRouter";
+import { useGetModelRoutersQuery } from "@/lib/store/apis/governanceApi";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { metadataFilterValueCount, normalizeMetadataFilters, toggleMetadataFilterValue } from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import "@enterprise/lib/registrations/logs";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -129,6 +131,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ModelRouterFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{getMetadataFilterGroups().map((group) => (
 						<LabelledMetadataFilter key={group.title} group={group} filters={filters} onFiltersChange={onFiltersChange} />
 					))}
@@ -958,6 +961,59 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="routing-rules-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ModelRouterFilter – model routers, listed from the gateway's configuration,
+// whose API is gated on Governance, so the list is hidden without it.
+// ---------------------------------------------------------------------------
+
+// ModelRouterFilter filters on the model router that took a request, by id,
+// listed by name. The list is fetched only once the section is opened.
+function ModelRouterFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("observability");
+	const { t: tc } = useTranslation("common");
+	const canView = useRbac(RbacResource.Routers, RbacOperation.View);
+	const selected = filters.model_router_ids || [];
+	const [opened, setOpened] = useState(defaultOpen || selected.length > 0);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const query = useGetModelRoutersQuery(undefined, { skip: !canView || (!opened && selected.length === 0) });
+	// Without Routers access the list cannot be read, but a filter a log
+	// link applied must still be visible and removable.
+	if (!canView && selected.length === 0) return null;
+	const testIdPrefix = "model-routers-filter";
+	const listed = (query.data?.routers ?? []).map((router) => ({ key: router.id, label: router.name }));
+	// Logs keep the id of a router that has since been deleted, so a selected
+	// id the list no longer has stays offered, by its id.
+	const items = [...listed, ...selected.filter((id) => !listed.some((item) => item.key === id)).map((id) => ({ key: id, label: id }))];
+	const toggle = (id: string) =>
+		onFiltersChange({ ...filters, model_router_ids: selected.includes(id) ? selected.filter((v) => v !== id) : [...selected, id] });
+	return (
+		<FilterSection
+			title={t("filters.modelRouters")}
+			defaultOpen={defaultOpen || selected.length > 0}
+			loading={query.isLoading}
+			onOpenChange={setOpened}
+			testId={`${testIdPrefix}-toggle`}
+		>
+			{query.isError && (
+				<div className="text-destructive flex items-center justify-between gap-2 px-1 pb-2 text-xs" data-testid={`${testIdPrefix}-error`}>
+					<span>{t("filters.loadFailed")}</span>
+					<Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void query.refetch()}>
+						{tc("retry")}
+					</Button>
+				</div>
+			)}
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder={t("filters.searchModelRouters")}
+				items={items}
+				isSelected={(id) => selected.includes(id)}
+				onToggle={toggle}
+				testIdPrefix={testIdPrefix}
 			/>
 		</FilterSection>
 	);

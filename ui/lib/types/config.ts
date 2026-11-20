@@ -311,6 +311,7 @@ export interface DatabricksKeyConfig {
 	client_id?: SecretVar;
 	client_secret?: SecretVar;
 	forward_gateway_tags?: boolean;
+	scopes?: string[];
 	// UI-only discriminator; not sent to the API.
 	_auth_type?: "pat" | "oauth_m2m";
 }
@@ -322,6 +323,7 @@ export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
 	client_id: { value: "", ref: "" },
 	client_secret: { value: "", ref: "" },
 	forward_gateway_tags: false,
+	scopes: [],
 	_auth_type: "pat",
 } as const satisfies Required<DatabricksKeyConfig>;
 
@@ -782,6 +784,8 @@ export interface FrameworkConfig {
 	mcp_library_sync_interval?: number;
 	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
 	live_models_sync_interval?: number;
+	/** OpenAPI spec /v1/mcp builds its tools from; empty reads dev's openapi-oss.json. */
+	openapi_url?: string;
 }
 
 /** Seconds between background model-list refreshes when the user has not set one. */
@@ -943,9 +947,13 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_max_protocol_version?: string; // "" or "auto" = newest; omitted on save keeps the stored value
+	mcp_server_max_protocol_version?: string; // cap on what Bifrost's /mcp serves; "" or "auto" = newest
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_openapi_max_spec_mb: number;
+	bifrost_url?: SecretVar;
+	bifrost_mcp_allow_writes?: boolean;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];
@@ -965,6 +973,9 @@ export interface CoreConfig {
 	skip_access_profile_user_virtual_key_creation?: boolean;
 	// Enterprise: losing the last access profile does not delete the user's virtual keys.
 	skip_access_profile_user_virtual_key_deletion?: boolean;
+	// Enterprise: whether team, business unit and customer access profiles add to ("union", shown as
+	// Extend) or cap ("intersect", shown as Restrict) what a user may reach, like a project's access rule.
+	entity_access_profile_mode?: "union" | "intersect";
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	// Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to
@@ -973,6 +984,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_client_metadata_url?: SecretVar;
 	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
 	a2a_store_raw_request_response?: boolean;
@@ -983,58 +995,19 @@ export interface CoreConfig {
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
+		// Client gateways, one block per coding client, served under /gateway/<client>.
+		gateways?: {
+			claude_code?: {
+				enabled?: boolean;
+				// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
+				managed_settings?: Record<string, unknown> | null; // null: no managed policy
+				telemetry?: ClientGatewayTelemetry;
+			};
+		};
 	};
 }
 
-export const DefaultCoreConfig: CoreConfig = {
-	drop_excess_requests: false,
-	initial_pool_size: 1000,
-	prometheus_labels: [],
-	enable_logging: true,
-	disable_content_logging: false,
-	retain_content_in_object_storage: false,
-	allow_per_request_content_storage_override: false,
-	allow_per_request_raw_override: false,
-	allow_direct_keys: false,
-	vk_rotation_cooldown: 0,
-	disable_db_pings_in_health: false,
-	dump_errors_in_console_logs: false,
-	log_retention_days: 365,
-	enforce_auth_on_inference: true,
-	dual_credential_conflict_behavior: "prefer_idp",
-	extra_fields_placement: "body",
-	allowed_origins: [],
-	max_request_body_size_mb: 100,
-	compat: {
-		convert_text_to_chat: false,
-		convert_chat_to_responses: false,
-		should_drop_params: false,
-		should_convert_params: false,
-		azure_deepseek: false,
-		force_reasoning_only_models_to_responses: true,
-		convert_decision_to_responses: false,
-	},
-	mcp_agent_depth: 10,
-	mcp_tool_execution_timeout: 30,
-	mcp_code_mode_binding_level: "server",
-	mcp_tool_sync_interval: 10,
-	mcp_disable_auto_tool_inject: false,
-	mcp_max_instructions_per_client: 0,
-	mcp_max_instructions_total: 0,
-	mcp_enable_temp_token_auth: false,
-	async_job_result_ttl: 3600,
-	allowed_headers: [],
-	required_headers: [],
-	logging_headers: [],
-	whitelisted_routes: [],
-	hide_deleted_virtual_keys_in_filters: false,
-	delete_expired_virtual_keys: false,
-	enforce_vk_object_ownership: true,
-	skip_access_profile_user_virtual_key_creation: false,
-	skip_access_profile_user_virtual_key_deletion: false,
-	hidden_request_types: [],
-	routing_chain_max_depth: 10,
-};
+export { DefaultCoreConfig } from "./coreConfigDefaults";
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
@@ -1106,3 +1079,14 @@ export interface ProviderFormData {
 
 // Status types
 export type ProviderStatus = "active" | "error" | "deleted";
+
+// Client gateway telemetry forwarding. Endpoints and header values come back from
+// the API as SecretVar objects and are sent as plain strings ("env.X" for a reference).
+export interface ClientGatewayTelemetry {
+	enabled?: boolean;
+	destinations?: {
+		endpoint?: SecretVar | string;
+		headers?: Record<string, SecretVar | string>;
+	}[];
+	drop_attributes?: string[];
+}
