@@ -2024,7 +2024,8 @@
     }
   ],
   "server": {
-    "read_buffer_size": 65536
+    "read_buffer_size": 65536,
+    "trusted_forwarded_host": "localhost:8080"
   },
   "client": {
     "bifrost_url": "http://localhost:8080",

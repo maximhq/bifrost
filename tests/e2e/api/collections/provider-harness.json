@@ -197369,6 +197369,7 @@
                 "exec": [
                   "var url = pm.response.headers.get('X-Goog-Upload-URL');",
                   "pm.test('initiation returns an upload url carrying an upload_id', function () { pm.expect(url, 'no X-Goog-Upload-URL header; body: ' + pm.response.text()).to.be.a('string').and.include('upload_id='); pm.expect(pm.response.headers.get('X-Goog-Upload-Status')).to.equal('active'); });",
+                  "pm.test('upload URL uses the reachable SDK endpoint without forwarded headers', function () { var base = pm.variables.get('baseUrl').replace(/\\/+$/, ''); pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(url, pm.response.text()).to.be.a('string'); pm.expect(url.indexOf(base + '/genai/upload/v1beta/files?upload_id='), 'unreachable upload URL: ' + url).to.equal(0); });",
                   "pm.collectionVariables.set('h153UploadUrl', url);"
                 ]
               }
@@ -346501,6 +346502,624 @@
               "path": [
                 "v1",
                 "videos"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "307. MCP trusted forwarded host discovery",
+      "description": "Local MCP discovery regressions for /api/oauth/client-metadata.json. Requires the dedicated tests/integrations/forwarded-host/config.json server, with server.trusted_forwarded_host=public.example.test:8443 and no client.mcp_external_client_url override. Do not run this folder against the ordinary SDK integration server. Cases 307.1-307.3 accept only the matching first forwarded authority; 307.4-307.9 reject untrusted request hosts with HTTP 400 instead of advertising internal or attacker URLs. Cases 307.10-307.12 accept Host only when it matches the configured authority, including case-insensitive matching and an untrusted forwarded header. Explicit URL priority, unconfigured fail-closed behavior and base paths are covered by Go regressions. No provider inference is called.",
+      "item": [
+        {
+          "name": "307.1 MCP trusted forwarded host exact authority over HTTPS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"https://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "public.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.2 MCP trusted forwarded host case-insensitive trimmed first entry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"https://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "  PuBlIc.ExAmPlE.TeSt:8443  , attacker.example.test"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.3 MCP trusted forwarded host preserves HTTP scheme",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"http://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "http"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "public.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.4 MCP trusted forwarded host rejects another hostname [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.5 MCP trusted forwarded host requires the configured port [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "public.example.test"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.6 MCP trusted forwarded host rejects a different port [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "public.example.test:9443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.7 MCP trusted forwarded host ignores a trusted later entry [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example.test, public.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.8 MCP trusted forwarded host rejects a full URL [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "https://public.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.9 MCP trusted forwarded host absent rejects untrusted Host [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('untrusted request authority is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('trusted public base URL');",
+                  "  pm.expect(pm.response.text()).not.to.include('internal.example.test');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example.test');",
+                  "  pm.expect(pm.response.headers.get('Cache-Control') || '').not.to.include('public');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "internal.example.test:8081"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.10 MCP trusted forwarded host accepts configured Host without forwarded header",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"https://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "public.example.test:8443"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.11 MCP trusted forwarded host accepts case-insensitive configured Host",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"https://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "PUBLIC.EXAMPLE.TEST:8443"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.12 MCP trusted forwarded host falls back only to configured Host",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth client metadata is reachable without provider inference', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('cache varies by forwarded host', function () {",
+                  "  var vary = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'vary'; }).map(function (h) { return h.value; }).join(',').toLowerCase().split(',').map(function (v) { return v.trim(); });",
+                  "  pm.expect(vary, 'Vary must separate forwarded hosts: ' + pm.response.text()).to.include('x-forwarded-host');",
+                  "});",
+                  "pm.test('metadata advertises exactly the expected authority, scheme and base path', function () {",
+                  "  var expected = \"https://public.example.test:8443\";",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_uri, 'body: ' + pm.response.text()).to.equal(expected);",
+                  "  pm.expect(doc.client_id, 'body: ' + pm.response.text()).to.equal(expected + '/api/oauth/client-metadata.json');",
+                  "  pm.expect(doc.redirect_uris, 'body: ' + pm.response.text()).to.eql([expected + '/api/oauth/callback']);",
+                  "  pm.expect(doc.token_endpoint_auth_method, 'body: ' + pm.response.text()).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "public.example.test:8443"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              },
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example.test:8443"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/client-metadata.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "client-metadata.json"
               ]
             }
           }
