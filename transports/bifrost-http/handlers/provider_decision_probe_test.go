@@ -294,3 +294,51 @@ func TestProbeDecision_MakesOneUpstreamCall(t *testing.T) {
 		t.Fatalf("expected the first attempt's 503, got %s", body)
 	}
 }
+
+// TestProbedRoute_ReportsKeyAliasTarget pins the model named when the provider
+// reports none: a key alias's target, which is what went upstream, rather than
+// the alias name the probe was asked for.
+func TestProbedRoute_ReportsKeyAliasTarget(t *testing.T) {
+	routing := schemas.RoutingInfo{Provider: probeTestProvider, Model: "judge", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "decider-2026-01"}}
+	if _, model := probedRoute(probeTestProvider, "judge", routing, ""); model != "decider-2026-01" {
+		t.Fatalf("model got %q, want the alias target decider-2026-01", model)
+	}
+	if _, model := probedRoute(probeTestProvider, "judge", routing, "decider-2026-02"); model != "decider-2026-02" {
+		t.Fatalf("model got %q, want the provider-reported decider-2026-02", model)
+	}
+	if _, model := probedRoute(probeTestProvider, "judge", schemas.RoutingInfo{Model: "judge"}, ""); model != "judge" {
+		t.Fatalf("model got %q, want the routed model judge", model)
+	}
+}
+
+// TestDecisionProbeErrorFrom_RedactsShortCredentials pins that a key or header
+// value shorter than decisionProbeMinSecretLength is still removed from every
+// returned field where it stands as a token, while longer words that merely
+// contain it are left alone.
+func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
+	config := &configstore.ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "short", Value: *schemas.NewSecretVar("tok1234")},
+			{ID: "empty", Value: *schemas.NewSecretVar("")},
+		},
+		NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{"x-team": *schemas.NewSecretVar("t-42")}},
+	}
+	got := decisionProbeErrorFrom(&schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+		Error: &schemas.ErrorField{
+			Message: "key tok1234 for team t-42 rejected; stok12345 and t-421 are other ids",
+			Type:    schemas.Ptr("auth_error tok1234"),
+			Code:    schemas.Ptr("bad_key:tok1234"),
+		},
+	}, decisionProbeSecrets(config))
+
+	if want := "key [redacted] for team [redacted] rejected; stok12345 and t-421 are other ids"; got.Message != want {
+		t.Fatalf("message got %q, want %q", got.Message, want)
+	}
+	if got.Type == nil || *got.Type != "auth_error [redacted]" {
+		t.Fatalf("type got %v, want auth_error [redacted]", got.Type)
+	}
+	if got.Code == nil || *got.Code != "bad_key:[redacted]" {
+		t.Fatalf("code got %v, want bad_key:[redacted]", got.Code)
+	}
+}

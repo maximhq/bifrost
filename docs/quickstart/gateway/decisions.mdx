@@ -318,7 +318,7 @@ A probe that reached the provider returns `200` either way. When the route fails
 }
 ```
 
-The probe is rejected with `400` before anything is sent when the model is not served on the provider's decisions endpoint (the models `GET /api/models?decisions=true` lists), and with `404` when the provider is not configured. It bypasses routing rules, governance, caching, and logging, so it tests the route itself, and each probe is a real, billed request.
+The probe is rejected with `400` before anything is sent when the model is not served on the provider's decisions endpoint (the models `GET /api/models?decisions=true` lists), and with `404` when the provider is not configured. It bypasses the plugin pipeline (routing rules, governance, caching, and request logs), so it tests the route itself, and each probe is a real, billed request. The HTTP access log still records the probe's method, path, and status like any other management call.
 
 ## Validation
 

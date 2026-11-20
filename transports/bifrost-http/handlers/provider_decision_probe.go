@@ -27,8 +27,9 @@ const (
 )
 
 // decisionProbeMinSecretLength is the shortest credential scrubbed from probe
-// errors by value. Real keys are far longer; a shorter value would mangle the
-// message without hiding anything worth hiding.
+// errors wherever it appears. A shorter credential is scrubbed only where it
+// stands as a whole token, so a value such as "abc1" hides the echoed key
+// without cutting the same letters out of other words in the message.
 const decisionProbeMinSecretLength = 8
 
 // decisionProbeURLPattern finds URLs in an error message so their userinfo and
@@ -66,8 +67,9 @@ type DecisionProbeError struct {
 // probeDecision handles POST /api/providers/{provider}/decisions/probe. It
 // sends one fixed decision request to exactly the given provider and model so
 // an operator can check a route before relying on it. The request skips the
-// plugin pipeline (routing rules, governance, caching, logging) and carries no
-// fallbacks, so the answer, or the error, comes from that route alone.
+// plugin pipeline (routing rules, governance, caching, request logs; the HTTP
+// access log still records the call) and carries no fallbacks, so the answer,
+// or the error, comes from that route alone.
 func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
@@ -156,6 +158,8 @@ func probedRoute(provider schemas.ModelProvider, model string, routing schemas.R
 	switch {
 	case reportedModel != "":
 		model = reportedModel
+	case routing.ResolvedKeyAlias != nil && routing.ResolvedKeyAlias.ModelID != "":
+		model = routing.ResolvedKeyAlias.ModelID
 	case routing.Model != "":
 		model = routing.Model
 	}
@@ -171,7 +175,11 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 	sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr)
 	scrub := func(text string) string {
 		for _, secret := range secrets {
-			text = strings.ReplaceAll(text, secret, "[redacted]")
+			if len(secret) >= decisionProbeMinSecretLength {
+				text = strings.ReplaceAll(text, secret, "[redacted]")
+			} else {
+				text = redactWholeToken(text, secret)
+			}
 		}
 		return decisionProbeURLPattern.ReplaceAllStringFunc(text, lib.RedactURLCredentials)
 	}
@@ -196,12 +204,13 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 	return out
 }
 
-// decisionProbeSecrets lists the provider's credential values long enough to
-// scrub by value: its key values and its extra header values.
+// decisionProbeSecrets lists the provider's credential values to scrub: its
+// key values and its extra header values. Empty values are skipped, since
+// scrubbing "" would insert the marker between every character.
 func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 	var secrets []string
 	add := func(value string) {
-		if len(value) >= decisionProbeMinSecretLength {
+		if value != "" {
 			secrets = append(secrets, value)
 		}
 	}
@@ -214,4 +223,36 @@ func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 		}
 	}
 	return secrets
+}
+
+// redactWholeToken replaces each occurrence of token in text that is not part
+// of a longer token, that is, not preceded or followed by a letter, digit,
+// '-' or '_'.
+func redactWholeToken(text, token string) string {
+	var out strings.Builder
+	last, from := 0, 0
+	for {
+		i := strings.Index(text[from:], token)
+		if i < 0 {
+			break
+		}
+		i += from
+		end := i + len(token)
+		if (i == 0 || !isDecisionProbeTokenByte(text[i-1])) && (end == len(text) || !isDecisionProbeTokenByte(text[end])) {
+			out.WriteString(text[last:i])
+			out.WriteString("[redacted]")
+			last, from = end, end
+		} else {
+			from = i + 1
+		}
+	}
+	if last == 0 {
+		return text
+	}
+	out.WriteString(text[last:])
+	return out.String()
+}
+
+func isDecisionProbeTokenByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_'
 }

@@ -556,8 +556,9 @@ provider-decisions-probe:
       Sends one fixed predicate question with a short text input to exactly this provider
       and model on the decisions endpoint, so a decision route can be checked before it is
       relied on. The request carries no fallbacks and skips the plugin pipeline: routing
-      rules, governance, caching, and logging do not apply, so the result reflects this
-      route alone. Each probe is a real, billed request.
+      rules, governance, caching, and request logs do not apply, so the result reflects this
+      route alone. The HTTP access log still records the call's method, path, and status.
+      Each probe is a real, billed request.
 
       A probe that reached the provider returns `200` whether or not the route works:
       `ok` reports the outcome, and on failure `error` carries the provider's status code,
