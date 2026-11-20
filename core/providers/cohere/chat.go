@@ -795,6 +795,19 @@ func (cm *CohereMessage) ToBifrostChatMessage() *schemas.ChatMessage {
 		contentBlocks = nil
 	}
 
+	// Convert tool plan if present
+	if cm.ToolPlan != nil && *cm.ToolPlan != "" {
+		reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+			Index: len(reasoningDetails),
+			Type:  schemas.BifrostReasoningDetailsTypeText,
+			Text:  cm.ToolPlan,
+		})
+		if len(reasoningText) > 0 {
+			reasoningText += "\n"
+		}
+		reasoningText += *cm.ToolPlan
+	}
+
 	// Create the message content
 	messageContent := &schemas.ChatMessageContent{
 		ContentStr:    content,
