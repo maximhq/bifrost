@@ -1338,11 +1338,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			for i, b := range vk.Budgets {
 				ids[i] = b.ID
 			}
-			if err := tx.Model(&configstoreTables.TableBudget{}).
+			// Only the owner moves. Skip hooks: TableBudget.BeforeSave would validate the zero-value
+			// model passed to Model() and reject its empty ResetDuration.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).
 				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
 				Updates(map[string]interface{}{
 					"model_config_id": mc.ID,
 					"virtual_key_id":  nil,
+					"updated_at":      time.Now(),
 				}).Error; err != nil {
 				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
 			}
@@ -2212,6 +2215,26 @@ func classifyAgentGrantReplacementError(err error) error {
 	return err
 }
 
+// validateVirtualKeyProviders refuses provider configs that name one provider more than once. A
+// virtual key holds one config per provider: its per-provider budgets and rate limits are keyed by
+// the provider, and access answers for a provider from that one config's models and keys. Names are
+// compared as the configs are stored, with surrounding whitespace trimmed; a blank name is left to
+// the provider check that refuses it.
+func validateVirtualKeyProviders(providers []string) error {
+	seen := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider)
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("provider_configs names provider %q more than once: a virtual key holds one config per provider", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2267,6 +2290,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	createProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		createProviders = append(createProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(createProviders); err != nil {
 		SendError(ctx, 400, err.Error())
 		return
 	}
@@ -2681,6 +2712,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
+	}
+	// provider_configs is the full desired set (configs it leaves out are deleted), so checking the
+	// request alone covers what the key will hold.
+	updateProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		updateProviders = append(updateProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(updateProviders); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
@@ -4441,13 +4482,24 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Non-paginated path: return all model configs
-	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve model configs: %v", err)
-		SendError(ctx, 500, "Failed to retrieve model configs")
-		return
+	// Non-paginated path: return every model config the caller may see. It pages through the
+	// paginated read, which applies the caller's row-visibility scope; GetModelConfigs does not.
+	modelConfigs := []configstoreTables.TableModelConfig{}
+	for offset := 0; ; {
+		page, total, err := h.configStore.GetModelConfigsPaginated(ctx, configstore.ModelConfigsQueryParams{Limit: 100, Offset: offset})
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		modelConfigs = append(modelConfigs, page...)
+		offset += len(page)
+		if len(page) == 0 || int64(offset) >= total {
+			break
+		}
 	}
+	// Pages come newest first; this route has always answered in id order.
+	sort.Slice(modelConfigs, func(i, j int) bool { return modelConfigs[i].ID < modelConfigs[j].ID })
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
 	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{

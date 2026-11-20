@@ -46,6 +46,15 @@ func GenAIRealtimePaths(pathPrefix string) []string {
 	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
 }
 
+// GenAIVertexRealtimePaths returns the WebSocket GET paths a Google GenAI client in Vertex mode opens for the Live
+// API: the Vertex AI service, in the API versions the SDK uses.
+func GenAIVertexRealtimePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent",
+		pathPrefix + "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent",
+	}
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
@@ -1928,19 +1937,14 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	// Check all contents for audio input
+	// Only inline audio counts: the transcription path carries bytes, not a fileData URI,
+	// so fileData audio stays on Responses, which forwards the URI.
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
 			if part == nil {
 				continue
 			}
-			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
-				return true
-			}
-
-			// Check for file-based audio data
-			if part.FileData != nil && isAudioMimeType(part.FileData.MIMEType) {
 				return true
 			}
 		}

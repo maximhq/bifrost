@@ -319,6 +319,10 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusNotFound, "folder not found")
 			return
 		}
+		if errors.Is(err, configstore.ErrFolderHasHiddenPrompts) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		logger.Error("failed to delete folder: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return

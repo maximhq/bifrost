@@ -31,6 +31,20 @@ const (
 	ExtraFieldsPlacementHeaders ExtraFieldsPlacement = "headers"
 )
 
+// EntityAccessProfileMode controls how the access profiles of the entities a caller belongs to
+// (teams, business units, customers) combine with the caller's own access. The values match a
+// project's access rule, since they are the same choice.
+type EntityAccessProfileMode string
+
+const (
+	// EntityAccessProfileModeUnion lets those profiles add to what the caller may reach
+	// (default when unset). Shown as "Extend".
+	EntityAccessProfileModeUnion EntityAccessProfileMode = "union"
+	// EntityAccessProfileModeIntersect makes each level holding a profile cap what the caller
+	// may reach: the caller keeps only what every such level also allows. Shown as "Restrict".
+	EntityAccessProfileModeIntersect EntityAccessProfileMode = "intersect"
+)
+
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
 	ID                                      uint                           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -52,12 +66,14 @@ type TableClientConfig struct {
 	EnforceSCIMAuth                         bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior          DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
 	ExtraFieldsPlacement                    ExtraFieldsPlacement           `gorm:"column:extra_fields_placement;type:varchar(20);not null;default:'body'" json:"extra_fields_placement"`
+	EntityAccessProfileMode                 EntityAccessProfileMode        `gorm:"column:entity_access_profile_mode;type:varchar(20);not null;default:'union'" json:"entity_access_profile_mode"`
 	MaxRequestBodySizeMB                    int                            `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                           int                            `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout                 int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`                       // Timeout for individual tool execution in seconds (default: 30)
 	MCPCodeModeBindingLevel                 string                         `gorm:"default:server" json:"mcp_code_mode_binding_level"`                  // How tools are exposed in VFS: "server" or "tool"
 	MCPToolSyncInterval                     int                            `gorm:"default:10" json:"mcp_tool_sync_interval"`                           // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPMaxProtocolVersion                   string                         `gorm:"type:varchar(20);default:''" json:"mcp_max_protocol_version"`        // Global cap on the MCP protocol version ("" or "auto" = newest)
+	MCPServerMaxProtocolVersion             string                         `gorm:"type:varchar(20);default:''" json:"mcp_server_max_protocol_version"` // Cap on the MCP protocol version Bifrost's /mcp serves ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                           `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPMaxInstructionsPerClient             int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`                   // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                        // Byte bound on the whole aggregate; 0 is the default
@@ -74,6 +90,7 @@ type TableClientConfig struct {
 	UsageEstimationTokenizersJSON           string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string of tokenizer families used to estimate a cancelled stream's usage
 	RoutingChainMaxDepth                    int                            `gorm:"default:10" json:"routing_chain_max_depth"`                          // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`         // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
+	MCPClientMetadataURL                    string                         `gorm:"type:varchar(512)" json:"mcp_client_metadata_url,omitempty"`         // Where Bifrost's Client ID Metadata Document is hosted, when not under mcp_external_client_url
 	SkillsExternalClientURL                 string                         `gorm:"type:varchar(512)" json:"skills_external_client_url,omitempty"`      // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse              bool                           `gorm:"column:a2a_store_raw_request_response;default:false" json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"a2a_external_client_url,omitempty"`      // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs
@@ -91,6 +108,16 @@ type TableClientConfig struct {
 	CompatAzureDeepseek                       bool `gorm:"column:compat_azure_deepseek;default:false" json:"-"`
 	CompatForceReasoningOnlyModelsToResponses bool `gorm:"column:compat_force_reasoning_only_models_to_responses;default:false" json:"-"`
 	CompatConvertDecisionToResponses          bool `gorm:"column:compat_convert_decision_to_responses;default:false" json:"-"`
+
+	// MCPOpenAPIMaxSpecMB limits an openapi MCP client's spec, in MiB; 0 is the built-in 32.
+	// The explicit column name avoids GORM deriving "mcp_open_api_..." from the field name.
+	MCPOpenAPIMaxSpecMB int `gorm:"column:mcp_openapi_max_spec_mb;default:0" json:"mcp_openapi_max_spec_mb"`
+
+	// BifrostURL is the gateway's public base URL; empty leaves self URLs to the request.
+	BifrostURL string `gorm:"column:bifrost_url;type:varchar(512)" json:"bifrost_url,omitempty"`
+	// BifrostMCPAllowWrites gates /v1/mcp's non-GET /api tools; NULL is true. A pointer, so GORM
+	// stores false instead of substituting a column default for the zero value.
+	BifrostMCPAllowWrites *bool `gorm:"column:bifrost_mcp_allow_writes" json:"bifrost_mcp_allow_writes,omitempty"`
 
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.
@@ -264,11 +291,11 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if cc.OAuth2ServerConfig != nil {
-		data, err := json.Marshal(cc.OAuth2ServerConfig)
+		data, err := cc.OAuth2ServerConfig.StorageJSON()
 		if err != nil {
 			return err
 		}
-		cc.OAuth2ServerConfigJSON = string(data)
+		cc.OAuth2ServerConfigJSON = data
 	} else {
 		cc.OAuth2ServerConfigJSON = ""
 	}

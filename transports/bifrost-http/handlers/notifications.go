@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"slices"
 	"sort"
@@ -160,6 +161,12 @@ func validateNotificationInput(input *schemas.NotificationInput) error {
 func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 	if localAdmin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !localAdmin {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can publish notifications")
+		return
+	}
+	// JSON only: a form or text/plain POST needs no CORS preflight, so a page on
+	// another site could send one with admin Basic credentials the browser cached.
+	if mediaType, _, err := mime.ParseMediaType(string(ctx.Request.Header.ContentType())); err != nil || mediaType != "application/json" {
+		SendError(ctx, fasthttp.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 	var input schemas.NotificationInput

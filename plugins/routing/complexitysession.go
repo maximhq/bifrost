@@ -193,13 +193,34 @@ func decodeStoredComplexityTier(value any) (string, error) {
 // session state key, scoped to the virtual key and user the request is attributed to, under
 // the complexity kind. See complexityStateKey for the agent scoping.
 func complexitySessionKey(ctx *schemas.BifrostContext) string {
-	return complexityStateKey(ctx, complexitySessionKind)
+	return complexitySessionKeyFor(ctx, "")
+}
+
+// complexitySessionKeyFor is complexitySessionKey for one model router, so routers never
+// raise each other's session tiers.
+func complexitySessionKeyFor(ctx *schemas.BifrostContext, routerID string) string {
+	return complexityStateKey(ctx, complexityRouterKind(complexitySessionKind, routerID))
 }
 
 // complexityTurnTierKey scopes continuation tier state to the request's session, caller and
 // agent, so a subagent's tool loop never resumes on a tier its parent served, or the reverse.
 func complexityTurnTierKey(ctx *schemas.BifrostContext) string {
-	return complexityStateKey(ctx, complexityTurnTierKind)
+	return complexityTurnTierKeyFor(ctx, "")
+}
+
+// complexityTurnTierKeyFor is complexityTurnTierKey for one model router.
+func complexityTurnTierKeyFor(ctx *schemas.BifrostContext, routerID string) string {
+	return complexityStateKey(ctx, complexityRouterKind(complexityTurnTierKind, routerID))
+}
+
+// complexityRouterKind scopes a state kind to a model router. The Complexity Router page's
+// config, which has no router id, keeps the kinds written before routers existed, so its
+// session state is unchanged.
+func complexityRouterKind(kind, routerID string) string {
+	if routerID == "" {
+		return kind
+	}
+	return kind + ":" + routerID
 }
 
 // complexityStateKey keys complexity state per agent rather than per session. Harnesses run

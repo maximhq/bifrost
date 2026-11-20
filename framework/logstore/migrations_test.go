@@ -1521,6 +1521,28 @@ func TestMigrationAddRelayLogLargePayloadResponse(t *testing.T) {
 	require.Equal(t, int64(1), count)
 }
 
+func TestCallerCorrelationIDColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "caller-correlation-id.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"), "the migration adds the column")
+	require.True(t, db.Migrator().HasIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id"), "the migration adds the index")
+	require.NoError(t, callerCorrelationIDColumnMigration(ctx, testLogger{}).Migrate(db), "the migration is idempotent")
+
+	now := time.Now().UTC()
+	caller := "task-parent"
+	require.NoError(t, db.Create(&AgentLog{ID: "agent-1", Timestamp: now, CreatedAt: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "req-1", CallerCorrelationID: &caller}).Error)
+	err = callerCorrelationIDColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while caller_correlation_id holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"), "caller_correlation_id survives a refused rollback")
+
+	require.NoError(t, db.Model(&AgentLog{}).Where("id = ?", "agent-1").Update("caller_correlation_id", nil).Error)
+	require.NoError(t, callerCorrelationIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
+	assert.False(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"))
+}
+
 func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
 	ctx := context.Background()
 	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "round-trip-id.db")}, testLogger{})
@@ -1540,4 +1562,86 @@ func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
 	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("round_trip_id", nil).Error)
 	require.NoError(t, roundTripIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
 	assert.False(t, db.Migrator().HasColumn(&MCPToolLog{}, "round_trip_id"))
+}
+
+// TestModelRoutingColumnsMigration_NonRollbackable pins that rolling
+// logs_add_model_routing_columns back is refused while any log records a
+// router: that attribution cannot be recaptured, so the drop would
+// delete data rather than reverse a schema change.
+func TestModelRoutingColumnsMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "model-routing.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&Log{ID: "log-1", Timestamp: now, CreatedAt: now, Object: "chat_completion", Provider: "openai", Model: "m", Status: "success"}).Error)
+	require.NoError(t, db.Model(&Log{}).Where("id = ?", "log-1").Update("model_router_name", "Support").Error)
+
+	err = modelRoutingColumnsMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while a log records a model router")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, column := range modelRoutingColumns {
+		assert.True(t, db.Migrator().HasColumn(&Log{}, column), "logs.%s survives a refused rollback", column)
+	}
+
+	require.NoError(t, db.Model(&Log{}).Where("id = ?", "log-1").Update("model_router_name", nil).Error)
+	require.NoError(t, modelRoutingColumnsMigration(ctx, testLogger{}).Rollback(db), "with nothing recorded the rollback is a genuine reversal")
+	assert.False(t, db.Migrator().HasColumn(&Log{}, "model_router_id"))
+}
+
+// pgRelOptions returns a table's reloptions (storage parameters), or nil when it has none.
+func pgRelOptions(t *testing.T, db *gorm.DB, table string) []string {
+	t.Helper()
+	var opts []string
+	require.NoError(t, db.Raw("SELECT unnest(reloptions) FROM pg_class WHERE oid = to_regclass(?)", table).Scan(&opts).Error)
+	return opts
+}
+
+// Retention deletes rows hourly on Postgres. With the default autovacuum scale
+// factor (20% dead rows) a large logs table bloats between vacuums, so the
+// retention tables get per-table autovacuum settings that run vacuum after a
+// small, bounded share of dead rows.
+func TestMigrationTuneRetentionAutovacuum_Postgres(t *testing.T) {
+	// setupRetentionPostgres recreates only logs and mcp_tool_logs, so the other
+	// retention tables keep settings from an earlier run on a reused database.
+	// Clear them first, or a broken migration still passes on those tables.
+	if pre := trySetupPostgresDB(t); pre != nil {
+		reset := "RESET (" + strings.Join(retentionAutovacuumOptionNames(), ", ") + ")"
+		for _, table := range retentionAutovacuumTables {
+			require.NoError(t, pre.Exec("ALTER TABLE IF EXISTS "+table+" "+reset).Error)
+		}
+	}
+
+	_, db := setupRetentionPostgres(t, 0, 0)
+	for _, table := range retentionAutovacuumTables {
+		var exists bool
+		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error)
+		require.True(t, exists, "%s is created by an earlier migration", table)
+		assert.Subset(t, pgRelOptions(t, db, table), retentionAutovacuumOptions, "%s must vacuum after a bounded share of dead rows", table)
+	}
+
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+	require.NoError(t, retentionAutovacuumMigration(context.Background(), testLogger{}).Rollback(tx))
+	for _, table := range retentionAutovacuumTables {
+		assert.Empty(t, pgRelOptions(t, tx, table), "rollback restores the server's autovacuum defaults on %s", table)
+	}
+}
+
+// Every table the retention cleaner deletes from must get the autovacuum
+// settings. Adding a retention table without tuning it fails here.
+func TestRetentionAutovacuumTablesMatchCleaner(t *testing.T) {
+	cleaned := make([]string, 0, len(retentionAdvisoryLockKeys))
+	for table := range retentionAdvisoryLockKeys {
+		cleaned = append(cleaned, table)
+	}
+	assert.ElementsMatch(t, cleaned, retentionAutovacuumTables)
+}
+
+// The settings are Postgres storage parameters; SQLite and MySQL skip the step.
+func TestMigrationTuneRetentionAutovacuum_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, migrationTuneRetentionAutovacuum(context.Background(), db, testLogger{}))
 }
