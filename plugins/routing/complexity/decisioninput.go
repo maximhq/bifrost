@@ -2,14 +2,22 @@ package complexity
 
 import "github.com/maximhq/bifrost/framework/configstore"
 
+// DecisionPreviousMessageCount is how many earlier user messages the decision
+// model reads with the current one: the configured count, or the default
+// when none is set, within the bounds the window allows. The request path
+// and a suggestion run's backfill both read it, so a backfilled request is
+// embedded from the same turns the decision model saw.
+func DecisionPreviousMessageCount(cfg *DecisionConfig) int {
+	count := configstore.DefaultComplexityDecisionPreviousMessageCount
+	if cfg != nil && cfg.PreviousMessageCount != nil {
+		count = *cfg.PreviousMessageCount
+	}
+	return min(max(count, 0), configstore.MaxComplexityDecisionPreviousMessageCount)
+}
+
 // DecisionConversationWindow returns the current user request and a bounded number of earlier user messages.
 func DecisionConversationWindow(input ComplexityInput, previousMessageCount int) []ConversationMessage {
-	if previousMessageCount < 0 {
-		previousMessageCount = 0
-	}
-	if previousMessageCount > configstore.MaxComplexityDecisionPreviousMessageCount {
-		previousMessageCount = configstore.MaxComplexityDecisionPreviousMessageCount
-	}
+	previousMessageCount = min(max(previousMessageCount, 0), configstore.MaxComplexityDecisionPreviousMessageCount)
 
 	conversation := input.Conversation
 	latestUser := -1

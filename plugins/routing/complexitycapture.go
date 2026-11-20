@@ -165,8 +165,11 @@ func (p *RoutingPlugin) ComplexityCaptureStats() complexity.CaptureStats {
 }
 
 // dropRouterCaptures deletes a deleted router's captured vectors, off the
-// caller's path.
+// caller's path, and forgets its embedded examples.
 func (p *RoutingPlugin) dropRouterCaptures(id string) {
+	if p.suggestions != nil {
+		p.suggestions.examples.Delete(id)
+	}
 	cc := p.capture
 	store := p.captureStore()
 	if cc == nil || store == nil {

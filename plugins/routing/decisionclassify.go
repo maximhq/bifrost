@@ -64,10 +64,7 @@ func (p *RoutingPlugin) classifyRouterDecision(ctx *schemas.BifrostContext, inpu
 		count := configstore.DefaultComplexityDecisionPreviousMessageCount
 		decisionConfig = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: configstore.DefaultComplexityDecisionTimeout}
 	}
-	count := configstore.DefaultComplexityDecisionPreviousMessageCount
-	if decisionConfig.PreviousMessageCount != nil {
-		count = *decisionConfig.PreviousMessageCount
-	}
+	count := complexity.DecisionPreviousMessageCount(decisionConfig)
 	provider, model := decisionConfig.Provider, decisionConfig.Model
 	if provider == "" || model == "" {
 		provider, model = configstore.DefaultComplexityDecisionProvider, configstore.DefaultComplexityDecisionModel

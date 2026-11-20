@@ -1616,3 +1616,152 @@ func TestComplexitySuggestionsCancelNeverOverwritesAFinishedRun(t *testing.T) {
 	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, runs[0].Status, "the outcome that landed is kept")
 	assert.EqualValues(t, 2, runs[0].Created)
 }
+
+// decisionEmbeddings answers embedding requests in two dimensions and
+// records every text it was asked to embed.
+type decisionEmbeddings struct {
+	mu    sync.Mutex
+	texts []string
+}
+
+func (e *decisionEmbeddings) execute(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if req.Provider != "openai" || req.Model != "test-embedding-model" {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "unexpected embedding model " + req.Model}}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	resp := &schemas.BifrostEmbeddingResponse{Usage: &schemas.BifrostLLMUsage{TotalTokens: len(req.Input)}}
+	for i, item := range req.Input {
+		text := *item.Content[0].Text
+		e.texts = append(e.texts, text)
+		vector := []float64{1, 0}
+		if strings.Contains(text, "hard") {
+			vector = []float64{0, 1}
+		}
+		resp.Data = append(resp.Data, schemas.EmbeddingData{Index: i, Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}})
+	}
+	return resp, nil
+}
+
+func (e *decisionEmbeddings) take() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	texts := e.texts
+	e.texts = nil
+	return texts
+}
+
+// addDecisionLog writes a request the decision router took, with the tier
+// and mechanism it logged (none when empty).
+func addDecisionLog(t *testing.T, store logstore.LogStore, id, routerID string, at time.Time, tier, mechanism string) {
+	t.Helper()
+	entry := &logstore.Log{ID: id, Timestamp: at, CreatedAt: at, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ModelRouterID: &routerID}
+	if tier != "" {
+		entry.ComplexityTier = &tier
+	}
+	if mechanism != "" {
+		entry.ComplexityMechanism = &mechanism
+	}
+	require.NoError(t, store.Create(context.Background(), entry))
+}
+
+// A decision-model router's suggestion source: its examples, as its decision
+// model reads them, embedded with its suggestions embedding model; a backfill
+// from its logs of only the requests its decision model logged a tier for,
+// with the turns that model reads; and those requests read back with that
+// tier. Examples embedded once are not embedded again until edited, and are
+// forgotten with the router.
+func TestComplexitySuggestionDecisionRouterSource(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	reads := &textReads{}
+	var historyCounts []int
+	p.SetComplexitySuggestionStore(store, func(ctx context.Context, ids []string, count int) (map[string]string, error) {
+		historyCounts = append(historyCounts, count)
+		return reads.read(ctx, ids, count)
+	})
+	embeddings := &decisionEmbeddings{}
+	p.SetEmbeddingRequestExecutor(embeddings.execute)
+	ctx := context.Background()
+
+	settings := suggestionTestSettings()
+	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
+	previous := 2
+	cfg := captureTestConfig(settings)
+	cfg.Classifier, cfg.Semantic = complexity.ClassifierDecision, nil
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &previous, Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		complexity.TierComplex: {Examples: []string{"a hard proof"}},
+	}}
+	const routerID = "decision-router"
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: routerID, Name: routerID, ComplexityAnalyzerConfig: *cfg}))
+	router, ok := p.suggestionRouter(routerID)
+	require.True(t, ok)
+	assert.Equal(t, 3, p.ComplexitySuggestionMessageHistoryCount(routerID), "the decision model reads two previous turns and the current one")
+
+	space, err := p.decisionSuggestionSpace(ctx, router)
+	require.NoError(t, err)
+	criteria := cfg.Decision.ResolvedCriteria()
+	examples := len(criteria[complexity.TierSimple].Examples) + len(criteria[complexity.TierMedium].Examples) + 1
+	require.Len(t, space.LivePhrases(), examples, "the shipped examples of the tiers not edited, and the edited one")
+	assert.Contains(t, space.LivePhrases(), complexity.SuggestionPhrase{Tier: complexity.TierComplex, Text: "a hard proof", Vector: []float32{0, 1}})
+	assert.Len(t, embeddings.take(), examples)
+	assert.Equal(t, complexity.CaptureNamespace(routerID, "openai", "test-embedding-model", 2, 3), space.Namespace())
+
+	now := time.Now().UTC().Truncate(time.Second)
+	at := now.Add(-time.Hour)
+	addDecisionLog(t, store, "decided-simple", routerID, at, complexity.TierSimple, complexity.MechanismDecision)
+	addDecisionLog(t, store, "decided-complex", routerID, at, complexity.TierComplex, complexity.MechanismDecision)
+	addDecisionLog(t, store, "session-pinned", routerID, at, complexity.TierComplex, complexity.MechanismSession)
+	addDecisionLog(t, store, "no-tier", routerID, at, "", complexity.MechanismSkipped)
+	addDecisionLog(t, store, "semantic-before", routerID, at, complexity.TierMedium, complexity.MechanismSemantic)
+	addDecisionLog(t, store, "theirs", captureRouterID, at, complexity.TierSimple, complexity.MechanismDecision)
+
+	written, err := p.backfillWindow(ctx, router, space, p.suggestionDeps(), now.Add(-24*time.Hour), now)
+	require.NoError(t, err)
+	assert.Equal(t, 2, written)
+	assert.Equal(t, []string{"decided-complex", "decided-simple"}, reads.take(), "only requests the decision model logged a tier for are read")
+	assert.Equal(t, []int{3}, historyCounts, "with the turns the decision model reads")
+	assert.Len(t, embeddings.take(), 2)
+
+	got := map[string]string{}
+	require.NoError(t, space.EachCaptured(ctx, now.Add(-24*time.Hour), now, func(page []complexity.CapturedRequest) error {
+		for _, r := range page {
+			got[r.LogID] = r.Tier
+		}
+		return nil
+	}))
+	assert.Equal(t, map[string]string{"decided-simple": complexity.TierSimple, "decided-complex": complexity.TierComplex}, got)
+
+	// A second space embeds nothing it already has; an edited example alone.
+	_, err = p.decisionSuggestionSpace(ctx, router)
+	require.NoError(t, err)
+	assert.Empty(t, embeddings.take())
+	cfg.Decision.Criteria = map[string]configstore.ComplexityDecisionTierCriteria{complexity.TierComplex: {Examples: []string{"a hard proof", "another hard one"}}}
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: routerID, Name: routerID, ComplexityAnalyzerConfig: *cfg}))
+	router, _ = p.suggestionRouter(routerID)
+	_, err = p.decisionSuggestionSpace(ctx, router)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"another hard one"}, embeddings.take())
+
+	require.NoError(t, p.RemoveModelRouter(routerID))
+	_, cached := p.suggestions.examples.Load(routerID)
+	assert.False(t, cached, "a removed router's examples are forgotten")
+}
+
+// A decision-model router's space needs its embedding model and the
+// embedding path; a semantic router has no decision space.
+func TestComplexitySuggestionDecisionSpaceNeedsAnEmbeddingModel(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	semantic, _ := p.suggestionRouter(captureRouterID)
+	_, err := p.decisionSuggestionSpace(ctx, semantic)
+	require.ErrorIs(t, err, complexity.ErrNoDecisionEmbedding)
+
+	settings := suggestionTestSettings()
+	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
+	cfg := captureTestConfig(settings)
+	cfg.Classifier, cfg.Semantic, cfg.Decision = complexity.ClassifierDecision, nil, &complexity.DecisionConfig{}
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: "decision-router", Name: "decision-router", ComplexityAnalyzerConfig: *cfg}))
+	router, _ := p.suggestionRouter("decision-router")
+	_, err = p.decisionSuggestionSpace(ctx, router)
+	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured, "no embedding path wired yet")
+}

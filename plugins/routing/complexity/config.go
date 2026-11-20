@@ -48,6 +48,10 @@ const (
 	TierComplex              = "COMPLEX"
 )
 
+// OrderedTiers returns the tiers from the lowest to the highest, a fresh
+// slice each call.
+func OrderedTiers() []string { return []string{TierSimple, TierMedium, TierComplex} }
+
 // Routing mechanism values recorded when a routing rule demands a complexity
 // tier. They surface in request logs (complexity_mechanism column) so admins can
 // see how each routing decision was classified. "skipped" means classification

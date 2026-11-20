@@ -944,10 +944,14 @@ func (c *RequestCapture) Close() {
 }
 
 // CapturedRequest is one captured request read back for a suggestion run.
+// Tier is the tier a decision-model router's decision model logged for it,
+// read from its log; empty for a semantic router's, which a run routes
+// against the serving phrases instead.
 type CapturedRequest struct {
 	LogID  string
 	Vector []float32
 	At     time.Time
+	Tier   string
 }
 
 // captureReadPage is how many captured vectors one read returns: about 3 MB
