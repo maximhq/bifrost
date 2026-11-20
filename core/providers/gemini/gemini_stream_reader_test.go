@@ -79,6 +79,23 @@ func TestReadNextSSEDataLine_KeepsSpaceAtFragmentBoundary(t *testing.T) {
 	}
 }
 
+// A fragment can end inside the whitespace after "data:", leaving no payload in
+// the first fragment. The payload in the continuation fragments must still be
+// returned rather than the event being dropped as empty.
+func TestReadNextSSEDataLine_PayloadStartsInLaterFragment(t *testing.T) {
+	const bufSize = 1024
+	text := `{"text":"later fragment"}`
+	stream := "data:" + strings.Repeat(" ", bufSize-len("data:")+3) + text + "\n"
+
+	line, err := readNextSSEDataLine(bufio.NewReaderSize(strings.NewReader(stream), bufSize), false)
+	if err != nil {
+		t.Fatalf("expected payload from the later fragment, got error: %v", err)
+	}
+	if string(line) != text {
+		t.Fatalf("got %q, want %q", line, text)
+	}
+}
+
 // fragmentBoundaryPayload builds a JSON payload that, after the given SSE prefix,
 // puts sep as the last byte of the fragment that ends at offset boundary.
 func fragmentBoundaryPayload(prefix string, boundary int, sep string) string {

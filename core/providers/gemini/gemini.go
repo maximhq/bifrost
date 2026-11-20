@@ -3567,7 +3567,9 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 		}
 
 		data := bytes.TrimLeft(trimmed[len("data:"):], " \t")
-		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		// An empty payload only ends the event when the line ends here; a fragment
+		// can stop inside the whitespace after "data:" with the payload still to come.
+		if !isPrefix && (len(data) == 0 || bytes.Equal(data, []byte("[DONE]"))) {
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
 				if err != nil {
