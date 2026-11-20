@@ -1253,7 +1253,7 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		copyParams.Description = &copyParamDesc
 	}
 	if original.Required != nil {
-		copyParams.Required = append([]string(nil), original.Required...)
+		copyParams.Required = append(make([]string, 0, len(original.Required)), original.Required...)
 	}
 	if original.Properties != nil {
 		copyParams.Properties = deepCopyOrderedMap(original.Properties)

@@ -4605,3 +4605,44 @@ func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
 		})
 	}
 }
+
+// TestToAnthropicResponsesRequest_PreservesExplicitEmptyRequired pins #6404 on the
+// /v1/responses route to Anthropic.
+func TestToAnthropicResponsesRequest_PreservesExplicitEmptyRequired(t *testing.T) {
+	var params schemas.ToolFunctionParameters
+	if err := schemas.Unmarshal([]byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), &params); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Take a screenshot.")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("take_screenshot"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &params, Strict: schemas.Ptr(true)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(result.Tools))
+	}
+	out, err := schemas.MarshalSorted(result.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"required":[]`) {
+		t.Fatalf("input_schema lost required: []: %s", out)
+	}
+}
