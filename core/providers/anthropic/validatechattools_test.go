@@ -159,3 +159,52 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 		})
 	}
 }
+
+// TestServerToolGatesHostFlagBoundsCatalog pins that a datasheet record can narrow a
+// host's web_search / code_execution support but never widen it past the host flag:
+// the catalog marks Claude on Bedrock supports_web_search, and Bedrock rejects
+// web_search_20250305 with 400. Nova 2 keeps its carve-out, and a record that says
+// false still drops the tool on a host that serves it.
+func TestServerToolGatesHostFlagBoundsCatalog(t *testing.T) {
+	yes, no := true, false
+	record := &schemas.ModelCapabilities{SupportsWebSearch: &yes, SupportsCodeExecution: &yes}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	chatTools := []schemas.ChatTool{
+		{Type: schemas.ChatToolType("web_search_20250305"), Name: "web_search"},
+		{Type: schemas.ChatToolType("code_execution_20250825"), Name: "code_execution"},
+	}
+	responsesTools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeWebSearch},
+		{Type: schemas.ResponsesToolTypeCodeInterpreter},
+	}
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		record   *schemas.ModelCapabilities
+		wantKeep int
+	}{
+		{"bedrock claude drops both although the record says supported", schemas.Bedrock, "global.anthropic.claude-sonnet-4-6", record, 0},
+		{"bedrock mantle claude drops both although the record says supported", schemas.BedrockMantle, "anthropic.claude-sonnet-4-6", record, 0},
+		{"bedrock nova 2 keeps both through the carve-out", schemas.Bedrock, "us.amazon.nova-2-lite-v1:0", record, 2},
+		{"anthropic keeps both when the record agrees", schemas.Anthropic, "claude-sonnet-4-6", record, 2},
+		{"anthropic drops both when the record says unsupported", schemas.Anthropic, "claude-sonnet-4-6", &schemas.ModelCapabilities{SupportsWebSearch: &no, SupportsCodeExecution: &no}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record = tc.record
+			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+			if keep, dropped := ValidateChatToolsForProvider(chatTools, caps); len(keep) != tc.wantKeep {
+				t.Errorf("chat: kept %d, want %d (dropped %v)", len(keep), tc.wantKeep, dropped)
+			}
+			if keep, dropped := ValidateResponsesToolsForProvider(responsesTools, caps); len(keep) != tc.wantKeep {
+				t.Errorf("responses: kept %d, want %d (dropped %v)", len(keep), tc.wantKeep, dropped)
+			}
+		})
+	}
+}

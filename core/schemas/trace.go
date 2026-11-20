@@ -25,9 +25,11 @@ type Trace struct {
 	mu                    sync.Mutex // Mutex for thread-safe span operations
 }
 
-// Trace-level attribute keys. Unlike span attributes, trace attributes are never
-// exported as OTEL/Datadog span attributes — observability connectors (BigQuery,
-// Datadog) read them directly off the completed trace.
+// Trace-level attribute keys. Unlike span attributes, trace attributes are not
+// exported as OTEL/Datadog span attributes by default — observability connectors
+// (BigQuery, Datadog) read them directly off the completed trace. The one exception
+// is an OTEL profile with apply_trace_dimensions_to_child_spans, which merges
+// TraceAttrDimensions onto every exported span.
 const (
 	// TraceAttrSessionID holds the session ID from the x-bf-session-id request
 	// header. The key matches the header name because connectors already read it.

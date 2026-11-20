@@ -1263,3 +1263,26 @@ func BenchmarkPassthroughStreamAccumulate(b *testing.B) {
 		accumulator.ResetStreamAccumulator("passthrough-bench")
 	}
 }
+
+// Streamed custom tool input accumulates into one custom call, as OpenAI sends it on chat.
+func TestBuildChatMessageFromChunks_CustomToolCall(t *testing.T) {
+	call := func(tc schemas.ChatAssistantMessageToolCall) *ChatStreamChunk {
+		return &ChatStreamChunk{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{tc}}}
+	}
+	chunks := []*ChatStreamChunk{
+		call(schemas.ChatAssistantMessageToolCall{ID: bifrost.Ptr("call_1"), Type: bifrost.Ptr("custom"), Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: bifrost.Ptr("code_exec")}}),
+		call(schemas.ChatAssistantMessageToolCall{Custom: &schemas.ChatAssistantMessageToolCallCustom{Input: "print("}}),
+		call(schemas.ChatAssistantMessageToolCall{Custom: &schemas.ChatAssistantMessageToolCallCustom{Input: "1)"}}),
+	}
+	message := BuildChatMessageFromChunks(chunks)
+	if message.ChatAssistantMessage == nil || len(message.ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("tool calls not accumulated: %+v", message.ChatAssistantMessage)
+	}
+	tc := message.ChatAssistantMessage.ToolCalls[0]
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != "print(1)" {
+		t.Fatalf("custom call = %+v, want code_exec/print(1)", tc.Custom)
+	}
+	if body, _ := schemas.Marshal(message); strings.Contains(string(body), `"function"`) {
+		t.Fatalf("custom call carries a function object: %s", body)
+	}
+}

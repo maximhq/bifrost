@@ -260,6 +260,65 @@ func sniffFileMediaType(data []byte) string {
 	return detected
 }
 
+// isEmptyInlineTextFile reports whether file data is an empty text document: file_data ""
+// with a text/plain file_type, or the empty text data URL. Anthropic accepts such a document,
+// but OpenAI-shaped surfaces reject "data:text/plain;base64," ("missing mime type or base64
+// content"), so the marshalers drop it when the message has anything else to send. Callers
+// check the block carries no file_id or file_url first, so a reference is never dropped.
+func isEmptyInlineTextFile(fileData, fileType *string) bool {
+	if fileData == nil {
+		return false
+	}
+	if *fileData == "data:text/plain;base64," {
+		return true
+	}
+	return *fileData == "" && fileType != nil && normalizeFileType(*fileType) == "text/plain"
+}
+
+// isEmptyChatTextFile reports whether a chat file block is an empty text document with no
+// file reference beside it.
+func isEmptyChatTextFile(f *schemas.ChatInputFile) bool {
+	return f != nil && (f.FileID == nil || *f.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// isEmptyResponsesTextFile is isEmptyChatTextFile for Responses blocks, which carry file_id on
+// the block rather than inside the file object.
+func isEmptyResponsesTextFile(block *schemas.ResponsesMessageContentBlock) bool {
+	f := block.ResponsesInputMessageContentBlockFile
+	return f != nil && (block.FileID == nil || *block.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// chatEmptyTextFilesToDrop reports whether blocks hold an empty text document and something
+// else, i.e. whether the document can be dropped without leaving the message empty.
+func chatEmptyTextFilesToDrop(blocks []schemas.ChatContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for _, block := range blocks {
+		if isEmptyChatTextFile(block.File) {
+			sawEmpty = true
+		} else {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
+// responsesEmptyTextFilesToDrop is chatEmptyTextFilesToDrop for Responses blocks. rendered_content
+// does not count as something else: the marshaler always removes it.
+func responsesEmptyTextFilesToDrop(blocks []schemas.ResponsesMessageContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for i := range blocks {
+		block := &blocks[i]
+		if isEmptyResponsesTextFile(block) {
+			sawEmpty = true
+		} else if block.Type != schemas.ResponsesOutputMessageContentTypeRenderedContent {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
 // fileDataNeedsDataURL reports whether file_data is set without a data: prefix, so the
 // marshal gates copy the block even when the caller sent no file_type to strip.
 func fileDataNeedsDataURL(fileData *string) bool {

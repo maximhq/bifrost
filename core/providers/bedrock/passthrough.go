@@ -175,7 +175,7 @@ func (provider *BedrockProvider) buildPassthroughRequest(ctx *schemas.BifrostCon
 
 	config := key.BedrockKeyConfig
 	region := resolveBedrockRegion(ctx, key, "")
-	requestURL := fmt.Sprintf("https://%s%s", resolveBedrockHost(bedrockEndpoints(config), route.service, region), req.Path)
+	requestURL := fmt.Sprintf("https://%s%s", provider.serviceHost(bedrockEndpoints(config), route.service, region), req.Path)
 	if req.RawQuery != "" {
 		requestURL += "?" + req.RawQuery
 	}
@@ -224,6 +224,8 @@ func passthroughTransportError(err error, latency time.Duration) *schemas.Bifros
 		}, latency)
 	case errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
 		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+	case errors.As(err, new(*providerUtils.DialBlockedError)):
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 	return providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 }

@@ -46,6 +46,8 @@ type Fleet struct {
 	// GET /control can hand a client its address and certificate.
 	tlsURL     string
 	tlsCertPEM string
+	// proxy is the forward proxy ServeProxy started, if any.
+	proxy *forwardProxy
 
 	conns *connTracker
 	// clients are the SDK clients the fleet drives against outside servers.

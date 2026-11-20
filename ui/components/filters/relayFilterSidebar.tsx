@@ -1,11 +1,17 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
-import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
+import {
+	CheckboxFilterItem,
+	EntityFilter,
+	FilterSection,
+	SearchableCheckboxList,
+	useAutoFocusOnOpen,
+} from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetRelayLogFilterDataQuery } from "@/lib/store";
-import type { RelayLogFilterDimension, RelayLogFilterEntity, RelayLogFilters } from "@/lib/types/relays";
+import type { RelayLogFilterDimension, RelayLogFilters } from "@/lib/types/relays";
 import { formatCostBound, parseCostBound } from "@/lib/utils/relayLogQuery";
 import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
@@ -23,7 +29,6 @@ interface RelayFilterSidebarProps {
 }
 
 type MultiKey = "relay_names" | "methods" | "status" | "kinds" | "virtual_key_ids" | "apps";
-type EntityKey = "user_ids" | "team_ids" | "customer_ids" | "business_unit_ids" | "project_ids";
 
 /** The Relay Logs filter sidebar, built on the same primitives as the LLM and MCP log sidebars. */
 export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSidebarProps) {
@@ -227,6 +232,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="virtual_key_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="virtual_keys"
 						title={t("relayLogs.fields.virtualKey")}
 						placeholder={t("filters.searchVirtualKeys")}
@@ -236,6 +242,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="user_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="users"
 						title={t("labels.user")}
 						placeholder={t("filters.searchOrAddAUser")}
@@ -246,6 +253,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="team_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="teams"
 						title={t("relayLogs.filters.teams")}
 						placeholder={t("filters.searchOrAddATeam")}
@@ -256,6 +264,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="customer_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="customers"
 						title={t("relayLogs.filters.customers")}
 						placeholder={t("filters.searchOrAddACustomer")}
@@ -266,6 +275,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="business_unit_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="business_units"
 						title={t("relayLogs.filters.businessUnits")}
 						placeholder={t("filters.searchOrAddABusinessUnit")}
@@ -276,6 +286,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="project_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="projects"
 						title={t("relayLogs.filters.projects")}
 						placeholder={t("filters.searchOrAddAProject")}
@@ -412,75 +423,6 @@ function NamesFilter({
 // the list shows names and keeps an id that the search did not return as its own row so a value
 // carried in the URL stays visible and clearable.
 // ---------------------------------------------------------------------------
-
-interface EntityFilterProps extends FilterComponentProps {
-	filterKey: EntityKey | "virtual_key_ids";
-	dimension: Extract<RelayLogFilterDimension, "virtual_keys" | "users" | "teams" | "customers" | "business_units" | "projects">;
-	title: string;
-	placeholder: string;
-	testIdPrefix: string;
-	/** Lets the user add an id that is not in the list (the LLM sidebar's "Search or add ..."). */
-	allowCustom?: boolean;
-}
-
-function EntityFilter({
-	filters,
-	onFiltersChange,
-	defaultOpen,
-	filterKey,
-	dimension,
-	title,
-	placeholder,
-	testIdPrefix,
-	allowCustom,
-}: EntityFilterProps) {
-	const selectedValues = filters[filterKey];
-	const selected = useMemo(() => selectedValues ?? [], [selectedValues]);
-	const hasActive = selected.length > 0;
-	const [opened, setOpened] = useState(!!defaultOpen || hasActive);
-	const searchInputRef = useAutoFocusOnOpen(opened);
-	const [searchQuery, setSearchQuery] = useState("");
-	const {
-		data: filterData,
-		isUninitialized,
-		isLoading,
-		isFetching,
-	} = useGetRelayLogFilterDataQuery({ dimensions: [dimension], q: searchQuery || undefined }, { skip: !opened && !hasActive });
-	const available: RelayLogFilterEntity[] = useMemo(() => filterData?.[dimension] ?? [], [filterData, dimension]);
-	const items = useMemo(() => {
-		const seen = new Set(available.map((e) => e.id));
-		const extras = selected.filter((id) => !seen.has(id));
-		return [...available.map((e) => ({ key: e.id, label: e.name || e.id })), ...extras.map((id) => ({ key: id, label: id }))];
-	}, [available, selected]);
-
-	if (!isUninitialized && !isLoading && available.length === 0 && !hasActive && !opened && !searchQuery) return null;
-
-	return (
-		<FilterSection
-			title={title}
-			defaultOpen={!!defaultOpen || hasActive}
-			loading={isLoading}
-			onOpenChange={setOpened}
-			testId={`${testIdPrefix}-toggle`}
-		>
-			<SearchableCheckboxList
-				inputRef={searchInputRef}
-				placeholder={placeholder}
-				items={items}
-				allowCustom={allowCustom}
-				isSelected={(id) => selected.includes(id)}
-				onToggle={(id) => {
-					const next = selected.includes(id) ? selected.filter((v) => v !== id) : [...selected, id];
-					onFiltersChange({ ...filters, [filterKey]: next });
-				}}
-				onSearch={setSearchQuery}
-				fetching={isFetching}
-				testIdPrefix={testIdPrefix}
-				normalizeTestIdKey
-			/>
-		</FilterSection>
-	);
-}
 
 // ---------------------------------------------------------------------------
 // CostFilter – min/max bounds in USD. Zero is a real bound (max 0 = free calls only), so the

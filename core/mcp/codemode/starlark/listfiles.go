@@ -85,7 +85,7 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		codeModeServerCount++

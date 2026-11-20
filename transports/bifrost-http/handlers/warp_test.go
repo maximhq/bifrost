@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -1291,7 +1292,83 @@ func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
 		// The turn ends on this error; the test only needs to see the address.
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
 	}
-	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat), warp.WithBifrostMCP(true))
+	service.SetManagementTools(handlerManagementTools{catalog: warp.NewManagementCatalog([]warp.ManagementTool{
+		{Name: "listRoutingRules", Description: "List routing rules.", InputSchema: `{"type":"object","properties":{}}`},
+	})})
+	return &WarpHandler{service: service}
+}
+
+// handlerManagementTools stands in for the Bifrost MCP: a nil catalog is a
+// gateway whose Bifrost MCP did not load.
+type handlerManagementTools struct{ catalog *warp.ManagementCatalog }
+
+func (h handlerManagementTools) Catalog() *warp.ManagementCatalog { return h.catalog }
+func (handlerManagementTools) Call(context.Context, *warp.ManagementCatalog, string, map[string]any) (string, bool, error) {
+	return "", false, nil
+}
+
+// Warp needs the Bifrost MCP. Without it the chat route answers 503 with the
+// no_bifrost_mcp reason before any model runs, and the config read says so, so
+// the panel can show the setup state before anyone asks.
+func TestWarpChatRefusedWithoutBifrostMCP(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	handler := warpModelsHandler(&calls)
+	handler.service.SetManagementTools(handlerManagementTools{})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"what routing rules exist?"}],"stream":false}`)
+	handler.chat(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var body schemas.WarpUnavailableResponse
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, schemas.WarpUnavailableNoBifrostMCP, body.Reason)
+	require.Empty(t, calls, "no model runs without the Bifrost MCP")
+
+	configCtx := &fasthttp.RequestCtx{}
+	handler.getConfig(configCtx)
+	require.Equal(t, fasthttp.StatusOK, configCtx.Response.StatusCode())
+	// An explicit false: a missing field would read as false through Bool().
+	require.Equal(t, gjson.False, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Type, string(configCtx.Response.Body()))
+
+	configCtx = &fasthttp.RequestCtx{}
+	warpModelsHandler(&calls).getConfig(configCtx)
+	require.True(t, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Bool())
+}
+
+// Decoupled from the Bifrost MCP (the default for now), the chat route answers
+// without it - the model runs - and the config read reports bifrost_mcp_enabled
+// false, so the dashboard hides the Bifrost MCP setup step.
+func TestWarpChatAnswersWithoutBifrostMCPWhenDecoupled(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	coupled := warpModelsHandler(&calls)
+	store := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}}
+	chat := func(_ context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		calls = append(calls, *request)
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
+	}
+	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))
+	service.SetManagementTools(handlerManagementTools{})
+	handler := &WarpHandler{service: service}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"what routing rules exist?"}],"stream":false}`)
+	handler.chat(ctx)
+	require.NotEqual(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotEmpty(t, calls, "the model runs without the Bifrost MCP")
+
+	configCtx := &fasthttp.RequestCtx{}
+	handler.getConfig(configCtx)
+	require.Equal(t, fasthttp.StatusOK, configCtx.Response.StatusCode())
+	require.Equal(t, gjson.False, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_enabled").Type, string(configCtx.Response.Body()))
+
+	configCtx = &fasthttp.RequestCtx{}
+	coupled.getConfig(configCtx)
+	require.True(t, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_enabled").Bool())
 }
 
 // The models an operator exposes are part of the config wire shape in both

@@ -1,0 +1,138 @@
+package opencode
+
+import (
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// OpencodeSessionHeader is the header the OpenCode Zen/Go gateways use to
+// identify a conversation/session. Starting 2026-09-06 the Go gateway requires
+// it and may reject requests that omit it. Bifrost resolves a session identity
+// once per request (see ResolveOpencodeSession) and attaches it only on
+// upstream calls to the OpenCode provider family.
+const OpencodeSessionHeader = "x-opencode-session"
+
+// isSafeOpencodeSessionValue reports whether a caller-supplied session value is
+// safe to forward as an HTTP header value: it must contain no CR, LF, or any
+// other control character. This is header-injection protection — a value that
+// fails validation is treated as absent and the fallback chain applies instead
+// of the raw value ever reaching the wire.
+func isSafeOpencodeSessionValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveOpencodeSession resolves the x-opencode-session value for a request
+// and returns it, namespaced per virtual key. The result is resolved exactly
+// once per request: the first call computes it and caches it on the context
+// (BifrostContextKeyOpencodeSession), and every later call — retries,
+// zen→go fallbacks, subsequent MCP agent-loop turns on the same request —
+// returns the cached value, so the upstream sees one stable identity for the
+// whole request.
+//
+// Resolution order, preserving the existing "client wins" and "poison-to-none"
+// session identity rules from core/schemas:
+//
+//	a) the client-sent x-opencode-session request header, trimmed and bounded by
+//	   schemas.NormalizeSessionID and charset-validated
+//	   (isSafeOpencodeSessionValue). A value failing either check is treated as
+//	   absent.
+//	b) the request's session identity as already resolved by Bifrost
+//	   (BifrostContextKeySessionID): x-bf-session-id wins, then the coding
+//	   harness's own session headers (Claude Code, Codex CLI, OpenCode, ...).
+//	c) if no signal at all: a fresh per-request UUID. This keeps the request
+//	   compliant with the gateway requirement but provides no affinity across
+//	   turns — multi-turn session tracking remains the client's responsibility.
+//
+// The resolved value is qualified with the virtual key ID (never the key value)
+// so sessions from different virtual keys cannot collide upstream.
+func ResolveOpencodeSession(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.GetOrStoreOpencodeSession(func() string {
+		return resolveOpencodeSessionValue(ctx)
+	})
+}
+
+// resolveOpencodeSessionValue computes the x-opencode-session value for a
+// request by walking the resolution chain (client header, Bifrost session id,
+// then a synthesized per-request UUID), namespacing whichever signal wins per
+// virtual key. It is called at most once per request by ResolveOpencodeSession.
+func resolveOpencodeSessionValue(ctx *schemas.BifrostContext) string {
+	// a) Client-sent header wins. The HTTP transport captures every request
+	// header into BifrostContextKeyRequestHeaders (lowercased keys), so the raw
+	// x-opencode-session is visible here even though ingress does not otherwise
+	// special-case it.
+	// The value goes through NormalizeSessionID, the same trim and
+	// MaxSessionIDLength bound every other session ingestion path uses.
+	if headers, ok := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); ok {
+		if value, ok := schemas.NormalizeSessionID(headers[OpencodeSessionHeader]); ok && isSafeOpencodeSessionValue(value) {
+			return namespaceOpencodeSession(ctx, value)
+		}
+	}
+	// b) BifrostContextKeySessionID already encodes the shared session identity
+	// rules (x-bf-session-id wins, poison-to-none on an invalid explicit value,
+	// then harness session headers), so reuse it rather than re-deriving.
+	// The value is still re-checked with the same charset rule as the client
+	// header: NormalizeSessionID only gates length, so a value carrying control
+	// bytes would otherwise reach the upstream inside the namespaced header.
+	if sessionID, ok := ctx.Value(schemas.BifrostContextKeySessionID).(string); ok && sessionID != "" && isSafeOpencodeSessionValue(sessionID) {
+		return namespaceOpencodeSession(ctx, sessionID)
+	}
+	// c) No signal at all: synthesize a fresh per-request UUID so the request
+	// stays compliant. No affinity — the caller must send its own session
+	// identity for multi-turn tracking.
+	return namespaceOpencodeSession(ctx, uuid.New().String())
+}
+
+// namespaceOpencodeSession qualifies a resolved session value with the ID of the
+// virtual key the request's Grant identity is attributed to, so the same client
+// session used under two different virtual keys cannot collide upstream. It
+// never uses the virtual key value itself: that is a Bifrost credential and must
+// not reach a third-party gateway. Without a settled Grant identity carrying a
+// virtual key (or with an unsafe ID) the value is left unqualified rather than
+// dropping the request.
+//
+// Each component is escaped before joining so the only literal ":" in the
+// result is the separator we insert. Without escaping, ("a", "b:c") and
+// ("a:b", "c") both produce "a:b:c" — a collision. Escaping doubles every
+// backslash and prefixes every colon with a backslash, making the mapping
+// injective: distinct (vk, value) pairs always yield distinct namespaced
+// strings. The escaped output stays within isSafeOpencodeSessionValue's
+// charset (only printable ASCII is introduced).
+func namespaceOpencodeSession(ctx *schemas.BifrostContext, value string) string {
+	grant := ctx.Grant()
+	if grant == nil {
+		return value
+	}
+	identity := grant.Identity()
+	if identity == nil {
+		return value
+	}
+	virtualKey := identity.VirtualKey()
+	if virtualKey == nil {
+		return value
+	}
+	virtualKeyID := virtualKey.ID
+	if strings.TrimSpace(virtualKeyID) == "" || !isSafeOpencodeSessionValue(virtualKeyID) {
+		return value
+	}
+	return escapeSessionComponent(virtualKeyID) + ":" + escapeSessionComponent(value)
+}
+
+// escapeSessionComponent makes a single session component unambiguous when
+// joined with ":" as a separator. Backslashes are doubled first, then colons
+// are prefixed with a backslash, so the only literal ":" in the final
+// namespaced string is the separator inserted by namespaceOpencodeSession.
+func escapeSessionComponent(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, ":", "\\:")
+	return s
+}

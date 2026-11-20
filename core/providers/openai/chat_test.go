@@ -17,6 +17,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Issue #8749: zero counts must survive the upstream parser and wire encoding,
@@ -672,6 +673,58 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_MistralReasoningEffortFollowsDatasheet pins that Mistral
+// (direct and on Vertex) maps reasoning effort onto the model's datasheet ladder
+// instead of rewriting every non-"none" value to "high" (issue #9731). A model with
+// no published ladder keeps the legacy none/high clamp.
+func TestToOpenAIChatRequest_MistralReasoningEffortFollowsDatasheet(t *testing.T) {
+	ladder := &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "high", "max"}}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if (p == schemas.Mistral && m == "zai-glm-5-3") || (p == schemas.Vertex && m == "mistral-medium-3") {
+			return ladder
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		expected string
+	}{
+		{name: "mistral keeps low", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "low", expected: "low"},
+		{name: "mistral keeps max", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "max", expected: "max"},
+		{name: "mistral snaps medium up to high", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "medium", expected: "high"},
+		{name: "mistral snaps minimal to low", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "minimal", expected: "low"},
+		{name: "vertex mistral keeps max", provider: schemas.Vertex, model: "mistral-medium-3", effort: "max", expected: "max"},
+		{name: "no ladder keeps legacy clamp", provider: schemas.Mistral, model: "magistral-medium-latest", effort: "low", expected: "high"},
+		{name: "no ladder keeps none", provider: schemas.Mistral, model: "magistral-medium-latest", effort: "none", expected: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}},
+			}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Reasoning)
+			require.NotNil(t, out.Reasoning.Effort)
+			require.Equal(t, tt.expected, *out.Reasoning.Effort)
+			// The caller's request is reused for fallbacks, so the clamp must not write through to it.
+			require.Equal(t, tt.effort, *req.Params.Reasoning.Effort)
+		})
+	}
+}
+
 // TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
 // OpenAI rejects at the effective reasoning effort are dropped for OpenAI and Azure.
 func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
@@ -730,6 +783,74 @@ func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
 			}
 			require.NotNil(t, params.Temperature, "caller's params must not be mutated")
 		})
+	}
+}
+
+// TestToOpenAIChatRequest_MantleStripsSamplingParamsByEffort pins that Bedrock Mantle
+// applies OpenAI's effort-dependent sampling rules to OpenAI's own models, and leaves
+// gpt-oss alone.
+func TestToOpenAIChatRequest_MantleStripsSamplingParamsByEffort(t *testing.T) {
+	installCapabilityRecord(t, "openai.gpt-6-luna", &schemas.ModelCapabilities{
+		DefaultReasoningEffort:   schemas.Ptr(schemas.ReasoningEffortMedium),
+		SupportsReasoningDisable: new(true),
+		ConditionallyUnsupportedFields: map[string]string{
+			schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+			schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+			schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+		},
+	})
+
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		stripped bool
+	}{
+		{name: "gpt-6-luna strips at low", model: "openai.gpt-6-luna", effort: "low", stripped: true},
+		{name: "gpt-6-luna strips when effort omitted", model: "openai.gpt-6-luna", stripped: true},
+		{name: "gpt-6-luna keeps at none", model: "openai.gpt-6-luna", effort: "none", stripped: false},
+		{name: "gpt-oss keeps at low", model: "openai.gpt-oss-120b", effort: "low", stripped: false},
+		{name: "non-openai qwen keeps at low", model: "qwen.qwen3-32b", effort: "low", stripped: false},
+		{name: "non-openai gemma keeps when effort omitted", model: "google.gemma-4-31b", stripped: false},
+	}
+	// The Bedrock provider serves the same models from Mantle without renaming the provider.
+	for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+		for _, tt := range tests {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				params := &schemas.ChatParameters{
+					Temperature: schemas.Ptr(0.5),
+					TopP:        schemas.Ptr(0.9),
+					LogProbs:    new(true),
+					TopLogProbs: schemas.Ptr(2),
+				}
+				if tt.effort != "" {
+					params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}
+				}
+				out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    tt.model,
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+					Params: params,
+				})
+				require.NotNil(t, out)
+				if tt.stripped {
+					require.Nil(t, out.Temperature)
+					require.Nil(t, out.TopP)
+					require.Nil(t, out.LogProbs)
+					require.Nil(t, out.TopLogProbs)
+				} else {
+					require.NotNil(t, out.Temperature)
+					require.NotNil(t, out.TopP)
+					require.NotNil(t, out.LogProbs)
+					require.NotNil(t, out.TopLogProbs)
+				}
+				require.NotNil(t, params.Temperature, "caller's params must not be mutated")
+			})
+		}
 	}
 }
 
@@ -1083,6 +1204,66 @@ func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
 	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {
 		t.Fatalf("expected prompt_cache_options stripped for Fireworks, got %#v", fw.ChatParameters.PromptCacheOptions)
 	}
+
+	// The gate is the model's, not the host's: any host serving gpt-5.6+ keeps the
+	// field, and earlier or non-OpenAI models drop it on every host. A custom provider
+	// (its own name, base type in ctx) follows the same rule.
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		base     schemas.ModelProvider
+		model    string
+		keep     bool
+	}{
+		{schemas.OpenAI, "", "gpt-5-mini", false},
+		{schemas.OpenAI, "", "gpt-5.5", false},
+		{schemas.Azure, "", "gpt-4o", false},
+		{schemas.Azure, "", "gpt-6-luna", true},
+		{schemas.OpenRouter, "", "openai/gpt-5.6-luna", true},
+		{schemas.OpenRouter, "", "openai/gpt-4o-mini", false},
+		{schemas.BedrockMantle, "", "openai.gpt-5.6-luna", true},
+		{schemas.BedrockMantle, "", "openai.gpt-oss-120b", false},
+		{schemas.Bedrock, "", "openai.gpt-5.6-luna", true},
+		{schemas.Groq, "", "llama-3.3-70b-versatile", false},
+		{"my-openai", schemas.OpenAI, "gpt-5-mini", false},
+		{"my-openai", schemas.OpenAI, "gpt-5.6-luna", true},
+		{"my-azure", schemas.Azure, "gpt-5-mini", false},
+		{"my-groq", schemas.Groq, "llama-3.3-70b-versatile", false},
+	} {
+		reqCtx, reqCancel := schemas.NewBifrostContextWithCancel(nil)
+		if tc.base != "" {
+			reqCtx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+			reqCtx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+		}
+		req := mkReq(tc.provider, tc.model)
+		out := ToOpenAIChatRequest(reqCtx, req)
+		reqCancel()
+		if out == nil {
+			t.Fatalf("%s/%s: expected request", tc.provider, tc.model)
+		}
+		if got := out.ChatParameters.PromptCacheOptions != nil; got != tc.keep {
+			t.Errorf("%s/%s: prompt_cache_options present = %v, want %v", tc.provider, tc.model, got, tc.keep)
+		}
+		if req.Params.PromptCacheOptions == nil {
+			t.Errorf("%s/%s: caller params must not be mutated", tc.provider, tc.model)
+		}
+	}
+}
+
+// TestToOpenAIChatRequest_PromptCacheOptionsCatalogRow pins that an explicit catalog row
+// marking prompt_cache_options unsupported drops it even on a gpt-5.6 model.
+func TestToOpenAIChatRequest_PromptCacheOptionsCatalogRow(t *testing.T) {
+	installCapabilityRecord(t, "gpt-5.6-luna", &schemas.ModelCapabilities{
+		UnsupportedFields: map[string]bool{schemas.FieldPromptCacheOptions: true},
+	})
+	userContent := "hello"
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-luna",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &userContent}}},
+		Params:   &schemas.ChatParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+	})
+	require.NotNil(t, out)
+	require.Nil(t, out.ChatParameters.PromptCacheOptions)
 }
 
 func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {
@@ -1147,7 +1328,7 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)
@@ -1232,7 +1413,7 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 			wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 				ctx,
 				bifrostReq,
-				func() (providerUtils.RequestBodyWithExtraParams, error) {
+				func() (*OpenAIChatRequest, error) {
 					return ToOpenAIChatRequest(ctx, bifrostReq), nil
 				},
 			)
@@ -1322,7 +1503,7 @@ func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelPr
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)
@@ -2563,6 +2744,53 @@ func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
 	}
 }
 
+// Chat Completions rejects both the block and request-level ttl on OpenAI and Azure
+// (live 400); OpenRouter accepts it and bills the 12h rate.
+func TestToOpenAIChatRequest_CacheBreakpointTTL(t *testing.T) {
+	msgsJSON := `[{"role":"system","content":[{"type":"text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"},"prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"text","text":"go"}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", false},
+		{"azure", schemas.Azure, "gpt-6.1-luna", false},
+		{"openrouter", schemas.OpenRouter, "openai/gpt-5.6-luna", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var msgs []schemas.ChatMessage
+			require.NoError(t, sonic.Unmarshal([]byte(msgsJSON), &msgs))
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("12h")}
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: msgs, Params: &schemas.ChatParameters{PromptCacheOptions: opts}})
+			require.NotNil(t, out)
+			b, err := out.MarshalJSON()
+			require.NoError(t, err)
+			raw := string(b)
+			bp := gjson.Get(raw, "messages.0.content.0.prompt_cache_breakpoint")
+			require.Equal(t, "explicit", bp.Get("mode").String(), raw)
+			if tc.wantTTL {
+				require.Equal(t, "12h", bp.Get("ttl").String(), raw)
+			} else {
+				require.False(t, bp.Get("ttl").Exists(), raw)
+			}
+			require.False(t, gjson.Get(raw, "messages.1.content.0.prompt_cache_breakpoint.ttl").Exists(), "no ttl must be invented; raw=%s", raw)
+			require.NotNil(t, msgs[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, "caller input must not be mutated")
+			// Request-level ttl: Responses accepts "12h", Chat rejects it (live 400 "Supported values are: '30m'").
+			require.Equal(t, "implicit", gjson.Get(raw, "prompt_cache_options.mode").String(), raw)
+			if tc.provider == schemas.OpenRouter { // the ttl fix-up is OpenAI-family only; OpenRouter gets the caller's value
+				require.Equal(t, "12h", gjson.Get(raw, "prompt_cache_options.ttl").String(), raw)
+			} else {
+				require.False(t, gjson.Get(raw, "prompt_cache_options.ttl").Exists(), raw)
+			}
+			require.NotNil(t, opts.TTL, "caller params must not be mutated")
+		})
+	}
+}
+
 // TestToOpenAIChatRequest_GPT56CacheBreakpoint is the Chat Completions counterpart
 // of TestToOpenAIResponsesRequest_GPT56CacheBreakpoint. gpt-5.6 and later take an
 // explicit boundary as prompt_cache_breakpoint on a text part; a cache_control
@@ -3448,4 +3676,68 @@ func BenchmarkResponsesUsageToChat(b *testing.B) {
 			})
 		}
 	}
+}
+
+// TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter — a cache_control the
+// client set on the message object reaches OpenRouter as a block marker, and is still
+// stripped for a provider that does not take one.
+func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"Create notes.txt","cache_control":{"type":"ephemeral"}}
+	]`), &input))
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     int
+	}{
+		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "google/gemini-2.5-flash", want: 2},
+		{name: "openai drops them as before", provider: schemas.OpenAI, model: "gpt-4o", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: input})
+			body, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, strings.Count(string(body), `"cache_control"`), "%s", body)
+		})
+	}
+}
+
+// TestOpenAIChatRequest_MessageLevelCacheControlIngress — the /openai chat route
+// decodes into OpenAIChatRequest. A cache_control the client set on the message
+// object must reach the Bifrost request as a block marker, without changing the
+// decoded request it came from.
+func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
+	var req OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openrouter/google/gemini-2.5-flash","messages":[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt"}
+	]}`), &req))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	bifrostReq := req.ToBifrostChatRequest(ctx)
+	in := bifrostReq.Input
+
+	require.Len(t, in[0].Content.ContentBlocks, 1)
+	require.NotNil(t, in[0].Content.ContentBlocks[0].CacheControl, "system string must become a marked block")
+	require.Nil(t, in[1].Content.ContentBlocks[0].CacheControl)
+	require.NotNil(t, in[1].Content.ContentBlocks[1].CacheControl, "marker belongs on the last block")
+	require.NotNil(t, in[2].ChatAssistantMessage.ToolCalls[0].CacheControl, "an assistant with content \"\" marks its last tool call")
+	require.NotNil(t, in[3].Content.ContentStr, "unmarked messages are untouched")
+
+	require.NotNil(t, req.Messages[0].Content.ContentStr, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[1].Content.ContentBlocks[1].CacheControl, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[2].OpenAIChatAssistantMessage.ToolCalls[0].CacheControl, "the decoded request must not be mutated")
+
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }

@@ -301,6 +301,19 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 		usage := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usageJSON+`}`))
 		require.NotNil(t, usage)
 		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
+	case "passthrough_stream":
+		// The stream accumulator sees the cumulative iterations list on message_delta (twice here, as a
+		// replayed delta would) and must still report it once at message_stop.
+		extra.RequestType = schemas.PassthroughStreamRequest
+		extra.PassthroughPath = "/v1/messages"
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}}`))
+		delta := []byte(`{"type":"message_delta","usage":` + usageJSON + `}`)
+		acc.ObserveEvent(delta)
+		acc.ObserveEvent(delta)
+		usage := acc.ObserveEvent([]byte(`{"type":"message_stop"}`))
+		require.NotNil(t, usage)
+		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
 	}
 	var native anthropic.AnthropicUsage
 	require.NoError(t, json.Unmarshal([]byte(usageJSON), &native))
@@ -319,7 +332,7 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 func TestCalculateCost_AnthropicAdvisorIterations(t *testing.T) {
 	const executorCost = 1000*0.000001 + 500*0.000005 // 0.0035
 	const advisorPass = `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`
-	for _, route := range []string{"responses", "responses_stream", "passthrough"} {
+	for _, route := range []string{"responses", "responses_stream", "passthrough", "passthrough_stream"} {
 		t.Run(route+": advisor pass priced at the advisor rate", func(t *testing.T) {
 			store, result := advisorCostFixture(t, route, advisorPass)
 			assert.InDelta(t, executorCost+2000*0.000005+1000*0.000025, store.CalculateCost(result, nil), 1e-12)
@@ -356,6 +369,58 @@ func TestCalculateCost_AnthropicAdvisorPassIgnoresExecutorPriorityTier(t *testin
 	const executorAtPriority = 1000*0.000002 + 500*0.00001
 	const advisorAtStandard = 2000*0.000005 + 1000*0.000025
 	assert.InDelta(t, executorAtPriority+advisorAtStandard, store.CalculateCost(result, nil), 1e-12)
+}
+
+// The flat per-request fee is charged once, for the request's own model. An advisor pass is part of
+// the same upstream request, so neither its model's fee nor the executor's is added again per pass.
+func TestCalculateCost_AnthropicAdvisorPassChargesNoRequestFee(t *testing.T) {
+	const executorFee, advisorFee = 0.01, 0.02
+	for _, route := range []string{"responses", "passthrough"} {
+		t.Run(route, func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			for key, fee := range map[string]float64{
+				makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): executorFee,
+				makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  advisorFee,
+			} {
+				row := store.pricingData[key]
+				row.CostPerRequest = bifrost.Ptr(fee)
+				store.pricingData[key] = row
+			}
+			const executorCost = 1000*0.000001 + 500*0.000005
+			const advisorPasses = 2 * (2000*0.000005 + 1000*0.000025)
+			assert.InDelta(t, executorCost+executorFee+advisorPasses, store.CalculateCost(result, nil), 1e-12)
+		})
+	}
+}
+
+// Fast mode and US data residency are properties of how the whole request was served, unlike a
+// Priority Tier commitment, so the advisor pass is priced at its model's fast rates and US multiplier.
+func TestCalculateCost_AnthropicAdvisorPassKeepsFastModeAndUSGeo(t *testing.T) {
+	store, result := advisorCostFixture(t, "passthrough", `,"speed":"fast","inference_geo":"us","iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+	for key, rates := range map[string][2]float64{
+		makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): {0.000006, 0.00003},
+		makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  {0.00003, 0.00015},
+	} {
+		row := store.pricingData[key]
+		row.InputCostPerTokenFast, row.OutputCostPerTokenFast = bifrost.Ptr(rates[0]), bifrost.Ptr(rates[1])
+		row.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
+		store.pricingData[key] = row
+	}
+	const executorFastUS = (1000*0.000006 + 500*0.00003) * 1.1
+	const advisorFastUS = (2000*0.00003 + 1000*0.00015) * 1.1
+	assert.InDelta(t, executorFastUS+advisorFastUS, store.CalculateCost(result, nil), 1e-12)
+}
+
+// A semantic-cache hit replays the original payload, iterations included, without calling the
+// provider. Neither the executor nor the replayed advisor passes are billed for it.
+func TestCalculateCost_AnthropicAdvisorPassNotBilledOnCacheHit(t *testing.T) {
+	for _, hitType := range []string{"direct", "semantic"} {
+		t.Run(hitType, func(t *testing.T) {
+			store, result := advisorCostFixture(t, "responses", `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			result.ResponsesResponse.ExtraFields.CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: schemas.Ptr(hitType)}
+			assert.Zero(t, store.CalculateCost(result, nil))
+		})
+	}
 }
 
 // A Responses stream cut after message_delta is billed from a bare usage (BifrostError BilledUsage),
@@ -1070,6 +1135,123 @@ func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
 	// Output: 500*0.000015 = 0.0075
 	// Total: 0.003 + 0.0045 + 0.0015 + 0.0075 = 0.0165
 	assert.InDelta(t, 0.0165, cost, 1e-12)
+}
+
+// OpenAI gpt-5.6+ 12h cache writes bill at cache_creation_input_token_cost_above_12hr (2.5x input);
+// 30m writes at the standard write rate (1.25x).
+func TestComputeTextCost_OpenAI12hCacheWriteTokens(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.CacheReadInputTokenCost = bifrost.Ptr(4e-7)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     12000,
+		CompletionTokens: 100,
+		TotalTokens:      12100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  4000,
+			CachedWriteTokens: 7000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens30m: 3000,
+				CachedWriteTokens12h: 4000,
+			},
+		},
+	}
+
+	cost := computeTextCostTotal(&p, usage, serviceTier{})
+
+	// Ordinary: 1000*4e-6 = 0.004; read: 4000*4e-7 = 0.0016
+	// 30m write: 3000*5e-6 = 0.015; 12h write: 4000*1e-5 = 0.04; output: 100*2e-5 = 0.002
+	assert.InDelta(t, 0.0626, cost, 1e-12)
+}
+
+// Anthropic 1h and OpenAI 12h writes each bill at their own rate, never the other's.
+func TestComputeTextCost_1hrAnd12hrCacheWritesUseSeparateRates(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.000008)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+
+	usage := func(oneHour, twelveHour int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: 10000,
+			TotalTokens:  10000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedWriteTokens: 4000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+					CachedWriteTokens1h:  oneHour,
+					CachedWriteTokens12h: twelveHour,
+				},
+			},
+		}
+	}
+
+	// Text: 6000*4e-6 = 0.024. 12h: 4000*1e-5 = 0.04.
+	assert.InDelta(t, 0.064, computeTextCostTotal(&p, usage(0, 4000), serviceTier{}), 1e-12)
+	// 1h: 4000*8e-6 = 0.032.
+	assert.InDelta(t, 0.056, computeTextCostTotal(&p, usage(4000, 0), serviceTier{}), 1e-12)
+
+	// Without an above_12hr rate, 12h writes fall back to the 30m write rate, not above_1hr.
+	p.CacheCreationInputTokenCostAbove12hr = nil
+	// 12h: 4000*5e-6 = 0.02.
+	assert.InDelta(t, 0.044, computeTextCostTotal(&p, usage(0, 4000), serviceTier{}), 1e-12)
+}
+
+// gpt-5.6-sol 12h write rates from the OpenAI pricing page, by tier and 272k context.
+func TestComputeTextCost_OpenAI12hCacheWriteTierRates(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.InputCostPerTokenAbove272kTokens = bifrost.Ptr(0.000008)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokens = bifrost.Ptr(0.00002)
+	p.CacheCreationInputTokenCostAbove12hrPriority = bifrost.Ptr(0.00002)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = bifrost.Ptr(0.00004)
+	p.CacheCreationInputTokenCostAbove12hrFlex = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = bifrost.Ptr(0.00001)
+
+	cases := []struct {
+		name   string
+		tier   serviceTier
+		prompt int
+		want   float64
+	}{
+		{"standard/short", serviceTier{}, 10000, 0.00001},
+		{"standard/long", serviceTier{}, 300000, 0.00002},
+		{"priority/short", serviceTier{isPriority: true}, 10000, 0.00002},
+		{"priority/long", serviceTier{isPriority: true}, 300000, 0.00004},
+		{"flex/short", serviceTier{isFlex: true}, 10000, 0.000005},
+		{"flex/long", serviceTier{isFlex: true}, 300000, 0.00001},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, tieredCacheCreationInputAbove12hrTokenRate(&p, tc.prompt, tc.tier), 1e-15)
+		})
+	}
+
+	// gpt-6-astra ultrafast: 12h write $150/M short, $300/M above 272k.
+	u := chatPricing(0.00001, 0.00005)
+	u.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.000025)
+	u.CacheCreationInputTokenCostUltrafast = bifrost.Ptr(0.000075)
+	u.CacheCreationInputTokenCostAbove12hrUltrafast = bifrost.Ptr(0.00015)
+	u.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = bifrost.Ptr(0.0003)
+	assert.InDelta(t, 0.00015, tieredCacheCreationInputAbove12hrTokenRate(&u, 10000, serviceTier{isUltrafast: true}), 1e-15)
+	assert.InDelta(t, 0.0003, tieredCacheCreationInputAbove12hrTokenRate(&u, 300000, serviceTier{isUltrafast: true}), 1e-15)
+
+	// Batch scales the long-context 12h rate by the batch/input ratio (0.5).
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 300000,
+		TotalTokens:  300000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens:       1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens12h: 1000},
+		},
+	}
+	p.InputCostPerTokenBatches = bifrost.Ptr(0.000002)
+	cost := computeBatchTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, cost)
+	// Text: 299000*8e-6*0.5 = 1.196; 12h write: 1000*2e-5*0.5 = 0.01
+	assert.InDelta(t, 1.206, cost.InputCost, 1e-9)
 }
 
 func TestComputeTextCost_StandardCacheCreationPricingLesserThan1hr(t *testing.T) {
@@ -1858,6 +2040,36 @@ func TestComputeSpeechCost_TokenFallback(t *testing.T) {
 	cost := computeSpeechCostTotal(&p, usage, nil, 0, serviceTier{}) // No audio seconds → token fallback
 	// 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
+// A token-billed TTS model (Gemini TTS, gpt-4o-mini-tts) has no per-character rate; the input is the
+// tokens the provider reported, not the character count times a per-token price.
+func TestComputeSpeechCost_ReportedTokensBeatCharactersWithoutPerCharacterRate(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 15*0.0000005+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_PerCharacterRateStillWins(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	p.InputCostPerCharacter = bifrost.Ptr(0.00003)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.00003+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_CharactersAreUsedWhenNoTokensAreReported(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 100, TotalTokens: 100}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.0000005+100*0.00001, cost, 1e-12)
 }
 
 func TestComputeSpeechCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testing.T) {
@@ -3399,6 +3611,59 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
+// TestCalculateCostExcludesExternalGuardrailEstimatedCost verifies an external
+// guardrail service call's estimated cost is display-only: it never reaches the
+// request cost, the guardrail cost, or (through CalculateCost) budgets, while the
+// LLM judge call beside it is still billed.
+func TestCalculateCostExcludesExternalGuardrailEstimatedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKeyNormalized("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	externalCall := schemas.BifrostGuardrailJudgeCall{
+		GuardrailProvider: "vendor",
+		UsageUnits:        map[string]int{"content_policy_units": 3},
+		EstimatedCost:     0.5, // Large on purpose: any leak would dominate the totals.
+	}
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
+			{
+				JudgeProvider:    schemas.Anthropic,
+				JudgeModel:       "claude-judge",
+				PromptTokens:     20,
+				CompletionTokens: 5,
+				TotalTokens:      25,
+			},
+			externalCall,
+		},
+	}
+
+	// Main 0.0002 plus judge 0.00008; the external call adds nothing.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.00008, bd.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.InDelta(t, 0.00008, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00028, bd.TotalCost, 1e-12)
+
+	// The blocked-request path prices guardrail metadata directly.
+	assert.Zero(t, s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{externalCall},
+	}, nil))
+}
+
 // TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
 func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 	pricing := chatPricing(0.00001, 0)
@@ -4213,6 +4478,28 @@ func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, LookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
+}
+
+func TestResolvePricing_PatternAliasPricesExpandedModelID(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("anthropic.claude-opus-5", "bedrock", "chat"):    chatPricing(0.000005, 0.000025),
+		makeKeyNormalized("us.anthropic.claude-opus-5", "bedrock", "chat"): chatPricing(0.0000055, 0.0000275),
+	})
+	aliases := schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "us.anthropic.$1"}}
+	ac := aliases.ResolveConfig("claude-opus-5")
+	require.NotNil(t, ac)
+
+	// The regional row wins over the base row the requested name falls back to.
+	info := schemas.RoutingInfo{Provider: "bedrock", Model: "claude-opus-5", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: ac.ModelID, ModelName: ac.ModelName}}
+	p := s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+
+	// An upstream id with no row of its own is priced from the requested name.
+	info.ResolvedKeyAlias.ModelID = "global.anthropic.claude-opus-5"
+	p = s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {

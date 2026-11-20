@@ -72,7 +72,9 @@ import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
+import { CodeModeServerLabel, ServerTypeOnSlugLabel } from "./codeModeFields";
 import { SectionHeader } from "./sectionHeader";
+import { ServerTypeOnSlugSelect } from "./serverTypeOnSlugSelect";
 import { TLSConfigFields } from "./tlsConfigFields";
 import {
 	exchangesAsSSOApplication,
@@ -380,6 +382,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		defaultValues: {
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			server_type_on_slug: mcpClient.config.server_type_on_slug ?? "inherit",
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			per_user_discovery: mcpClient.config.per_user_discovery === true,
@@ -453,6 +456,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	};
 	const isDisabled = form.watch("disabled");
 	const needsSessionStickiness = form.watch("needs_session_stickiness");
+	const codeModeServer = form.watch("is_code_mode_client");
 	const perUserDiscovery = form.watch("per_user_discovery") === true;
 	const canUsePerUserDiscovery = supportsPerUserDiscovery(mcpClient.config.auth_type, mcpClient.config.connection_type);
 
@@ -461,6 +465,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		form.reset({
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			server_type_on_slug: mcpClient.config.server_type_on_slug ?? "inherit",
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			per_user_discovery: mcpClient.config.per_user_discovery === true,
@@ -709,6 +714,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				data: {
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
+					server_type_on_slug: data.server_type_on_slug,
 					is_ping_available: data.is_ping_available,
 					// Only meaningful (and only accepted) for http clients — an
 					// explicit false is rejected for sse/stdio, which always keep
@@ -1075,30 +1081,21 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													name="is_code_mode_client"
 													render={({ field }) => (
 														<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
-															<div className="flex items-center gap-2">
-																<FormLabel>{t("registry.form.codeModeServer")}</FormLabel>
-																<TooltipProvider>
-																	<Tooltip>
-																		<TooltipTrigger asChild>
-																			<a
-																				href="https://docs.getbifrost.ai/mcp/code-mode"
-																				target="_blank"
-																				rel="noopener noreferrer"
-																				data-testid="code-mode-link-help"
-																				className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-																				aria-label={t("registry.form.learnCodeModeAria")}
-																			>
-																				<Info className="h-4 w-4 cursor-help" />
-																			</a>
-																		</TooltipTrigger>
-																		<TooltipContent>
-																			<p>{t("registry.form.learnCodeMode")}</p>
-																		</TooltipContent>
-																	</Tooltip>
-																</TooltipProvider>
-															</div>
+															<CodeModeServerLabel />
 															<FormControl>
 																<Switch checked={field.value || false} onCheckedChange={field.onChange} />
+															</FormControl>
+														</FormItem>
+													)}
+												/>
+												<FormField
+													control={form.control}
+													name="server_type_on_slug"
+													render={({ field }) => (
+														<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+															<ServerTypeOnSlugLabel slug={mcpClient.config.endpoint_slug} />
+															<FormControl>
+																<ServerTypeOnSlugSelect value={field.value} onChange={field.onChange} codeModeServer={!!codeModeServer} />
 															</FormControl>
 														</FormItem>
 													)}

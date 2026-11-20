@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -362,7 +363,8 @@ func TestPostgresGrantRevocationCatchesConcurrentCodeExchange(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_revocation") })
 
-	require.NoError(t, store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race"))
+	_, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race")
+	require.NoError(t, err)
 
 	var exchangeErr error
 	select {
@@ -398,7 +400,7 @@ func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
 	var once sync.Once
 	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_refresh", func(db *gorm.DB) {
 		once.Do(func() {
-			go func() { revokeDone <- store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh") }()
+			go func() { _, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh"); revokeDone <- err }()
 			time.Sleep(500 * time.Millisecond)
 		})
 	}))
@@ -419,4 +421,83 @@ func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
 	require.NoError(t, store.DB().Model(&tables.TableOAuth2RefreshToken{}).
 		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", "vk", "vk-refresh").Count(&active).Error)
 	require.Zero(t, active, "a token minted by a concurrent refresh must not outlive the revocation")
+}
+
+// Nodes creating the same datasheet override target at once all succeed and
+// converge on one row, rather than one losing to the unique target index.
+func TestPostgresDatasheetOverrideConcurrentCreateSameTarget(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		model := fmt.Sprintf("race-%02d", i)
+		start := make(chan struct{})
+		saved := make([]*tables.TableDatasheetOverride, 4)
+		errs := make([]error, len(saved))
+		var wg sync.WaitGroup
+		for j := range saved {
+			saved[j] = &tables.TableDatasheetOverride{
+				ID: fmt.Sprintf("%s-%d", model, j), Provider: "openai", Model: model, Mode: "chat",
+				PricingPatch: json.RawMessage(fmt.Sprintf(`{"context_length":%d}`, 1000+j)),
+			}
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				<-start
+				errs[j] = store.UpsertDatasheetOverride(ctx, saved[j])
+			}(j)
+		}
+		close(start)
+		wg.Wait()
+		for j, err := range errs {
+			require.NoError(t, err, "iteration %d writer %d", i, j)
+		}
+		for j := range saved {
+			require.Equal(t, saved[0].ID, saved[j].ID, "every writer reports the one stored row's ID")
+		}
+	}
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 20)
+}
+
+// Concurrent saves for bedrock and bedrock_mantle carrying the same pricing
+// claim: exactly one is stored, every other writer gets
+// ErrDatasheetPricingClaimTaken, whichever connection commits first.
+func TestPostgresDatasheetOverrideConcurrentPricingClaim(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		model := fmt.Sprintf("claim-%02d", i)
+		claim := model + "|bedrock|chat"
+		providers := []string{"bedrock", "bedrock_mantle", "bedrock", "bedrock_mantle"}
+		start := make(chan struct{})
+		errs := make([]error, len(providers))
+		var wg sync.WaitGroup
+		for j, provider := range providers {
+			row := &tables.TableDatasheetOverride{
+				ID: fmt.Sprintf("%s-%d", model, j), Provider: provider, Model: model, Mode: "chat", PricingClaim: &claim,
+				PricingPatch: json.RawMessage(fmt.Sprintf(`{"input_cost_per_token":%d}`, j+1)),
+			}
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				<-start
+				errs[j] = store.UpsertDatasheetOverride(ctx, row)
+			}(j)
+		}
+		close(start)
+		wg.Wait()
+		for j, err := range errs {
+			if err != nil {
+				require.ErrorIs(t, err, ErrDatasheetPricingClaimTaken, "iteration %d writer %d", i, j)
+			}
+		}
+	}
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 20, "one stored override per folded pricing row")
 }

@@ -261,6 +261,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.
@@ -379,7 +384,7 @@ not forwarded, that the upstream body, status, `Content-Type` and `X-Amzn-*` hea
 and that every other path, a traversal and a non-POST method are refused before any request is built. A traversal path is normalized by the HTTP server to a path outside the allow-list, so 162.6 asserts the allow-list refusal; the identifier validators for encoded dots are pinned by the Go tests.
 InvokeAgent is streamed: the fixture's `AGENTSLOW001` agent sends five event-stream pieces one second apart, and the fixture gateway sets `default_request_timeout_in_seconds` to 3 seconds. For a streaming request that setting bounds the connection, the request write and the wait for response headers; once headers arrive, `stream_idle_timeout_in_seconds` governs the body. So 162.12 shows that a run longer than 3 seconds is not cut off by a total-duration cap and that every piece arrives. It does not by itself show incremental delivery; the Go tests in `core/providers/bedrock/passthrough_test.go` pin that.
 162.13 pins the other half of that rule: the fixture's `STREAMSLOWKB` knowledge base takes 4 seconds to answer a Retrieve, and because Retrieve is a plain request/response call (even with the word `stream` in its id) the 3 second request timeout cuts it off with a 500 whose error says the deadline was exceeded, instead of streaming the answer through.
-162.14 to 162.19 cover the read-only control-plane listings served under `/bedrock` (#9531): ListInferenceProfiles, GetInferenceProfile, ListFoundationModels and GetFoundationModel go to the control-plane endpoint (fixture port 8798), SigV4 signed for the key region (or with a bearer token for an API-key-only key), with the query forwarded, and the fixture's JSON, or its 404 with AWS error headers, comes back as sent rather than the dashboard's `index.html`.
+162.16 to 162.21 cover the read-only control-plane listings served under `/bedrock` (#9531): ListInferenceProfiles, GetInferenceProfile, ListFoundationModels and GetFoundationModel go to the control-plane endpoint (fixture port 8798), SigV4 signed for the key region (or with a bearer token for an API-key-only key), with the query forwarded, and the fixture's JSON, or its 404 with AWS error headers, comes back as sent rather than the dashboard's `index.html`.
 The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

@@ -36,6 +36,33 @@ func TestListSessions(t *testing.T) {
 		assert.Equal(t, "Alpha VK", resp.Sessions[0].BfSubDisplay)
 	})
 
+	t.Run("reports the configured access token TTL", func(t *testing.T) {
+		h := newSessionsHandler(&mockOAuth2Store{})
+		h.store.ClientConfig.OAuth2ServerConfig.AccessTokenTTL = 1800
+		ctx := &fasthttp.RequestCtx{}
+		h.listSessions(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+
+		var resp struct {
+			AccessTokenTTL int `json:"access_token_ttl"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, 1800, resp.AccessTokenTTL)
+	})
+
+	t.Run("unset access token TTL reports the default", func(t *testing.T) {
+		h := newSessionsHandler(&mockOAuth2Store{})
+		h.store.ClientConfig.OAuth2ServerConfig.AccessTokenTTL = 0
+		ctx := &fasthttp.RequestCtx{}
+		h.listSessions(ctx)
+
+		var resp struct {
+			AccessTokenTTL int `json:"access_token_ttl"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, configtables.DefaultAccessTokenTTL, resp.AccessTokenTTL)
+	})
+
 	t.Run("store error surfaces 500", func(t *testing.T) {
 		h := newSessionsHandler(&mockOAuth2Store{listErr: errors.New("boom")})
 		ctx := &fasthttp.RequestCtx{}

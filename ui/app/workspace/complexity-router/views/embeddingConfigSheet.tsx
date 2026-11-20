@@ -8,9 +8,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import { getProviderLabel } from "@/lib/constants/logs";
 import {
-	MAX_LLM_MESSAGE_HISTORY,
 	MAX_SEMANTIC_MESSAGE_HISTORY,
-	MIN_LLM_MESSAGE_HISTORY,
 	MIN_SEMANTIC_MESSAGE_HISTORY,
 	SEMANTIC_FALLBACK_OPTIONS,
 	SEMANTIC_VECTOR_STORE_OPTIONS,
@@ -23,8 +21,9 @@ import { useCallback, type ReactNode } from "react";
 import { Controller, type Control, type FieldErrors, type UseFormRegister, type UseFormSetValue } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import type { AnalyzerFormValues, LLMFormValues, SemanticFormValues } from "../formSchema";
-import { llmTimeoutFieldValue, semanticTimeoutFieldValue } from "../formSchema";
-import { FieldLabel, InfoTip } from "./formPrimitives";
+import { semanticTimeoutFieldValue } from "../formSchema";
+import { FieldLabel } from "./formPrimitives";
+import { LLMClassifierFields } from "./llmClassifierFields";
 
 interface Props {
 	open: boolean;
@@ -103,7 +102,6 @@ export default function EmbeddingConfigSheet({
 	// The two pools are narrowed by the parent, so the selectors filter the full provider
 	// list back down to them rather than re-deriving the capability rules here.
 	const isEmbeddingProvider = useCallback((provider: ModelProvider) => providers.some((p) => p.name === provider.name), [providers]);
-	const isLLMProvider = useCallback((provider: ModelProvider) => llmProviders.some((p) => p.name === provider.name), [llmProviders]);
 	const { t } = useTranslation("models");
 	const { t: tCommon } = useTranslation("common");
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
@@ -118,10 +116,6 @@ export default function EmbeddingConfigSheet({
 		!providersLoading && !noProviders && Boolean(semantic?.provider) && !providers.some((provider) => provider.name === semantic?.provider);
 
 	const isLLMFallbackSelected = (semantic?.fallback ?? "none") === "llm";
-	const noLLMProviders = !providersLoading && llmProviders.length === 0;
-	const isLLMConfigured = Boolean(llm?.provider && llm?.model);
-	const savedLLMProviderUnavailable =
-		!providersLoading && !noLLMProviders && Boolean(llm?.provider) && !llmProviders.some((provider) => provider.name === llm?.provider);
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -400,157 +394,19 @@ export default function EmbeddingConfigSheet({
 							    selected fallback — a dormant llm block still keeps its saved
 							    settings, but they have nothing to configure until this is on. */}
 							{isLLMFallbackSelected && (
-								<div className="space-y-5 border-t pt-4" data-testid="complexity-router-llm-fallback-section">
-									<div className="flex items-center gap-1.5">
-										<h3 className="text-sm font-medium">{tcpx("fallbackClassifier")}</h3>
-										<InfoTip label={tcpx("fallbackPromptTitle")}>{tcpx("fallbackClassifierPromptTip")}</InfoTip>
-									</div>
-									<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">{tcpx("fallbackClassifierHelp")}</p>
-
-									{/* The cost of this classifier is latency, and it is paid on every
-									    classified request, so it is stated up front rather than
-									    discovered in production. */}
-									<Alert variant="warning" data-testid="complexity-router-llm-latency-callout">
-										<TriangleAlert className="h-4 w-4" />
-										<AlertDescription>{tcpx("llmLatencyCallout")}</AlertDescription>
-									</Alert>
-
-									{noLLMProviders && (
-										<Alert variant="warning" data-testid="complexity-router-no-llm-providers">
-											<TriangleAlert className="h-4 w-4" />
-											<AlertDescription className="gap-2">
-												<span>{tcpx("noLlmProviders")}</span>
-												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-add-provider-link">
-													<Link to="/workspace/providers">
-														{tcpx("addProvider")}
-														<ArrowRight className="size-3.5" />
-													</Link>
-												</Button>
-											</AlertDescription>
-										</Alert>
-									)}
-
-									{savedLLMProviderUnavailable && (
-										<Alert variant="warning" data-testid="complexity-router-llm-saved-provider-unavailable">
-											<TriangleAlert className="h-4 w-4" />
-											<AlertDescription className="gap-2">
-												<span>{tcpx("savedLlmProviderUnavailable", { provider: getProviderLabel(llm?.provider ?? "") })}</span>
-												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-saved-provider-link">
-													<Link to="/workspace/providers" search={{ provider: llm?.provider }}>
-														{tcpx("reviewProviderKeys")}
-														<ArrowRight className="size-3.5" />
-													</Link>
-												</Button>
-											</AlertDescription>
-										</Alert>
-									)}
-
-									{!providersLoading && !noLLMProviders && !isLLMConfigured && (
-										<Alert variant="info" data-testid="complexity-router-llm-required-callout">
-											<Info className="h-4 w-4" />
-											<AlertDescription>{tcpx("llmRequired")}</AlertDescription>
-										</Alert>
-									)}
-
-									<div className="space-y-2">
-										<FieldLabel htmlFor="llm-provider">{tcpx("fallbackProvider")}</FieldLabel>
-										<Controller
-											control={control}
-											name="llm.provider"
-											render={({ field }) => (
-												<ProviderSelector
-													inputId="llm-provider"
-													data-testid="complexity-router-llm-provider-select"
-													filter={isLLMProvider}
-													value={field.value || ""}
-													onChange={(value: string) => {
-														if (value === field.value) return;
-														field.onChange(value as ModelProviderName);
-														// A model name is only meaningful for its own provider.
-														setValue("llm.model", "", { shouldDirty: true });
-													}}
-													disabled={!canUpdate || noLLMProviders}
-												/>
-											)}
-										/>
-										{llmErrors?.provider && <p className="text-destructive text-xs">{llmErrors.provider.message}</p>}
-									</div>
-
-									<div className="space-y-2">
-										<FieldLabel htmlFor="llm-model">{tcpx("fallbackModel")}</FieldLabel>
-										<Controller
-											control={control}
-											name="llm.model"
-											render={({ field }) => (
-												<ModelSelector
-													inputId="llm-model"
-													data-testid="complexity-router-llm-model-select"
-													provider={llm?.provider || undefined}
-													keys={llmProviderKeyIds}
-													value={field.value ?? ""}
-													onChange={(model) => {
-														field.onChange(model);
-													}}
-													allowCustomModel
-													placeholder={llm?.provider ? tcpx("searchChatModel") : tcpx("selectProviderFirst")}
-													disabled={!canUpdate || !llm?.provider}
-												/>
-											)}
-										/>
-										{llmErrors?.model ? <p className="text-destructive text-xs">{llmErrors.model.message}</p> : null}
-									</div>
-
-									{/* Timeout + conversation window */}
-									<div className="grid gap-4 sm:grid-cols-2">
-										<div className="space-y-2">
-											<FieldLabel htmlFor="llm-timeout" tooltip={tcpx("classificationTimeoutTip")}>
-												{tcpx("classificationTimeout")}
-											</FieldLabel>
-											<Controller
-												control={control}
-												name="llm.timeout"
-												render={({ field }) => (
-													<Input
-														id="llm-timeout"
-														data-testid="complexity-router-llm-timeout-input"
-														type="number"
-														min={1}
-														step={100}
-														disabled={!canUpdate || !isLLMConfigured}
-														value={llmTimeoutFieldValue(field.value)}
-														onChange={(event) => {
-															const raw = event.target.value;
-															field.onChange(raw === "" ? "" : `${raw}ms`);
-														}}
-														aria-invalid={llmErrors?.timeout ? true : undefined}
-														className={cn("font-mono", llmErrors?.timeout && "border-destructive focus-visible:ring-destructive")}
-													/>
-												)}
-											/>
-											{llmErrors?.timeout && <p className="text-destructive text-xs">{llmErrors.timeout.message}</p>}
-										</div>
-
-										<div className="space-y-2">
-											<FieldLabel htmlFor="llm-message-history" tooltip={tcpx("maxMessagesSendTip")}>
-												{tcpx("maxMessagesSend")}
-											</FieldLabel>
-											<Input
-												id="llm-message-history"
-												data-testid="complexity-router-llm-message-history-input"
-												type="number"
-												min={MIN_LLM_MESSAGE_HISTORY}
-												max={MAX_LLM_MESSAGE_HISTORY}
-												step={1}
-												disabled={!canUpdate || !isLLMConfigured}
-												aria-invalid={llmErrors?.message_history_count ? true : undefined}
-												className={cn("font-mono", llmErrors?.message_history_count && "border-destructive focus-visible:ring-destructive")}
-												{...register("llm.message_history_count", { valueAsNumber: true })}
-											/>
-											{llmErrors?.message_history_count && (
-												<p className="text-destructive text-xs">{llmErrors.message_history_count.message}</p>
-											)}
-										</div>
-									</div>
+								<div className="border-t pt-4">
+									<LLMClassifierFields
+										variant="fallback"
+										control={control}
+										register={register}
+										setValue={setValue}
+										errors={llmErrors}
+										llm={llm}
+										canUpdate={canUpdate}
+										providers={llmProviders}
+										providerKeyIds={llmProviderKeyIds}
+										providersLoading={providersLoading}
+									/>
 								</div>
 							)}
 
@@ -573,28 +429,6 @@ export default function EmbeddingConfigSheet({
 									)}
 								/>
 							</div>
-
-							{/* Fallback classifier budget attribution */}
-							{isLLMFallbackSelected && (
-								<div className="flex items-center justify-between gap-6 border-t pt-4">
-									<FieldLabel htmlFor="llm-count-toward-budgets" tooltip={tcpx("countClassificationBudgetsTip")}>
-										{tcpx("countClassificationBudgets")}
-									</FieldLabel>
-									<Controller
-										control={control}
-										name="llm.count_toward_budgets"
-										render={({ field }) => (
-											<Switch
-												id="llm-count-toward-budgets"
-												data-testid="complexity-router-llm-budgets-switch"
-												checked={field.value ?? false}
-												onCheckedChange={field.onChange}
-												disabled={!canUpdate || !isLLMConfigured}
-											/>
-										)}
-									/>
-								</div>
-							)}
 
 							{warning}
 						</>
