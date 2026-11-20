@@ -289,10 +289,10 @@ func rewriteClientToolSearchHistory(input []schemas.ResponsesMessage, searchName
 	return out
 }
 
-// forEachLoadedTool calls fn for every function a tool_search_output loaded, with its
-// namespace ("" for a top-level function). Other top-level tool types are skipped:
-// core declares only functions and namespaces from the output, and a tool_reference
-// must name a declared tool.
+// forEachLoadedTool calls fn for every function or custom tool a tool_search_output
+// loaded, with its namespace ("" for a top-level tool). Other top-level tool types are
+// skipped: core declares only those and namespaces, and a tool_reference must name a
+// declared tool.
 func forEachLoadedTool(tools []byte, fn func(namespace, name string)) {
 	if len(tools) == 0 {
 		return
@@ -307,7 +307,7 @@ func forEachLoadedTool(tools []byte, fn func(namespace, name string)) {
 			}
 			continue
 		}
-		if tool.Get("type").String() != string(schemas.ResponsesToolTypeFunction) {
+		if t := tool.Get("type").String(); t != string(schemas.ResponsesToolTypeFunction) && t != string(schemas.ResponsesToolTypeCustom) {
 			continue
 		}
 		if name := tool.Get("name").String(); name != "" {

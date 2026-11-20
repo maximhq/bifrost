@@ -89,7 +89,7 @@ export default function ObservabilityView() {
 					{needsRestart && <RestartWarning />}
 				</div>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>

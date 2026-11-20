@@ -47,21 +47,6 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest(ctx *schem
 					audioMimeType = part.InlineData.MIMEType
 				}
 			}
-
-			// Extract audio data from file data (would need to be fetched separately in real scenario)
-			// For now, we just note the file URI in extra params
-			if part.FileData != nil && strings.HasPrefix(strings.ToLower(part.FileData.MIMEType), "audio/") {
-				if bifrostReq.Params == nil {
-					bifrostReq.Params = &schemas.TranscriptionParameters{}
-				}
-				if bifrostReq.Params.ExtraParams == nil {
-					bifrostReq.Params.ExtraParams = make(map[string]interface{})
-				}
-				bifrostReq.Params.ExtraParams["file_uri"] = part.FileData.FileURI
-				if audioMimeType == "" {
-					audioMimeType = part.FileData.MIMEType
-				}
-			}
 		}
 	}
 

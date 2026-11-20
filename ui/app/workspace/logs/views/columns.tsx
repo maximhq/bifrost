@@ -112,7 +112,11 @@ function formatToolCall(name?: string, args?: string): string {
 
 function formatToolCalls(toolCalls?: ChatMessage["tool_calls"]): string {
 	return (toolCalls || [])
-		.map((toolCall) => formatToolCall(toolCall?.function?.name, toolCall?.function?.arguments))
+		.map((toolCall) =>
+			toolCall?.function?.name
+				? formatToolCall(toolCall.function.name, toolCall.function.arguments)
+				: formatToolCall(toolCall?.custom?.name, toolCall?.custom?.input),
+		)
 		.filter(Boolean)
 		.join("\n");
 }
@@ -715,6 +719,16 @@ export const createColumns = (
 					</Badge>
 				);
 			},
+		},
+		{
+			id: "stop_reason",
+			header: t("logs.detail.stopReason"),
+			size: 150,
+			cell: ({ row }) => (
+				<TruncatedLabel className="font-mono text-xs" data-testid="logs-stop-reason-cell">
+					{row.original.stop_reason || "-"}
+				</TruncatedLabel>
+			),
 		},
 		{
 			accessorKey: "input",

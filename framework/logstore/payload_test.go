@@ -167,6 +167,8 @@ func TestBuildInputContentSummary_ToolLoopFallback(t *testing.T) {
 	callID := "call_1"
 	fcType := schemas.ResponsesMessageTypeFunctionCall
 	fcoType := schemas.ResponsesMessageTypeFunctionCallOutput
+	ctcType := schemas.ResponsesMessageTypeCustomToolCall
+	ctcoType := schemas.ResponsesMessageTypeCustomToolCallOutput
 	args := `{"q":"amend?"}`
 	output := "done"
 
@@ -205,6 +207,31 @@ func TestBuildInputContentSummary_ToolLoopFallback(t *testing.T) {
 			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
 				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
 				{Type: &fcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
+			}},
+			want: output,
+		},
+		{
+			name: "chat assistant custom call",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{Type: schemas.Ptr("custom"), Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: schemas.Ptr("code_exec"), Input: "print(1)"}},
+				}}},
+			}},
+			want: "code_exec(print(1))",
+		},
+		{
+			name: "responses custom tool call",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &ctcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("code_exec"), ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"}}},
+			}},
+			want: "code_exec(print(1))",
+		},
+		{
+			name: "responses custom tool call output",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &ctcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("code_exec"), ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"}}},
+				{Type: &ctcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
 			}},
 			want: output,
 		},

@@ -2842,7 +2842,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			if outputConfig := responsesNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params.Text, bifrostReq.Params.Tools); outputConfig != nil {
+			if outputConfig := responsesNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params, bedrockReq.Messages); outputConfig != nil {
 				bedrockReq.OutputConfig = outputConfig
 			} else if bifrostReq.Params.Text.Format != nil {
 				// Otherwise the synthetic `bf_so_*` tool is captured here and injected after

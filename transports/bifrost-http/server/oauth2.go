@@ -36,9 +36,10 @@ func newOAuth2SweepWorker(store configstore.ConfigStore, shouldSweep func() bool
 		sweepInterval:    10 * time.Minute,
 		revokedRetention: 30 * 24 * time.Hour,
 		// Grace before a token-less client is collected. Must exceed the
-		// authorization code TTL so a client mid-handshake (code issued, not yet
-		// exchanged) is not swept before it can mint its first token.
-		orphanClientGrace: time.Hour,
+		// authorization code TTL, and spans a day because MCP clients cache their
+		// client_id: sweeping an abandoned registration strands the client on
+		// "unknown client_id" when the user retries.
+		orphanClientGrace: 24 * time.Hour,
 		shouldSweep:       shouldSweep,
 		stopCh:            make(chan struct{}),
 	}

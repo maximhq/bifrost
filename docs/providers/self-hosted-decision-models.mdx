@@ -6,7 +6,7 @@ icon: "server"
 
 ## Overview
 
-[Laya](https://github.com/NandhaKishorM/laya) and [Nimble](https://github.com/bespokelabsai/nimble) are open decision models you run yourself. Both serve TypeSafe's System One API (`POST /v1/systemone`), so you add each one as a [custom provider](/providers/custom-providers) on the **Typesafe** base format. They then work like any other decision model: on [`/v1/decisions`](/quickstart/gateway/decisions), on `/typesafe/v1/systemone`, and as the [Complexity Router](/features/complexity-router) classifier.
+[Laya](https://github.com/NandhaKishorM/laya) and [Nimble](https://github.com/bespokelabsai/nimble) are open decision models you run yourself. Both serve TypeSafe's System One API (`POST /v1/systemone`), so you add each one as a [custom provider](/providers/custom-providers) on the **Typesafe** base format. They then work like any other decision model: on [`/v1/decisions`](/quickstart/gateway/decisions), on `/typesafe/v1/systemone`, and as a [router's](/features/routers) classifier.
 
 | | Laya | Nimble |
 |---|---|---|
@@ -94,7 +94,7 @@ Without `LAYA_API_KEY`, drop `keys` and add `"is_key_less": true` to `custom_pro
 <Warning>
 **Two settings make the provider look broken if missed.**
 
-- **List Models off.** Laya has no `/v1/models`. With listing on, the provider is marked `list_models_failed` and the Complexity Router reports it as failing its checks.
+- **List Models off.** Laya has no `/v1/models`. With listing on, the provider is marked `list_models_failed` and the router's classifier settings report it as failing its checks.
 - **Allowed Models set.** A key that allows every model, on a provider that lists none, makes Bifrost treat Laya as serving *every* model. Requests without a provider prefix, of any type, are then tried on Laya first.
 </Warning>
 
@@ -222,12 +222,12 @@ Laya reports 0 output tokens, so only its input rate is charged. Nimble reports 
 
 ---
 
-## Using them in the Complexity Router
+## Using them in Routers
 
-Pick the custom provider as the decision model in [**Complexity Router**](/features/complexity-router#choosing-the-decision-model). Nimble's models come from its listing. For Laya, which lists none, the UI offers the known checkpoints, starting on `english` when the provider is named after Laya.
+Pick the custom provider as the decision model on a [router's](/features/routers#choosing-the-decision-model) **Configuration** tab (or on the deprecated Complexity Router). Nimble's models come from its listing. For Laya, which lists none, the UI offers the known checkpoints, starting on `english` when the provider is named after Laya.
 
 - **Keep guidance short on Laya.** All tier guidance is sent on every request, and `english` reads only 512 tokens. `multilingual` reads 1,024.
-- **Confidence floor.** `decision.min_confidence` in the Complexity Router is checked by Bifrost against the answer's `confidence`, or against one derived from its probabilities when that is missing. It is separate from Laya's own `min_confidence` request field, which the router does not send.
+- **Confidence floor.** A router's `decision.min_confidence` is checked by Bifrost against the answer's `confidence`, or against one derived from its probabilities when that is missing. It is separate from Laya's own `min_confidence` request field, which the router does not send.
 - **Keep the model loaded.** A request that waits for a model to load goes unclassified once it passes `decision.timeout` (`1.5s` by default). For Laya, keep `LAYA_PRELOAD=1` with every checkpoint you use, or raise `LAYA_MAX_LOADED`. For Nimble on Modal, keep the deployment warm, since waking takes minutes.
 
 ---
@@ -236,7 +236,7 @@ Pick the custom provider as the decision model in [**Complexity Router**](/featu
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Laya shows `list_models_failed`, and the Complexity Router says it is failing its checks | List Models is on | Turn **List Models** off |
+| Laya shows `list_models_failed`, and the router says it is failing its checks | List Models is on | Turn **List Models** off |
 | Unrelated requests (chat, embeddings) go to Laya | The key allows every model | List the checkpoints in **Allowed Models** |
 | `401` from Laya | `LAYA_API_KEY` is set but the provider is keyless, or the key differs | Add a key with the same value |
 | `422` from Laya | The model name contains a slash | Use a checkpoint name, or a name like `auto` |
@@ -250,5 +250,5 @@ Pick the custom provider as the decision model in [**Complexity Router**](/featu
 
 - **[Decisions](/quickstart/gateway/decisions)** - Request and response format
 - **[TypeSafe](/providers/supported-providers/typesafe)** - How System One requests are converted
-- **[Complexity Router](/features/complexity-router)** - Route requests by complexity with a decision model
+- **[Routers](/features/routers)** - Route requests by complexity with a decision model
 - **[Custom Pricing](/providers/custom-pricing)** - Price self-hosted models
