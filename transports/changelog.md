@@ -44,6 +44,7 @@
 - **Databricks Scoped OAuth Secrets** - Databricks service principals whose OAuth secret is limited to specific scopes work without configuration: Bifrost retries the token request with the scopes its routes need, and a scope 403 is reported as the provider's own message
 - **Virtual MCPs on Virtual Keys** - The virtual key details sheet lists the Virtual MCPs assigned to the key
 - **FIPS-Approved Key Derivation** - In FIPS 140-3 mode, the encryption data key is derived with PBKDF2-HMAC-SHA-256 and passwords are hashed with PBKDF2-HMAC-SHA-256. Standard builds keep writing the earlier formats, and both formats stay readable, so a rolling deploy is safe
+- **Decision Models in /v1/models** - `GET /v1/models` and `GET /v1/models/{model}` add `decisions` to `architecture.output_modalities` for models that serve only decisions (TypeSafe, Gemini Decision, Clef, Perplexity decider, Baseten, Ollama System One, Microsoft Decision and Databricks decision models), so clients can find them without the management API. Models that also serve chat, such as `gpt-6-luna` and vLLM or SGLang models, are left unmarked
 
 ## 🐞 Fixed
 
