@@ -460,7 +460,8 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, providerUtils.NewBifrostBadRequestError("Mistral speech does not support large-payload passthrough: the staged body cannot be converted to the Mistral speech schema")
 	}
-	if request.Input == nil || request.Input.Input == "" {
+	// A raw-body request carries the client's Mistral JSON and needs no parsed input.
+	if _, useRaw := providerUtils.CheckAndGetRawRequestBody(ctx, request); !useRaw && (request.Input == nil || request.Input.Input == "") {
 		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
 	}
 
@@ -510,14 +511,14 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	var mistralResp MistralSpeechResponse
 	_, rawResponse, parseErr := providerUtils.HandleProviderResponseCtx(ctx, body, &mistralResp, nil, false, sendBackRawResponse)
 	if parseErr != nil {
-		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if mistralResp.AudioData == "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Mistral speech response contained no audio", nil), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Mistral speech response contained no audio", nil), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	audio, err := base64.StdEncoding.DecodeString(mistralResp.AudioData)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to decode Mistral base64 audio", err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to decode Mistral base64 audio", err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse := &schemas.BifrostSpeechResponse{

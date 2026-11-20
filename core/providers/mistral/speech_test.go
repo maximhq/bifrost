@@ -160,3 +160,70 @@ func TestSpeechRefusesLargePayload(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, "large-payload")
 	assert.Zero(t, hits.Load(), "the staged body must not reach Mistral")
 }
+
+// With the raw-body flag on, the client's Mistral JSON is sent as is. The request has no
+// parsed input, so the input check must not reject it before the raw body is selected.
+func TestSpeechRawRequestBody(t *testing.T) {
+	t.Parallel()
+
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_data":"` + base64.StdEncoding.EncodeToString([]byte("ID3fake")) + `"}`))
+	}))
+	defer server.Close()
+
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, &testLogger{})
+
+	rawBody := `{"model":"voxtral-mini-tts-latest","input":"Hello raw.","voice_id":"gb_jane_neutral"}`
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
+		Model:          "voxtral-mini-tts-latest",
+		RawRequestBody: []byte(rawBody),
+	})
+	require.Nil(t, bifrostErr)
+	assert.JSONEq(t, rawBody, gotBody)
+	assert.Equal(t, []byte("ID3fake"), resp.Audio)
+}
+
+// With raw-response capture on, a 200 whose audio cannot be used keeps the upstream JSON
+// on the returned error.
+func TestSpeechErrorKeepsRawResponse(t *testing.T) {
+	t.Parallel()
+
+	for name, upstream := range map[string]string{
+		"bad base64":    `{"audio_data":"%%%"}`,
+		"missing audio": `{"audio_data":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(upstream))
+			}))
+			defer server.Close()
+
+			provider := NewMistralProvider(&schemas.ProviderConfig{
+				NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+				SendBackRawResponse: true,
+			}, &testLogger{})
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
+				Model: "voxtral-mini-tts-latest",
+				Input: &schemas.SpeechInput{Input: "Hi"},
+			})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			raw, ok := bifrostErr.ExtraFields.RawResponse.(json.RawMessage)
+			require.True(t, ok, "raw response should be the upstream JSON, got %T", bifrostErr.ExtraFields.RawResponse)
+			assert.JSONEq(t, upstream, string(raw))
+		})
+	}
+}
