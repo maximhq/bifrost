@@ -342,3 +342,39 @@ func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
 		t.Fatalf("code got %v, want bad_key:[redacted]", got.Code)
 	}
 }
+
+// TestDecisionProbeErrorFrom_RedactsOverlappingCredentialsInAnyOrder pins that
+// a credential overlapping a longer one, as its prefix or as a short token at
+// its end, does not cut the longer one apart and leave its rest in the text,
+// whichever order the provider config lists them in.
+func TestDecisionProbeErrorFrom_RedactsOverlappingCredentialsInAnyOrder(t *testing.T) {
+	text := "keys abcdefgh-secret-value and abcdefgh.xyz rejected"
+	want := "keys [redacted] and [redacted] rejected"
+	for _, secrets := range [][]string{
+		{"abcdefgh", "abcdefgh-secret-value", "xyz", "abcdefgh.xyz"},
+		{"abcdefgh.xyz", "xyz", "abcdefgh-secret-value", "abcdefgh"},
+	} {
+		got := decisionProbeErrorFrom(&schemas.BifrostError{
+			StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+			Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
+		}, secrets)
+		if got.Message != want || got.Type == nil || *got.Type != want || got.Code == nil || *got.Code != want {
+			t.Fatalf("secrets %q: message %q, type %v, code %v; want %q in each", secrets, got.Message, got.Type, got.Code, want)
+		}
+	}
+}
+
+// TestDecisionProbeErrorFrom_RedactsUnparseableURLs pins that a URL url.Parse
+// rejects still has its whole userinfo, through the last '@' before the host,
+// and every query value masked in the message, type, and code.
+func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
+	text := "see https://user:pa@ss%zz@host.example/path?sig=query-secret&x=1#top now"
+	want := "see https://redacted:redacted@host.example/path?sig=redacted&x=redacted#top now"
+	got := decisionProbeErrorFrom(&schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
+	}, nil)
+	if got.Message != want || got.Type == nil || *got.Type != want || got.Code == nil || *got.Code != want {
+		t.Fatalf("message %q, type %v, code %v; want %q in each", got.Message, got.Type, got.Code, want)
+	}
+}

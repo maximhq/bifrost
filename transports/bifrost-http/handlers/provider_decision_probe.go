@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -170,9 +171,13 @@ func probedRoute(provider schemas.ModelProvider, model string, routing schemas.R
 // client sanitizer every error response gets, then, in every returned string
 // (type, code, and message), removes the provider's credentials by value and
 // masks userinfo and query values in any URL, since an upstream error can echo
-// the key or the URL it was sent to.
+// the key or the URL it was sent to. Credentials are removed longest first: a
+// shorter one that overlaps a longer one would otherwise cut it apart and leave
+// the rest of the longer one in the text.
 func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) *DecisionProbeError {
 	sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr)
+	secrets = slices.Clone(secrets)
+	slices.SortStableFunc(secrets, func(a, b string) int { return len(b) - len(a) })
 	scrub := func(text string) string {
 		for _, secret := range secrets {
 			if len(secret) >= decisionProbeMinSecretLength {
@@ -181,7 +186,7 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 				text = redactWholeToken(text, secret)
 			}
 		}
-		return decisionProbeURLPattern.ReplaceAllStringFunc(text, lib.RedactURLCredentials)
+		return decisionProbeURLPattern.ReplaceAllStringFunc(text, redactDecisionProbeURL)
 	}
 	scrubPtr := func(text *string) *string {
 		if text == nil {
@@ -223,6 +228,46 @@ func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 		}
 	}
 	return secrets
+}
+
+// redactDecisionProbeURL masks the userinfo and query values of a URL found in
+// a probe error. A URL that parses is masked by lib.RedactURLCredentials. One
+// that does not, which that helper returns unchanged, is masked by position:
+// everything before the last '@' ahead of the query or fragment is userinfo,
+// and every query value is replaced, so a malformed URL cannot carry its
+// credentials through.
+func redactDecisionProbeURL(raw string) string {
+	if _, err := url.Parse(raw); err == nil {
+		return lib.RedactURLCredentials(raw)
+	}
+	scheme, rest, _ := strings.Cut(raw, "://")
+	beforeQuery := rest
+	if end := strings.IndexAny(rest, "?#"); end >= 0 {
+		beforeQuery = rest[:end]
+	}
+	if at := strings.LastIndexByte(beforeQuery, '@'); at >= 0 {
+		userinfo := "redacted"
+		if strings.Contains(rest[:at], ":") {
+			userinfo = "redacted:redacted"
+		}
+		rest = userinfo + rest[at:]
+	}
+	address, query, hasQuery := strings.Cut(rest, "?")
+	if !hasQuery {
+		return scheme + "://" + rest
+	}
+	query, fragment, hasFragment := strings.Cut(query, "#")
+	pairs := strings.Split(query, "&")
+	for i, pair := range pairs {
+		if name, _, _ := strings.Cut(pair, "="); pair != "" {
+			pairs[i] = name + "=redacted"
+		}
+	}
+	out := scheme + "://" + address + "?" + strings.Join(pairs, "&")
+	if hasFragment {
+		out += "#" + fragment
+	}
+	return out
 }
 
 // redactWholeToken replaces each occurrence of token in text that is not part
