@@ -2746,6 +2746,60 @@ func TestExecuteToolCodeWithholdsMediaRedactedByPostHook(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCodeForwardsOnlyMediaNamedBeforePostHooks(t *testing.T) {
+	imageName := schemas.MediaPlaceholder("image/png", len(pngData))
+	for name, tc := range map[string]struct {
+		mutate  func(*mcp.CallToolResult)
+		forward bool
+	}{
+		"unchanged": {mutate: func(*mcp.CallToolResult) {}, forward: true},
+		"appended media": {mutate: func(native *mcp.CallToolResult) {
+			native.Content = append(native.Content, mcp.AudioContent{Type: "audio", Data: wavData, MIMEType: "audio/wav"})
+		}},
+		"replaced media": {mutate: func(native *mcp.CallToolResult) {
+			native.Content[1] = mcp.ImageContent{Type: "image", Data: wavData, MIMEType: "image/png"}
+		}},
+		"removed media": {mutate: func(native *mcp.CallToolResult) {
+			native.Content = native.Content[:1]
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
+				mcp.NewTextContent("captured"),
+				mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
+			}})
+			manager.postHook = func(resp *schemas.BifrostMCPResponse) {
+				native := forwardedResult(resp.ChatMessage)
+				if native == nil {
+					t.Fatal("nested native result was not registered before post-hooks")
+				}
+				text := mediaResponseText(t, resp.ChatMessage)
+				tc.mutate(native)
+				if forwardedResult(resp.ChatMessage) == nil || mediaResponseText(t, resp.ChatMessage) != text {
+					t.Fatal("the mutation changed the hook-visible text")
+				}
+			}
+			msg := runMediaCode(t, mode, "result = shots.capture()")
+			native := forwardedResult(msg)
+			if !tc.forward {
+				if native != nil {
+					t.Fatalf("media the placeholders never named was forwarded: %#v", native)
+				}
+				return
+			}
+			if native == nil || len(native.Content) != 2 {
+				t.Fatalf("forwarded %#v, want the reply text and the named image", native)
+			}
+			if image, ok := native.Content[1].(mcp.ImageContent); !ok || image.Data != pngData {
+				t.Fatalf("image block = %#v", native.Content[1])
+			}
+			if text := mediaResponseText(t, msg); !strings.Contains(text, "Attached media: "+imageName) {
+				t.Fatalf("reply does not name the attached media: %s", text)
+			}
+		})
+	}
+}
+
 func TestExecuteToolCodeReplyMediaWithheldWhenReplyTextRewritten(t *testing.T) {
 	for name, rewrite := range mediaRewrites() {
 		t.Run(name, func(t *testing.T) {

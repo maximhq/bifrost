@@ -51,27 +51,39 @@ func mediaBlock(block mcp.Content) (mcp.Content, string, string) {
 	return nil, "", ""
 }
 
-// add retains successful image/audio blocks within this run's count and encoded-byte bounds.
-func (c *mediaCollector) add(result *mcp.CallToolResult) {
-	if c == nil || result == nil || result.IsError {
+// add retains image/audio blocks within this run's count and encoded-byte bounds.
+func (c *mediaCollector) add(blocks []mcp.Content) {
+	if c == nil {
 		return
 	}
-	for _, block := range result.Content {
-		media, _, data := mediaBlock(block)
-		if data == "" {
-			continue
-		}
+	for _, block := range blocks {
+		_, _, data := mediaBlock(block)
 		if len(c.blocks) >= maxForwardedMediaBlocks || len(data) > maxForwardedMediaBytes-c.bytes {
 			c.dropped++
 			continue
 		}
-		c.blocks = append(c.blocks, media)
+		c.blocks = append(c.blocks, block)
 		c.bytes += len(data)
 	}
 }
 
-// hookVisibleMedia requires unchanged post-hook content that named every media block.
-func hookVisibleMedia(msg *schemas.ChatMessage) *mcp.CallToolResult {
+// namedMedia copies the image/audio blocks a result's placeholders name.
+func namedMedia(result *mcp.CallToolResult) []mcp.Content {
+	if result == nil {
+		return nil
+	}
+	var named []mcp.Content
+	for _, block := range result.Content {
+		if media, _, data := mediaBlock(block); data != "" {
+			named = append(named, media)
+		}
+	}
+	return named
+}
+
+// hookVisibleMedia returns named, the media the placeholders listed before post-hooks ran,
+// only while the post-hook content and native result still match it.
+func hookVisibleMedia(msg *schemas.ChatMessage, named []mcp.Content) []mcp.Content {
 	if msg == nil || msg.ChatToolMessage == nil {
 		return nil
 	}
@@ -84,7 +96,18 @@ func hookVisibleMedia(msg *schemas.ChatMessage) *mcp.CallToolResult {
 			return nil
 		}
 	}
-	return result
+	current := namedMedia(result)
+	if len(current) != len(named) {
+		return nil
+	}
+	for i, block := range current {
+		_, kind, data := mediaBlock(block)
+		_, namedKind, namedData := mediaBlock(named[i])
+		if kind != namedKind || data != namedData {
+			return nil
+		}
+	}
+	return named
 }
 
 // attachMedia snapshots the reply text so an outer rewrite withholds its media.
@@ -478,6 +501,8 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// Whether the server flagged the result with isError. The message's own flag also covers
 	// text that only opens with "Error: ", so it cannot tell the two apart after the pipeline.
 	wireIsError := false
+	// The media the placeholder text names, copied before post-hooks can touch the native result.
+	var named []mcp.Content
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
 		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):
@@ -561,6 +586,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 		message := createToolResponseMessage(toolCallReq, rawResult, isErrorResult)
 		if media != nil {
+			named = namedMedia(toolResponse)
 			message.SetMCPResult(toolResponse, message.Content)
 		}
 		return &schemas.BifrostMCPResponse{
@@ -618,7 +644,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		// the script prints or returns. The payload itself is in the MCP tool log.
 		s.logger.Debug("%s Tool returned %d bytes: %s.%s", codemcp.CodeModeLogPrefix, len(text), clientName, logToolName)
 		if media != nil {
-			media.add(hookVisibleMedia(msg))
+			media.add(hookVisibleMedia(msg, named))
 		}
 		return extractResultFromChatMessage(msg), nil
 	}
