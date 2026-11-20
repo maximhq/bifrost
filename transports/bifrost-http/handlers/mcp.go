@@ -2477,10 +2477,25 @@ func resourceCredentialResendRequired(existing, req *schemas.MCPTokenExchangeCon
 	targetChanged := req.ResourceTokenEndpointURL() != existing.ResourceTokenEndpointURL() ||
 		strings.TrimSpace(req.ResourceAssertionAudience) != strings.TrimSpace(existing.ResourceAssertionAudience) ||
 		strings.TrimSpace(req.Audience) != strings.TrimSpace(existing.Audience)
-	if targetChanged && (req.ResourceClientSecret.IsMaskedPlaceholder() || req.ResourcePrivateKey.IsMaskedPlaceholder()) {
+	if credentialResendRequired(targetChanged, req.ResourceClientSecret, req.ResourcePrivateKey) {
 		return fmt.Errorf("token_exchange.resource_client_secret and resource_private_key must be resent explicitly when audience, resource_token_endpoint or resource_assertion_audience changes")
 	}
 	return nil
+}
+
+// credentialResendRequired reports whether an update that changes where a stored
+// credential is sent keeps any of creds through a masked placeholder: the stored
+// credential was never paired with the new target.
+func credentialResendRequired(targetChanged bool, creds ...*schemas.SecretVar) bool {
+	if !targetChanged {
+		return false
+	}
+	for _, c := range creds {
+		if c.IsMaskedPlaceholder() {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpClientSecretReferences lists the credential-bearing fields of an MCP

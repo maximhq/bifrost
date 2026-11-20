@@ -2608,23 +2608,22 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	})
 }
 
-// marshalTokenExchangeJSON serialises the token_exchange block the way
-// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when
-// enabled — the block carries the exchange application's client_secret),
+// marshalEncryptedJSON serialises a credential-bearing block the way
+// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when enabled),
 // for the map-based update path that bypasses GORM hooks.
-func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, error) {
+func marshalEncryptedJSON[T any](cfg *T, name string) (*string, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token_exchange: %w", err)
+		return nil, fmt.Errorf("failed to marshal %s: %w", name, err)
 	}
 	s := string(data)
 	if encrypt.IsEnabled() && s != "" {
 		encrypted, err := encrypt.Encrypt(s)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+			return nil, fmt.Errorf("failed to encrypt mcp %s config: %w", name, err)
 		}
 		s = encrypted
 	}
@@ -2823,7 +2822,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		// Mirror BeforeSave for the token_exchange block: nil means
 		// "preserve" on API updates (same convention as PerUserHeaderKeys).
-		tokenExchangeJSON, tokenExchangeErr := marshalTokenExchangeJSON(clientConfig.TokenExchange)
+		tokenExchangeJSON, tokenExchangeErr := marshalEncryptedJSON(clientConfig.TokenExchange, "token exchange")
 		if tokenExchangeErr != nil {
 			return tokenExchangeErr
 		}
