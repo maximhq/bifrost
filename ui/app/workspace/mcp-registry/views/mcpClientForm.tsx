@@ -145,7 +145,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	return (
 		<Sheet open={open} onOpenChange={(open) => !open && !oauthFlow && onClose()}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
+			<SheetContent resizeKey="mcp-client-form" className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{t("registry.newServer")}</SheetTitle>
 					<SheetDescription>{t("registry.form.description")}</SheetDescription>
