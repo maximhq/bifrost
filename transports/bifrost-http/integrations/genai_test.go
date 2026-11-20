@@ -912,3 +912,36 @@ func TestGenAIGenerateContentNullEntriesDoNotPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestGenAIStreamErrorConverterKeepsServerErrorsServerSide pins the in-stream error code. The
+// HTTP status is already 200 once a stream starts, so the google-genai SDK picks ClientError or
+// ServerError from this code alone.
+func TestGenAIStreamErrorConverterKeepsServerErrorsServerSide(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	require.NotNil(t, route.StreamConfig)
+	require.NotNil(t, route.StreamConfig.ErrorConverter)
+
+	cases := []struct {
+		name       string
+		err        *schemas.BifrostError
+		wantCode   int
+		wantStatus string
+	}{
+		{"google server status without status code", &schemas.BifrostError{Error: &schemas.ErrorField{Type: new("INTERNAL"), Message: "plugin aborted"}}, 500, "INTERNAL"},
+		{"google unavailable without status code", &schemas.BifrostError{Error: &schemas.ErrorField{Type: new("UNAVAILABLE"), Message: "overloaded"}}, 503, "UNAVAILABLE"},
+		{"no status code and no google status", &schemas.BifrostError{Error: &schemas.ErrorField{Message: "stream broke"}}, 500, "INTERNAL"},
+		{"explicit status code wins", &schemas.BifrostError{StatusCode: new(429), Error: &schemas.ErrorField{Type: new("RESOURCE_EXHAUSTED"), Message: "quota"}}, 429, "RESOURCE_EXHAUSTED"},
+		{"explicit client status code", &schemas.BifrostError{StatusCode: new(400), Error: &schemas.ErrorField{Message: "blocked by guardrail"}}, 400, "INVALID_ARGUMENT"},
+		{"explicit success code is not an error code", &schemas.BifrostError{StatusCode: new(200), Error: &schemas.ErrorField{Type: new("INTERNAL"), Message: "upstream sent code 200"}}, 500, "INTERNAL"},
+		{"OK type is not an error status", &schemas.BifrostError{Error: &schemas.ErrorField{Type: new("OK"), Message: "mislabelled"}}, 500, "INTERNAL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := route.StreamConfig.ErrorConverter(nil, tc.err).(*gemini.GeminiGenerationError)
+			require.True(t, ok)
+			require.NotNil(t, got.Error)
+			assert.Equal(t, tc.wantCode, got.Error.Code)
+			assert.Equal(t, tc.wantStatus, got.Error.Status)
+		})
+	}
+}

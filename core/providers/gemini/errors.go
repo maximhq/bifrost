@@ -71,22 +71,91 @@ func toGeminiStreamBifrostError(err error) *schemas.BifrostError {
 	return bifrostErr
 }
 
+// googleRPCStatusHTTP maps each google.rpc.Code error name to its HTTP status (googleapis
+// google/rpc/code.proto). OK is left out: it means success and never describes an error.
+var googleRPCStatusHTTP = map[string]int{
+	"CANCELLED": 499, "UNKNOWN": 500, "INVALID_ARGUMENT": 400, "DEADLINE_EXCEEDED": 504,
+	"NOT_FOUND": 404, "ALREADY_EXISTS": 409, "PERMISSION_DENIED": 403, "UNAUTHENTICATED": 401,
+	"RESOURCE_EXHAUSTED": 429, "FAILED_PRECONDITION": 400, "ABORTED": 409, "OUT_OF_RANGE": 400,
+	"UNIMPLEMENTED": 501, "INTERNAL": 500, "UNAVAILABLE": 503, "DATA_LOSS": 500,
+}
+
+// googleRPCStatusOf returns the error's type when it is a google.rpc.Code name, else "".
+func googleRPCStatusOf(bifrostErr *schemas.BifrostError) string {
+	if bifrostErr.Error == nil || bifrostErr.Error.Type == nil {
+		return ""
+	}
+	if _, ok := googleRPCStatusHTTP[*bifrostErr.Error.Type]; !ok {
+		return ""
+	}
+	return *bifrostErr.Error.Type
+}
+
+// googleRPCStatusForHTTP inverts code.proto's HTTP mapping. 400 and 409 have several codes;
+// the general one is used. Statuses code.proto does not map fall back to UNKNOWN.
+func googleRPCStatusForHTTP(code int) string {
+	switch code {
+	case fasthttp.StatusBadRequest:
+		return "INVALID_ARGUMENT"
+	case fasthttp.StatusUnauthorized:
+		return "UNAUTHENTICATED"
+	case fasthttp.StatusForbidden:
+		return "PERMISSION_DENIED"
+	case fasthttp.StatusNotFound:
+		return "NOT_FOUND"
+	case fasthttp.StatusConflict:
+		return "ABORTED"
+	case fasthttp.StatusTooManyRequests:
+		return "RESOURCE_EXHAUSTED"
+	case 499:
+		return "CANCELLED"
+	case fasthttp.StatusInternalServerError:
+		return "INTERNAL"
+	case fasthttp.StatusNotImplemented:
+		return "UNIMPLEMENTED"
+	case fasthttp.StatusServiceUnavailable:
+		return "UNAVAILABLE"
+	case fasthttp.StatusGatewayTimeout:
+		return "DEADLINE_EXCEEDED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // ToGeminiError derives a GeminiGenerationError from a BifrostError
 func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiGenerationError {
 	if bifrostErr == nil {
 		return nil
 	}
-	code := 500
-	status := ""
-	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil {
-		status = *bifrostErr.Error.Type
+	// AIP-193: code is the HTTP status the response is written with, status its google.rpc.Code name.
+	return newGeminiError(bifrostErr, bifrostErr.EffectiveHTTPStatus())
+}
+
+// ToGeminiStreamError derives the error event for a stream that has already started. The HTTP
+// status is 200 by then, so SDKs classify the error from this code alone: an explicit error status
+// (400 or above) wins, then the HTTP status of a google.rpc.Code type, then 500.
+func ToGeminiStreamError(bifrostErr *schemas.BifrostError) *GeminiGenerationError {
+	if bifrostErr == nil {
+		return nil
+	}
+	code := fasthttp.StatusInternalServerError
+	if bifrostErr.StatusCode != nil && *bifrostErr.StatusCode >= fasthttp.StatusBadRequest {
+		code = *bifrostErr.StatusCode
+	} else if typeCode, ok := googleRPCStatusHTTP[googleRPCStatusOf(bifrostErr)]; ok {
+		code = typeCode
+	}
+	return newGeminiError(bifrostErr, code)
+}
+
+// newGeminiError builds the Gemini error body for code, keeping a google.rpc.Code type as status.
+func newGeminiError(bifrostErr *schemas.BifrostError, code int) *GeminiGenerationError {
+	status := googleRPCStatusOf(bifrostErr)
+	if status == "" {
+		status = googleRPCStatusForHTTP(code)
 	}
 	message := ""
 	if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 		message = bifrostErr.Error.Message
-	}
-	if bifrostErr.StatusCode != nil {
-		code = *bifrostErr.StatusCode
 	}
 	return &GeminiGenerationError{
 		Error: &GeminiGenerationErrorStruct{
