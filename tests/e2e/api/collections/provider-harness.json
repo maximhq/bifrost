@@ -318427,6 +318427,135 @@
           }
         }
       ]
+    },
+    {
+      "name": "380. Datasheet modalities on retrieved models (datasheet modalities)",
+      "description": "The pricing datasheet has no architecture block; it describes modalities through supports_vision / supports_audio_input / supports_video_input / supports_pdf_input / supports_audio_output and the supported_modalities / supported_input_modalities / supported_output_modalities lists. Entry.UnmarshalJSON now derives architecture.input_modalities and output_modalities from them, and EnrichModelRetrieveResponse / EnrichListModelsResponse (shared enrichModel) copy them onto models the provider returns without an architecture. Before the fix each row below came back with no architecture. Cases: (1) gpt-4o-mini has only supports_vision + supports_pdf_input, so input is text+image+file and output comes from its chat mode (text); (2) gpt-4.1 has explicit supported_modalities / supported_output_modalities plus flags; (3) gpt-audio-mini sets supports_audio_output, so output is text+audio. The /openai drop-in returns the OpenAI Model shape (object, id, created, owned_by) without architecture, so it is not covered; the Go SDK does not run catalog enrichment.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native /v1/models retrieve: flags-only row gets input from flags and output from its mode - datasheet modalities",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"openai/gpt-4o-mini retrieve reports datasheet modalities (flags only) - datasheet modalities\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  var arch = j.architecture;",
+                  "  pm.expect(arch, 'architecture missing: the catalog did not derive modalities from the datasheet row: ' + body).to.be.an('object');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.output_modalities, 'output_modalities missing: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.eql([\"text\", \"image\", \"file\"]);",
+                  "  pm.expect(arch.output_modalities, 'output_modalities: ' + body).to.eql([\"text\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4.1 native /v1/models retrieve: explicit modality lists plus pdf flag - datasheet modalities",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"openai/gpt-4.1 retrieve reports datasheet modalities (explicit lists) - datasheet modalities\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  var arch = j.architecture;",
+                  "  pm.expect(arch, 'architecture missing: the catalog did not derive modalities from the datasheet row: ' + body).to.be.an('object');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.output_modalities, 'output_modalities missing: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.eql([\"text\", \"image\", \"file\"]);",
+                  "  pm.expect(arch.output_modalities, 'output_modalities: ' + body).to.eql([\"text\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-4.1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-4.1"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-audio-mini native /v1/models retrieve: supports_audio_output adds audio output - datasheet modalities",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"openai/gpt-audio-mini retrieve reports datasheet modalities (audio output) - datasheet modalities\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  var arch = j.architecture;",
+                  "  pm.expect(arch, 'architecture missing: the catalog did not derive modalities from the datasheet row: ' + body).to.be.an('object');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.output_modalities, 'output_modalities missing: ' + body).to.be.an('array');",
+                  "  pm.expect(arch.input_modalities, 'input_modalities: ' + body).to.include.members([\"text\", \"audio\"]);",
+                  "  pm.expect(arch.output_modalities, 'output_modalities: ' + body).to.eql([\"text\", \"audio\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-audio-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-audio-mini"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

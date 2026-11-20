@@ -482,13 +482,22 @@ func TestEntryUnmarshalJSON_DerivesModalities(t *testing.T) {
 		wantInput  []string
 		wantOutput []string
 	}{
-		{"supports_vision", `{"provider":"openai","mode":"chat","supports_vision":true}`, []string{"text", "image"}, nil},
-		{"supported_input_modalities", `{"provider":"x","mode":"chat","supported_input_modalities":["text","image"]}`, []string{"text", "image"}, nil},
-		{"supported_modalities", `{"provider":"x","mode":"chat","supported_modalities":["Text"," image "]}`, []string{"text", "image"}, nil},
-		{"list_and_flags_union", `{"provider":"x","mode":"chat","supported_modalities":["text","image"],"supports_pdf_input":true,"supports_audio_input":true,"supports_video_input":true}`, []string{"text", "image", "audio", "video", "file"}, nil},
-		{"pdf_maps_to_file", `{"provider":"x","mode":"chat","supported_input_modalities":["text","pdf"]}`, []string{"text", "file"}, nil},
+		{"supports_vision", `{"provider":"openai","mode":"chat","supports_vision":true}`, []string{"text", "image"}, []string{"text"}},
+		{"supported_input_modalities", `{"provider":"x","mode":"chat","supported_input_modalities":["text","image"]}`, []string{"text", "image"}, []string{"text"}},
+		{"supported_modalities", `{"provider":"x","mode":"chat","supported_modalities":["Text"," image "]}`, []string{"text", "image"}, []string{"text"}},
+		{"list_and_flags_union", `{"provider":"x","mode":"chat","supported_modalities":["text","image"],"supports_pdf_input":true,"supports_audio_input":true,"supports_video_input":true}`, []string{"text", "image", "audio", "video", "file"}, []string{"text"}},
+		{"pdf_maps_to_file", `{"provider":"x","mode":"chat","supported_input_modalities":["text","pdf"]}`, []string{"text", "file"}, []string{"text"}},
 		{"output_modalities", `{"provider":"x","mode":"chat","supported_output_modalities":["text","image","image"]}`, nil, []string{"text", "image"}},
-		{"text_only", `{"provider":"openai","mode":"chat","supports_vision":false,"supported_modalities":["text"]}`, nil, nil},
+		{"explicit_list_without_text", `{"provider":"azure","mode":"audio_transcription","supported_modalities":["audio"],"supported_output_modalities":["text"]}`, []string{"audio"}, []string{"text"}},
+		{"video_generation_list", `{"provider":"x","mode":"video_generation","supported_modalities":["video"]}`, []string{"video"}, []string{"video"}},
+		{"output_from_mode_image", `{"provider":"x","mode":"image_generation","supports_vision":true}`, []string{"text", "image"}, []string{"image"}},
+		{"output_from_mode_embedding", `{"provider":"x","mode":"embedding","supported_modalities":["text","image"]}`, []string{"text", "image"}, []string{"embeddings"}},
+		{"output_from_mode_unknown", `{"provider":"x","mode":"rerank","supports_vision":true}`, []string{"text", "image"}, nil},
+		{"supports_audio_output", `{"provider":"openai","mode":"chat","supports_audio_input":true,"supports_audio_output":true}`, []string{"text", "audio"}, []string{"text", "audio"}},
+		{"supports_audio_output_only", `{"provider":"bedrock","mode":"realtime","supports_audio_output":true}`, nil, []string{"text", "audio"}},
+		{"unknown_modalities_dropped", `{"provider":"bedrock","mode":"chat","supported_modalities":["text","image"],"supported_output_modalities":["text","code"]}`, []string{"text", "image"}, []string{"text"}},
+		{"text_only_list", `{"provider":"openai","mode":"chat","supports_vision":false,"supported_modalities":["text"]}`, []string{"text"}, []string{"text"}},
+		{"false_flags_only", `{"provider":"openai","mode":"chat","supports_vision":false,"supports_audio_output":false}`, nil, nil},
 		{"no_signal", `{"provider":"openai","mode":"chat"}`, nil, nil},
 		{"explicit_architecture_wins", `{"provider":"x","mode":"chat","architecture":{"input_modalities":["text","audio"]},"supports_vision":true,"supported_output_modalities":["text"]}`, []string{"text", "audio"}, []string{"text"}},
 	}

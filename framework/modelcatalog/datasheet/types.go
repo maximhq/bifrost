@@ -77,6 +77,7 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 		SupportsAudioInput        *bool    `json:"supports_audio_input,omitempty"`
 		SupportsVideoInput        *bool    `json:"supports_video_input,omitempty"`
 		SupportsPdfInput          *bool    `json:"supports_pdf_input,omitempty"`
+		SupportsAudioOutput       *bool    `json:"supports_audio_output,omitempty"`
 		SupportedModalities       []string `json:"supported_modalities,omitempty"`
 		SupportedInputModalities  []string `json:"supported_input_modalities,omitempty"`
 		SupportedOutputModalities []string `json:"supported_output_modalities,omitempty"`
@@ -110,7 +111,7 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	// Architecture modalities from them. An explicit architecture block wins.
 	inputModalities := datasheetInputModalities(raw.SupportsVision, raw.SupportsAudioInput, raw.SupportsVideoInput, raw.SupportsPdfInput,
 		raw.SupportedInputModalities, raw.SupportedModalities)
-	outputModalities := normalizeModalities(nil, raw.SupportedOutputModalities)
+	outputModalities := datasheetOutputModalities(p.Mode, raw.SupportsAudioOutput, raw.SupportedOutputModalities, len(inputModalities) > 0)
 	if len(inputModalities) > 0 || len(outputModalities) > 0 {
 		if p.Architecture == nil {
 			p.Architecture = &schemas.Architecture{}
@@ -125,16 +126,39 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// architectureModalities is the set of modality names the architecture block
+// carries. Datasheet values outside it (e.g. "code") are dropped so upstream
+// editorial labels never reach /v1/models.
+var architectureModalities = []string{"text", "image", "audio", "video", "file", "embeddings"}
+
+// modeOutputModalities is the output a datasheet mode implies when the row has
+// no supported_output_modalities list. Modes without a clear output (rerank,
+// moderation, ...) are absent and yield no output modalities.
+var modeOutputModalities = map[string][]string{
+	"chat":                {"text"},
+	"responses":           {"text"},
+	"completion":          {"text"},
+	"text_completion":     {"text"},
+	"realtime":            {"text"},
+	"audio_transcription": {"text"},
+	"image_generation":    {"image"},
+	"image_edit":          {"image"},
+	"image_variation":     {"image"},
+	"video_generation":    {"video"},
+	"audio_speech":        {"audio"},
+	"embedding":           {"embeddings"},
+}
+
 // normalizeModalities appends the lowercased, trimmed modalities of list to dst,
-// skipping blanks and duplicates. "pdf" maps to "file", the name the
-// architecture modalities use for document input.
+// skipping blanks, duplicates and names outside architectureModalities. "pdf"
+// maps to "file", the name the architecture modalities use for document input.
 func normalizeModalities(dst []string, list []string) []string {
 	for _, m := range list {
 		v := strings.ToLower(strings.TrimSpace(m))
 		if v == "pdf" {
 			v = "file"
 		}
-		if v != "" && !slices.Contains(dst, v) {
+		if slices.Contains(architectureModalities, v) && !slices.Contains(dst, v) {
 			dst = append(dst, v)
 		}
 	}
@@ -142,11 +166,13 @@ func normalizeModalities(dst []string, list []string) []string {
 }
 
 // datasheetInputModalities returns the input modalities a datasheet row
-// advertises, as the union of its explicit modality lists and its supports_*
-// input flags. A row that advertises nothing beyond text returns nil, so
-// text-only rows carry no architecture and consumers keep their defaults.
+// advertises. An explicit supported_input_modalities / supported_modalities
+// list is authoritative (a transcription row listing only "audio" takes no
+// text), with the supports_* input flags added on top. Without a list, "text"
+// is assumed and the true flags are appended. A row with neither a list nor a
+// true flag returns nil, so it carries no architecture.
 func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supportsPdf *bool, lists ...[]string) []string {
-	modalities := []string{"text"}
+	var modalities []string
 	for _, list := range lists {
 		modalities = normalizeModalities(modalities, list)
 	}
@@ -159,12 +185,29 @@ func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supp
 		{supportsVideo, "video"},
 		{supportsPdf, "file"},
 	} {
-		if flag.set != nil && *flag.set && !slices.Contains(modalities, flag.modality) {
-			modalities = append(modalities, flag.modality)
+		if flag.set == nil || !*flag.set || slices.Contains(modalities, flag.modality) {
+			continue
 		}
+		if len(modalities) == 0 {
+			modalities = append(modalities, "text")
+		}
+		modalities = append(modalities, flag.modality)
 	}
-	if len(modalities) == 1 {
-		return nil
+	return modalities
+}
+
+// datasheetOutputModalities returns the output modalities a datasheet row
+// advertises: its supported_output_modalities list or, when that is empty and
+// the row carries other modality data (hasInput or supports_audio_output), the
+// output its mode implies. supports_audio_output adds "audio" either way.
+func datasheetOutputModalities(mode string, supportsAudioOutput *bool, list []string, hasInput bool) []string {
+	modalities := normalizeModalities(nil, list)
+	audioOut := supportsAudioOutput != nil && *supportsAudioOutput
+	if len(modalities) == 0 && (hasInput || audioOut) {
+		modalities = normalizeModalities(nil, modeOutputModalities[strings.ToLower(mode)])
+	}
+	if audioOut && !slices.Contains(modalities, "audio") {
+		modalities = append(modalities, "audio")
 	}
 	return modalities
 }
