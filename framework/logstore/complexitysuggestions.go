@@ -69,7 +69,15 @@ const (
 	ComplexitySuggestionRunStageReading     = "reading"     // sampling the window's requests
 	ComplexitySuggestionRunStageClustering  = "clustering"  // grouping them and counting the rest in
 	ComplexitySuggestionRunStageSuggesting  = "suggesting"  // asking the models about each group
+	ComplexitySuggestionRunStageSignals     = "signals"     // a decision-model router's: asking for each tier's signals from its groups
 	ComplexitySuggestionRunStageSaving      = "saving"      // reconciling with the stored suggestions
+
+	// ComplexitySuggestionCategorySignal marks a decision-model router's
+	// suggested signal: one row per signal, for its tier, drawn from several
+	// groups rather than one cluster, so it has no centroid. A run matches it
+	// to the stored row of the same tier and text, and its example logs are
+	// requests of the groups it describes.
+	ComplexitySuggestionCategorySignal = "signal"
 
 	// ComplexitySuggestionUnmatchedTier keys the requests of a suggestion's
 	// CurrentRouting that matched no phrase above the floor.

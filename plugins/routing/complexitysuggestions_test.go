@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1032,6 +1033,33 @@ func TestComplexitySuggestionsDecisionRouterRuns(t *testing.T) {
 	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier)
 }
 
+// A decision-model router's run writes signals too: it is given each tier's
+// room for them and the signals and definitions its decision model reads,
+// the administrator's where they are set and the shipped ones elsewhere. A
+// semantic router's run writes none.
+func TestComplexitySuggestionDecisionRunSettingsCarrySignals(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	settings := suggestionTestSettings()
+	settings.Embedding = &configstore.ComplexitySuggestionsEmbedding{Provider: "openai", Model: "test-embedding-model"}
+	serveDecisionRouter(t, p, "decision-router", settings, &complexity.DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		complexity.TierSimple: {Definition: "One short answer.", Signals: []string{"An administrator's signal"}},
+	}})
+	router, ok := p.suggestionRouter("decision-router")
+	require.True(t, ok)
+	s := runSettings(router, "run", logstore.ComplexitySuggestionTriggerManual, 0)
+	assert.Equal(t, suggest.ModeExamples, s.Mode)
+	assert.Equal(t, configstore.MaxComplexityDecisionSignals, s.MaxSignalsPerTier)
+	assert.Equal(t, []string{"An administrator's signal"}, s.Signals[complexity.TierSimple])
+	assert.Equal(t, "One short answer.", s.Definitions[complexity.TierSimple])
+	shipped := configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierMedium]
+	assert.Equal(t, shipped.Signals, s.Signals[complexity.TierMedium])
+	assert.Equal(t, shipped.Definition, s.Definitions[complexity.TierMedium])
+
+	semantic, ok := p.suggestionRouter(captureRouterID)
+	require.True(t, ok)
+	assert.Zero(t, runSettings(semantic, "run", logstore.ComplexitySuggestionTriggerManual, 0).MaxSignalsPerTier)
+}
+
 // PromptHashOf is the prompt hash a router's run records.
 func PromptHashOf(t *testing.T, p *RoutingPlugin, routerID string) string {
 	t.Helper()
@@ -1890,7 +1918,7 @@ func TestComplexitySuggestionExamplesTest(t *testing.T) {
 	requests := []suggestrun.TestExample{{LogID: "a", Text: "where is my refund"}, {LogID: "b", Text: "plan our migration"}}
 	draft := []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: "Check the status of a refund"}}
 
-	_, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, requests)
+	_, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, nil, requests)
 	require.ErrorIs(t, err, ErrDecisionRequestExecutorNotConfigured)
 
 	var mu sync.Mutex
@@ -1905,9 +1933,12 @@ func TestComplexitySuggestionExamplesTest(t *testing.T) {
 		if strings.Contains(text, "refund") && strings.Contains(strings.Join(simple["examples"].([]string), "\n"), "Check the status of a refund") {
 			return decisionChoiceResponse(complexity.TierSimple), nil
 		}
+		if signals, _ := simple["signals"].([]string); strings.Contains(text, "migration") && slices.Contains(signals, "Recall one documented procedure") {
+			return decisionChoiceResponse(complexity.TierSimple), nil
+		}
 		return decisionChoiceResponse(complexity.TierComplex), nil
 	})
-	result, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, requests)
+	result, err := p.TestComplexitySuggestionExamples(ctx, "decision-router", draft, nil, requests)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Changed)
 	require.Len(t, result.Requests, 2)
@@ -1922,11 +1953,21 @@ func TestComplexitySuggestionExamplesTest(t *testing.T) {
 		assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, choiceTiers(req.Questions[0]))
 	}
 
-	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex].Examples[0]}}, requests)
+	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex].Examples[0]}}, nil, requests)
 	require.ErrorIs(t, err, suggestrun.ErrInvalidPhraseTest, "another tier's example")
-	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", nil, requests)
+	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", nil, nil, requests)
 	require.ErrorIs(t, err, suggestrun.ErrInvalidPhraseTest)
-	_, err = p.TestComplexitySuggestionExamples(ctx, captureRouterID, draft, requests)
+
+	// A draft signal is tried the same way.
+	asked = nil
+	result, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", nil, []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: "Recall one documented procedure"}}, requests)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Changed)
+	assert.True(t, result.Requests[1].Changed, "the migration request moves once the signal describes it")
+	assert.False(t, result.Requests[0].Changed)
+	_, err = p.TestComplexitySuggestionExamples(ctx, "decision-router", nil, []complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex].Signals[0]}}, requests)
+	require.ErrorIs(t, err, suggestrun.ErrInvalidPhraseTest, "another tier's signal")
+	_, err = p.TestComplexitySuggestionExamples(ctx, captureRouterID, draft, nil, requests)
 	require.ErrorIs(t, err, ErrComplexitySuggestionsClassifier, "a semantic router tests phrases")
 }
 

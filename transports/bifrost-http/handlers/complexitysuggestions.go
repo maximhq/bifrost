@@ -42,8 +42,9 @@ type ComplexitySuggestionManager interface {
 	EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error)
 	TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error)
 	// TestComplexitySuggestionExamples asks a decision-model router's
-	// decision model about requests with and without draft examples.
-	TestComplexitySuggestionExamples(ctx context.Context, routerID string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error)
+	// decision model about requests with and without draft examples and
+	// signals.
+	TestComplexitySuggestionExamples(ctx context.Context, routerID string, examples, signals []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error)
 	// CancelComplexitySuggestionRun stops a queued or running run and returns
 	// its record as it now stands.
 	CancelComplexitySuggestionRun(ctx context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error)
@@ -498,13 +499,14 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 // examples, with the requests to ask about named as a phrase test names them.
 type complexitySuggestionExampleTestRequest struct {
 	Examples     []complexitySuggestionTestPhrase `json:"examples"`
+	Signals      []complexitySuggestionTestPhrase `json:"signals,omitempty"`
 	SuggestionID string                           `json:"suggestion_id,omitempty"`
 	LogIDs       []string                         `json:"log_ids,omitempty"`
 }
 
 // testComplexitySuggestionExamples asks a decision-model router's decision
-// model about requests with and without draft examples, so an edited example
-// can be tried before it is staged. It is the decision-model router's phrase
+// model about requests with and without draft examples and signals, so an
+// edited one can be tried before it is staged. It is the decision-model router's phrase
 // test: requests are a suggestion's, or given log IDs, read within the
 // caller's access scope, and each costs two decision-model calls, so fewer
 // are asked about.
@@ -522,19 +524,22 @@ func (h *RoutingHandler) testComplexitySuggestionExamples(ctx *fasthttp.RequestC
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
-	if len(req.Examples) == 0 || len(req.Examples) > suggestrun.MaxTestPhrases {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("test between 1 and %d examples", suggestrun.MaxTestPhrases))
+	if n := len(req.Examples) + len(req.Signals); n == 0 || n > suggestrun.MaxTestPhrases {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("test between 1 and %d examples and signals", suggestrun.MaxTestPhrases))
 		return
 	}
 	requests, ok := h.readTestRequests(ctx, manager, store, routerID, req.SuggestionID, req.LogIDs, suggestrun.MaxExampleTestRequests)
 	if !ok {
 		return
 	}
-	draft := make([]complexity.SuggestionPhrase, len(req.Examples))
-	for i, e := range req.Examples {
-		draft[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(e.Tier)), Text: strings.TrimSpace(e.Text)}
+	draft := func(items []complexitySuggestionTestPhrase) []complexity.SuggestionPhrase {
+		out := make([]complexity.SuggestionPhrase, len(items))
+		for i, e := range items {
+			out[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(e.Tier)), Text: strings.TrimSpace(e.Text)}
+		}
+		return out
 	}
-	result, err := manager.TestComplexitySuggestionExamples(ctx, routerID, draft, requests)
+	result, err := manager.TestComplexitySuggestionExamples(ctx, routerID, draft(req.Examples), draft(req.Signals), requests)
 	switch {
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
 		h.sendModelRouterNotServed(ctx, routerID)
@@ -781,18 +786,23 @@ type complexitySuggestionImpactResponse struct {
 }
 
 // addModelRouterPhrasesRequest is phrases to add to a router's phrase bank,
-// by tier, and the suggestions they came from, which are marked accepted.
+// by tier (a decision-model router's examples), signals to add to a
+// decision-model router's tiers, and the suggestions they came from, which
+// are marked accepted.
 type addModelRouterPhrasesRequest struct {
 	Phrases       map[string][]string `json:"phrases"`
+	Signals       map[string][]string `json:"signals,omitempty"`
 	SuggestionIDs []string            `json:"suggestion_ids,omitempty"`
 }
 
 // addModelRouterPhrasesResponse is the router as saved, what was added or
-// skipped, and the suggestions marked accepted.
+// skipped, and the suggestions marked accepted. Signals is what the signals
+// given did, for a decision-model router given any.
 type addModelRouterPhrasesResponse struct {
 	Router *configstore.ModelRouter `json:"router"`
 	complexity.PhraseAppend
-	Accepted []string `json:"accepted"`
+	Signals  *complexity.PhraseAppend `json:"signals,omitempty"`
+	Accepted []string                 `json:"accepted"`
 }
 
 // addModelRouterPhrases appends phrases to a model router's saved phrase
@@ -846,6 +856,8 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	var appended complexity.PhraseAppend
+	var signalsAppended *complexity.PhraseAppend
+	var changed bool // whether anything was added, to the phrases, examples or signals
 	var before configstore.ModelRouter
 	var refusal *phraseAppendRefusal
 	edited, err := h.configStore.EditModelRouter(ctx, routerID, func(router *configstore.ModelRouter) (bool, error) {
@@ -856,15 +868,21 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 		var err error
 		if router.Classifier == complexity.ClassifierDecision {
 			var decision *complexity.DecisionConfig
-			decision, result, err = complexity.AppendDecisionExamples(router.Decision, req.Phrases)
-			if err == nil && len(result.Added) > 0 {
-				router.Decision = decision
+			var signals complexity.PhraseAppend
+			decision, result, signals, err = complexity.AppendDecisionCriteria(router.Decision, req.Phrases, req.Signals)
+			if len(req.Signals) > 0 {
+				signalsAppended = &signals
 			}
+			if err == nil && (len(result.Added) > 0 || len(signals.Added) > 0) {
+				router.Decision, changed = decision, true
+			}
+		} else if len(req.Signals) > 0 {
+			err = fmt.Errorf("%w: only a decision-model router has signals", complexity.ErrPhraseAppend)
 		} else {
 			var keywords complexity.EditableKeywordConfig
 			keywords, result, err = complexity.AppendPhrases(router.Keywords, req.Phrases)
 			if err == nil && len(result.Added) > 0 {
-				router.Keywords = keywords
+				router.Keywords, changed = keywords, true
 			}
 		}
 		if err != nil {
@@ -872,7 +890,7 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 			return false, refusal
 		}
 		appended = result
-		if len(result.Added) == 0 {
+		if !changed {
 			return false, nil
 		}
 		normalized, err := complexity.ValidateAndNormalize(&router.ComplexityAnalyzerConfig)
@@ -899,7 +917,7 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, routerID, err)
 		return
 	}
-	if len(appended.Added) > 0 {
+	if changed {
 		// Recorded once the phrases are saved, before anything that could
 		// still fail: the save stands either way.
 		lib.RecordAuditChange(ctx, "model_router.phrases_added", "model_router", before.ID, before.Name, &before, edited)
@@ -927,7 +945,7 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 		lib.RecordAuditChange(ctx, "model_routing_suggestion."+logstore.ComplexitySuggestionStatusAccepted, "model_routing_suggestion", row.ID, strings.Join(row.Phrases(), ", "),
 			map[string]any{"status": row.Status}, map[string]any{"status": logstore.ComplexitySuggestionStatusAccepted})
 	}
-	SendJSON(ctx, addModelRouterPhrasesResponse{Router: saved, PhraseAppend: appended, Accepted: accepted})
+	SendJSON(ctx, addModelRouterPhrasesResponse{Router: saved, PhraseAppend: appended, Signals: signalsAppended, Accepted: accepted})
 }
 
 // phraseAppendRefusal is a phrase add the router's config refuses, with the

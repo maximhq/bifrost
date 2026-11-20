@@ -1277,6 +1277,13 @@ func runSettings(router suggestionRouter, runID, triggeredBy string, window time
 	}
 	if decisionSuggestions(router) {
 		s.Mode, s.MaxPhrases, s.MaxPerTier = suggest.ModeExamples, 0, configstore.MaxComplexityDecisionExamples
+		// Signals are written per tier after the groups, beside the tier's
+		// signals and definition as its decision model reads them.
+		s.MaxSignalsPerTier = configstore.MaxComplexityDecisionSignals
+		s.Signals, s.Definitions = map[string][]string{}, map[string]string{}
+		for tier, c := range router.config.Decision.ResolvedCriteria() {
+			s.Signals[tier], s.Definitions[tier] = c.Signals, c.Definition
+		}
 	}
 	return s
 }
@@ -1765,12 +1772,12 @@ var ErrDecisionRequestExecutorNotConfigured = errors.New("decision-model executo
 const exampleTestWorkers = 4
 
 // TestComplexitySuggestionExamples asks a decision-model router's decision
-// model about requests twice, with its examples as they are and with draft
-// examples added, exactly as routing asks it, so examples can be tried before
-// they are saved. Nothing is stored. Each request's text is the turns the
-// decision model reads, joined, sent as one user message. The draft is
-// checked as accepting it would check it, and the calls' cost is reported.
-func (p *RoutingPlugin) TestComplexitySuggestionExamples(ctx context.Context, routerID string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
+// model about requests twice, with its guidance as it is and with draft
+// examples and signals added, exactly as routing asks it, so they can be
+// tried before they are saved. Nothing is stored. Each request's text is the
+// turns the decision model reads, joined, sent as one user message. The draft
+// is checked as accepting it would check it, and the calls' cost is reported.
+func (p *RoutingPlugin) TestComplexitySuggestionExamples(ctx context.Context, routerID string, examples, signals []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
 	router, ok := p.suggestionRouter(routerID)
 	if !ok {
 		return suggestrun.ExampleTest{}, ErrUnknownComplexityRouter
@@ -1778,14 +1785,17 @@ func (p *RoutingPlugin) TestComplexitySuggestionExamples(ctx context.Context, ro
 	if !decisionSuggestions(router) {
 		return suggestrun.ExampleTest{}, ErrComplexitySuggestionExamplesOnly
 	}
-	if len(draft) == 0 || len(draft) > suggestrun.MaxTestPhrases {
-		return suggestrun.ExampleTest{}, fmt.Errorf("%w: test between 1 and %d examples", suggestrun.ErrInvalidPhraseTest, suggestrun.MaxTestPhrases)
+	if n := len(examples) + len(signals); n == 0 || n > suggestrun.MaxTestPhrases {
+		return suggestrun.ExampleTest{}, fmt.Errorf("%w: test between 1 and %d examples and signals", suggestrun.ErrInvalidPhraseTest, suggestrun.MaxTestPhrases)
 	}
-	add := map[string][]string{}
-	for _, e := range draft {
-		add[e.Tier] = append(add[e.Tier], e.Text)
+	byTier := func(items []complexity.SuggestionPhrase) map[string][]string {
+		out := map[string][]string{}
+		for _, e := range items {
+			out[e.Tier] = append(out[e.Tier], e.Text)
+		}
+		return out
 	}
-	drafted, _, err := complexity.AppendDecisionExamples(router.config.Decision, add)
+	drafted, _, _, err := complexity.AppendDecisionCriteria(router.config.Decision, byTier(examples), byTier(signals))
 	if err != nil {
 		return suggestrun.ExampleTest{}, fmt.Errorf("%w: %v", suggestrun.ErrInvalidPhraseTest, err)
 	}

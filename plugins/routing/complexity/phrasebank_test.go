@@ -1,6 +1,7 @@
 package complexity
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -113,11 +114,48 @@ func TestAppendDecisionExamplesRefuses(t *testing.T) {
 		"too long":       {map[string][]string{TierSimple: {strings.Repeat("a", configstore.MaxComplexityDecisionCriteriaItemCharacters+1)}}, "the limit is 300"},
 		"past the limit": {map[string][]string{TierMedium: {"one more"}}, "MEDIUM would hold 61 examples; the limit is 60 per tier"},
 		"unknown tier":   {map[string][]string{"HARD": {"x"}}, "unknown tier"},
-		"nothing to add": {map[string][]string{TierSimple: {}}, "no examples given"},
+		"nothing to add": {map[string][]string{TierSimple: {}}, "no examples or signals given"},
 	} {
 		out, _, err := AppendDecisionExamples(decision, tc.add)
 		require.ErrorIs(t, err, ErrPhraseAppend, name)
 		assert.ErrorContains(t, err, tc.want, name)
 		assert.Same(t, decision, out, "%s: nothing is changed", name)
 	}
+}
+
+// Examples and signals are appended in one go, each under its own limit, and
+// a refusal of either appends neither. A tier's signals start from the ones
+// its decision model reads, shipped ones included.
+func TestAppendDecisionCriteria(t *testing.T) {
+	shipped := configstore.DefaultComplexityDecisionGuidance().Criteria
+	decision := &DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+		TierSimple: {Definition: "One short answer.", Signals: []string{"Needs one lookup"}},
+	}}
+	out, examples, signals, err := AppendDecisionCriteria(decision,
+		map[string][]string{TierSimple: {"Convert a unit"}},
+		map[string][]string{TierSimple: {"Needs one lookup", "Recall one fact"}, TierMedium: {"Weigh a few dependent steps"}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{TierSimple: {"Convert a unit"}}, examples.Added)
+	assert.Equal(t, map[string][]string{TierSimple: {"Recall one fact"}, TierMedium: {"Weigh a few dependent steps"}}, signals.Added)
+	assert.Equal(t, []SkippedPhrase{{Tier: TierSimple, Text: "Needs one lookup"}}, signals.Skipped)
+	simple := out.Criteria[TierSimple]
+	assert.Equal(t, "One short answer.", simple.Definition)
+	assert.Equal(t, []string{"Needs one lookup", "Recall one fact"}, simple.Signals)
+	assert.Equal(t, append(slices.Clone(shipped[TierSimple].Examples), "Convert a unit"), simple.Examples)
+	assert.Equal(t, append(slices.Clone(shipped[TierMedium].Signals), "Weigh a few dependent steps"), out.Criteria[TierMedium].Signals)
+	assert.Empty(t, out.Criteria[TierMedium].Examples, "a tier given only signals keeps its examples unset")
+	assert.Len(t, decision.Criteria, 1, "decision is not modified")
+
+	full := make([]string, configstore.MaxComplexityDecisionSignals)
+	for i := range full {
+		full[i] = "signal " + string(rune('a'+i))
+	}
+	atLimit := &DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{TierComplex: {Signals: full}}}
+	got, _, _, err := AppendDecisionCriteria(atLimit, map[string][]string{TierComplex: {"Fine example"}}, map[string][]string{TierComplex: {"one more"}})
+	require.ErrorIs(t, err, ErrPhraseAppend)
+	assert.ErrorContains(t, err, "COMPLEX would hold 31 signals; the limit is 30 per tier")
+	assert.Same(t, atLimit, got, "the examples are not appended either")
+
+	_, _, _, err = AppendDecisionCriteria(nil, nil, map[string][]string{TierSimple: {shipped[TierComplex].Signals[0]}})
+	assert.ErrorContains(t, err, "a signal describes one tier")
 }
