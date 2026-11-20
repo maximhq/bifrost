@@ -1141,6 +1141,8 @@ Bifrost intelligently classifies errors as either **transient** (retryable) or *
 
 A `tls_config.ca_cert_pem` that does not parse as a PEM certificate is refused when the client is created or edited, before any connection is attempted.
 
+For OAuth clients, `tls_config` also applies to Bifrost's outbound discovery, dynamic registration, authorization-code exchange, and token refresh requests. The custom CA supplements system trust; it does not change which private destinations the OAuth allowlist permits. The browser still needs to trust the authorization server's certificate independently.
+
 ### What Operations Are Retried
 
 Bifrost applies retry logic to these critical operations:

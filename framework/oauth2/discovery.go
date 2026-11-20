@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +97,13 @@ func SetPrivateTargetAllowlist(allow *network.Allowlist) {
 	if old := oauthAllowlistedDiscoveryTransport.Swap(newAllowlistedTransport()); old != nil {
 		old.CloseIdleConnections()
 	}
+	oauthTLSCache.Lock()
+	for _, transport := range oauthTLSCache.transports {
+		transport.CloseIdleConnections()
+	}
+	oauthTLSCache.transports = nil
+	oauthTLSCache.order = nil
+	oauthTLSCache.Unlock()
 }
 
 // requirePublicTargetKey carries an OAuth request's destination policy on its
@@ -118,6 +128,88 @@ func requirePublicTargetFrom(ctx context.Context) bool {
 	requirePublic, ok := ctx.Value(requirePublicTargetKey{}).(bool)
 	return !ok || requirePublic
 }
+
+// The context carries a small config handle, never certificate pools or connections.
+type oauthTLSConfigKey struct{}
+
+func withMCPClient(ctx context.Context, client *schemas.MCPClientConfig) context.Context {
+	var tlsConfig *schemas.MCPTLSConfig
+	if client != nil {
+		tlsConfig = client.TLSConfig
+	}
+	ctx = withRequirePublicTarget(ctx, client == nil || client.RequirePublicTarget)
+	if tlsConfig == nil && ctx.Value(oauthTLSConfigKey{}) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, oauthTLSConfigKey{}, tlsConfig)
+}
+
+// Keep at most 64 custom TLS policies. Each transport inherits the shared
+// 32-idle-connection limit and 90-second idle timeout. Keys contain a digest,
+// not the PEM or its secret reference. Rotation selects a new pool; eviction
+// closes idle connections without interrupting in-flight exchanges.
+const maxOAuthTLSTransports = 64
+
+type oauthTLSCacheKey struct {
+	base     *http.Transport
+	ca       [32]byte
+	insecure bool
+}
+
+var oauthTLSCache struct {
+	sync.Mutex
+	transports map[oauthTLSCacheKey]*http.Transport
+	order      []oauthTLSCacheKey
+}
+
+func oauthTransportWithTLS(base *http.Transport, config *schemas.MCPTLSConfig) http.RoundTripper {
+	if config == nil {
+		return base
+	}
+	ca := ""
+	if !config.InsecureSkipVerify && config.CACertPEM != nil {
+		ca = config.CACertPEM.GetValue()
+	}
+	if ca == "" && !config.InsecureSkipVerify {
+		return base
+	}
+	key := oauthTLSCacheKey{base: base, ca: sha256.Sum256([]byte(ca)), insecure: config.InsecureSkipVerify}
+	oauthTLSCache.Lock()
+	defer oauthTLSCache.Unlock()
+	if transport := oauthTLSCache.transports[key]; transport != nil {
+		return transport
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: config.InsecureSkipVerify}
+	if ca != "" {
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM([]byte(ca)) {
+			return oauthTransportError{fmt.Errorf("failed to parse MCP CA certificate PEM")}
+		}
+		tlsConfig.RootCAs = roots
+	}
+	transport := base.Clone()
+	transport.TLSClientConfig = tlsConfig
+	if oauthTLSCache.transports == nil {
+		oauthTLSCache.transports = make(map[oauthTLSCacheKey]*http.Transport)
+	}
+	if len(oauthTLSCache.order) == maxOAuthTLSTransports {
+		oldest := oauthTLSCache.order[0]
+		oauthTLSCache.transports[oldest].CloseIdleConnections()
+		delete(oauthTLSCache.transports, oldest)
+		oauthTLSCache.order = oauthTLSCache.order[1:]
+	}
+	oauthTLSCache.transports[key] = transport
+	oauthTLSCache.order = append(oauthTLSCache.order, key)
+	return transport
+}
+
+// An invalid CA must fail the request, never fall back to unconfigured TLS.
+type oauthTransportError struct{ err error }
+
+func (t oauthTransportError) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
 
 // oauthDialContext returns guarded with one distinction: a dial addressed to
 // an operator-configured proxy (exact host:port, as http.Transport dials it)
@@ -286,9 +378,13 @@ func newOAuthDiscoveryHTTPClient(ctx context.Context, timeout time.Duration) *ht
 	if testDialContextOverride != nil {
 		transport = newOAuthDiscoveryTransport(testDialContextOverride)
 	}
+	var tlsConfig *schemas.MCPTLSConfig
+	if ctx != nil {
+		tlsConfig, _ = ctx.Value(oauthTLSConfigKey{}).(*schemas.MCPTLSConfig)
+	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: oauthTransportWithTLS(transport, tlsConfig),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// A 307/308 on the token or registration POST would make Go replay
 			// the credential-bearing body at the new location; only discovery
