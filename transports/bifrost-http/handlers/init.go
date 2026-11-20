@@ -1,6 +1,9 @@
 package handlers
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 var version string
 var logger schemas.Logger
@@ -10,9 +13,11 @@ func SetLogger(l schemas.Logger) {
 	logger = l
 }
 
-// SetVersion sets the version for the application.
+// SetVersion sets the version for the application, and the version reported in
+// the User-Agent sent to providers.
 func SetVersion(v string) {
 	version = v
+	providerUtils.BifrostVersion = v
 }
 
 func GetVersion() string {
