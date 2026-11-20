@@ -93,9 +93,10 @@ type ClientManager interface {
 // instructions of the clients it can reach. Building it reads each client's
 // discovery for the caller once.
 type CallerDiscovery struct {
-	ToolsPerClient map[string][]schemas.ChatTool
-	ConnectTools   []schemas.ChatTool
-	Instructions   []schemas.MCPServerInstructions
+	ToolsPerClient  map[string][]schemas.ChatTool
+	ConnectTools    []schemas.ChatTool
+	Instructions    []schemas.MCPServerInstructions
+	CodeModeClients []string // Sorted names of the code mode clients with a visible tool, collected with the instructions
 }
 
 // MCPToolExecutor is the per-call executor signature used by the agent loop.
@@ -295,6 +296,8 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
 	var includeCodeModeTools bool
+	// The code mode clients this caller reaches, for the catalogue in the listToolFiles description
+	var codeModeServers []codeModeServer
 	// Track tool names to prevent duplicates
 	seenToolNames := make(map[string]bool)
 
@@ -315,6 +318,12 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 		direct, codeMode := codeModeListing(ctx, client.ExecutionConfig)
 		if codeMode {
 			includeCodeModeTools = true
+			if modelVisibleTools(clientTools) > 0 {
+				if codeModeServers == nil {
+					codeModeServers = make([]codeModeServer, 0, len(sortedClients))
+				}
+				codeModeServers = append(codeModeServers, codeModeServer{name: clientName, description: client.ExecutionConfig.Description, tools: clientTools})
+			}
 		}
 		// Add tools from this client, checking for duplicates
 		for _, tool := range clientTools {
@@ -350,10 +359,17 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
 	if includeCodeModeTools && m.codeMode != nil {
 		codeModeTools := m.codeMode.GetTools()
+		var catalogue string
+		if listsCodeModeCatalogue(ctx) {
+			catalogue = codeModeCatalogue(codeModeServers)
+		}
 		// Add code mode tools, checking for duplicates
 		for _, tool := range codeModeTools {
 			if tool.Function != nil && tool.Function.Name != "" {
 				if !seenToolNames[tool.Function.Name] {
+					if catalogue != "" && tool.Function.Name == ToolTypeListToolFiles {
+						tool = withCatalogue(tool, catalogue)
+					}
 					availableTools = append(availableTools, tool)
 					seenToolNames[tool.Function.Name] = true
 				}
@@ -660,7 +676,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	m.addServerInstructionsToRequest(ctx, req, callerDiscovery.Instructions)
+	m.addServerInstructionsToRequest(ctx, req, callerDiscovery)
 	return req
 }
 
@@ -720,8 +736,11 @@ func serverInstructionsInjected(ctx *schemas.BifrostContext) bool {
 // Only mcp_disable_auto_tool_inject suppresses it, and that drops the tools too; the caps are not
 // an off switch, since InstructionCaps clamps a non-positive value back to the default.
 //
-// parts are the instructions of the request's CallerDiscovery, read with its tools.
-func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, parts []schemas.MCPServerInstructions) {
+// The code mode clients are named on a line after the blocks (see codeModePointer): their own
+// instructions ride in their stubs, but the model has to know they exist to open one.
+//
+// callerDiscovery is the request's, read with its tools.
+func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, callerDiscovery CallerDiscovery) {
 	// The agent loop re-enters this path once per turn against the same context. Without
 	// this guard the block would be prepended again on every turn, growing the prompt
 	// without bound over a long tool-calling conversation.
@@ -729,7 +748,10 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 		return
 	}
 
-	instructions := AggregateServerInstructions(parts, m.instructionCaps())
+	instructions := AggregateServerInstructions(callerDiscovery.Instructions, m.instructionCaps())
+	if m.codeMode != nil {
+		instructions = withCodeModePointer(instructions, callerDiscovery.CodeModeClients)
+	}
 	if instructions == "" {
 		return
 	}

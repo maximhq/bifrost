@@ -19,11 +19,11 @@ func (s *StarlarkCodeMode) createGetToolDocsTool() schemas.ChatTool {
 	getToolDocsProps := schemas.NewOrderedMapFromPairs(
 		schemas.KV("server", map[string]interface{}{
 			"type":        "string",
-			"description": "The server name (e.g., 'calculator'). Use listToolFiles to see available servers.",
+			"description": "Server name as listToolFiles lists it, e.g. github.",
 		}),
 		schemas.KV("tool", map[string]interface{}{
 			"type":        "string",
-			"description": "The tool name (e.g., 'add'). Use readToolFile to see available tools for a server.",
+			"description": "Tool name as readToolFile shows it, e.g. create_issue.",
 		}),
 	)
 	return schemas.ChatTool{
@@ -31,10 +31,9 @@ func (s *StarlarkCodeMode) createGetToolDocsTool() schemas.ChatTool {
 		Function: &schemas.ChatToolFunction{
 			Name: codemcp.ToolTypeGetToolDocs,
 			Description: schemas.Ptr(
-				"Get detailed documentation for a specific tool including full parameter descriptions, " +
-					"types, and usage examples. Use this when the compact signature from readToolFile " +
-					"is not sufficient to understand how to use a tool. " +
-					"Requires both server name and tool name as parameters.",
+				"Code mode, optional step 3 of 4. Returns the full documentation of one tool: its whole description, " +
+					"every parameter with its type, whether it is required and what it means, and how to read its result. " +
+					"Use it only when the readToolFile signature is not enough to call the tool correctly. Next: executeToolCode.",
 			),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",

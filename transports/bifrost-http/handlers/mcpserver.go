@@ -666,12 +666,19 @@ func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.
 	if !narrowed {
 		dropRefusalTools(index, result) // a narrowed list keeps only Bifrost's own names
 	}
+	callerCtx := withCallerCapabilities(ctx)
+	var available []schemas.ChatTool
+	listsCatalogue := slices.ContainsFunc(result.Tools, func(tool mcp.Tool) bool { return tool.Name == coremcp.ToolTypeListToolFiles })
+	if listsCatalogue || narrowed || perCaller != nil {
+		available = h.toolManager.GetAvailableMCPTools(callerCtx)
+	}
+	if listsCatalogue {
+		describeCodeModeServers(available, result)
+	}
 	if !narrowed && perCaller == nil && !index.hasAppTools() {
 		return
 	}
-	callerCtx := withCallerCapabilities(ctx)
 	if narrowed || perCaller != nil {
-		available := h.toolManager.GetAvailableMCPTools(callerCtx)
 		// By index: a ChatTool is too large for a map to hold inline.
 		callers := make(map[string]int, len(available))
 		for i, tool := range available {
@@ -713,6 +720,24 @@ func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *ga
 	index.serverTypesOnSlug = modes
 	index.codeModeOnlyOnSlug = listsCodeModeTools(installed) && !listsCodeModeTools(h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx)))
 	return index
+}
+
+// describeCodeModeServers gives a listed listToolFiles the caller's own description, which names the
+// code mode servers this caller can reach (the catalogue). The installed tool is shared by every
+// caller and carries no catalogue, so the description is taken from the caller's own listing.
+func describeCodeModeServers(available []schemas.ChatTool, result *mcp.ListToolsResult) {
+	for i := range result.Tools {
+		if result.Tools[i].Name != coremcp.ToolTypeListToolFiles {
+			continue
+		}
+		for _, tool := range available {
+			if tool.Function != nil && tool.Function.Name == coremcp.ToolTypeListToolFiles && tool.Function.Description != nil {
+				result.Tools[i].Description = *tool.Function.Description
+				return
+			}
+		}
+		return
+	}
 }
 
 // listsCodeModeTools reports whether tools include the code-mode tools.

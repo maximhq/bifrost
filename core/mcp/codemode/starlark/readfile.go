@@ -20,28 +20,17 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 
 	var fileNameDescription, toolDescription string
 
+	const usage = "The def names are the exact names to call in executeToolCode as <server>.<tool>(param=value). " +
+		"Omit startLine and endLine to get the whole file, and once you have it do not read it again. " +
+		"If a signature is not enough to call a tool, use getToolDocs; otherwise go to executeToolCode."
 	if bindingLevel == schemas.CodeModeBindingLevelServer {
-		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>.pyi (e.g., 'servers/calculator.pyi')"
-		toolDescription = "Reads a virtual .pyi stub file for a specific MCP server, returning compact Python function signatures " +
-			"for all tools available on that server. The fileName should be in format servers/<serverName>.pyi as listed by listToolFiles. " +
-			"The function performs case-insensitive matching and removes the .pyi extension. " +
-			"This is the authoritative source for the exact callable tool names and parameters to use in executeToolCode. " +
-			"Each tool can be accessed in code via: serverName.tool_name(param=value). " +
-			"If the compact signature is not enough to understand a tool, use getToolDocs for detailed documentation. " +
-			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
-			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
-			"do NOT call this tool again with startLine/endLine - you already have the complete file."
+		fileNameDescription = "Path exactly as listToolFiles lists it, e.g. servers/github.pyi."
+		toolDescription = "Code mode, step 2 of 4. Returns the Python signatures of every tool on one server, each with a short description, " +
+			"plus any usage rules the server publishes. Read a server's file before writing code for it. " + usage
 	} else {
-		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>/<toolName>.pyi (e.g., 'servers/calculator/add.pyi')"
-		toolDescription = "Reads a virtual .pyi stub file for a specific tool, returning its compact Python function signature. " +
-			"The fileName should be in format servers/<serverName>/<toolName>.pyi as listed by listToolFiles. " +
-			"The function performs case-insensitive matching and removes the .pyi extension. " +
-			"This is the authoritative source for the exact callable tool name and arguments to use in executeToolCode. " +
-			"The tool can be accessed in code via: serverName.tool_name(param=value) using the def name shown in the file. " +
-			"If the compact signature is not enough to understand the tool, use getToolDocs for detailed documentation. " +
-			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
-			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
-			"do NOT call this tool again with startLine/endLine - you already have the complete file."
+		fileNameDescription = "Path exactly as listToolFiles lists it, e.g. servers/github/create_issue.pyi."
+		toolDescription = "Code mode, step 2 of 4. Returns the Python signature of one tool with a short description, " +
+			"plus any usage rules its server publishes. Read a tool's file before writing code that calls it. " + usage
 	}
 
 	readToolFileProps := schemas.NewOrderedMapFromPairs(
@@ -51,11 +40,11 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 		}),
 		schemas.KV("startLine", map[string]interface{}{
 			"type":        "number",
-			"description": "Optional 1-based starting line number for partial file read. Usually not needed - omit to read the entire file. Files are typically small (under 50 lines).",
+			"description": "Optional 1-based first line to read. Omit to read the whole file.",
 		}),
 		schemas.KV("endLine", map[string]interface{}{
 			"type":        "number",
-			"description": "Optional 1-based ending line number for partial file read. Usually not needed - omit to read the entire file. Will be clamped to actual file size if too large.",
+			"description": "Optional 1-based last line to read. Omit to read the whole file.",
 		}),
 	)
 	return schemas.ChatTool{

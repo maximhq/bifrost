@@ -2250,6 +2250,51 @@ func TestMCPGateway_ServerTypeOnSlug(t *testing.T) {
 	}
 }
 
+// The code mode catalogue on the gateway: the installed listToolFiles is shared by every caller and
+// carries none, so tools/list fills in the caller's own, and initialize names the caller's code mode
+// servers. An endpoint that cannot reach a code mode server is told of none.
+func TestMCPGateway_CodeModeCatalogue(t *testing.T) {
+	ctx := context.Background()
+	baseURL := startGateway(t, newCodeModeGateway(t, true, ""))
+	pointer := "MCP servers available through code mode (start with listToolFiles to use them): github."
+
+	for path, want := range map[string]struct{ catalogue, instructions bool }{
+		"/mcp":        {catalogue: true, instructions: true},
+		"/mcp/bundle": {catalogue: true, instructions: true},
+		"/mcp/github": {catalogue: true, instructions: true},
+		"/mcp/slack":  {},
+	} {
+		tr, err := transport.NewStreamableHTTP(baseURL + path)
+		require.NoError(t, err)
+		c := client.NewClient(tr)
+		require.NoError(t, c.Start(ctx))
+		t.Cleanup(func() { _ = c.Close() })
+		init := mcp.InitializeRequest{}
+		init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initialized, err := c.Initialize(ctx, init)
+		require.NoError(t, err, path)
+		if want.instructions {
+			assert.Equal(t, pointer, initialized.Instructions, "initialize on %s", path)
+		} else {
+			assert.NotContains(t, initialized.Instructions, "code mode", "initialize on %s", path)
+		}
+
+		tools, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		require.NoError(t, err, path)
+		description, listed := "", false
+		for _, tool := range tools.Tools {
+			if tool.Name == coremcp.ToolTypeListToolFiles {
+				description, listed = tool.Description, true
+			}
+		}
+		assert.Equal(t, want.catalogue, listed, "listToolFiles on %s", path)
+		if want.catalogue {
+			assert.True(t, strings.HasSuffix(description, "\n\nServers available through code mode:\n- github (1 tool: create_issue)"),
+				"listToolFiles on %s: %s", path, description)
+		}
+	}
+}
+
 // MCP Apps on the gateway: /mcp/<slug> for one server serves its tools' _meta and ui:// URIs as the
 // server sent them, and app-only tools to callers that declared MCP Apps; aggregate /mcp and Virtual
 // MCP slugs never serve app-only tools and namespace ui:// URIs (resources and templates) by client.

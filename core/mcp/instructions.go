@@ -208,8 +208,14 @@ func (m *MCPManager) InstructionCaps() InstructionCaps {
 // of a server it was never granted. The text is read from the caller's discovery for each
 // client, in the same read as its tools, so a client with per_user_discovery on serves each
 // caller its own instructions with no extra wiring. Code mode clients are excluded: their
-// tools are never sent, so their guidance rides in the stub instead. See
-// InstructionsCommentBlock.
+// tools are never sent, so their guidance rides in the stub instead (see
+// InstructionsCommentBlock); they are only named, on one line after the blocks (see
+// codeModePointer), so the reader knows to look for them.
 func (m *MCPManager) GetAggregatedServerInstructions(ctx context.Context) string {
-	return AggregateServerInstructions(m.resolveCallerDiscovery(ctx, false, true).Instructions, m.toolsManager.instructionCaps())
+	discovery := m.resolveCallerDiscovery(ctx, false, true)
+	instructions := AggregateServerInstructions(discovery.Instructions, m.toolsManager.instructionCaps())
+	if m.toolsManager.GetCodeMode() != nil {
+		instructions = withCodeModePointer(instructions, discovery.CodeModeClients)
+	}
+	return instructions
 }
