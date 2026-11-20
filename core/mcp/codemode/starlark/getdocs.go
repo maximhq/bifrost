@@ -66,9 +66,10 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
-	// A discovered tool may itself be named like a path ("report.py"), so the
-	// name with its ".py" suffix kept is tried before the fully normalized one.
-	serverName, exactToolName, toolName := normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
+	// A discovered tool may itself be named like a path ("report.py") or carry its
+	// server's name ("codey.add"), so the supplied name is tried before the
+	// server prefix and the ".py" suffix are stripped from it.
+	serverName, toolCandidates := normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
 
 	// Find matching client
 	var matchedClientName string
@@ -90,9 +91,10 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			matchedClientName = clientName
 
 			// Find the specific tool
-			matchedTool = findToolReference(tools, clientName, exactToolName)
-			if matchedTool == nil {
-				matchedTool = findToolReference(tools, clientName, toolName)
+			for _, candidate := range toolCandidates {
+				if matchedTool = findToolReference(tools, clientName, candidate); matchedTool != nil {
+					break
+				}
 			}
 			break
 		}
@@ -149,23 +151,34 @@ func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *s
 // normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
 // "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
 // "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
-// exactTool keeps a ".py" suffix that normalizedTool strips, for tools named like a path.
-func normalizeDocsArgs(server, tool string, servers []string) (parsedServer, exactTool, normalizedTool string) {
+// toolCandidates lists the tool names to try in order: the supplied name with only its
+// directory dropped, then without a "<server>." prefix, then without a ".py" suffix too.
+func normalizeDocsArgs(server, tool string, servers []string) (parsedServer string, toolCandidates []string) {
 	parsedServer, _, _ = parseVFSFilePath(server, servers)
 	if parsedServer == "" {
 		parsedServer = strings.TrimSpace(server)
 	}
-	exactTool, _ = trimVFSPath(tool, nil)
-	return parsedServer, docsToolName(exactTool, parsedServer), docsToolName(normalizeVFSPath(tool, nil), parsedServer)
+	exactTool, _ := trimVFSPath(tool, nil)
+	exactTool = dropVFSDir(exactTool)
+	return parsedServer, []string{
+		exactTool,
+		stripServerPrefix(exactTool, parsedServer),
+		stripServerPrefix(dropVFSDir(normalizeVFSPath(tool, nil)), parsedServer),
+	}
 }
 
-// docsToolName drops a directory and a "<server>." prefix from a normalized tool path.
-func docsToolName(tool, server string) string {
+// dropVFSDir drops a directory from a normalized tool path.
+func dropVFSDir(tool string) string {
 	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
-		tool = tool[i+1:]
+		return tool[i+1:]
 	}
+	return tool
+}
+
+// stripServerPrefix drops a "<server>." prefix from a tool name.
+func stripServerPrefix(tool, server string) string {
 	if len(tool) > len(server)+1 && tool[len(server)] == '.' && strings.EqualFold(tool[:len(server)], server) {
-		tool = tool[len(server)+1:]
+		return tool[len(server)+1:]
 	}
 	return tool
 }

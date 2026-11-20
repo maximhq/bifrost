@@ -2633,6 +2633,33 @@ func TestGetToolDocsPrefersTheExactToolName(t *testing.T) {
 	}
 }
 
+// A tool may carry its server's name ("codey.add"), so getToolDocs tries the supplied name
+// before it strips the server prefix, and strips it only when no tool has the dotted name.
+func TestGetToolDocsPrefersTheQualifiedToolName(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.tools["codey"] = append(manager.tools["codey"], schemas.ChatTool{
+		Function: &schemas.ChatToolFunction{Name: "codey.add", Description: schemas.Ptr("Does codey.add")},
+	})
+	cases := []struct{ tool, want, notWant string }{
+		{"codey.add", "Does codey.add\n", "Does codey-add\n"},
+		{"CODEY.add()", "Does codey.add\n", "Does codey-add\n"},
+		{"servers/codey/codey.add.pyi", "Does codey.add\n", "Does codey-add\n"},
+		{"add", "Does codey-add\n", "Does codey.add\n"},
+		{"servers/codey/add.pyi", "Does codey-add\n", "Does codey.add\n"},
+		{"codey.multiply", "Does codey-multiply\n", "Does codey.add\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			msg, err := mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": tc.tool}))
+			content, isError := vfsToolResponse(t, msg, err)
+			if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
+				t.Fatalf("getToolDocs(codey, %q): want docs with %q and without %q, got (isError=%v):\n%s", tc.tool, tc.want, tc.notWant, isError, content)
+			}
+		})
+	}
+}
+
 // readToolFile keeps a tool name's extension-like suffix when the server has a tool by that
 // name, and strips ".py" as an extension only otherwise.
 func TestReadToolFilePrefersTheExactToolName(t *testing.T) {
