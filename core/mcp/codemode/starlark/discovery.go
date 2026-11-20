@@ -47,6 +47,8 @@ const (
 	discoveryMaxRequestBytes     = 256 << 10
 	discoveryMaxResponseBytes    = 64 << 10
 	discoveryMaxTokenBytes       = 4096
+	// discoveryMaxTokenReads bounds token file reads in flight per ranker.
+	discoveryMaxTokenReads = 4
 
 	// discoveryRankVersion is the version of the external ranker contract.
 	discoveryRankVersion = 1
@@ -544,6 +546,9 @@ type httpDiscoveryRanker struct {
 	tokenFile string
 	timeout   time.Duration
 	client    *http.Client
+	// readToken reads tokenFile; tokenReads bounds the reads in flight.
+	readToken  func(path string) (string, error)
+	tokenReads chan struct{}
 }
 
 // storeDiscoveryRanker publishes the external ranker. nil keeps the current
@@ -561,9 +566,11 @@ func (s *StarlarkCodeMode) storeDiscoveryRanker(config *schemas.MCPCodeModeDisco
 		return
 	}
 	s.discoveryRanker.Store(&httpDiscoveryRanker{
-		endpoint:  config.URL,
-		tokenFile: config.TokenFile,
-		timeout:   config.Timeout(),
+		endpoint:   config.URL,
+		tokenFile:  config.TokenFile,
+		timeout:    config.Timeout(),
+		readToken:  readDiscoveryToken,
+		tokenReads: make(chan struct{}, discoveryMaxTokenReads),
 		client: &http.Client{
 			// A redirect is answered as a failure rather than followed, so the
 			// catalogue and token only ever reach the configured endpoint.
@@ -587,12 +594,13 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return result, fmt.Errorf("build request: %w", err)
+		// The error quotes the endpoint, which may carry a signed query string.
+		return result, errors.New("build request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if r.tokenFile != "" {
-		token, err := readDiscoveryToken(r.tokenFile)
+		token, err := r.token(ctx)
 		if err != nil {
 			return result, err
 		}
@@ -601,7 +609,12 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return result, fmt.Errorf("request failed: %w", err)
+		// Client.Do quotes the endpoint, which may carry a signed query
+		// string: report only the kind of failure.
+		if ctx.Err() != nil {
+			return result, errors.New("request did not finish before the ranker timeout")
+		}
+		return result, errors.New("request failed before a response arrived")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -618,6 +631,35 @@ func (r *httpDiscoveryRanker) rank(ctx context.Context, input discoveryRankReque
 		return result, fmt.Errorf("decode response: %w", err)
 	}
 	return result, nil
+}
+
+// token reads the bearer token, giving up at the ranker deadline: a token
+// file on a stalled mount must not keep the caller from the lexical fallback.
+// At most discoveryMaxTokenReads reads run at once, so stalled reads cannot
+// pile up goroutines. A request is never sent without its token.
+func (r *httpDiscoveryRanker) token(ctx context.Context) (string, error) {
+	errTimeout := errors.New("token file read did not finish before the ranker timeout")
+	select {
+	case r.tokenReads <- struct{}{}:
+	case <-ctx.Done():
+		return "", errTimeout
+	}
+	type tokenResult struct {
+		token string
+		err   error
+	}
+	done := make(chan tokenResult, 1)
+	go func() {
+		defer func() { <-r.tokenReads }()
+		token, err := r.readToken(r.tokenFile)
+		done <- tokenResult{token, err}
+	}()
+	select {
+	case res := <-done:
+		return res.token, res.err
+	case <-ctx.Done():
+		return "", errTimeout
+	}
 }
 
 // readDiscoveryToken reads the bearer token on every call, so a rotated token
