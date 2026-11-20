@@ -73,6 +73,9 @@ type ModelCapabilities struct {
 	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
 	StripsUserTurnTrailingWhitespace *bool `json:"strips_user_turn_trailing_whitespace,omitempty"`
 
+	// Anthropic converter: send mid-conversation system messages as native role:"system"; released gateways ignore it.
+	SupportsNativeMidConversationSystem *bool `json:"supports_native_mid_conversation_system,omitempty"`
+
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
 	// broadly populated across the catalog where the flags above are curated.

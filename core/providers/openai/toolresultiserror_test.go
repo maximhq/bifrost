@@ -90,12 +90,12 @@ func TestConvertBifrostMessagesToOpenAIMessages_ReplacesImagesWithoutURLWhenOpte
 			CallID: schemas.Ptr("call_1"),
 			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
 				{
-					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
-					FileID: schemas.Ptr("file_image_1"),
+					Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+					FileID:                                 schemas.Ptr("file_image_1"),
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{},
 				},
 				{
-					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+					Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
 				},
 			}},
@@ -148,6 +148,27 @@ func structuredToolOutputChatRequest(data *string) *schemas.BifrostChatRequest {
 				ImageURLStruct: &schemas.ChatInputImage{URL: *data},
 			}}},
 		}},
+	}
+}
+
+func BenchmarkToOpenAIChatRequest_StructuredToolOutput(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "default"
+		if enabled {
+			name = "opted_in"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			provider := &OpenAIProvider{customProviderConfig: &schemas.CustomProviderConfig{SupportsStructuredToolOutputs: enabled}}
+			request := structuredToolOutputChatRequest(schemas.Ptr("data:image/png;base64,iVBORw0KGgo="))
+			b.ReportAllocs()
+			for b.Loop() {
+				provider.setStructuredToolOutputsContext(ctx)
+				if converted := ToOpenAIChatRequest(ctx, request); converted == nil {
+					b.Fatal("nil OpenAI request")
+				}
+			}
+		})
 	}
 }
 

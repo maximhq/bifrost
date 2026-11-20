@@ -8705,7 +8705,7 @@
             },
             "supports_structured_tool_outputs": {
               "type": "boolean",
-              "description": "Allow structured media blocks in chat tool results for custom OpenAI-compatible providers."
+              "description": "Preserve image blocks with nonempty URLs in chat tool results for custom OpenAI-compatible providers. Audio and file blocks remain text placeholders; without this setting, images also become placeholders."
             },
             "allowed_requests": {
               "type": "object",

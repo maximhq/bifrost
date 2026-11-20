@@ -1281,7 +1281,7 @@
       "keys": [
         {
           "name": "OpenAI API Key",
-          "value": "env.OPENAI_API_KEY",
+          "value": "sk-harness-relay-upstream",
           "weight": 1,
           "models": ["*"]
         }
