@@ -346506,6 +346506,154 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Roleless Responses input items get a Gemini role (roleless items)",
+      "description": "Codex multi-agent v2 injects a subagent's reply as {\"type\":\"agent_message\",\"content\":[{\"type\":\"input_text\",...}]} with no role, and its function_call items carry no role either. The Gemini Responses converter only set Content.role from msg.role, so both went upstream with role \"\" and Vertex answered 400 \"Please use a valid role: user, model.\" A roleless function_call now becomes role model and any other roleless item role user. Each case replays a spawn_agent call, its output and the agent_message, and expects a completed answer.",
+      "item": [
+        {
+          "name": "vertex/gemini-4-argon /v1/responses: roleless agent_message and function_call items get a Gemini role (roleless items)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Spawn a subagent to count the TODOs, then tell me what it found in one sentence.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_spawn_1\",\n      \"name\": \"spawn_agent\",\n      \"arguments\": \"{\\\"task\\\":\\\"count TODOs\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_spawn_1\",\n      \"output\": \"agent started\"\n    },\n    {\n      \"type\": \"agent_message\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Subagent result: found 3 TODOs in core/bifrost.go.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"spawn_agent\",\n      \"description\": \"Spawn a subagent for a task\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"task\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"task\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": \"none\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('372 vertex/gemini-4-argon /v1/responses: 200, not a \"valid role: user, model\" 400', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 1500)).to.eql(200);",
+                  "  pm.expect(txt, 'roleless content reached the provider: ' + txt.slice(0, 1500)).to.not.include('valid role');",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('372 vertex/gemini-4-argon /v1/responses: completed with assistant text', function () {",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('completed');",
+                  "  var texts = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(texts, 'no assistant text: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses: roleless agent_message and function_call items get a Gemini role (roleless items)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Spawn a subagent to count the TODOs, then tell me what it found in one sentence.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_spawn_1\",\n      \"name\": \"spawn_agent\",\n      \"arguments\": \"{\\\"task\\\":\\\"count TODOs\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_spawn_1\",\n      \"output\": \"agent started\"\n    },\n    {\n      \"type\": \"agent_message\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Subagent result: found 3 TODOs in core/bifrost.go.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"spawn_agent\",\n      \"description\": \"Spawn a subagent for a task\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"task\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"task\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": \"none\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('372 vertex/gemini-4-argon /openai/v1/responses: 200, not a \"valid role: user, model\" 400', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 1500)).to.eql(200);",
+                  "  pm.expect(txt, 'roleless content reached the provider: ' + txt.slice(0, 1500)).to.not.include('valid role');",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('372 vertex/gemini-4-argon /openai/v1/responses: completed with assistant text', function () {",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('completed');",
+                  "  var texts = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(texts, 'no assistant text: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses: roleless agent_message and function_call items get a Gemini role (roleless items)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Spawn a subagent to count the TODOs, then tell me what it found in one sentence.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_spawn_1\",\n      \"name\": \"spawn_agent\",\n      \"arguments\": \"{\\\"task\\\":\\\"count TODOs\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_spawn_1\",\n      \"output\": \"agent started\"\n    },\n    {\n      \"type\": \"agent_message\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Subagent result: found 3 TODOs in core/bifrost.go.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"spawn_agent\",\n      \"description\": \"Spawn a subagent for a task\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"task\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"task\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": \"none\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('372 gemini/gemini-2.5-flash /v1/responses: 200, not a \"valid role: user, model\" 400', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 1500)).to.eql(200);",
+                  "  pm.expect(txt, 'roleless content reached the provider: ' + txt.slice(0, 1500)).to.not.include('valid role');",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('372 gemini/gemini-2.5-flash /v1/responses: completed with assistant text', function () {",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('completed');",
+                  "  var texts = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(texts, 'no assistant text: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
