@@ -380,6 +380,9 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if err != nil {
 		return nil, err
 	}
+	if request.Params != nil {
+		jsonData = setRawServiceTier(ctx, jsonData, request.Params.ServiceTier)
+	}
 
 	geminiResponse, rawResponse, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, request.Model, key, jsonData, ":generateContent")
 	if providerResponseHeaders != nil {
@@ -446,6 +449,9 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		})
 	if err != nil {
 		return nil, err
+	}
+	if request.Params != nil {
+		jsonData = setRawServiceTier(ctx, jsonData, request.Params.ServiceTier)
 	}
 
 	// Prepare Gemini headers
@@ -786,6 +792,9 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if err != nil {
 			return nil, err
 		}
+		if request.Params != nil {
+			jsonData = setRawServiceTier(ctx, jsonData, request.Params.ServiceTier)
+		}
 	}
 
 	// Check if enterprise large response detection is enabled
@@ -984,6 +993,9 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		})
 	if err != nil {
 		return nil, err
+	}
+	if request.Params != nil {
+		jsonData = setRawServiceTier(ctx, jsonData, request.Params.ServiceTier)
 	}
 
 	// Prepare Gemini headers

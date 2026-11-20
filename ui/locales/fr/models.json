@@ -225,6 +225,7 @@
 			"descriptionHint": "Note pour les utilisateurs. Non utilisée par Bifrost.",
 			"descriptionPlaceholder": "À quoi sert ce déploiement ?",
 			"useKeySetting": "Utiliser le paramètre de clé",
+			"serviceTierHint": "Remplace le niveau de service de la clé pour ce déploiement.",
 			"on": "Activé",
 			"off": "Désactivé",
 			"deploymentName": "Nom du déploiement",
@@ -572,6 +573,9 @@
 		"keys": {
 			"useForBatch": "Utiliser pour les API Batch",
 			"useForBatchHelp": "Activez cette clé pour les opérations d’API Batch. Seules les clés pour lesquelles cette option est activée seront utilisées pour les requêtes batch.",
+			"serviceTier": "Niveau de service",
+			"serviceTierHelp": "Envoyé avec les requêtes chat et responses à la place de tout niveau de service indiqué par la requête. Chaque fournisseur ne transmet que les niveaux pris en charge par son modèle.",
+			"serviceTierNotSet": "Non défini",
 			"vpcEndpointsOptional": "Points de terminaison VPC (facultatif)",
 			"vpcEndpointsHelp": "Acheminez le trafic via des points de terminaison VPC d’interface au lieu des points de terminaison régionaux publics. Utilisez le nom DNS de chaque point de terminaison depuis la console VPC, et non son ID. La région reste requise — elle définit le périmètre de signature de la requête.",
 			"vpc": {

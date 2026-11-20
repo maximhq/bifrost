@@ -699,6 +699,42 @@ func TestUpdateProvidersConfig_CreateNew(t *testing.T) {
 	assert.Equal(t, "openai-primary", result["openai"].Keys[0].Name)
 }
 
+// TestUpdateProvidersConfig_ServiceTierRoundTrip pins that a key's service_tier and an alias's
+// survive save and reload, and that clearing the key tier persists.
+func TestUpdateProvidersConfig_ServiceTierRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	priority := schemas.BifrostServiceTierPriority
+	flex := schemas.BifrostServiceTierFlex
+
+	key := schemas.Key{
+		ID:          "key-uuid-1",
+		Name:        "vertex-priority",
+		Value:       *schemas.NewSecretVar("sk-test-key"),
+		Weight:      0,
+		ServiceTier: &priority,
+		Aliases:     schemas.KeyAliases{"carbon-flex": {ModelID: "gemini-4-carbon", ServiceTier: &flex}},
+	}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{"vertex": {Keys: []schemas.Key{key}}}))
+
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, result["vertex"].Keys, 1)
+	got := result["vertex"].Keys[0]
+	require.NotNil(t, got.ServiceTier, "key service_tier must survive the round trip")
+	assert.Equal(t, priority, *got.ServiceTier)
+	alias, ok := got.Aliases["carbon-flex"]
+	require.True(t, ok)
+	require.NotNil(t, alias.ServiceTier, "alias service_tier must survive the round trip")
+	assert.Equal(t, flex, *alias.ServiceTier)
+
+	key.ServiceTier = nil
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{"vertex": {Keys: []schemas.Key{key}}}))
+	result, err = store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, result["vertex"].Keys[0].ServiceTier, "clearing the key service_tier must persist")
+}
+
 func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

@@ -316,6 +316,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
+		if request.Params != nil {
+			jsonBody, err = setRawServiceTier(jsonBody, request.Params.ServiceTier)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
 		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -673,6 +680,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		if defaults.DeleteRegionField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		if request.Params != nil {
+			jsonBody, err = setRawServiceTier(jsonBody, request.Params.ServiceTier)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}

@@ -1008,6 +1008,19 @@ Availability varies by region. Check [GCP documentation](https://cloud.google.co
 
 Some models (e.g. Claude Opus 4.7/4.8) are published only on Google's multi-region pool endpoints. When such a model is requested with a single US or Europe region, Bifrost automatically promotes the call to the matching pool endpoint (`aiplatform.us.rep.googleapis.com` / `aiplatform.eu.rep.googleapis.com`) and rewrites the `locations/` path segment to `us` / `eu`. Set `force_single_region: true` on the Vertex key (or per-deployment) to disable this and keep the exact region you configured — for example when you serve these models from a single region via provisioned throughput. Endpoint rewrites are emitted at `debug` log level.
 
+## Service Tiers
+
+Gemini requests with `service_tier: "priority"` or `"flex"` are sent with the `X-Vertex-AI-LLM-Shared-Request-Type` header ([Priority PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/priority-paygo), [Flex PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo)). The header is sent only when both hold:
+
+| Tier | Regions | Models |
+| ---- | ------- | ------ |
+| `priority` | `global`, `us`, `eu` | The datasheet's `service_tiers` for the model when it lists any; otherwise Google's Priority PayGo list |
+| `flex` | `global` | The datasheet's `service_tiers` for the model when it lists any; otherwise Google's Flex PayGo list |
+
+Custom model IDs (all digits) skip the model check, so in a tier's regions they always get the header. When no header is sent, Vertex serves the request on its default path: Standard PayGo, or Provisioned Throughput where the project has it for the model and region. The tier that served the request is returned as `service_tier`.
+
+The tier comes from the key's or alias's `service_tier` when either sets one, in place of the request's own; otherwise from the request.
+
 ## Streaming
 
 Streaming format depends on model type:

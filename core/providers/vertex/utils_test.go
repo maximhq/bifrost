@@ -878,6 +878,39 @@ func TestVertexServiceTierHeaderValue_Gemini35FlashLiteFlex(t *testing.T) {
 	}
 }
 
+// TestVertexServiceTierHeaderValue_RegionGate pins Google's per-tier endpoint support:
+// Priority PayGo on global, us and eu; Flex PayGo on global only; neither on a single region.
+func TestVertexServiceTierHeaderValue_RegionGate(t *testing.T) {
+	t.Parallel()
+
+	priority := schemas.BifrostServiceTierPriority
+	flex := schemas.BifrostServiceTierFlex
+	cases := []struct {
+		region string
+		model  string
+		tier   schemas.BifrostServiceTier
+		want   string
+	}{
+		{"global", "gemini-4-carbon", priority, "priority"},
+		{"us", "gemini-4-carbon", priority, "priority"},
+		{"eu", "gemini-4-carbon", priority, "priority"},
+		{"us-central1", "gemini-4-carbon", priority, ""},
+		{"us", "gemini-4-argon", priority, "priority"},
+		{"eu", "gemini-4-hydrogen", priority, "priority"},
+		{"us", "gemini-3.8-flash", priority, "priority"},
+		{"global", "gemini-3.8-flash", flex, "flex"},
+		{"us", "gemini-3.8-flash", flex, ""},
+		{"eu", "gemini-3.8-flash", flex, ""},
+		{"global", "gemini-4-carbon", flex, ""},
+		{"global", "gemini-4-carbon", schemas.BifrostServiceTierDefault, ""},
+	}
+	for _, tc := range cases {
+		if got := vertexServiceTierHeaderValue(tc.region, tc.model, tc.tier); got != tc.want {
+			t.Errorf("vertexServiceTierHeaderValue(%q, %q, %q) = %q, want %q", tc.region, tc.model, tc.tier, got, tc.want)
+		}
+	}
+}
+
 // TestClassifyURLSource pins the capability matrix this provider implements. Vertex
 // serves two model families with different source support -- Claude-on-Vertex takes
 // base64 only, Gemini-on-Vertex takes fileData.fileUri -- so the same URL is downloaded
@@ -1186,7 +1219,10 @@ func TestVertexServiceTierReadsDatasheet(t *testing.T) {
 		install(t, model, []string{"priority"})
 
 		if got := vertexServiceTierHeaderValue("us-central1", model, schemas.BifrostServiceTierPriority); got != "" {
-			t.Fatalf("service tiers are global-endpoint only, got %q", got)
+			t.Fatalf("service tiers are not offered on single-region endpoints, got %q", got)
+		}
+		if got := vertexServiceTierHeaderValue("us", model, schemas.BifrostServiceTierPriority); got != "priority" {
+			t.Fatalf("expected priority header on the us multi-region endpoint, got %q", got)
 		}
 	})
 }

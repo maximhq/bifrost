@@ -35,6 +35,16 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true
+        },
+        {
+          "name": "OpenAI Service Tier Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 0,
+          "models": ["gpt-4o-mini", "gpt-4o-mini-tier-auto"],
+          "service_tier": "priority",
+          "aliases": {
+            "gpt-4o-mini-tier-auto": { "model_id": "gpt-4o-mini", "service_tier": "auto" }
+          }
         }
       ],
       "network_config": {
@@ -193,7 +203,10 @@
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": true
+          "use_for_batch_api": true,
+          "aliases": {
+            "claude-haiku-4-5-tier-default": { "model_id": "claude-haiku-4-5", "service_tier": "default" }
+          }
         }
       ],
       "network_config": {
@@ -213,7 +226,10 @@
           "value": "env.GEMINI_API_KEY",
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": true
+          "use_for_batch_api": true,
+          "aliases": {
+            "gemini-3.8-flash-tier-priority": { "model_id": "gemini-3.8-flash", "service_tier": "priority" }
+          }
         }
       ],
       "network_config": {
@@ -288,8 +304,12 @@
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
             "gemini-3-flash-preview",
-            "gemini-4-argon"
-          ]
+            "gemini-4-argon",
+            "gemini-3.7-flash-tier-priority"
+          ],
+          "aliases": {
+            "gemini-3.7-flash-tier-priority": { "model_id": "gemini-3.7-flash", "service_tier": "priority" }
+          }
         }
       ],
       "network_config": {
@@ -566,6 +586,7 @@
           "value": "env.AZURE_API_KEY",
           "aliases": {
             "Microsoft-Decision-1": "Decision-1",
+            "gpt-4o-mini-tier-auto": { "model_id": "gpt-4o-mini", "service_tier": "auto" },
             "speech-neural": { "model_id": "neural", "use_speech_endpoints": true },
             "speech-mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
             "speech-fast-transcription": {

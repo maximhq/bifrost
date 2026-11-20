@@ -8741,6 +8741,11 @@
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
         },
+        "service_tier": {
+          "type": "string",
+          "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+          "description": "Service tier sent on chat completions and responses requests served by this key, in place of any service_tier the request sets; the request's own tier applies only when neither the key nor the alias sets one. An alias's service_tier overrides the key's. Allowed values by provider: openai auto, default, flex, priority, fast, ultrafast; azure auto, default, flex, priority; anthropic auto, default; vertex and gemini default, flex, priority. Other providers reject it. A provider still drops a tier the requested model does not support."
+        },
         "aliases": {
           "type": "object",
           "additionalProperties": {
@@ -8857,6 +8862,11 @@
                   "use_openai_endpoints": {
                     "type": "boolean",
                     "description": "Per-alias override of use_openai_endpoints."
+                  },
+                  "service_tier": {
+                    "type": "string",
+                    "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+                    "description": "Per-alias override of the key's service_tier, with the same allowed values per provider."
                   }
                 },
                 "required": [

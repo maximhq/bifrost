@@ -27979,3 +27979,35 @@ func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
 	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
 	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
 }
+
+// TestProcessProvider_KeyServiceTier pins that a config.json key tier is checked against the
+// key's base provider at load, so a custom provider takes its base provider's tiers.
+func TestProcessProvider_KeyServiceTier(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		custom   *schemas.CustomProviderConfig
+		tier     schemas.BifrostServiceTier
+		wantErr  bool
+	}{
+		{name: "vertex priority", provider: "vertex", tier: schemas.BifrostServiceTierPriority},
+		{name: "anthropic flex", provider: "anthropic", tier: schemas.BifrostServiceTierFlex, wantErr: true},
+		{name: "groq priority", provider: "groq", tier: schemas.BifrostServiceTierPriority, wantErr: true},
+		{name: "custom openai priority", provider: "my-openai", custom: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}, tier: schemas.BifrostServiceTierPriority},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := configstore.ProviderConfig{
+				Keys:                 []schemas.Key{{Name: "k", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, ServiceTier: schemas.Ptr(tc.tier)}},
+				CustomProviderConfig: tc.custom,
+			}
+			err := processProvider(nil, tc.provider, cfg, map[schemas.ModelProvider]configstore.ProviderConfig{})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("processProvider err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "service_tier") {
+				t.Fatalf("expected the error to name service_tier, got %v", err)
+			}
+		})
+	}
+}

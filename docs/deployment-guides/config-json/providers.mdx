@@ -46,6 +46,7 @@ Every key object supports these fields:
 | `enabled` | boolean | Set to `false` to keep the key configured but skip it during key selection. Same as the **Enabled** toggle in the UI. New keys default to `true`; omitting it on an existing key keeps the stored value (for example a UI toggle) |
 | `aliases` | object | Map logical name → actual model name for this key |
 | `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
+| `service_tier` | string | Service tier sent on chat completions and responses requests this key serves, in place of any `service_tier` the request sets; the request's own tier applies only when neither the key nor the alias sets one. An alias's `service_tier` overrides the key's. Allowed values by provider: openai `auto`, `default`, `flex`, `priority`, `fast`, `ultrafast`; azure `auto`, `default`, `flex`, `priority`; anthropic `auto`, `default`; vertex and gemini `default`, `flex`, `priority`. Other providers reject it. A provider still drops a tier the requested model does not support |
 | `oauth_key_config` | object | Mint the bearer from an OAuth token endpoint instead of carrying a static `value`. `openai` and custom providers on the `openai` base only. See below |
 
 ### OAuth-minted keys (`oauth_key_config`)
