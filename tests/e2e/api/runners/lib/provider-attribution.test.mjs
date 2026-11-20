@@ -105,4 +105,21 @@ test("Baseten rows stay with baseten and Hugging Face Baseten rows with huggingf
   assert.strictEqual(providerOfFolder("61. Hugging Face Baseten model discovery (#6631)", withBaseten), "huggingface");
 });
 
+test("Nace SDK routes are attributed to Nace rather than their ingress provider", () => {
+  const matchNace = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  const folder = "Nace native decisions - #9739";
+  const row = { name: "nace drex-max", request: { url: "http://localhost:8080/openai/v1/decisions" } };
+  assert.strictEqual(providerOfItem(row, [folder], matchNace), "nace");
+  assert.strictEqual(providerOfLogLine("post http://localhost:8080/openai/v1/decisions [200 ok]", folder, matchNace), "nace");
+});
+
+test("Nace is matched as a whole word, not inside prompt words", () => {
+  const match = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  assert.strictEqual(match("explain how a furnace works gpt-4o"), "openai");
+  assert.strictEqual(match("a menace on /openai/v1/chat/completions"), "openai");
+  assert.strictEqual(match("model nace/drex-v2.0"), "nace");
+  assert.strictEqual(match("https://console.nace.ai/v1/systemone"), "nace");
+  assert.strictEqual(match("drex-max-v1.1"), "nace");
+});
+
 console.log(`\n${passed} passed`);

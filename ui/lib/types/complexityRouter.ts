@@ -356,6 +356,9 @@ export const MAX_SEMANTIC_PHRASES = 750;
 export const DEFAULT_DECISION_PROVIDER = "typesafe";
 export const DEFAULT_DECISION_MODEL = "jev-latest";
 
+// NACE_DECISION_MODEL is the initial model when an operator selects Nace.
+export const NACE_DECISION_MODEL = "drex-v2.0";
+
 // The checkpoints self-hosted decision models serve, grouped by model. Offered
 // when a custom provider cannot list its own models (Laya has no model listing,
 // and a Clef served by Ollama has no Cloudflare URL to read its model from), so

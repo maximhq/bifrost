@@ -25,6 +25,7 @@ export const PROVIDER_KEYWORDS = {
   passthrough: ["_passthrough", "passthrough"],
   openrouter: ["openrouter"],
   "github-copilot": ["github-copilot"],
+  nace: ["nace", "drex-"],
   huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
@@ -38,6 +39,7 @@ export const MATCH_ORDER = [
   "passthrough",
   "openrouter",
   "github-copilot",
+  "nace",
   "huggingface",
   "replicate",
   // After huggingface, whose router serves Baseten-hosted models; ahead of anthropic and
@@ -70,6 +72,11 @@ export function makeMatchProvider(isActive) {
   return function matchProvider(haystack) {
     for (const p of MATCH_ORDER) {
       if (!isActive(p)) continue;
+      if (p === "nace") {
+        // Whole word, as in filter-collection.mjs: "furnace" or "menace" in a prompt is not Nace.
+        if (/\bnace\b/.test(haystack) || haystack.includes("drex-")) return p;
+        continue;
+      }
       for (const k of PROVIDER_KEYWORDS[p] || [p]) if (haystack.includes(k)) return p;
     }
     return null;
