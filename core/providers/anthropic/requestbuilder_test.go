@@ -3888,6 +3888,106 @@ func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T)
 	}
 }
 
+// TestBuildAnthropicRequestBody_SignedOmittedThinkingReplay pins that a signed
+// thinking block with empty text, as returned under thinking.display "omitted",
+// reaches every host built from these builders on every inbound route.
+func TestBuildAnthropicRequestBody_SignedOmittedThinkingReplay(t *testing.T) {
+	const model = "claude-opus-5-5"
+	const signature = "EpYBCkYIBxgCKkD-omitted"
+	nativeBody := []byte(`{"model":"` + model + `","max_tokens":4096,"thinking":{"type":"adaptive","display":"omitted"},"messages":[` +
+		`{"role":"user","content":"What is 27 * 453?"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"` + signature + `"},{"type":"text","text":"12231"}]},` +
+		`{"role":"user","content":"Now divide that by 9."}]}`)
+
+	chatInput := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 27 * 453?")}},
+		{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("12231")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+				{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr(""), Signature: schemas.Ptr(signature)},
+			}},
+		},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Now divide that by 9.")}},
+	}
+	// A streaming client rebuilds omitted thinking from the signature delta alone, so the detail has no text.
+	chatStreamInput := slices.Clone(chatInput)
+	chatStreamInput[1].ChatAssistantMessage = &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+		{Type: schemas.BifrostReasoningDetailsTypeText, Signature: schemas.Ptr(signature)},
+	}}
+
+	userRole, assistantRole := schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleAssistant
+	responsesInput := []schemas.ResponsesMessage{
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What is 27 * 453?")}},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role: &assistantRole,
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr(""), Signature: schemas.Ptr(signature)},
+			}},
+		},
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: &assistantRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("12231")}},
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Now divide that by 9.")}},
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.Vertex, schemas.Azure} {
+		for _, route := range []string{"anthropic_messages", "anthropic_messages_raw", "chat_completions", "chat_completions_stream", "responses"} {
+			t.Run(fmt.Sprintf("%s/%s", provider, route), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+				var out []byte
+				var bErr *schemas.BifrostError
+				switch route {
+				case "anthropic_messages", "anthropic_messages_raw":
+					var req AnthropicMessageRequest
+					if err := json.Unmarshal(nativeBody, &req); err != nil {
+						t.Fatalf("unmarshal: %v", err)
+					}
+					request := req.ToBifrostResponsesRequest(ctx)
+					request.Provider = provider
+					if route == "anthropic_messages_raw" {
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						request.RawRequestBody = nativeBody
+					}
+					out, bErr = BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+				case "chat_completions":
+					out, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, Input: chatInput}, cfg)
+				case "chat_completions_stream":
+					out, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, Input: chatStreamInput}, cfg)
+				case "responses":
+					out, bErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, Input: responsesInput}, cfg)
+				}
+				if bErr != nil {
+					t.Fatalf("build: %v", bErr.Error.Message)
+				}
+				block := gjson.GetBytes(out, `messages.#(role=="assistant").content.#(type=="thinking")`)
+				if !block.Exists() || block.Get("signature").String() != signature ||
+					!block.Get("thinking").Exists() || block.Get("thinking").String() != "" {
+					t.Fatalf("signed omitted thinking block not replayed unchanged; body=%s", out)
+				}
+			})
+		}
+	}
+
+	// A Gemini thought signature has no thinking text and is not Anthropic's to verify:
+	// it must still be stripped, not sent for Anthropic to reject.
+	t.Run("gemini_thought_signature_still_stripped", func(t *testing.T) {
+		geminiInput := slices.Clone(chatInput)
+		geminiInput[1].ChatAssistantMessage = &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+			{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Signature: schemas.Ptr("gemini-thought-sig")},
+		}}
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		out, bErr := BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model, Input: geminiInput},
+			AnthropicRequestBuildConfig{Provider: schemas.Anthropic, Model: model})
+		if bErr != nil {
+			t.Fatalf("build: %v", bErr.Error.Message)
+		}
+		if gjson.GetBytes(out, `messages.#(role=="assistant").content.#(type=="thinking")`).Exists() {
+			t.Fatalf("gemini thought signature reached Anthropic as a thinking block; body=%s", out)
+		}
+	})
+}
+
 // topLevelKeys returns the top-level keys of a JSON object in wire order.
 func topLevelKeys(b []byte) []string {
 	var ks []string
