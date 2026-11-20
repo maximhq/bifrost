@@ -604,18 +604,11 @@ func TestValidateDiscoveryRankResponse(t *testing.T) {
 	}
 }
 
-func TestRankCandidatesKeepsEveryServer(t *testing.T) {
-	items := make([]discoveryTool, 0, 60)
-	for i := range 50 {
-		items = append(items, discoveryTool{candidate: discoveryCandidate{ID: fmt.Sprintf("servers/big/t%02d.pyi", i), Server: "big"}, lexical: float64(100 - i)})
-	}
-	for i := range 10 {
-		server := fmt.Sprintf("small%d", i)
-		items = append(items, discoveryTool{candidate: discoveryCandidate{ID: "servers/" + server + "/t.pyi", Server: server}})
-	}
-	selected := rankCandidates(items, discoveryMaxRankCandidates)
-	if len(selected) != discoveryMaxRankCandidates {
-		t.Fatalf("expected %d candidates, got %d", discoveryMaxRankCandidates, len(selected))
+// rankedServers checks selected for duplicates and returns its servers.
+func rankedServers(t *testing.T, selected []discoveryTool, maxCandidates int) map[string]bool {
+	t.Helper()
+	if len(selected) != maxCandidates {
+		t.Fatalf("expected %d candidates, got %d", maxCandidates, len(selected))
 	}
 	servers := map[string]bool{}
 	ids := map[string]bool{}
@@ -626,11 +619,57 @@ func TestRankCandidatesKeepsEveryServer(t *testing.T) {
 		}
 		ids[item.candidate.ID] = true
 	}
-	if len(servers) != 9 {
-		t.Fatalf("expected the big server plus 8 small servers in the remaining slots, got %d servers", len(servers))
+	return servers
+}
+
+func TestRankCandidatesKeepsEveryServer(t *testing.T) {
+	tools := func(server string, n int, best float64) []discoveryTool {
+		items := make([]discoveryTool, 0, n)
+		for i := range n {
+			items = append(items, discoveryTool{candidate: discoveryCandidate{ID: fmt.Sprintf("servers/%s/t%02d.pyi", server, i), Server: server}, lexical: best - float64(i)})
+		}
+		return items
+	}
+
+	// One dominant server and seven smaller ones fit a decision ranker's cap:
+	// every server keeps a candidate, and the rest go to the best matches.
+	items := tools("a", 40, 100)
+	for _, server := range []string{"b", "c", "d", "e", "f", "g", "h"} {
+		items = append(items, tools(server, 3, 10)...)
+	}
+	selected := rankCandidates(items, discoveryMaxDecisionChoices)
+	if servers := rankedServers(t, selected, discoveryMaxDecisionChoices); len(servers) != 8 {
+		t.Fatalf("expected all 8 servers, got %v", servers)
+	}
+	if selected[0].candidate.ID != "servers/a/t00.pyi" || selected[18].candidate.ID != "servers/a/t18.pyi" {
+		t.Fatalf("the best lexical matches must fill the remaining slots in order, got %s and %s", selected[0].candidate.ID, selected[18].candidate.ID)
+	}
+
+	// The same with the HTTP ranker's cap and ten single-tool servers.
+	items = tools("big", 50, 100)
+	for i := range 10 {
+		items = append(items, tools(fmt.Sprintf("small%d", i), 1, 0)...)
+	}
+	selected = rankCandidates(items, discoveryMaxRankCandidates)
+	if servers := rankedServers(t, selected, discoveryMaxRankCandidates); len(servers) != 11 {
+		t.Fatalf("expected all 11 servers, got %d", len(servers))
 	}
 	if selected[0].candidate.ID != "servers/big/t00.pyi" {
 		t.Fatalf("best lexical match must come first, got %s", selected[0].candidate.ID)
+	}
+
+	// More servers than slots: the best matches take three quarters of the
+	// slots and the rest go to servers not yet represented.
+	items = tools("big", 50, 100)
+	for i := range 40 {
+		items = append(items, tools(fmt.Sprintf("small%02d", i), 1, 0)...)
+	}
+	selected = rankCandidates(items, discoveryMaxRankCandidates)
+	if servers := rankedServers(t, selected, discoveryMaxRankCandidates); len(servers) != 9 {
+		t.Fatalf("expected the big server plus 8 small servers, got %d servers", len(servers))
+	}
+	if selected[23].candidate.ID != "servers/big/t23.pyi" || selected[24].candidate.Server != "small00" {
+		t.Fatalf("unexpected split between lexical and server slots: %s, %s", selected[23].candidate.ID, selected[24].candidate.ID)
 	}
 }
 

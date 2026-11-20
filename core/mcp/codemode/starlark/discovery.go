@@ -291,38 +291,58 @@ func scoreDiscovery(items []discoveryTool, query string) []discoveryTool {
 }
 
 // rankCandidates picks what is sent to a ranker that takes at most
-// maxCandidates: everything when the catalogue is small, otherwise the best
-// lexical matches in three quarters of the slots plus one tool from each server
-// not yet represented, so a match with no shared words can still be found.
+// maxCandidates: everything when the catalogue is small. Otherwise, when every
+// server fits, each server's best lexical match is reserved first and the
+// remaining slots go to the best lexical matches, so a match with no shared
+// words can still be found on any server. With more servers than slots, the
+// best lexical matches take three quarters of the slots and the rest go to one
+// tool from each server not yet represented. Candidates keep their lexical
+// order.
 func rankCandidates(ranked []discoveryTool, maxCandidates int) []discoveryTool {
 	if len(ranked) <= maxCandidates {
 		return ranked
 	}
-	lexicalSlots := maxCandidates - maxCandidates/4
-	selected := append(make([]discoveryTool, 0, maxCandidates), ranked[:lexicalSlots]...)
-	picked := map[string]bool{}
+	picked := make([]bool, len(ranked))
+	count := 0
+	pick := func(i int) {
+		if !picked[i] && count < maxCandidates {
+			picked[i] = true
+			count++
+		}
+	}
 	servers := map[string]bool{}
-	for _, item := range selected {
-		picked[item.candidate.ID] = true
+	for _, item := range ranked {
 		servers[item.candidate.Server] = true
 	}
-	for _, item := range ranked[lexicalSlots:] {
-		if len(selected) == maxCandidates {
-			break
+	if len(servers) <= maxCandidates {
+		represented := map[string]bool{}
+		for i, item := range ranked {
+			if !represented[item.candidate.Server] {
+				represented[item.candidate.Server] = true
+				pick(i)
+			}
 		}
-		if !servers[item.candidate.Server] {
-			selected = append(selected, item)
-			picked[item.candidate.ID] = true
-			servers[item.candidate.Server] = true
+	} else {
+		lexicalSlots := maxCandidates - maxCandidates/4
+		represented := map[string]bool{}
+		for i := range lexicalSlots {
+			pick(i)
+			represented[ranked[i].candidate.Server] = true
+		}
+		for i, item := range ranked {
+			if !represented[item.candidate.Server] {
+				represented[item.candidate.Server] = true
+				pick(i)
+			}
 		}
 	}
-	for _, item := range ranked[lexicalSlots:] {
-		if len(selected) == maxCandidates {
-			break
-		}
-		if !picked[item.candidate.ID] {
+	for i := range ranked {
+		pick(i)
+	}
+	selected := make([]discoveryTool, 0, maxCandidates)
+	for i, item := range ranked {
+		if picked[i] {
 			selected = append(selected, item)
-			picked[item.candidate.ID] = true
 		}
 	}
 	return selected

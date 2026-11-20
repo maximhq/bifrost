@@ -11293,7 +11293,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "pattern": "^[^/\\s]+/\\S.*$"
+                "pattern": "^[^/\\s]+/(?:\\S|\\S.*\\S)$"
               },
               "description": "Fallback decision models, as provider/model, tried in order when decision_model fails. Requires decision_model."
             },
