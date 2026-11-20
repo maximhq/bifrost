@@ -608,6 +608,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12341,6 +12342,66 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
+// migrationNormalizeVirtualKeyIsActive is a background data repair, deliberately
+// absent from configstoreMigrationSteps so it never delays schema startup. The
+// existing ledger ID records completion and preserves compatibility with earlier
+// repairs. NULL already means active; hashes, timestamps and false stay intact.
+func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "normalize_virtual_key_is_active"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	// Commit each repair independently. An outer transaction would retain all
+	// key locks and could deadlock with config sync updating keys in file order.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db.WithContext(ctx), &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(db *gorm.DB) error {
+			// Bound retained IDs and advance past each page even if an older
+			// replica writes NULL again. AfterFind supplies the effective default
+			// for writes that arrive after this one-time backfill.
+			const pageSize = 256
+			var after string
+			firstPage := true
+			for {
+				query := db.Table("governance_virtual_keys").Where("is_active IS NULL").Order("id").Limit(pageSize)
+				if !firstPage {
+					query = query.Where("id > ?", after)
+				}
+				var ids []string
+				if err := query.Pluck("id", &ids).Error; err != nil {
+					return err
+				}
+				if len(ids) == 0 {
+					return nil
+				}
+				for _, id := range ids {
+					if err := db.Transaction(func(tx *gorm.DB) error {
+						if err := setMigrationLockTimeout(tx); err != nil {
+							return err
+						}
+						// Recheck under the row lock so a concurrent disable wins.
+						return tx.Table("governance_virtual_keys").Where("id = ? AND is_active IS NULL", id).UpdateColumn("is_active", true).Error
+					}); err != nil {
+						return err
+					}
+				}
+				after = ids[len(ids)-1]
+				firstPage = false
+			}
+		},
+		Rollback: rollbackNormalizeVirtualKeyIsActive,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func rollbackNormalizeVirtualKeyIsActive(tx *gorm.DB) error {
+	return fmt.Errorf("normalize_virtual_key_is_active is non-rollbackable: repaired NULL values cannot be distinguished from explicitly active keys")
+}
+
 // migrationAddClientConfigEnforceVKObjectOwnershipColumn adds enforce_vk_object_ownership
 // to config_client. It defaults to true, so an upgrade keeps provider objects bound to the
 // virtual key that created them, as they were before the setting existed.
@@ -17718,62 +17779,24 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 	}
 }
 
-// migrationNormalizeVirtualKeyIsActive is a background data repair, deliberately
-// absent from configstoreMigrationSteps so it never delays schema startup. The
-// existing ledger ID records completion and preserves compatibility with earlier
-// repairs. NULL already means active; hashes, timestamps and false stay intact.
-func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "normalize_virtual_key_is_active"
+// migrationAddVirtualMCPConfigIssuesColumn adds the column that records which parts of a Virtual
+// MCP's config.json declaration could not be applied, so the dashboard can show them.
+func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_mcp_config_issues_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	// Commit each repair independently. An outer transaction would retain all
-	// key locks and could deadlock with config sync updating keys in file order.
-	opts := *migrator.DefaultOptions
-	opts.UseTransaction = false
-	m := migrator.New(db.WithContext(ctx), &opts, []*migrator.Migration{{
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
 		ID: migrationName,
-		Migrate: func(db *gorm.DB) error {
-			// Bound retained IDs and advance past each page even if an older
-			// replica writes NULL again. AfterFind supplies the effective default
-			// for writes that arrive after this one-time backfill.
-			const pageSize = 256
-			var after string
-			firstPage := true
-			for {
-				query := db.Table("governance_virtual_keys").Where("is_active IS NULL").Order("id").Limit(pageSize)
-				if !firstPage {
-					query = query.Where("id > ?", after)
-				}
-				var ids []string
-				if err := query.Pluck("id", &ids).Error; err != nil {
-					return err
-				}
-				if len(ids) == 0 {
-					return nil
-				}
-				for _, id := range ids {
-					if err := db.Transaction(func(tx *gorm.DB) error {
-						if err := setMigrationLockTimeout(tx); err != nil {
-							return err
-						}
-						// Recheck under the row lock so a concurrent disable wins.
-						return tx.Table("governance_virtual_keys").Where("id = ? AND is_active IS NULL", id).UpdateColumn("is_active", true).Error
-					}); err != nil {
-						return err
-					}
-				}
-				after = ids[len(ids)-1]
-				firstPage = false
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
 			}
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualMCP{}, "config_issues")
 		},
-		Rollback: rollbackNormalizeVirtualKeyIsActive,
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running %s migration: %w", migrationName, err)
-	}
-	return nil
-}
-
-func rollbackNormalizeVirtualKeyIsActive(tx *gorm.DB) error {
-	return fmt.Errorf("normalize_virtual_key_is_active is non-rollbackable: repaired NULL values cannot be distinguished from explicitly active keys")
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: the column is display-only and rewritten at every config.json load.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
+		},
+	})
 }
