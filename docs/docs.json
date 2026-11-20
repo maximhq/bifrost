@@ -178,7 +178,7 @@
                   "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
-                  "providers/supported-providers/subquadratic",
+                  "providers/supported-providers/subq",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",

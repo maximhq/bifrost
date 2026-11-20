@@ -89,7 +89,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
-	Subquadratic  ModelProvider = "subquadratic"
+	Subq  ModelProvider = "subq"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -143,7 +143,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
-	Subquadratic,
+	Subq,
 }
 
 // RequestType represents the type of request being made to a provider.

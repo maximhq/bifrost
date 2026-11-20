@@ -1513,14 +1513,14 @@
         "default_request_timeout_in_seconds": 300
       }
     },
-    "subquadratic": {
+    "subq": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
       "store_raw_request_response": true,
       "keys": [
         {
-          "name": "Subquadratic API Key",
-          "value": "env.SUBQUADRATIC_API_KEY",
+          "name": "Subq API Key",
+          "value": "env.SUBQ_API_KEY",
           "weight": 1,
           "models": [
             "*"
@@ -1946,7 +1946,7 @@
             "weight": 1.0
           },
           {
-            "provider": "subquadratic",
+            "provider": "subq",
             "allowed_models": [
               "*"
             ],

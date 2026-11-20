@@ -1126,7 +1126,7 @@
       "video_edit": false,
       "rerank": false
     },
-    "subquadratic": {
+    "subq": {
       "chat_completions": true,
       "chat_completions_with_tools": true,
       "text_completion": false,

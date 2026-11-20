@@ -498,7 +498,7 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
-	case schemas.Subquadratic:
+	case schemas.Subq:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 

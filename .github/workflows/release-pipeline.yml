@@ -480,7 +480,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -761,7 +761,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
@@ -960,7 +960,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1632,7 +1632,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1767,7 +1767,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2261,7 +2261,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2719,7 +2719,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2884,7 +2884,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -3018,7 +3018,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -3147,7 +3147,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -3293,7 +3293,7 @@ jobs:
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-          SUBQUADRATIC_API_KEY: ${{ secrets.SUBQUADRATIC_API_KEY }}
+          SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

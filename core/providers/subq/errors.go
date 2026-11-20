@@ -1,4 +1,4 @@
-package subquadratic
+package subq
 
 import (
 	"strings"
@@ -10,14 +10,14 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// parseSubquadraticError parses an OpenAI-shaped error body (chat, responses, files).
-func parseSubquadraticError(resp *fasthttp.Response) *schemas.BifrostError {
+// parseSubqError parses an OpenAI-shaped error body (chat, responses, files).
+func parseSubqError(resp *fasthttp.Response) *schemas.BifrostError {
 	return openai.ParseOpenAIError(resp)
 }
 
-// parseSubquadraticDecisionError parses a Decisions API error. SubQ returns the
+// parseSubqDecisionError parses a Decisions API error. Subq returns the
 // System One detail shape: {"detail":{"error_type":"...","message":"..."}}.
-func parseSubquadraticDecisionError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseSubqDecisionError(resp *fasthttp.Response) *schemas.BifrostError {
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &struct{}{})
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
@@ -67,7 +67,7 @@ func parseSubquadraticDecisionError(resp *fasthttp.Response) *schemas.BifrostErr
 		if msg := gjson.GetBytes(body, "error.message").String(); msg != "" {
 			bifrostErr.Error.Message = msg
 		} else {
-			bifrostErr.Error.Message = "subquadratic api request failed"
+			bifrostErr.Error.Message = "subq api request failed"
 		}
 	}
 	return bifrostErr

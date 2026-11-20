@@ -53,7 +53,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
 	"github.com/maximhq/bifrost/core/providers/sgl"
-	"github.com/maximhq/bifrost/core/providers/subquadratic"
+	"github.com/maximhq/bifrost/core/providers/subq"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -5300,8 +5300,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
 	case schemas.Typesafe:
 		return typesafe.NewTypesafeProvider(config, bifrost.logger)
-	case schemas.Subquadratic:
-		return subquadratic.NewSubquadraticProvider(config, bifrost.logger)
+	case schemas.Subq:
+		return subq.NewSubqProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}

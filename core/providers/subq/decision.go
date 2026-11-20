@@ -1,4 +1,4 @@
-package subquadratic
+package subq
 
 import (
 	"net/http"
@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	subquadraticDecisionPath = "/v1/systemone"
+	subqDecisionPath = "/v1/systemone"
 	maxDecisionImages        = 4
 )
 
-// ToSubquadraticDecisionRequest converts a Bifrost decision request into SubQ's
+// ToSubqDecisionRequest converts a Bifrost decision request into Subq's
 // System One body. Images must be data: URIs (or raw base64 with an explicit
 // media type); http(s) URLs and asset references are rejected.
-func ToSubquadraticDecisionRequest(request *schemas.BifrostDecisionRequest) (*SubquadraticDecisionRequest, error) {
+func ToSubqDecisionRequest(request *schemas.BifrostDecisionRequest) (*SubqDecisionRequest, error) {
 	if request.Input.HasAssetParts() {
 		return nil, providerUtils.InvalidRequestErrorf("decision input carries an image sent by reference, which this provider cannot read; route the request to a provider that accepts it")
 	}
@@ -31,9 +31,9 @@ func ToSubquadraticDecisionRequest(request *schemas.BifrostDecisionRequest) (*Su
 		return nil, err
 	}
 	if len(imageURLs) > maxDecisionImages {
-		return nil, providerUtils.InvalidRequestErrorf("subquadratic decisions accept at most %d images", maxDecisionImages)
+		return nil, providerUtils.InvalidRequestErrorf("subq decisions accept at most %d images", maxDecisionImages)
 	}
-	images := make([]SubquadraticImage, 0, len(imageURLs))
+	images := make([]SubqImage, 0, len(imageURLs))
 	for i, url := range imageURLs {
 		img, convErr := parseDecisionImage(url, i)
 		if convErr != nil {
@@ -47,53 +47,53 @@ func ToSubquadraticDecisionRequest(request *schemas.BifrostDecisionRequest) (*Su
 	if err != nil {
 		return nil, err
 	}
-	return &SubquadraticDecisionRequest{TypesafeDecisionRequest: native, Images: images}, nil
+	return &SubqDecisionRequest{TypesafeDecisionRequest: native, Images: images}, nil
 }
 
-// parseDecisionImage converts a Bifrost decision image URL into SubQ's
+// parseDecisionImage converts a Bifrost decision image URL into Subq's
 // {mediaType, base64} shape. Only data: URIs are accepted.
-func parseDecisionImage(url string, index int) (SubquadraticImage, error) {
+func parseDecisionImage(url string, index int) (SubqImage, error) {
 	trimmed := strings.TrimSpace(url)
 	if trimmed == "" {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("decision input carries an input_image part without an image_url")
 	}
 	lower := strings.ToLower(trimmed)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions reject image urls (images/%d); send a data uri", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions reject image urls (images/%d); send a data uri", index)
 	}
 	if !strings.HasPrefix(lower, "data:") {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions require a data uri for images/%d", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions require a data uri for images/%d", index)
 	}
 	// data:[<mediatype>][;base64],<data>
 	comma := strings.Index(trimmed, ",")
 	if comma < 0 {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions require a data uri for images/%d", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions require a data uri for images/%d", index)
 	}
 	meta := trimmed[len("data:"):comma]
 	payload := trimmed[comma+1:]
 	if !strings.Contains(strings.ToLower(meta), ";base64") {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions require base64 data uris for images/%d", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions require base64 data uris for images/%d", index)
 	}
 	mediaType := strings.Split(meta, ";")[0]
 	mediaType = strings.TrimSpace(mediaType)
 	switch mediaType {
 	case "image/png", "image/jpeg", "image/webp":
 	default:
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions accept image/png, image/jpeg, or image/webp for images/%d", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions accept image/png, image/jpeg, or image/webp for images/%d", index)
 	}
 	if payload == "" {
-		return SubquadraticImage{}, providerUtils.InvalidRequestErrorf("subquadratic decisions require base64 data for images/%d", index)
+		return SubqImage{}, providerUtils.InvalidRequestErrorf("subq decisions require base64 data for images/%d", index)
 	}
-	return SubquadraticImage{MediaType: mediaType, Base64: payload}, nil
+	return SubqImage{MediaType: mediaType, Base64: payload}, nil
 }
 
-// Decision answers a decision request on SubQ's /v1/systemone.
-func (provider *SubquadraticProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+// Decision answers a decision request on Subq's /v1/systemone.
+func (provider *SubqProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (*SubquadraticDecisionRequest, error) {
-			return ToSubquadraticDecisionRequest(request)
+		func() (*SubqDecisionRequest, error) {
+			return ToSubqDecisionRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -108,13 +108,13 @@ func (provider *SubquadraticProvider) Decision(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, subquadraticDecisionPath))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, subqDecisionPath))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	for name, value := range openai.BearerAuthHeader(key) {
 		req.Header.Set(name, value)
 	}
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Subquadratic) {
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Subq) {
 		req.SetBody(jsonData)
 	}
 
@@ -128,7 +128,7 @@ func (provider *SubquadraticProvider) Decision(ctx *schemas.BifrostContext, key 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseSubquadraticDecisionError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseSubqDecisionError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	respBody, err := providerUtils.CheckAndDecodeBody(resp)

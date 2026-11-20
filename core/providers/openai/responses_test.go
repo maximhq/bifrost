@@ -5682,9 +5682,9 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 	}
 }
 
-func TestToOpenAIResponsesRequest_SubquadraticDropsEffortNone(t *testing.T) {
+func TestToOpenAIResponsesRequest_SubqDropsEffortNone(t *testing.T) {
 	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
-		Provider: schemas.Subquadratic,
+		Provider: schemas.Subq,
 		Model:    "subq-savant-1.4",
 		Input: []schemas.ResponsesMessage{{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -5698,10 +5698,10 @@ func TestToOpenAIResponsesRequest_SubquadraticDropsEffortNone(t *testing.T) {
 	})
 	require.NotNil(t, req)
 	require.NotNil(t, req.Reasoning)
-	require.Nil(t, req.Reasoning.Effort, "SubQ rejects effort none; Bifrost must drop it")
+	require.Nil(t, req.Reasoning.Effort, "Subq rejects effort none; Bifrost must drop it")
 
 	kept := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
-		Provider: schemas.Subquadratic,
+		Provider: schemas.Subq,
 		Model:    "subq-savant-1.4",
 		Input: []schemas.ResponsesMessage{{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -5718,9 +5718,9 @@ func TestToOpenAIResponsesRequest_SubquadraticDropsEffortNone(t *testing.T) {
 	require.Equal(t, schemas.ReasoningEffortHigh, *kept.Reasoning.Effort)
 }
 
-func TestToOpenAIResponsesRequest_SubquadraticDowngradesForcedToolChoice(t *testing.T) {
+func TestToOpenAIResponsesRequest_SubqDowngradesForcedToolChoice(t *testing.T) {
 	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
-		Provider: schemas.Subquadratic,
+		Provider: schemas.Subq,
 		Model:    "subq-savant-1.4",
 		Input: []schemas.ResponsesMessage{{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -5738,7 +5738,7 @@ func TestToOpenAIResponsesRequest_SubquadraticDowngradesForcedToolChoice(t *test
 	require.Equal(t, string(schemas.ResponsesToolChoiceTypeAuto), *req.ToolChoice.ResponsesToolChoiceStr)
 
 	none := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
-		Provider: schemas.Subquadratic,
+		Provider: schemas.Subq,
 		Model:    "subq-savant-1.4",
 		Input: []schemas.ResponsesMessage{{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),

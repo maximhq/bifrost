@@ -3560,7 +3560,7 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }
 
-func TestToOpenAIChatRequest_SubquadraticCompatibility(t *testing.T) {
+func TestToOpenAIChatRequest_SubqCompatibility(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
 	defer cancel()
 
@@ -3573,7 +3573,7 @@ func TestToOpenAIChatRequest_SubquadraticCompatibility(t *testing.T) {
 	content := "hello"
 
 	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Subquadratic,
+		Provider: schemas.Subq,
 		Model:    "subq-savant-1.4",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},

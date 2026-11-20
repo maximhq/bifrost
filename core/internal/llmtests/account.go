@@ -666,10 +666,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
-	case schemas.Subquadratic:
+	case schemas.Subq:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewSecretVar("env.SUBQUADRATIC_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.SUBQ_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -1201,7 +1201,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
-	case schemas.Subquadratic:
+	case schemas.Subq:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,

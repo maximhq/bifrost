@@ -1,4 +1,4 @@
-package subquadratic
+package subq
 
 import (
 	"bytes"
@@ -17,14 +17,14 @@ import (
 )
 
 // mimeTypeForFilename picks an explicit Content-Type for a multipart file part.
-// SubQ rejects application/octet-stream, so the type must come from the filename.
+// Subq rejects application/octet-stream, so the type must come from the filename.
 func mimeTypeForFilename(filename string) string {
 	ext := path.Ext(filename)
 	if ext == "" {
 		return "application/octet-stream"
 	}
 	if byExt := mime.TypeByExtension(ext); byExt != "" {
-		// mime.TypeByExtension can return "text/plain; charset=utf-8"; SubQ wants the type alone.
+		// mime.TypeByExtension can return "text/plain; charset=utf-8"; Subq wants the type alone.
 		if mediaType, _, err := mime.ParseMediaType(byExt); err == nil && mediaType != "" {
 			return mediaType
 		}
@@ -42,9 +42,9 @@ func mimeTypeForFilename(filename string) string {
 	}
 }
 
-// FileUpload uploads a file to SubQ. Purpose is forced to assistants, the only
-// value SubQ accepts today, and the multipart part carries an explicit MIME type.
-func (provider *SubquadraticProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+// FileUpload uploads a file to Subq. Purpose is forced to assistants, the only
+// value Subq accepts today, and the multipart part carries an explicit MIME type.
+func (provider *SubqProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
@@ -55,7 +55,7 @@ func (provider *SubquadraticProvider) FileUpload(ctx *schemas.BifrostContext, ke
 	}
 	contentType := mimeTypeForFilename(filename)
 	if contentType == "application/octet-stream" {
-		return nil, providerUtils.NewBifrostOperationError("subquadratic requires an explicit mime type; set a filename with a supported extension", nil)
+		return nil, providerUtils.NewBifrostOperationError("subq requires an explicit mime type; set a filename with a supported extension", nil)
 	}
 
 	var buf bytes.Buffer
@@ -99,7 +99,7 @@ func (provider *SubquadraticProvider) FileUpload(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseSubquadraticError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(parseSubqError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -121,7 +121,7 @@ func (provider *SubquadraticProvider) FileUpload(ctx *schemas.BifrostContext, ke
 }
 
 // FileList lists files for the first configured key.
-func (provider *SubquadraticProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+func (provider *SubqProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys available for file list", nil)
 	}
@@ -166,7 +166,7 @@ func (provider *SubquadraticProvider) FileList(ctx *schemas.BifrostContext, keys
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseSubquadraticError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(parseSubqError(resp), latency)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -214,7 +214,7 @@ func (provider *SubquadraticProvider) FileList(ctx *schemas.BifrostContext, keys
 }
 
 // FileRetrieve retrieves file metadata by trying each key until found.
-func (provider *SubquadraticProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+func (provider *SubqProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
@@ -248,7 +248,7 @@ func (provider *SubquadraticProvider) FileRetrieve(ctx *schemas.BifrostContext, 
 			continue
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = parseSubquadraticError(resp)
+			lastErr = parseSubqError(resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -279,7 +279,7 @@ func (provider *SubquadraticProvider) FileRetrieve(ctx *schemas.BifrostContext, 
 }
 
 // FileDelete deletes a file by trying each key until successful.
-func (provider *SubquadraticProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+func (provider *SubqProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
@@ -313,7 +313,7 @@ func (provider *SubquadraticProvider) FileDelete(ctx *schemas.BifrostContext, ke
 			continue
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = parseSubquadraticError(resp)
+			lastErr = parseSubqError(resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -358,7 +358,7 @@ func (provider *SubquadraticProvider) FileDelete(ctx *schemas.BifrostContext, ke
 	return nil, lastErr
 }
 
-// FileContent is not supported: SubQ has no file download endpoint.
-func (provider *SubquadraticProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+// FileContent is not supported: Subq has no file download endpoint.
+func (provider *SubqProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }

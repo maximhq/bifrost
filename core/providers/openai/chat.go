@@ -199,9 +199,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBytePlusCompatibility()
 		return openaiReq
-	case schemas.Subquadratic:
+	case schemas.Subq:
 		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applySubquadraticCompatibility()
+		openaiReq.applySubqCompatibility()
 		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -454,11 +454,11 @@ func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
 	req.ExtraParams = extraParams
 }
 
-// applySubquadraticCompatibility rewrites a chat request for SubQ's Chat Completions
+// applySubqCompatibility rewrites a chat request for Subq's Chat Completions
 // contract: temperature must be 1 or omitted, max_completion_tokens becomes
 // max_tokens, reasoning cannot be turned off, tool_choice is only auto/none, and
 // stop is capped at 4 sequences. Forced tool choices downgrade to auto.
-func (req *OpenAIChatRequest) applySubquadraticCompatibility() {
+func (req *OpenAIChatRequest) applySubqCompatibility() {
 	if req.MaxCompletionTokens != nil {
 		req.MaxTokens = req.MaxCompletionTokens
 		req.MaxCompletionTokens = nil

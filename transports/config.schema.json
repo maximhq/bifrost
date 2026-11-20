@@ -735,7 +735,7 @@
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
-        "subquadratic": {
+        "subq": {
           "$ref": "#/$defs/provider"
         },
         "vllm": {

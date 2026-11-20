@@ -1173,9 +1173,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
-			// SubQ always reasons and rejects effort "none" with 400 unsupported_value.
-			// Drop the effort so the request uses SubQ's default (high) rather than failing.
-			if bifrostReq.Provider == schemas.Subquadratic {
+			// Subq always reasons and rejects effort "none" with 400 unsupported_value.
+			// Drop the effort so the request uses Subq's default (high) rather than failing.
+			if bifrostReq.Provider == schemas.Subq {
 				if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone {
 					req.ResponsesParameters.Reasoning.Effort = nil
 				}
@@ -1190,10 +1190,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		// SubQ tool_choice accepts only "auto" or "none". Downgrade required/forced
+		// Subq tool_choice accepts only "auto" or "none". Downgrade required/forced
 		// choices to "auto" (lossy, same as Chat Completions) rather than 400.
-		if bifrostReq.Provider == schemas.Subquadratic {
-			applySubquadraticResponsesToolChoice(req)
+		if bifrostReq.Provider == schemas.Subq {
+			applySubqResponsesToolChoice(req)
 		}
 
 		effort := ""
@@ -1313,10 +1313,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // Gated on the OpenAI-family name rather than caps.SupportsReasoning:
 // this asks whether the API rejects the field, which is not the same question for
 // xAI/Groq.
-// applySubquadraticResponsesToolChoice rewrites tool_choice for SubQ's Responses
+// applySubqResponsesToolChoice rewrites tool_choice for Subq's Responses
 // contract: only "auto" and "none" are accepted. Forced/required choices become
-// "auto", matching Chat Completions' applySubquadraticCompatibility.
-func applySubquadraticResponsesToolChoice(req *OpenAIResponsesRequest) {
+// "auto", matching Chat Completions' applySubqCompatibility.
+func applySubqResponsesToolChoice(req *OpenAIResponsesRequest) {
 	if req == nil || req.ToolChoice == nil {
 		return
 	}
