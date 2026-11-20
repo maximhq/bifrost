@@ -91,7 +91,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	servers := s.codeModeServers(ctx, availableToolsPerClient)
 
 	// Parse the file path to extract server name and optional tool name
-	serverName, toolName, isToolLevel := parseVFSFilePath(fileName, servers)
+	serverName, toolName, isToolLevel := resolveVFSFilePath(fileName, servers, availableToolsPerClient)
 
 	// Find matching client
 	var matchedClientName string
@@ -265,6 +265,17 @@ func isKnownServer(name string, servers []string) bool {
 // servers keeps its extension-like suffix, so a server named "acme.py" is not
 // read as "acme".
 func normalizeVFSPath(p string, servers []string) string {
+	p, hadStubExtension := trimVFSPath(p, servers)
+	if hadStubExtension || isKnownServer(p, servers) {
+		return p
+	}
+	return strings.TrimSuffix(p, ".py")
+}
+
+// trimVFSPath strips what normalizeVFSPath does except a ".py" extension, so a tool
+// named like a path ("report.py") keeps its name. hadStubExtension reports whether
+// a ".pyi" extension was stripped.
+func trimVFSPath(p string, servers []string) (trimmed string, hadStubExtension bool) {
 	p = strings.TrimSpace(p)
 	p = strings.TrimSuffix(p, "()")
 	p = strings.TrimPrefix(p, "./")
@@ -274,12 +285,24 @@ func normalizeVFSPath(p string, servers []string) string {
 	}
 	p = strings.TrimRight(p, "/")
 	if trimmed, ok := strings.CutSuffix(p, ".pyi"); ok && (isKnownServer(trimmed, servers) || !isKnownServer(p, servers)) {
-		return trimmed
+		return trimmed, true
 	}
-	if isKnownServer(p, servers) {
-		return p
+	return p, false
+}
+
+// resolveVFSFilePath parses fileName like parseVFSFilePath, but first tries it with a ".py"
+// suffix kept, so "codey.report.py()" reads tool "report.py" when codey has one and falls
+// back to tool "report" otherwise. toolsPerClient holds the connected servers' tools.
+func resolveVFSFilePath(fileName string, servers []string, toolsPerClient map[string][]schemas.ChatTool) (serverName, toolName string, isToolLevel bool) {
+	trimmed, _ := trimVFSPath(fileName, servers)
+	if server, tool, toolLevel := parseVFSBasePath(trimmed, servers); toolLevel {
+		for clientName, tools := range toolsPerClient {
+			if strings.EqualFold(clientName, server) && isKnownServer(clientName, servers) && findToolReference(tools, clientName, tool) != nil {
+				return server, tool, true
+			}
+		}
 	}
-	return strings.TrimSuffix(p, ".py")
+	return parseVFSFilePath(fileName, servers)
 }
 
 // splitDottedToolReference splits the callable form "server.tool" used in executeToolCode.
@@ -307,8 +330,11 @@ func splitDottedToolReference(path string, servers []string) (serverName, toolNa
 // <server>.<tool> and the spellings normalizeVFSPath strips. servers lists the connected server
 // names, used to keep dotted server names whole.
 func parseVFSFilePath(fileName string, servers []string) (serverName, toolName string, isToolLevel bool) {
-	basePath := normalizeVFSPath(fileName, servers)
+	return parseVFSBasePath(normalizeVFSPath(fileName, servers), servers)
+}
 
+// parseVFSBasePath parses a path already stripped of its decorations, see parseVFSFilePath.
+func parseVFSBasePath(basePath string, servers []string) (serverName, toolName string, isToolLevel bool) {
 	// Defensive validation: reject paths with path traversal attempts
 	if strings.Contains(basePath, "..") {
 		// Return empty to indicate invalid path

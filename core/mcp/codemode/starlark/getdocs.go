@@ -67,9 +67,8 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// A discovered tool may itself be named like a path ("report.py"), so the
-	// supplied name is tried before its normalized form.
-	requestedToolName := toolName
-	serverName, toolName = normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
+	// name with its ".py" suffix kept is tried before the fully normalized one.
+	serverName, exactToolName, toolName := normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
 
 	// Find matching client
 	var matchedClientName string
@@ -91,7 +90,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			matchedClientName = clientName
 
 			// Find the specific tool
-			matchedTool = findToolReference(tools, clientName, requestedToolName)
+			matchedTool = findToolReference(tools, clientName, exactToolName)
 			if matchedTool == nil {
 				matchedTool = findToolReference(tools, clientName, toolName)
 			}
@@ -150,19 +149,25 @@ func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *s
 // normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
 // "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
 // "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
-func normalizeDocsArgs(server, tool string, servers []string) (string, string) {
-	parsedServer, _, _ := parseVFSFilePath(server, servers)
+// exactTool keeps a ".py" suffix that normalizedTool strips, for tools named like a path.
+func normalizeDocsArgs(server, tool string, servers []string) (parsedServer, exactTool, normalizedTool string) {
+	parsedServer, _, _ = parseVFSFilePath(server, servers)
 	if parsedServer == "" {
 		parsedServer = strings.TrimSpace(server)
 	}
-	tool = normalizeVFSPath(tool, nil)
+	exactTool, _ = trimVFSPath(tool, nil)
+	return parsedServer, docsToolName(exactTool, parsedServer), docsToolName(normalizeVFSPath(tool, nil), parsedServer)
+}
+
+// docsToolName drops a directory and a "<server>." prefix from a normalized tool path.
+func docsToolName(tool, server string) string {
 	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
 		tool = tool[i+1:]
 	}
-	if len(tool) > len(parsedServer)+1 && tool[len(parsedServer)] == '.' && strings.EqualFold(tool[:len(parsedServer)], parsedServer) {
-		tool = tool[len(parsedServer)+1:]
+	if len(tool) > len(server)+1 && tool[len(server)] == '.' && strings.EqualFold(tool[:len(server)], server) {
+		tool = tool[len(server)+1:]
 	}
-	return parsedServer, tool
+	return tool
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.

@@ -2617,6 +2617,10 @@ func TestGetToolDocsPrefersTheExactToolName(t *testing.T) {
 		{"report.py", "Does report.py\n", "Does report\n"},
 		{"report", "Does report\n", "Does report.py\n"},
 		{"report.pyi", "Does report\n", "Does report.py\n"},
+		{"report.py()", "Does report.py\n", "Does report\n"},
+		{"codey.report.py()", "Does report.py\n", "Does report\n"},
+		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n"},
+		{"report()", "Does report\n", "Does report.py\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -2626,5 +2630,30 @@ func TestGetToolDocsPrefersTheExactToolName(t *testing.T) {
 				t.Fatalf("getToolDocs(codey, %q): want docs with %q and without %q, got (isError=%v):\n%s", tc.tool, tc.want, tc.notWant, isError, content)
 			}
 		})
+	}
+}
+
+// readToolFile keeps a tool name's extension-like suffix when the server has a tool by that
+// name, and strips ".py" as an extension only otherwise.
+func TestReadToolFilePrefersTheExactToolName(t *testing.T) {
+	cases := []struct{ fileName, want, notWant string }{
+		{"codey.report.py()", "Does report.py\n", "Does report\n"},
+		{"codey.report.py", "Does report.py\n", "Does report\n"},
+		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n"},
+		{"servers/codey/report.pyi", "Does report\n", "Does report.py\n"},
+		{"codey.report()", "Does report\n", "Does report.py\n"},
+		{"servers/codey/add.py", "Does codey-add\n", "Does report"},
+	}
+	for _, level := range []schemas.CodeModeBindingLevel{schemas.CodeModeBindingLevelServer, schemas.CodeModeBindingLevelTool} {
+		mode := newVFSPathCodeMode(level)
+		for _, tc := range cases {
+			t.Run(string(level)+"/"+tc.fileName, func(t *testing.T) {
+				msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": tc.fileName}))
+				content, isError := vfsToolResponse(t, msg, err)
+				if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
+					t.Fatalf("readToolFile(%q): want a stub with %q and without %q, got (isError=%v):\n%s", tc.fileName, tc.want, tc.notWant, isError, content)
+				}
+			})
+		}
 	}
 }
