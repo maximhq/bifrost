@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -475,6 +476,34 @@ func assertLexicalFallback(t *testing.T, out string) {
 	}
 }
 
+// callListToolFiles runs listToolFiles off the test goroutine and fails if it
+// does not return within wait.
+func callListToolFiles(t *testing.T, mode *StarlarkCodeMode, args string, wait time.Duration) string {
+	t.Helper()
+	type result struct {
+		msg *schemas.ChatMessage
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: args},
+		})
+		done <- result{msg, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil || res.msg == nil || res.msg.Content == nil || res.msg.Content.ContentStr == nil {
+			t.Fatalf("listToolFiles(%s) returned %+v, %v", args, res.msg, res.err)
+		}
+		return *res.msg.Content.ContentStr
+	case <-time.After(wait):
+		t.Fatalf("listToolFiles(%s) did not return within %v", args, wait)
+		return ""
+	}
+}
+
 func TestListToolFilesExternalRankerTimeoutFallsBack(t *testing.T) {
 	release := make(chan struct{})
 	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
@@ -486,17 +515,111 @@ func TestListToolFilesExternalRankerTimeoutFallsBack(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 	})
-	defer close(release)
+	// Registered after the server's own cleanup, so it runs first and frees the handler.
+	t.Cleanup(func() { close(release) })
 	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
 	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
 	httpRankerOf(t, mode).timeout = 50 * time.Millisecond
 
-	start := time.Now()
-	out := listToolFiles(t, mode, `{"query":"create an issue"}`)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("ranking was not bounded by its timeout: %v", elapsed)
-	}
+	out := callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second)
+	nextRankRequest(t, rs, "create an issue", out)
 	assertLexicalFallback(t, out)
+}
+
+// warnCapture records warnings so a test can check what reaches the logs.
+type warnCapture struct {
+	schemas.Logger
+	mu       sync.Mutex
+	warnings []string
+}
+
+func (w *warnCapture) Warn(msg string, args ...any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.warnings = append(w.warnings, fmt.Sprintf(msg, args...))
+}
+
+func TestListToolFilesExternalRankerFailureLogOmitsEndpoint(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	endpoint := closed.URL + "/rank?signature=secret-signature"
+	closed.Close()
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	logs := &warnCapture{Logger: mode.logger}
+	mode.logger = logs
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: endpoint})
+	assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if len(logs.warnings) == 0 {
+		t.Fatal("expected a warning for the failed ranker call")
+	}
+	for _, warning := range logs.warnings {
+		if strings.Contains(warning, "secret-signature") || strings.Contains(warning, strings.TrimPrefix(closed.URL, "http://")) {
+			t.Fatalf("warning quotes the ranker endpoint: %s", warning)
+		}
+	}
+}
+
+// A token file read that stalls past the ranker deadline falls back to the
+// lexical shortlist without calling the ranker, stalled reads stay bounded,
+// and a healthy read afterwards is used again.
+func TestListToolFilesExternalRankerStalledTokenReadFallsBack(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("fresh-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var authorization atomic.Value
+	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
+		authorization.Store(r.Header.Get("Authorization"))
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+			{"id": "servers/jira/create_issue.pyi", "relevance": 0.9},
+		}})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL, TokenFile: tokenFile})
+	ranker := httpRankerOf(t, mode)
+	ranker.timeout = 50 * time.Millisecond
+	var stalled atomic.Bool
+	var stalledReads atomic.Int32
+	stalled.Store(true)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	ranker.readToken = func(path string) (string, error) {
+		if stalled.Load() {
+			stalledReads.Add(1)
+			<-release
+		}
+		return readDiscoveryToken(path)
+	}
+
+	for range discoveryMaxTokenReads + 2 {
+		assertLexicalFallback(t, callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second))
+	}
+	if got := rs.calls.Load(); got != 0 {
+		t.Fatalf("the ranker was called %d times without its token", got)
+	}
+	if got := stalledReads.Load(); got > discoveryMaxTokenReads {
+		t.Fatalf("%d token reads in flight, want at most %d", got, discoveryMaxTokenReads)
+	}
+
+	stalled.Store(false)
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out := callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second)
+		if strings.Contains(out, "(discovery ranker)") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ranker was not used again after the token read recovered:\n%s", out)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := authorization.Load(); got != "Bearer fresh-token" {
+		t.Fatalf("expected the token from the file, got %v", got)
+	}
 }
 
 func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {

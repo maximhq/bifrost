@@ -561,12 +561,13 @@ func (r MCPCodeModeDiscoveryRanker) Validate() error {
 	if r.URL == "" {
 		return nil
 	}
+	// The parser error quotes the URL, which may carry credentials: name the setting only.
 	u, err := url.Parse(r.URL)
 	if err != nil {
-		return fmt.Errorf("code mode discovery ranker url is invalid: %w", err)
+		return fmt.Errorf("code mode discovery ranker url is not a valid URL")
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("code mode discovery ranker url must be an absolute http or https URL")
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("code mode discovery ranker url must be an absolute http or https URL with a host")
 	}
 	if u.User != nil {
 		return fmt.Errorf("code mode discovery ranker url must not carry credentials; use token_file")
