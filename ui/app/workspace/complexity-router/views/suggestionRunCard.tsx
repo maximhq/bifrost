@@ -11,7 +11,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
-import { runBreakdown, runInProgress, runProgress, runWindowDays } from "./suggestions.utils";
+import { runBreakdown, runInProgress, runProgress, runWindowDays, SuggestionKind } from "./suggestions.utils";
 
 interface Props {
 	routerId: string;
@@ -29,6 +29,8 @@ interface Props {
 	awaiting: boolean;
 	onRun: () => void;
 	onOpenSettings: () => void;
+	// Phrases or examples, for the breakdown lines that name them.
+	kind?: SuggestionKind;
 }
 
 // SuggestionRunCard says where the router's suggestions stand: no run yet,
@@ -43,6 +45,7 @@ export default function SuggestionRunCard({
 	canRun,
 	canUpdate,
 	awaiting,
+	kind = "phrases",
 	onRun,
 	onOpenSettings,
 }: Props) {
@@ -198,7 +201,9 @@ export default function SuggestionRunCard({
 						<div key={row.step} className="contents" data-testid={`complexity-suggestions-breakdown-${row.step}`}>
 							<span className={cn(row.kind === "minus" ? "text-muted-foreground pl-3" : "font-medium")}>
 								{row.kind === "minus" ? "− " : row.kind === "result" ? "= " : ""}
-								{t(`breakdown.${row.step}`)}
+								{kind === "examples" && (row.step === "covered" || row.step === "overLimit")
+									? t(`breakdownExamples.${row.step}`)
+									: t(`breakdown.${row.step}`)}
 							</span>
 							<span className={cn("text-right font-mono tabular-nums", row.kind === "minus" && "text-muted-foreground")}>
 								{row.unit === "groups" ? t("breakdownGroups", { count: row.value, n: number(row.value) }) : number(row.value)}

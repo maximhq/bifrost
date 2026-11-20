@@ -90106,6 +90106,10 @@
                       "type": "string",
                       "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
                     },
+                    "suggestion_default_example_instructions": {
+                      "type": "string",
+                      "description": "The shipped example-step instructions a decision-model router's suggestions send in place of the phrase step's, served so a configuration client can seed its editor and offer a reset. Model routers only; the fixed output and safety rules are not exposed."
+                    },
                     "suggestion_default_tier_instructions": {
                       "type": "string",
                       "description": "The shipped tier-step instructions for suggestions, served so a configuration client can seed its editor and offer a reset. The tier definitions, examples and fixed output and safety rules are not exposed."
@@ -90315,6 +90319,10 @@
                     "suggestion_default_instructions": {
                       "type": "string",
                       "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_example_instructions": {
+                      "type": "string",
+                      "description": "The shipped example-step instructions a decision-model router's suggestions send in place of the phrase step's, served so a configuration client can seed its editor and offer a reset. Model routers only; the fixed output and safety rules are not exposed."
                     },
                     "suggestion_default_tier_instructions": {
                       "type": "string",
@@ -93916,6 +93924,10 @@
                       "type": "string",
                       "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
                     },
+                    "suggestion_default_example_instructions": {
+                      "type": "string",
+                      "description": "The shipped example-step instructions a decision-model router's suggestions send in place of the phrase step's, served so a configuration client can seed its editor and offer a reset. Model routers only; the fixed output and safety rules are not exposed."
+                    },
                     "suggestion_default_tier_instructions": {
                       "type": "string",
                       "description": "The shipped tier-step instructions for suggestions, served so a configuration client can seed its editor and offer a reset. The tier definitions, examples and fixed output and safety rules are not exposed."
@@ -94136,6 +94148,10 @@
                     "suggestion_default_instructions": {
                       "type": "string",
                       "description": "The shipped phrase-suggestion instructions, served so a configuration client can seed its editor and offer a reset. The tier definitions and fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_example_instructions": {
+                      "type": "string",
+                      "description": "The shipped example-step instructions a decision-model router's suggestions send in place of the phrase step's, served so a configuration client can seed its editor and offer a reset. Model routers only; the fixed output and safety rules are not exposed."
                     },
                     "suggestion_default_tier_instructions": {
                       "type": "string",

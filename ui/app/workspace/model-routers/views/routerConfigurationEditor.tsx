@@ -400,6 +400,8 @@ export function RouterConfigurationSheets({ config }: { config: RouterConfigForm
 			<SuggestionSettingsSheet
 				open={sheets.open === "suggestions"}
 				onOpenChange={(open) => sheets.setOpen(open ? "suggestions" : null)}
+				kind={config.staging.kind}
+				embeddingProviders={providers.embedding}
 				control={control}
 				register={register}
 				setValue={setValue}
@@ -412,7 +414,11 @@ export function RouterConfigurationSheets({ config }: { config: RouterConfigForm
 				decisionModel={
 					live.decisionProvider && live.decisionModel ? { provider: live.decisionProvider, model: live.decisionModel } : undefined
 				}
-				defaultInstructions={status.semantic?.suggestion_default_instructions ?? ""}
+				defaultInstructions={
+					(config.staging.kind === "examples"
+						? status.semantic?.suggestion_default_example_instructions
+						: status.semantic?.suggestion_default_instructions) ?? ""
+				}
 				defaultTierInstructions={status.semantic?.suggestion_default_tier_instructions ?? ""}
 				tierDefaults={config.defaults.tier}
 				tierDefaultsLoading={status.loading || status.fetching}

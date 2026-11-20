@@ -194,9 +194,10 @@ const llmSchema = z.object({
 	count_toward_budgets: z.boolean().optional(),
 });
 
-// suggestionsSchema holds the phrase-suggestion settings. The sample rate is
-// edited as a percentage; toAnalyzerPayload sends it as the fraction the
-// gateway stores.
+// suggestionsSchema holds the suggestion settings: phrases for a semantic
+// router, tier examples for a decision-model router. The sample rate is edited
+// as a percentage; toAnalyzerPayload sends it as the fraction the gateway
+// stores.
 const suggestionsSchema = z
 	.object({
 		enabled: z.boolean(),
@@ -243,6 +244,11 @@ const suggestionsSchema = z
 			MEDIUM: decisionTierFormShape,
 			COMPLEX: decisionTierFormShape,
 		}),
+		// A decision-model router's runs embed its logged requests and its
+		// examples with this model; a semantic router clusters in its own
+		// embedding space and sends none.
+		embedding_provider: z.string(),
+		embedding_model: z.string(),
 	})
 	.superRefine((data, ctx) => {
 		const maxEvery = MAX_SUGGESTION_EVERY[data.every_unit];
@@ -264,6 +270,12 @@ const suggestionsSchema = z
 		}
 		if (data.tier_provider.trim() === "" && data.tier_model.trim() !== "") {
 			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["tier_provider"] });
+		}
+		if (data.embedding_provider.trim() !== "" && data.embedding_model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.modelRequired"), path: ["embedding_model"] });
+		}
+		if (data.embedding_provider.trim() === "" && data.embedding_model.trim() !== "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["embedding_provider"] });
 		}
 		// Running suggestions needs both models named: nothing is borrowed from
 		// elsewhere in the router at run time.
@@ -454,6 +466,28 @@ export const analyzerConfigSchema = z
 			ctx.addIssue({ code: "custom", message: complexityT("selectEmbeddingProvider"), path: ["semantic", "provider"] });
 			ctx.addIssue({ code: "custom", message: complexityT("selectEmbeddingModel"), path: ["semantic", "embedding_model"] });
 		}
+		// A decision-model router has no embedding space of its own: its runs
+		// embed its logged requests with the suggestions embedding model, which
+		// the gateway requires while suggestions are on.
+		if (
+			data.suggestions.enabled &&
+			data.classifier === "decision" &&
+			!data.suggestions.embedding_provider.trim() &&
+			!data.suggestions.embedding_model.trim()
+		) {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.embeddingRequired"), path: ["suggestions", "embedding_model"] });
+		}
+		// Its tiers cannot be judged by its own decision model: the judge would
+		// agree with every tier it logged, so nothing would read as misrouted.
+		if (
+			data.classifier === "decision" &&
+			data.suggestions.tier_classifier === "decision" &&
+			data.suggestions.tier_provider.trim() !== "" &&
+			data.suggestions.tier_provider.trim() === data.decision.provider.trim() &&
+			data.suggestions.tier_model.trim() === data.decision.model.trim()
+		) {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.tierOwnDecisionModel"), path: ["suggestions", "tier_model"] });
+		}
 
 		if (usesDecision(data)) {
 			const decision = decisionSchema.safeParse(data.decision);
@@ -590,6 +624,8 @@ export const DEFAULT_SUGGESTIONS_FORM_VALUES: SuggestionsFormValues = {
 	tier_prompt: "",
 	tier_instructions: "",
 	tier_criteria: emptyTierCriteria(),
+	embedding_provider: "",
+	embedding_model: "",
 };
 
 // rateToPercent and percentToRate convert the sample rate for the percent
@@ -672,6 +708,8 @@ export function suggestionsFormValues(
 		tier_prompt: saved.tier?.prompt ?? "",
 		tier_instructions: saved.tier?.instructions ?? "",
 		tier_criteria: tierCriteriaFormValues(saved.tier, tierDefaults?.criteria),
+		embedding_provider: saved.embedding?.provider ?? "",
+		embedding_model: saved.embedding?.model ?? "",
 	};
 }
 
@@ -791,6 +829,8 @@ export function toSuggestionsPayload(
 	const model = values.model.trim();
 	const tierProvider = values.tier_provider.trim();
 	const tierModel = values.tier_model.trim();
+	const embeddingProvider = values.embedding_provider.trim();
+	const embeddingModel = values.embedding_model.trim();
 	// The prompt editor shows the generated prompt while it is empty; text
 	// identical to it is the generated prompt, and stays generated.
 	const tierPrompt = values.tier_prompt.trim() && values.tier_prompt.trim() !== tierDefaults?.prompt.trim() ? values.tier_prompt : "";
@@ -812,7 +852,7 @@ export function toSuggestionsPayload(
 		},
 		...(saved?.max_clustered_requests !== undefined ? { max_clustered_requests: saved.max_clustered_requests } : {}),
 		...(saved?.min_cluster_requests !== undefined ? { min_cluster_requests: saved.min_cluster_requests } : {}),
-		...(saved?.embedding ? { embedding: saved.embedding } : {}),
+		...(embeddingProvider && embeddingModel ? { embedding: { provider: embeddingProvider, model: embeddingModel } } : {}),
 		...(provider && model ? { provider, model } : {}),
 		...(values.instructions.trim() ? { instructions: values.instructions } : {}),
 		tier: {
@@ -963,6 +1003,14 @@ export function toComplexityConfigPayload(values: AnalyzerFormValues, saved?: An
 	return payload;
 }
 
+// toComplexityFormValues is toFormValues for the Complexity Router page's
+// config. It reads the config without a suggestions block, since the page
+// never sends one: a block stored by an older gateway would otherwise hold
+// the form to settings the page has no use for, and no field to fix them in.
+export function toComplexityFormValues(config: AnalyzerConfig, decisionDefaults?: DecisionGuidanceDefaults): AnalyzerFormValues {
+	return toFormValues({ ...config, suggestions: undefined }, decisionDefaults);
+}
+
 export function toAnalyzerPayload(
 	values: AnalyzerFormValues,
 	saved?: AnalyzerConfig,
@@ -981,21 +1029,26 @@ export function toAnalyzerPayload(
 		// Sent once suggestions have ever been turned on, so turning them off
 		// keeps their settings; never sent for a router that has not used them,
 		// so an ordinary save stays readable by gateways that predate them.
-		// Suggestions cluster in the semantic classifier's embedding space and
-		// the gateway refuses them on any other, so another classifier saves
-		// them turned off, settings kept.
-		...(values.suggestions.enabled || saved?.suggestions
-			? {
-					suggestions: toSuggestionsPayload(
-						values.classifier === "semantic" ? values.suggestions : { ...values.suggestions, enabled: false },
-						saved?.suggestions,
-						tierDefaults,
-					),
-				}
-			: {}),
+		...(values.suggestions.enabled || saved?.suggestions ? { suggestions: suggestionsForClassifier(values, saved, tierDefaults) } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};
+}
+
+// suggestionsForClassifier is the suggestions block as the router's classifier
+// can take it. A semantic router clusters in its own embedding space and a
+// decision-model router in its suggestions embedding model; the llm classifier
+// has neither, and the gateway refuses suggestions on it, so it saves them
+// turned off, settings kept. The embedding model is only a decision-model
+// router's: the gateway refuses it on any other, so it is not sent there.
+function suggestionsForClassifier(
+	values: AnalyzerFormValues,
+	saved: AnalyzerConfig | undefined,
+	tierDefaults: SuggestionTierDefaults | undefined,
+): NonNullable<AnalyzerConfig["suggestions"]> {
+	const form = values.classifier === "llm" ? { ...values.suggestions, enabled: false } : values.suggestions;
+	const { embedding, ...payload } = toSuggestionsPayload(form, saved?.suggestions, tierDefaults);
+	return values.classifier === "decision" && embedding ? { ...payload, embedding } : payload;
 }
 
 // toDecisionPayload sends the editors' contents. The gateway drops anything equal

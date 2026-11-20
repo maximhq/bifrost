@@ -33,11 +33,14 @@ export function ConfigurationTab({ config }: { config: RouterConfigForm }) {
 			? tcpx("footerDecisionIsFallback")
 			: tcpx("footerDecisionNeedsProvider")
 		: staging.count > 0
-			? tcpx("suggestions.footerStaged", { count: staging.count })
+			? staging.kind === "examples"
+				? tcpx("suggestions.footerStagedExamples", { count: staging.count })
+				: tcpx("suggestions.footerStaged", { count: staging.count })
 			: classifier !== savedClassifier
-				? // Suggestions only run on the semantic classifier, so leaving it
-					// turns saved-on suggestions off; say so before the save does it.
-					classifier !== "semantic" && saved?.suggestions?.enabled
+				? // Suggestions run on the semantic and decision classifiers, so
+					// moving to the llm one turns saved-on suggestions off; say so
+					// before the save does it.
+					classifier === "llm" && saved?.suggestions?.enabled
 					? tcpx("footerClassifierChangedSuggestionsOff", { classifier: tcpx(CLASSIFIER_NAME_KEYS[classifier]) })
 					: tcpx("footerClassifierChanged", { classifier: tcpx(CLASSIFIER_NAME_KEYS[classifier]) })
 				: "";

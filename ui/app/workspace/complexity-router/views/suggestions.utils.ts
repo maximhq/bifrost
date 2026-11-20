@@ -5,6 +5,7 @@ import {
 	UNMATCHED_TIER,
 	type DecisionTier,
 	type EditableKeywordConfig,
+	type ExampleTest,
 	type KeywordListKey,
 	type Suggestion,
 	type SuggestionCategory,
@@ -74,6 +75,62 @@ export function removePhrases(keywords: EditableKeywordConfig, tier: DecisionTie
 export function replacePhrase(keywords: EditableKeywordConfig, tier: DecisionTier, from: string, to: string): EditableKeywordConfig {
 	const key = TIER_LIST_KEYS[tier];
 	return { ...keywords, [key]: keywords[key].map((phrase) => (phrase === from ? to : phrase)) };
+}
+
+// A decision-model router's suggestions are examples for its decision
+// guidance. Staging edits them through the same helpers as phrases, with each
+// tier's examples standing in for that tier's phrase list: exampleLists reads
+// them that way and withExampleLists writes them back.
+export type SuggestionKind = "phrases" | "examples";
+
+type TierCriteria = Record<DecisionTier, { definition: string; signals: string[]; examples: string[] }>;
+
+export function exampleLists(criteria: TierCriteria): EditableKeywordConfig {
+	return {
+		simple_keywords: criteria.SIMPLE.examples,
+		medium_keywords: criteria.MEDIUM.examples,
+		complex_keywords: criteria.COMPLEX.examples,
+	};
+}
+
+export function withExampleLists<T extends TierCriteria>(criteria: T, lists: EditableKeywordConfig): T {
+	return {
+		...criteria,
+		SIMPLE: { ...criteria.SIMPLE, examples: lists.simple_keywords },
+		MEDIUM: { ...criteria.MEDIUM, examples: lists.medium_keywords },
+		COMPLEX: { ...criteria.COMPLEX, examples: lists.complex_keywords },
+	};
+}
+
+// stagingRoom is how many more items a tier's list can take: phrases share
+// one bank-wide cap, while each decision tier holds its own count of examples.
+export function stagingRoom(
+	kind: SuggestionKind,
+	lists: EditableKeywordConfig,
+	tier: DecisionTier,
+	phraseCap: number,
+	examplesPerTier: number,
+): number {
+	if (kind === "examples") return Math.max(0, examplesPerTier - lists[TIER_LIST_KEYS[tier]].length);
+	const total = lists.simple_keywords.length + lists.medium_keywords.length + lists.complex_keywords.length;
+	return Math.max(0, phraseCap - total);
+}
+
+// examplesTestSummary is how an examples test turned out: how many requests
+// were asked about, how many changed tier, and how many moved to the tier the
+// examples were written for.
+export function examplesTestSummary(
+	test: Pick<ExampleTest, "requests">,
+	tier: DecisionTier,
+): { asked: number; changed: number; toTier: number } {
+	let changed = 0;
+	let toTier = 0;
+	for (const request of test.requests) {
+		if (!request.changed) continue;
+		changed++;
+		if (request.with_examples.tier === tier) toTier++;
+	}
+	return { asked: test.requests.length, changed, toTier };
 }
 
 // stagedPhraseCount is how many phrases staging has added to the draft.

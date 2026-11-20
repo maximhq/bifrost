@@ -45,6 +45,7 @@ import {
 	isRouterConfigured,
 	decisionGuidanceFormValues,
 	toComplexityConfigPayload,
+	toComplexityFormValues,
 	toFormValues,
 	shouldSeedLLMPrompt,
 } from "./formSchema";
@@ -347,7 +348,7 @@ export default function ComplexityRouterPage() {
 
 	useEffect(() => {
 		if (!data || isDirty || promptEdited.current) return;
-		reset(toFormValues(data, decisionDefaults));
+		reset(toComplexityFormValues(data, decisionDefaults));
 		setSubmitError(null);
 	}, [data, isDirty, reset, decisionDefaults]);
 
@@ -369,7 +370,7 @@ export default function ComplexityRouterPage() {
 
 	const handleDiscard = () => {
 		promptEdited.current = false;
-		if (data) reset(toFormValues(data, decisionDefaults));
+		if (data) reset(toComplexityFormValues(data, decisionDefaults));
 		setSubmitError(null);
 	};
 
@@ -380,7 +381,7 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((defaults) => {
 				promptEdited.current = false;
-				reset(toFormValues(defaults, decisionDefaults));
+				reset(toComplexityFormValues(defaults, decisionDefaults));
 				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => {
@@ -423,7 +424,7 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((res) => {
 				promptEdited.current = false;
-				reset(toFormValues(res, decisionDefaults));
+				reset(toComplexityFormValues(res, decisionDefaults));
 				setEmbeddingSheetOpen(false);
 				setDecisionSheetOpen(false);
 				setLLMSheetOpen(false);

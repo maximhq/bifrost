@@ -1082,9 +1082,9 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagWarp = "warp"
 
-// FeatureFlagPhraseSuggestions gates the phrase suggestions dashboard: a
-// semantic model router's Suggestions tab, its settings sheet and the draft
-// bar. Off by default in every build, so a few deployments can try the
+// FeatureFlagPhraseSuggestions gates the suggestions dashboard: a model
+// router's Suggestions tab (phrases for a semantic router, tier examples for a
+// decision-model router), its settings sheet and the draft bar. Off by default in every build, so a few deployments can try the
 // suggestion APIs before the dashboard ships. It gates only the UI: the
 // /api/routing/model-routers/{id}/suggestions routes, request capture and scheduled
 // runs keep working as a router's suggestions settings say, flag on or off.
@@ -1106,7 +1106,7 @@ func registerFeatureFlags(_ context.Context) error {
 		{
 			ID:          FeatureFlagPhraseSuggestions,
 			DisplayName: "Phrase suggestions",
-			Description: "The phrase suggestions dashboard: a semantic model router's Suggestions tab, which proposes phrases for its tiers from captured traffic. While off the dashboard hides it; the suggestion APIs and scheduled runs keep working as configured.",
+			Description: "The suggestions dashboard: a model router's Suggestions tab, which proposes phrases for a semantic router's tiers, or tier examples for a decision-model router's, from its traffic. While off the dashboard hides it; the suggestion APIs and scheduled runs keep working as configured.",
 			Default:     false,
 		},
 	}

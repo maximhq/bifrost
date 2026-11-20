@@ -205,6 +205,8 @@ export interface SemanticStatusInfo {
 	// The shipped phrase-suggestion instructions, for the instructions editor.
 	suggestion_default_instructions?: string;
 	suggestion_default_tier_instructions?: string;
+	// A decision-model router's example step; model routers only.
+	suggestion_default_example_instructions?: string;
 	suggestion_default_tier_prompt?: string;
 	suggestion_default_tier_criteria?: SuggestionTierDefaults["criteria"];
 }
@@ -749,6 +751,28 @@ export interface SuggestionImpactTier {
 
 // What a draft phrase bank would do to a router's recent captured traffic.
 // Costs are dollars over the window, for the changed requests only.
+// ExampleTest is a decision-model router's examples test: each request's tier
+// with the router's examples as they are and with the draft added, how many
+// changed, and what the decision-model calls cost (USD).
+export interface DecisionRouting {
+	tier: string;
+	confidence?: number;
+}
+
+export interface TestedRequest {
+	log_id: string;
+	text: string;
+	current: DecisionRouting;
+	with_examples: DecisionRouting;
+	changed: boolean;
+}
+
+export interface ExampleTest {
+	requests: TestedRequest[];
+	changed: number;
+	cost: number;
+}
+
 export interface SuggestionImpact {
 	window_seconds: number;
 	requests: number;

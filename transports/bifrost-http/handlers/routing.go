@@ -96,10 +96,11 @@ type complexityStatusResponse struct {
 	DecisionDefaults configstore.ComplexityDecisionGuidanceDefaults `json:"decision_defaults"`
 	// SuggestionDefaultInstructions is the shipped phrase-suggestion
 	// instructions, served for the same reason: the editable half only.
-	SuggestionDefaultInstructions     string                                                `json:"suggestion_default_instructions"`
-	SuggestionDefaultTierInstructions string                                                `json:"suggestion_default_tier_instructions"`       // shipped tier-step question
-	SuggestionDefaultTierPrompt       string                                                `json:"suggestion_default_tier_prompt,omitempty"`   // see getModelRouterStatus
-	SuggestionDefaultTierCriteria     map[string]configstore.ComplexityDecisionTierDefaults `json:"suggestion_default_tier_criteria,omitempty"` // see getModelRouterStatus
+	SuggestionDefaultInstructions        string                                                `json:"suggestion_default_instructions"`
+	SuggestionDefaultTierInstructions    string                                                `json:"suggestion_default_tier_instructions"`              // shipped tier-step question
+	SuggestionDefaultExampleInstructions string                                                `json:"suggestion_default_example_instructions,omitempty"` // a decision-model router's example step; model routers only
+	SuggestionDefaultTierPrompt          string                                                `json:"suggestion_default_tier_prompt,omitempty"`          // see getModelRouterStatus
+	SuggestionDefaultTierCriteria        map[string]configstore.ComplexityDecisionTierDefaults `json:"suggestion_default_tier_criteria,omitempty"`        // see getModelRouterStatus
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.

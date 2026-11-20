@@ -52,6 +52,7 @@ import {
 	SemanticStatusInfo,
 	DecisionTier,
 	SuggestionDetail,
+	ExampleTest,
 	SuggestionImpact,
 	SuggestionRun,
 	SuggestionRunEstimate,
@@ -1065,6 +1066,18 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: { phrases, ...(minSimilarity !== undefined ? { min_similarity: minSimilarity } : {}) },
 			}),
 		}),
+		// A decision-model router's draft examples, tried on a suggestion's
+		// requests with its decision model; nothing is saved.
+		testComplexitySuggestionExamples: builder.mutation<
+			ExampleTest,
+			{ routerId: string; suggestionId: string; examples: { tier: DecisionTier; text: string }[] }
+		>({
+			query: ({ routerId, suggestionId, examples }) => ({
+				url: suggestionsUrl(routerId, "/test-examples"),
+				method: "POST",
+				body: { examples, suggestion_id: suggestionId },
+			}),
+		}),
 	}),
 });
 
@@ -1158,6 +1171,7 @@ export const {
 	useStartComplexitySuggestionRunMutation,
 	useCancelComplexitySuggestionRunMutation,
 	useGetComplexitySuggestionImpactMutation,
+	useTestComplexitySuggestionExamplesMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

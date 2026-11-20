@@ -415,14 +415,15 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 		logger.Warn("model router %s status: could not read the router for its suggestion tier defaults: %v", id, loadErr)
 	}
 	SendJSON(ctx, complexityStatusResponse{
-		SemanticStatusInfo:                semantic,
-		LLM:                               &llm,
-		DecisionDefaults:                  configstore.DefaultComplexityDecisionGuidance(),
-		SuggestionDefaultInstructions:     suggest.DefaultInstructions(),
-		SuggestionDefaultTierInstructions: suggest.DefaultTierInstructions(),
-		SuggestionDefaultTierPrompt:       tierPrompt,
-		SuggestionDefaultTierCriteria:     tierCriteria,
-		LLMDefaultPrompt:                  complexity.DefaultLLMClassifierGuidance(),
+		SemanticStatusInfo:                   semantic,
+		LLM:                                  &llm,
+		DecisionDefaults:                     configstore.DefaultComplexityDecisionGuidance(),
+		SuggestionDefaultInstructions:        suggest.DefaultInstructions(),
+		SuggestionDefaultTierInstructions:    suggest.DefaultTierInstructions(),
+		SuggestionDefaultExampleInstructions: suggest.DefaultExampleInstructions(),
+		SuggestionDefaultTierPrompt:          tierPrompt,
+		SuggestionDefaultTierCriteria:        tierCriteria,
+		LLMDefaultPrompt:                     complexity.DefaultLLMClassifierGuidance(),
 	})
 }
 
