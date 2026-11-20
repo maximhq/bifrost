@@ -1698,6 +1698,9 @@ false
 {{- if $client.endpointSlug }}
 {{- $_ := set $cc "endpoint_slug" $client.endpointSlug }}
 {{- end }}
+{{- with $client.description }}
+{{- $_ := set $cc "description" . }}
+{{- end }}
 {{- /* Map tlsConfig -> tls_config (only for http/sse/websocket connection types) */ -}}
 {{- if and $client.tlsConfig (or (eq $client.connectionType "http") (eq $client.connectionType "sse") (eq $client.connectionType "websocket")) }}
 {{- $tls := dict }}

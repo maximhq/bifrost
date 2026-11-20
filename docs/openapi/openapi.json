@@ -47409,6 +47409,11 @@
                             "type": "string",
                             "description": "Display name for the MCP client"
                           },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                          },
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
@@ -47789,6 +47794,11 @@
                           "name": {
                             "type": "string",
                             "description": "Display name for the MCP client"
+                          },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -48179,6 +48189,11 @@
                           "name": {
                             "type": "string",
                             "description": "Display name for the MCP client"
+                          },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -48590,6 +48605,11 @@
                             "type": "string",
                             "description": "Display name for the MCP client"
                           },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards,\nalerts, Prometheus and Loki queries\"). Models see it in the code mode\ncatalogue. Surrounding whitespace is trimmed; more than 200 characters, or any\ncontrol character (newline, carriage return and tab included), is\nrejected with 400. Omitted or empty means no description.\n"
+                          },
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
@@ -48991,6 +49011,11 @@
                   "name": {
                     "type": "string",
                     "description": "Display name for the MCP client"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "One-line summary of what the MCP server is for, shown to models in the\ncode mode catalogue. Omitting it keeps the stored description; an empty\nstring clears it. Trimmed and validated as on create (at most 200 characters,\nno control characters), otherwise 400.\n"
                   },
                   "is_code_mode_client": {
                     "type": "boolean",
