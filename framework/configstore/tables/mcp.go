@@ -82,7 +82,7 @@ type TableMCPClient struct {
 	DiscoveredPromptsJSON           string `gorm:"type:text" json:"-"` // JSON serialized []mcp.Prompt
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange", "client_credentials"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
@@ -99,6 +99,11 @@ type TableMCPClient struct {
 	// endpoint and grant shape come from the deployment's identity-provider
 	// integration at exchange time.
 	TokenExchangeJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPTokenExchangeConfig
+
+	// client_credentials grant configuration for auth_type='client_credentials'.
+	// NULL for all other auth types. Carries the client secret or private key,
+	// so it is encrypted at rest.
+	ClientCredentialsJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPClientCredentialsConfig
 
 	// AllowByDefault opens the client to every caller not assigned it explicitly. The column keeps the
 	// name the flag was introduced under; only the wire name moved.
@@ -138,20 +143,21 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig         *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig           *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute      schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute  schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
-	PromptsToExpose     schemas.WhiteList               `gorm:"-" json:"prompts_to_expose"`
-	ResourcesToExpose   schemas.WhiteList               `gorm:"-" json:"resources_to_expose"`
-	Headers             map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
-	AllowedExtraHeaders schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing         map[string]float64              `gorm:"-" json:"tool_pricing"`
-	DiscoveredTools     map[string]schemas.ChatTool     `gorm:"-" json:"-"`
-	PerUserHeaderKeys   []string                        `gorm:"-" json:"per_user_header_keys"`
-	TokenExchange       *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
-	PendingOAuthConfig  *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
-	OpenAPIConfig       *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
+	StdioConfig         *schemas.MCPStdioConfig             `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig           *schemas.MCPTLSConfig               `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute      schemas.WhiteList                   `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute  schemas.WhiteList                   `gorm:"-" json:"tools_to_auto_execute"`
+	PromptsToExpose     schemas.WhiteList                   `gorm:"-" json:"prompts_to_expose"`
+	ResourcesToExpose   schemas.WhiteList                   `gorm:"-" json:"resources_to_expose"`
+	Headers             map[string]schemas.SecretVar        `gorm:"-" json:"headers"`
+	AllowedExtraHeaders schemas.WhiteList                   `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing         map[string]float64                  `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools     map[string]schemas.ChatTool         `gorm:"-" json:"-"`
+	PerUserHeaderKeys   []string                            `gorm:"-" json:"per_user_header_keys"`
+	TokenExchange       *schemas.MCPTokenExchangeConfig     `gorm:"-" json:"token_exchange,omitempty"`     // Runtime mirror of TokenExchangeJSON
+	ClientCredentials   *schemas.MCPClientCredentialsConfig `gorm:"-" json:"client_credentials,omitempty"` // Runtime mirror of ClientCredentialsJSON
+	PendingOAuthConfig  *schemas.OAuth2Config               `gorm:"-" json:"oauth_config,omitempty"`       // Runtime mirror of PendingOAuthConfigJSON
+	OpenAPIConfig       *schemas.MCPOpenAPIConfig           `gorm:"-" json:"openapi_config,omitempty"`     // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
 
 	DiscoveredResources         []mcp.Resource         `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourcesJSON
 	DiscoveredResourceTemplates []mcp.ResourceTemplate `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourceTemplatesJSON
@@ -353,6 +359,17 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.TokenExchangeJSON = nil
 	}
 
+	if c.ClientCredentials != nil {
+		data, err := json.Marshal(c.ClientCredentials)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.ClientCredentialsJSON = &s
+	} else {
+		c.ClientCredentialsJSON = nil
+	}
+
 	// Persist the inline `oauth_config` block. Rehydrated by AfterFind so
 	// the initiate-verification endpoint can feed it to InitiateOAuthFlow
 	// the same way the UI Create handler does.
@@ -413,6 +430,13 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 				return fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
 			}
 			c.TokenExchangeJSON = &enc
+		}
+		if c.ClientCredentialsJSON != nil && *c.ClientCredentialsJSON != "" {
+			enc, err := encrypt.Encrypt(*c.ClientCredentialsJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp client credentials config: %w", err)
+			}
+			c.ClientCredentialsJSON = &enc
 		}
 		// openapi_config carries the upstream API credentials.
 		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
@@ -505,6 +529,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp token exchange config: %w", err)
 			}
 			c.TokenExchangeJSON = &decrypted
+		}
+		if c.ClientCredentialsJSON != nil && *c.ClientCredentialsJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.ClientCredentialsJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp client credentials config: %w", err)
+			}
+			c.ClientCredentialsJSON = &decrypted
 		}
 		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
 			decrypted, err := encrypt.Decrypt(*c.PendingOAuthConfigJSON)
@@ -609,6 +640,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		c.TokenExchange = &cfg
+	}
+	if c.ClientCredentialsJSON != nil && *c.ClientCredentialsJSON != "" {
+		var cfg schemas.MCPClientCredentialsConfig
+		if err := sonic.Unmarshal([]byte(*c.ClientCredentialsJSON), &cfg); err != nil {
+			return err
+		}
+		c.ClientCredentials = &cfg
 	}
 	if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
 		var cfg schemas.OAuth2Config

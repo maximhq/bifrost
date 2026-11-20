@@ -99,6 +99,11 @@ type OAuth2Provider interface {
 	// integration is configured, and *TokenExchangeRejectedError when the
 	// provider refused the exchange.
 	GetExchangedAccessToken(ctx *BifrostContext, config *MCPClientConfig) (string, error)
+
+	// GetClientCredentialsAccessToken returns the shared access token for config
+	// (AuthType == client_credentials), minted with the client_credentials grant
+	// and cached until shortly before it expires.
+	GetClientCredentialsAccessToken(ctx context.Context, config *MCPClientConfig) (string, error)
 }
 
 // TokenExchangeRejectedError reports that the identity provider refused a

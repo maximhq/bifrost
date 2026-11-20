@@ -1977,6 +1977,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			Disabled:               dbClient.Disabled,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
+			ClientCredentials:      dbClient.ClientCredentials,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
 		}
 		// Populate oauth client credentials from pre-fetched batch
@@ -2323,31 +2324,32 @@ const maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                   *string                         `json:"name,omitempty"`
-	Disabled               *bool                           `json:"disabled,omitempty"`
-	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
-	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
-	ServerTypeOnSlug       *string                         `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
-	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
-	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       *MCPSyncInterval                `json:"tool_sync_interval,omitempty"`
-	MaxProtocolVersion     *string                         `json:"max_protocol_version,omitempty"` // "" = use the global setting
-	ToolExecutionTimeout   *int                            `json:"tool_execution_timeout,omitempty"`
-	MaxInstructionsLength  *int                            `json:"max_instructions_length,omitempty"`
-	Headers                map[string]schemas.SecretVar    `json:"headers,omitempty"`
-	AllowedExtraHeaders    *schemas.WhiteList              `json:"allowed_extra_headers,omitempty"`
-	ToolPricing            map[string]float64              `json:"tool_pricing,omitempty"`
-	ToolsToExecute         *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute     *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
-	PromptsToExpose        *schemas.WhiteList              `json:"prompts_to_expose,omitempty"`
-	ResourcesToExpose      *schemas.WhiteList              `json:"resources_to_expose,omitempty"`
-	PerUserHeaderKeys      *[]string                       `json:"per_user_header_keys,omitempty"`
-	PerUserDiscovery       *bool                           `json:"per_user_discovery,omitempty"`
-	TokenExchange          *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
-	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
-	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
-	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
-	OpenAPIConfig          *schemas.MCPOpenAPIConfig       `json:"openapi_config,omitempty"` // openapi clients only; replaces the spec/credentials (PATCH-style inside the block)
+	Name                   *string                             `json:"name,omitempty"`
+	Disabled               *bool                               `json:"disabled,omitempty"`
+	AllowByDefault         *bool                               `json:"allow_by_default,omitempty"`
+	IsCodeModeClient       *bool                               `json:"is_code_mode_client,omitempty"`
+	ServerTypeOnSlug       *string                             `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
+	IsPingAvailable        *bool                               `json:"is_ping_available,omitempty"`
+	NeedsSessionStickiness *bool                               `json:"needs_session_stickiness,omitempty"`
+	ToolSyncInterval       *MCPSyncInterval                    `json:"tool_sync_interval,omitempty"`
+	MaxProtocolVersion     *string                             `json:"max_protocol_version,omitempty"` // "" = use the global setting
+	ToolExecutionTimeout   *int                                `json:"tool_execution_timeout,omitempty"`
+	MaxInstructionsLength  *int                                `json:"max_instructions_length,omitempty"`
+	Headers                map[string]schemas.SecretVar        `json:"headers,omitempty"`
+	AllowedExtraHeaders    *schemas.WhiteList                  `json:"allowed_extra_headers,omitempty"`
+	ToolPricing            map[string]float64                  `json:"tool_pricing,omitempty"`
+	ToolsToExecute         *schemas.WhiteList                  `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute     *schemas.WhiteList                  `json:"tools_to_auto_execute,omitempty"`
+	PromptsToExpose        *schemas.WhiteList                  `json:"prompts_to_expose,omitempty"`
+	ResourcesToExpose      *schemas.WhiteList                  `json:"resources_to_expose,omitempty"`
+	PerUserHeaderKeys      *[]string                           `json:"per_user_header_keys,omitempty"`
+	PerUserDiscovery       *bool                               `json:"per_user_discovery,omitempty"`
+	TokenExchange          *schemas.MCPTokenExchangeConfig     `json:"token_exchange,omitempty"`
+	ClientCredentials      *schemas.MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
+	TLSConfig              *schemas.MCPTLSConfig               `json:"tls_config,omitempty"`
+	VKConfigs              *[]MCPVKConfigRequest               `json:"vk_configs,omitempty"`
+	OauthConfig            *OAuthConfigRequest                 `json:"oauth_config,omitempty"`
+	OpenAPIConfig          *schemas.MCPOpenAPIConfig           `json:"openapi_config,omitempty"` // openapi clients only; replaces the spec/credentials (PATCH-style inside the block)
 
 	// AllowOnAllVirtualKeys is the earlier name of allow_by_default, still accepted. AllowByDefault
 	// decides when both are sent; see schemas.ResolveAllowByDefault.
@@ -2483,6 +2485,19 @@ func resourceCredentialResendRequired(existing, req *schemas.MCPTokenExchangeCon
 	return nil
 }
 
+// clientCredentialsResendRequired is resourceCredentialResendRequired for a
+// client_credentials block: a changed token_url (an emptied one is discovered
+// again) or assertion_audience needs the secret or key resent.
+func clientCredentialsResendRequired(existing, req *schemas.MCPClientCredentialsConfig) error {
+	if existing == nil || req == nil {
+		return nil
+	}
+	if credentialResendRequired(req.TargetChangedFrom(existing), req.ClientSecret, req.PrivateKey) {
+		return fmt.Errorf("client_credentials.client_secret and private_key must be resent explicitly when token_url or assertion_audience changes")
+	}
+	return nil
+}
+
 // credentialResendRequired reports whether an update that changes where a stored
 // credential is sent keeps any of creds through a masked placeholder: the stored
 // credential was never paired with the new target.
@@ -2501,7 +2516,7 @@ func credentialResendRequired(targetChanged bool, creds ...*schemas.SecretVar) b
 // mcpClientSecretReferences lists the credential-bearing fields of an MCP
 // client request whose value is an env./vault. reference rather than a literal.
 // Keys are wire field names so a refusal can name what to change.
-func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, tlsConfig *schemas.MCPTLSConfig, openAPI *schemas.MCPOpenAPIConfig) []string {
+func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, clientCredentials *schemas.MCPClientCredentialsConfig, tlsConfig *schemas.MCPTLSConfig, openAPI *schemas.MCPOpenAPIConfig) []string {
 	var refs []string
 	isRef := func(v *schemas.SecretVar) bool { return v != nil && v.Type() != schemas.SecretTypePlainText }
 	for name, value := range headers {
@@ -2536,6 +2551,17 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 		}
 		if isRef(tokenExchange.ResourcePrivateKey) {
 			refs = append(refs, "token_exchange.resource_private_key")
+		}
+	}
+	if clientCredentials != nil {
+		if isRef(clientCredentials.ClientID) {
+			refs = append(refs, "client_credentials.client_id")
+		}
+		if isRef(clientCredentials.ClientSecret) {
+			refs = append(refs, "client_credentials.client_secret")
+		}
+		if isRef(clientCredentials.PrivateKey) {
+			refs = append(refs, "client_credentials.private_key")
 		}
 	}
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
@@ -2635,7 +2661,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
 		return
 	}
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.ClientCredentials, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
@@ -3291,6 +3317,31 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// client_credentials: nothing interactive. The token endpoint is discovered
+	// when not given and checked against what the authorization server
+	// advertises, and one token is requested, before anything is stored; the
+	// client then connects like a headers client.
+	var clientCredentials *schemas.MCPClientCredentialsConfig
+	if req.AuthType == string(schemas.MCPAuthTypeClientCredentials) {
+		if h.store.OAuthProvider == nil {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider is not available")
+			return
+		}
+		if req.ClientCredentials == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "client_credentials is required for client_credentials auth type")
+			return
+		}
+		resolved, err := h.store.OAuthProvider.ResolveClientCredentials(ctx, strings.TrimSpace(req.ConnectionString.GetValue()), req.RequirePublicTarget, req.ClientCredentials)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		clientCredentials = resolved
+	} else if req.ClientCredentials != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "client_credentials can only be set for client_credentials clients")
+		return
+	}
+
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     req.ClientID,
@@ -3318,6 +3369,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		AllowByDefault:         req.AllowByDefault,
+		ClientCredentials:      clientCredentials,
 	}
 	if preparedOpenAPI != nil {
 		schemasConfig.OpenAPIConfig = preparedOpenAPI.config
@@ -3419,7 +3471,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	before := auditMCPClient(h.store, existingConfig)
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.ClientCredentials, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
@@ -3776,6 +3828,36 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// "Re-verify as me". Unlike OAuth there's no per-user row to cascade —
 	// end-user exchanged tokens are cache-only and simply re-exchange fresh
 	// on the next call once evicted below.
+	// client_credentials: masked values keep the stored ones, and the block is
+	// resolved again (discovery when token_url was cleared, then a token
+	// request) only when something changed. A change is applied to the live
+	// client like a header edit.
+	clientCredentials := existingConfig.ClientCredentials
+	if req.ClientCredentials != nil {
+		if existingConfig.AuthType != schemas.MCPAuthTypeClientCredentials {
+			SendError(ctx, fasthttp.StatusBadRequest, "client_credentials can only be set for client_credentials clients")
+			return
+		}
+		if err := clientCredentialsResendRequired(existingConfig.ClientCredentials, req.ClientCredentials); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		req.ClientCredentials.KeepMaskedFrom(existingConfig.ClientCredentials)
+		if !req.ClientCredentials.Equal(existingConfig.ClientCredentials) {
+			if h.store.OAuthProvider == nil {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider is not available")
+				return
+			}
+			resolved, err := h.store.OAuthProvider.ResolveClientCredentials(ctx, strings.TrimSpace(existingConfig.ConnectionString.GetValue()), existingConfig.RequirePublicTarget, req.ClientCredentials)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+			clientCredentials = resolved
+			connectionEditChanged = connectionEditChanged || !existingConfig.Disabled
+		}
+	}
+
 	shouldMarkExchangeNeedsReauth := req.TokenExchange != nil &&
 		existingConfig.AuthType == schemas.MCPAuthTypeTokenExchange &&
 		existingConfig.TokenExchange.DiffersFrom(req.TokenExchange)
@@ -4008,6 +4090,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
+		ClientCredentials:      clientCredentials,
 		TLSConfig:              tlsConfig,
 		OpenAPIConfig:          resolvedOpenAPIConfig,
 		PerUserDiscovery:       req.PerUserDiscovery, // only what was asked: the store keeps its own value when nil, and runs a flip only on a change
@@ -4111,6 +4194,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
+		ClientCredentials:      clientCredentials,
 		OpenAPIConfig:          resolvedOpenAPIConfig,
 		PerUserDiscovery:       perUserDiscovery,
 		PendingVerification:    pendingVerification,

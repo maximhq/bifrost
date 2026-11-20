@@ -359,6 +359,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -383,6 +386,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -3969,6 +3973,65 @@ func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
 	require.NotNil(t, cfg.MCPConfig)
 	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
 	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
+}
+
+// TestLoadMCPConfig_ClientCredentialsResolvesTokenEndpoint: a config.json
+// client_credentials client without token_url has it discovered and stored on
+// load, the way the API does on save; one whose endpoint cannot be resolved, or
+// that runs over STDIO, is skipped.
+func TestLoadMCPConfig_ClientCredentialsResolvesTokenEndpoint(t *testing.T) {
+	initTestLogger()
+	var upstream *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+upstream.URL+`/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": upstream.URL + "/mcp", "authorization_servers": []string{upstream.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": upstream.URL, "token_endpoint": upstream.URL + "/token", "grant_types_supported": []string{"client_credentials"}})
+	})
+	upstream = httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+	bare := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(bare.Close)
+	// The discovery client refuses loopback addresses outside tests.
+	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	t.Cleanup(func() { oauth2.SetDiscoveryDialContextForTests(nil) })
+
+	cc := func() *schemas.MCPClientCredentialsConfig {
+		return &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "cc_discovered", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(upstream.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+		{Name: "cc_no_metadata", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(bare.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+		{Name: "cc_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"cc_discovered"}, mcpClientNames(cfg.MCPConfig.ClientConfigs))
+	require.Len(t, store.mcpConfigsCreated, 1)
+	stored := store.mcpConfigsCreated[0].ClientCredentials
+	require.NotNil(t, stored)
+	assert.Equal(t, upstream.URL+"/token", stored.TokenURL, "the discovered endpoint is stored")
+	assert.Equal(t, schemas.ClientSecretBasic, stored.AuthMethod)
+}
+
+// TestMCPClientConfigToTable_CarriesClientCredentials: the config.json row keeps
+// the client_credentials block, so it is hashed and stored on sync.
+func TestMCPClientConfigToTable_CarriesClientCredentials(t *testing.T) {
+	cc := &schemas.MCPClientCredentialsConfig{TokenURL: "https://as.example.com/token", ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}
+	row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "cc", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc})
+	require.NoError(t, err)
+	require.NotNil(t, row.ClientCredentials)
+	assert.True(t, row.ClientCredentials.Equal(cc))
 }
 
 // TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client

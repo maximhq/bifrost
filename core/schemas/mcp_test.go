@@ -266,3 +266,77 @@ func TestMCPProtocolVersionsUpTo(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPClientCredentialsConfigValidate(t *testing.T) {
+	secret := func() *MCPClientCredentialsConfig {
+		return &MCPClientCredentialsConfig{ClientID: NewSecretVar("bifrost"), ClientSecret: NewSecretVar("s")}
+	}
+	if err := secret().Validate(); err != nil {
+		t.Fatalf("secret config: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		mutate func(*MCPClientCredentialsConfig)
+		want   string
+	}{
+		"nil block":                {func(c *MCPClientCredentialsConfig) { *c = MCPClientCredentialsConfig{} }, "client_credentials.client_id is required"},
+		"no credential":            {func(c *MCPClientCredentialsConfig) { c.ClientSecret = nil }, "client_credentials: set client_secret or private_key"},
+		"secret and key":           {func(c *MCPClientCredentialsConfig) { c.PrivateKey = NewSecretVar("pem") }, "client_credentials: set either client_secret or private_key, not both"},
+		"key settings without key": {func(c *MCPClientCredentialsConfig) { c.KeyID = "k" }, "client_credentials.key_id, signing_algorithm and assertion_audience require private_key"},
+		"unknown auth method":      {func(c *MCPClientCredentialsConfig) { c.AuthMethod = "tls_client_auth" }, `client_credentials.auth_method must be empty, "client_secret_basic" or "client_secret_post"`},
+		"http token url":           {func(c *MCPClientCredentialsConfig) { c.TokenURL = "http://as.example.com/token" }, "client_credentials.token_url must be an https URL"},
+		"scope with a space":       {func(c *MCPClientCredentialsConfig) { c.Scopes = []string{"a b"} }, "client_credentials.scopes[0] must be a single non-empty scope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := secret()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+	key := &MCPClientCredentialsConfig{ClientID: NewSecretVar("bifrost"), PrivateKey: NewSecretVar("pem"), SigningAlgorithm: "ES256"}
+	if err := key.Validate(); err != nil {
+		t.Fatalf("key config: %v", err)
+	}
+	if err := (*MCPClientCredentialsConfig)(nil).Validate(); err == nil {
+		t.Fatal("expected an error for a missing block")
+	}
+}
+
+// TestMCPClientCredentialsConfigMasking: a read masks the credentials, and an
+// update that sends the masks back keeps the stored values.
+func TestMCPClientCredentialsConfigMasking(t *testing.T) {
+	stored := &MCPClientCredentialsConfig{TokenURL: "https://as.example.com/token", ClientID: NewSecretVar("bifrost-client"), ClientSecret: NewSecretVar("super-secret-value"), Scopes: []string{"mcp"}}
+	redacted := stored.Redacted()
+	if redacted.ClientSecret.GetValue() == stored.ClientSecret.GetValue() || !redacted.ClientSecret.IsMaskedPlaceholder() {
+		t.Fatalf("client_secret not masked: %q", redacted.ClientSecret.GetValue())
+	}
+	if stored.ClientSecret.GetValue() != "super-secret-value" {
+		t.Fatal("Redacted mutated the stored block")
+	}
+	update := *redacted
+	update.KeepMaskedFrom(stored)
+	if !update.Equal(stored) {
+		t.Fatalf("masked round trip did not keep the stored values: %+v", update)
+	}
+	if update.TargetChangedFrom(stored) {
+		t.Fatal("unchanged token_url counted as a target change")
+	}
+	update.TokenURL = ""
+	if !update.TargetChangedFrom(stored) {
+		t.Fatal("a cleared token_url is discovered again, so it is a target change")
+	}
+}
+
+func TestMCPClientCredentialsConfigResourceFor(t *testing.T) {
+	cfg := &MCPClientCredentialsConfig{}
+	if got := cfg.ResourceFor("https://mcp.example.com/mcp"); got != "https://mcp.example.com/mcp" {
+		t.Fatalf("unset resource should default to the server URL, got %q", got)
+	}
+	empty := ""
+	cfg.Resource = &empty
+	if got := cfg.ResourceFor("https://mcp.example.com/mcp"); got != "" {
+		t.Fatalf("an empty resource is omitted, got %q", got)
+	}
+}

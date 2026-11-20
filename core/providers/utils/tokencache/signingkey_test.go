@@ -63,3 +63,36 @@ func TestKeyMatchesSigningAlgorithm(t *testing.T) {
 	assert.EqualError(t, KeyMatchesSigningAlgorithm(rsaKey, "ES256", "f"), "f ES256 needs an EC private key; private_key is RSA")
 	assert.EqualError(t, KeyMatchesSigningAlgorithm(p256, "ES384", "f"), "f ES384 needs a P-384 key; private_key is on P-256")
 }
+
+// TestDefaultSigningAlgorithm: an EC key's curve fixes its algorithm; an RSA key
+// takes the first RSA algorithm the authorization server advertises, else RS256.
+func TestDefaultSigningAlgorithm(t *testing.T) {
+	rsaKey, _ := rsaPEM(t)
+	for name, tc := range map[string]struct {
+		key        any
+		advertised []string
+		want       string
+	}{
+		"P-256":                        {ecKeyOn(t, elliptic.P256()), []string{"RS256"}, "ES256"},
+		"P-384":                        {ecKeyOn(t, elliptic.P384()), nil, "ES384"},
+		"P-521":                        {ecKeyOn(t, elliptic.P521()), nil, "ES512"},
+		"RSA, nothing advertised":      {rsaKey, nil, "RS256"},
+		"RSA, PS only advertised":      {rsaKey, []string{"ES256", "PS256"}, "PS256"},
+		"RSA, first RSA one wins":      {rsaKey, []string{"RS512", "RS256"}, "RS512"},
+		"RSA, no RSA one advertised":   {rsaKey, []string{"ES256"}, "RS256"},
+		"RSA, unsupported one skipped": {rsaKey, []string{"RS1", "PS512"}, "PS512"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := DefaultSigningAlgorithm(tc.key, tc.advertised)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	_, err := DefaultSigningAlgorithm(ecKeyOn(t, elliptic.P224()), nil)
+	assert.Error(t, err, "P-224 has no supported algorithm")
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	_, err = DefaultSigningAlgorithm(edKey, nil)
+	assert.Error(t, err)
+}

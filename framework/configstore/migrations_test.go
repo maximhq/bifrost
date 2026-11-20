@@ -6010,6 +6010,26 @@ func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
 	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
 }
 
+func TestMigrationAddMCPClientClientCredentialsJSONColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "client_credentials_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableMCPClient{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddMCPClientClientCredentialsJSONColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_client_credentials_json_column").Error)
+	require.NoError(t, migrationAddMCPClientClientCredentialsJSONColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+
+	err := rollbackMCPClientClientCredentialsJSONColumn(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "a refused rollback must leave the column intact")
+}
+
 // Postgres silently truncates identifiers past 63 bytes, so a longer column is
 // created under a different name than GORM reads and writes.
 func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {

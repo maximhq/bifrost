@@ -895,7 +895,7 @@ func TestOpenAPICredentialSecretReferences(t *testing.T) {
 	assert.Equal(t, []string{"openapi_config.security_credentials.ApiKey.value", "openapi_config.security_credentials.Basic.password"}, refs)
 	assert.Nil(t, openAPICredentialSecretReferences(nil))
 
-	full := mcpClientSecretReferences(nil, nil, nil, nil, nil, &schemas.MCPOpenAPIConfig{SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKey": {Value: &env}}})
+	full := mcpClientSecretReferences(nil, nil, nil, nil, nil, nil, &schemas.MCPOpenAPIConfig{SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKey": {Value: &env}}})
 	assert.Equal(t, []string{"openapi_config.security_credentials.ApiKey.value"}, full)
 }
 

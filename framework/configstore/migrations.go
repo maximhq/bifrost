@@ -609,6 +609,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
+	{IDs: []string{"add_mcp_client_client_credentials_json_column"}, run: migrationAddMCPClientClientCredentialsJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17739,4 +17740,35 @@ func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, 
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
 		},
 	})
+}
+
+// migrationAddMCPClientClientCredentialsJSONColumn adds the client_credentials_json
+// column to config_mcp_clients: the encrypted client_credentials grant block for
+// auth_type='client_credentials' clients. NULL for every existing client.
+func migrationAddMCPClientClientCredentialsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_client_credentials_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "ClientCredentialsJSON"); err != nil {
+				return fmt.Errorf("failed to add client_credentials_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: rollbackMCPClientClientCredentialsJSONColumn,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func rollbackMCPClientClientCredentialsJSONColumn(*gorm.DB) error {
+	return fmt.Errorf("add_mcp_client_client_credentials_json_column is non-rollbackable: dropping client_credentials_json would permanently delete the credentials of every client_credentials MCP client; the column is additive and older binaries safely ignore it")
 }

@@ -2487,15 +2487,26 @@ func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schem
 		return schemas.MCPAuthTypeHeaders, nil
 	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth:
 		return authType, nil
+	case schemas.MCPAuthTypeClientCredentials:
+		// The bearer token goes on an HTTP request, which a STDIO subprocess never receives.
+		if connectionType == schemas.MCPConnectionTypeSTDIO {
+			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http' or 'sse')", authType, connectionType)
+		}
+		return authType, nil
 	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
 		if connectionType == schemas.MCPConnectionTypeSSE || connectionType == schemas.MCPConnectionTypeSTDIO {
 			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http')", authType, connectionType)
 		}
 		return authType, nil
 	default:
-		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange", authType)
+		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials", authType)
 	}
 }
+
+// mcpClientCredentialsLoadTimeout bounds discovering a client_credentials token
+// endpoint while loading config.json, so an unreachable upstream delays startup
+// by at most this long.
+const mcpClientCredentialsLoadTimeout = 15 * time.Second
 
 // loadMCPConfig loads the MCP client configs from the store and config.json and
 // reconciles the two. A config.json client that cannot be created is skipped, and a
@@ -2528,6 +2539,22 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				continue
 			}
 			c.AuthType = authType
+			// The token endpoint is discovered and stored the same way the API does
+			// on save; a client whose endpoint cannot be resolved is skipped.
+			if c.AuthType == schemas.MCPAuthTypeClientCredentials {
+				resolveCtx, cancel := context.WithTimeout(ctx, mcpClientCredentialsLoadTimeout)
+				resolved, err := oauth2.PrepareClientCredentials(resolveCtx, strings.TrimSpace(c.ConnectionString.GetValue()), c.RequirePublicTarget, c.ClientCredentials)
+				cancel()
+				if err != nil {
+					logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
+					if configData.rejectedMCPClients == nil {
+						configData.rejectedMCPClients = map[string]bool{}
+					}
+					configData.rejectedMCPClients[c.Name] = true
+					continue
+				}
+				c.ClientCredentials = resolved
+			}
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
@@ -2740,6 +2767,10 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		existing.TokenExchange != nil {
 		logger.Warn("token_exchange cannot be emptied for MCP client %q (auth_type 'token_exchange'); keeping the stored block", existing.Name)
 		fileClient.TokenExchange = existing.TokenExchange
+	}
+	if fileClient.AuthType == schemas.MCPAuthTypeClientCredentials && fileClient.ClientCredentials == nil && existing.ClientCredentials != nil {
+		logger.Warn("client_credentials cannot be emptied for MCP client %q (auth_type 'client_credentials'); keeping the stored block", existing.Name)
+		fileClient.ClientCredentials = existing.ClientCredentials
 	}
 
 	fileClient.OauthConfigID = existing.OauthConfigID
@@ -3424,6 +3455,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		DiscoveredInstructions: clientConfig.DiscoveredInstructions,
 		PerUserHeaderKeys:      mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:          clientConfig.TokenExchange,
+		ClientCredentials:      clientConfig.ClientCredentials,
 		PendingOAuthConfig:     clientConfig.PendingOAuthConfig,
 		OpenAPIConfig:          clientConfig.OpenAPIConfig,
 		ConfigHash:             clientConfig.ConfigHash,
@@ -10643,6 +10675,7 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		exchangeCopy.ResourcePrivateKey = exchangeCopy.ResourcePrivateKey.Redacted()
 		configCopy.TokenExchange = &exchangeCopy
 	}
+	configCopy.ClientCredentials = config.ClientCredentials.Redacted()
 
 	// Redact credentials inside the inline `oauth_config` bootstrap block.
 	// Copy the struct first — configCopy shares the pointer with the live
