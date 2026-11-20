@@ -580,3 +580,77 @@ func TestChatReplayDropsForeignRedactedToken(t *testing.T) {
 		"a foreign token reached redactedContent: %s", raw)
 	require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
 }
+
+// The Claude half of TestRedactedReasoningSurvivesTheReplayLoop. The response side
+// surfaces a Claude redacted-thinking block as an encrypted reasoning detail the same
+// way it does for Grok, but convertMessage replayed the blob only for redacted-shape
+// models, so a Claude turn that redacted its thinking reached Bedrock without it and
+// the drop was silent (#10177).
+//
+// The blob cannot go back as reasoningContent.redactedContent: converseReasoningShape
+// documents that Anthropic answers that variant with a 400. The Responses converter
+// already carries the identical item (empty summary plus encrypted content) for a
+// text-shape model as an empty-text reasoningText with the blob in signature
+// (TestConvertBifrostReasoningToBedrockReasoningEncryptedContent), so the Chat path
+// replays it the same way.
+func TestClaudeRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
+	blob := "Y2xhdWRlLXJlZGFjdGVkLWJsb2I="
+	const model = "global.anthropic.claude-sonnet-4-6"
+
+	t.Run("blob survives the replay in signature form", func(t *testing.T) {
+		resp := &BedrockConverseResponse{
+			Output: &BedrockConverseOutput{
+				Message: &BedrockMessage{
+					Role: BedrockMessageRoleAssistant,
+					Content: []BedrockContentBlock{
+						{ReasoningContent: &BedrockReasoningContent{RedactedContent: &blob}},
+						{Text: schemas.Ptr("Hello!")},
+					},
+				},
+			},
+		}
+
+		bifrostResp, err := resp.ToBifrostChatResponse(context.Background(), model)
+		require.NoError(t, err)
+		require.NotEmpty(t, bifrostResp.Choices)
+
+		assistant := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+		require.NotNil(t, assistant, "the blob must reach the client, not be dropped")
+		require.Len(t, assistant.ReasoningDetails, 1)
+		require.Equal(t, schemas.BifrostReasoningDetailsTypeEncrypted, assistant.ReasoningDetails[0].Type)
+		require.NotNil(t, assistant.ReasoningDetails[0].Data)
+		require.Equal(t, blob, *assistant.ReasoningDetails[0].Data)
+
+		replayed, err := convertMessage(context.Background(), model,
+			*bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+
+		require.Equal(t, blob, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.signature").String(),
+			"the redacted blob was dropped from the replay: %s", raw)
+		require.True(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.text").Exists(),
+			"an absent text key is the Converse 400 (see reasoningTextInvariant): %s", raw)
+		require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Array()) > 0,
+			"redactedContent is the wrong variant for Anthropic on Converse, which answers it with a 400: %s", raw)
+		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+	})
+
+	t.Run("a token that is not a Converse blob stays dropped", func(t *testing.T) {
+		foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+		msg := schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ReasoningDetails: []schemas.ChatReasoningDetails{{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: &foreign}},
+			},
+		}
+		replayed, err := convertMessage(context.Background(), model, msg, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent").Array()) > 0,
+			"a foreign token cannot deserialize for Claude either, so it must not reach the request: %s", raw)
+		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+	})
+}

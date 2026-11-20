@@ -2235,16 +2235,43 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
 		shape := converseReasoningShape(model)
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
+			if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted {
+				// A redacted-thinking blob, the one replayable form of redacted
+				// reasoning. Its wire shape follows the model, not the detail: a
+				// redacted-shape model takes it as reasoningContent.redactedContent,
+				// while a text-shape model that redacted part of its thinking
+				// (Claude on Converse does) gets it the way the Responses converter
+				// carries the same item -- an empty-text reasoningText with the blob
+				// in signature (convertBifrostReasoningToBedrockReasoning). Sending
+				// top-level redactedContent there instead is the wrong variant, which
+				// Anthropic answers with a 400 (see converseReasoningShape).
+				if detail.Data == nil || !isConverseBlob(*detail.Data) {
+					// Not a Converse blob: it cannot even deserialize, and Bedrock
+					// fails the whole turn with an empty SerializationException that
+					// no reasoning fail-soft recognises. Drop it instead (#9685).
+					continue
+				}
+				if shape == schemas.BedrockReasoningShapeRedacted {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
+					})
+				} else {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{
+							ReasoningText: &BedrockReasoningContentText{
+								Text:      new(""),
+								Signature: reasoningSignatureForBedrock(detail.Data),
+							},
+						},
+					})
+				}
+				continue
+			}
 			if shape == schemas.BedrockReasoningShapeRedacted {
 				// These models reject reasoningText in every form -- with a
 				// signature, without one, empty or not -- with an opaque 500. The
 				// encrypted blob is the only replayable detail, and dropping the
 				// rest beats sending a shape that cannot be accepted.
-				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
-					contentBlocks = append(contentBlocks, BedrockContentBlock{
-						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
-					})
-				}
 				continue
 			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
