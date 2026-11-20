@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "予算使用状況",
 		"override": "オーバーライド",
-		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}"
+		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}",
+		"sharedTag": "共有"
 	},
 	"rateLimit": {
 		"tokens": "トークン",

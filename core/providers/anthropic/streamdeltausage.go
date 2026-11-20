@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -314,16 +315,30 @@ func (l *anthropicStreamDeltaPromptUsageLedger) lookup(sequenceNumber int) (anth
 // its snapshot, so a null is already a no-op there and rendering it as a 0
 // would turn an upstream non-answer into an answer the client acts on.
 func absentAnthropicPromptCounters(event []byte) anthropicPromptCounterBit {
-	usage := providerUtils.GetJSONField(event, "usage")
+	if len(event) == 0 {
+		return 0
+	}
+	// Read through a zero-copy view of the frame: the result is used and dropped
+	// inside this call, so nothing outlives the caller's buffer.
+	usage := gjson.Get(unsafe.String(unsafe.SliceData(event), len(event)), "usage")
 	if !usage.Exists() || !usage.IsObject() {
 		return 0
 	}
-	var absent anthropicPromptCounterBit
-	for _, counter := range anthropicPromptCounterKeys {
-		if reported := usage.Get(counter.key); !reported.Exists() || reported.Type == gjson.Null {
-			absent |= counter.bit
+	// One pass over the usage object rather than one lookup per counter: this
+	// runs on every message_delta of both stream paths.
+	absent := anthropicPromptCountersAll
+	usage.ForEach(func(key, value gjson.Result) bool {
+		if value.Type == gjson.Null {
+			return true
 		}
-	}
+		for _, counter := range anthropicPromptCounterKeys {
+			if key.Str == counter.key {
+				absent &^= counter.bit
+				break
+			}
+		}
+		return true
+	})
 	return absent
 }
 

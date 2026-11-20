@@ -3929,3 +3929,54 @@ func TestInvokeDocument_ConverseNames(t *testing.T) {
 		})
 	}
 }
+
+// The InvokeModel body must send a tail system reminder in the same form at turn N and at N+1,
+// after Claude's tool_use reply is appended behind it, with the datasheet row held false as it
+// is for released gateways. Before the placement pass, the role-less function_call item made
+// the converter inline at N+1 a reminder it sent natively at N, which broke the cached prefix
+// at that reminder on every turn (Opus 5.5 on InvokeModel, 2026-11-16).
+func TestInvokeAnthropicBody_MidConvSystemReminderStableAcrossTurns(t *testing.T) {
+	no := false
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, _ string) *schemas.ModelCapabilities {
+		if provider == schemas.Bedrock {
+			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &no}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	const reminder = "R1: the date is 2026-11-18."
+	turn := func(raw string) []byte {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		var input []schemas.ResponsesMessage
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &input))
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-opus-5-5",
+			Input:    input,
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("read"),
+				DeferLoading:          schemas.Ptr(true),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}}},
+		}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req), "a deferred tool must take InvokeModel")
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, (&BedrockProvider{}).invokeBuildConfig(req.Model, false, true, nil))
+		require.Nil(t, bifrostErr)
+		return body
+	}
+	head := `{"type":"message","role":"user","content":"q1"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+		{"type":"message","role":"user","content":"q2"},
+		{"type":"message","role":"system","content":[{"type":"input_text","text":"` + reminder + `","cache_control":{"type":"ephemeral"}}]}`
+	reply := `,{"type":"function_call","call_id":"toolu_1","name":"read","arguments":"{}"},
+		{"type":"function_call_output","call_id":"toolu_1","output":"ok"}`
+
+	for _, body := range [][]byte{turn("[" + head + "]"), turn("[" + head + reply + "]")} {
+		msg := gjson.GetBytes(body, "messages.3")
+		assert.Equal(t, "system", msg.Get("role").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
+		assert.Equal(t, reminder, msg.Get("content.0.text").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
+		assert.Equal(t, "ephemeral", msg.Get("content.0.cache_control.type").String())
+	}
+}

@@ -39,6 +39,14 @@ func TestWebSearchStreamQueryVariants(t *testing.T) {
 					events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
 						Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: &i,
 					})...)
+					// A finished search is followed by its web_search_tool_result, also when it
+					// found nothing (Anthropic sends one for every finished search).
+					if n := len(events); n < 2 || events[n-2].Type != AnthropicStreamEventTypeContentBlockStart ||
+						events[n-2].ContentBlock.Type != AnthropicContentBlockTypeWebSearchToolResult ||
+						events[n-1].Type != AnthropicStreamEventTypeContentBlockStop {
+						t.Fatalf("finished search must end with a web_search_tool_result start and stop, got %d events", n)
+					}
+					events = events[:len(events)-2]
 					var input strings.Builder
 					index, stops := -1, 0
 					for _, event := range events {
@@ -4012,6 +4020,46 @@ func BenchmarkToAnthropicResponsesRequest_TextMessages(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
+				if _, err := ToAnthropicResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkToAnthropicResponsesRequest_MidConvReminders measures a Claude Code-shaped request:
+// ten turns that each end in a system reminder, followed by a tool_use-led reply. "native" is a
+// model that takes role:"system" (the placement pass runs), "inline" one that does not.
+func BenchmarkToAnthropicResponsesRequest_MidConvReminders(b *testing.B) {
+	user := schemas.ResponsesInputMessageRoleUser
+	system := schemas.ResponsesInputMessageRoleSystem
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	functionCallOutput := schemas.ResponsesMessageTypeFunctionCallOutput
+	input := make([]schemas.ResponsesMessage, 0, 40)
+	for i := 0; i < 10; i++ {
+		callID := fmt.Sprintf("toolu_%d", i)
+		input = append(input,
+			schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Read the file.")}},
+			schemas.ResponsesMessage{Role: &system, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("The date is 2026-11-18.")},
+			}}},
+			schemas.ResponsesMessage{Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(callID), Name: schemas.Ptr("read"), Arguments: schemas.Ptr("{}"),
+			}},
+			schemas.ResponsesMessage{Type: &functionCallOutput, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(callID), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("ok")},
+			}},
+		)
+	}
+	for name, req := range map[string]*schemas.BifrostResponsesRequest{
+		"native": {Provider: schemas.Bedrock, Model: "us.anthropic.claude-opus-5-5", Input: input},
+		"inline": {Provider: schemas.Anthropic, Model: "claude-opus-4-6", Input: input},
+	} {
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
 				if _, err := ToAnthropicResponsesRequest(ctx, req); err != nil {
 					b.Fatal(err)
 				}
