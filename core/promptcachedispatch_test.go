@@ -609,6 +609,39 @@ func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
 	}
 }
 
+// BenchmarkResolveAdvisorToolAliases measures the advisor alias step; the common cases must not allocate.
+func BenchmarkResolveAdvisorToolAliases(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plain := responsesReqWithText("hello")
+	plain.Model = "claude-opus-5"
+	plain.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+	}}
+	advisor := responsesReqWithText("hello")
+	advisor.Model = "claude-opus-5"
+	advisor.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeAdvisor, ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: "anthropic.claude-opus-5"}},
+	}}
+	aliased := schemas.Key{Aliases: schemas.KeyAliases{"anthropic.claude-opus-5": {ModelID: "claude-opus-5"}}}
+	for _, testCase := range []struct {
+		name    string
+		key     schemas.Key
+		request *schemas.BifrostResponsesRequest
+	}{
+		{"no aliases", schemas.Key{}, advisor},
+		{"aliases without advisor", aliased, plain},
+		{"aliased advisor", aliased, advisor},
+	} {
+		b.Run(testCase.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = resolveAdvisorToolAliases(ctx, testCase.key, testCase.request)
+			}
+		})
+	}
+}
+
 // BenchmarkPrepareCountTokensRequest measures the preparation count tokens now shares with
 // dispatch: the common case (plain tools) and a request whose custom tool is rewritten.
 func BenchmarkPrepareCountTokensRequest(b *testing.B) {
