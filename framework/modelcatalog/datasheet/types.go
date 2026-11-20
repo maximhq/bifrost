@@ -168,12 +168,15 @@ func normalizeModalities(dst []string, list []string) []string {
 // datasheetInputModalities returns the input modalities a datasheet row
 // advertises. An explicit supported_input_modalities / supported_modalities
 // list is authoritative (a transcription row listing only "audio" takes no
-// text), with the supports_* input flags added on top. Without a list, "text"
-// is assumed and the true flags are appended. A row with neither a list nor a
-// true flag returns nil, so it carries no architecture.
+// text), with the supports_* input flags added on top, even when every listed
+// name was dropped by normalization. Without a list, "text" is assumed and the
+// true flags are appended. A row with neither a list nor a true flag returns
+// nil, so it carries no architecture.
 func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supportsPdf *bool, lists ...[]string) []string {
 	var modalities []string
+	explicit := false
 	for _, list := range lists {
+		explicit = explicit || len(list) > 0
 		modalities = normalizeModalities(modalities, list)
 	}
 	for _, flag := range []struct {
@@ -188,7 +191,7 @@ func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supp
 		if flag.set == nil || !*flag.set || slices.Contains(modalities, flag.modality) {
 			continue
 		}
-		if len(modalities) == 0 {
+		if !explicit && len(modalities) == 0 {
 			modalities = append(modalities, "text")
 		}
 		modalities = append(modalities, flag.modality)
@@ -197,13 +200,15 @@ func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supp
 }
 
 // datasheetOutputModalities returns the output modalities a datasheet row
-// advertises: its supported_output_modalities list or, when that is empty and
-// the row carries other modality data (hasInput or supports_audio_output), the
-// output its mode implies. supports_audio_output adds "audio" either way.
+// advertises: its supported_output_modalities list or, when the row has no
+// such list and carries other modality data (hasInput or
+// supports_audio_output), the output its mode implies. An explicit list wins
+// even when every listed name was dropped by normalization.
+// supports_audio_output adds "audio" either way.
 func datasheetOutputModalities(mode string, supportsAudioOutput *bool, list []string, hasInput bool) []string {
 	modalities := normalizeModalities(nil, list)
 	audioOut := supportsAudioOutput != nil && *supportsAudioOutput
-	if len(modalities) == 0 && (hasInput || audioOut) {
+	if len(list) == 0 && (hasInput || audioOut) {
 		modalities = normalizeModalities(nil, modeOutputModalities[strings.ToLower(mode)])
 	}
 	if audioOut && !slices.Contains(modalities, "audio") {

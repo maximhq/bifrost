@@ -500,6 +500,8 @@ func TestEntryUnmarshalJSON_DerivesModalities(t *testing.T) {
 		{"false_flags_only", `{"provider":"openai","mode":"chat","supports_vision":false,"supports_audio_output":false}`, nil, nil},
 		{"no_signal", `{"provider":"openai","mode":"chat"}`, nil, nil},
 		{"explicit_architecture_wins", `{"provider":"x","mode":"chat","architecture":{"input_modalities":["text","audio"]},"supports_vision":true,"supported_output_modalities":["text"]}`, []string{"text", "audio"}, []string{"text"}},
+		{"explicit_input_list_all_dropped", `{"provider":"x","mode":"chat","supported_input_modalities":["code"],"supports_audio_input":true}`, []string{"audio"}, []string{"text"}},
+		{"explicit_output_list_all_dropped", `{"provider":"x","mode":"chat","supported_input_modalities":["audio"],"supported_output_modalities":["code"]}`, []string{"audio"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
