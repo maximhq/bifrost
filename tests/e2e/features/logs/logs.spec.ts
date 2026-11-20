@@ -65,6 +65,60 @@ test.describe("LLM Logs", () => {
       });
     }
 
+    test("should show cache read tokens in the tokens column", async ({ page, logsPage }) => {
+      const timestamp = new Date().toISOString();
+      const row = (id: string, tokenUsage: Record<string, unknown>) => ({
+        id: `synthetic-cache-read-${id}-${Date.now()}`,
+        object: "chat.completion",
+        timestamp,
+        created_at: timestamp,
+        provider: "openai",
+        model: "synthetic-model",
+        number_of_retries: 0,
+        fallback_index: 0,
+        status: "success",
+        stream: false,
+        latency: 120,
+        cost: 0,
+        token_usage: tokenUsage,
+        input_history: [],
+        responses_input_history: [],
+      });
+      await page.route((url) => url.pathname === "/api/logs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: {
+          logs: [
+            row("cached", { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_read_tokens: 400 } }),
+            row("uncached", { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100 }),
+          ],
+          pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          stats: {
+            total_requests: 2,
+            success_rate: 100,
+            user_facing_success_rate: 100,
+            user_facing_total_requests: 2,
+            average_latency: 120,
+            total_tokens: 2200,
+            prompt_tokens: 2000,
+            completion_tokens: 200,
+            total_cost: 0,
+          },
+          has_logs: true,
+        } });
+      });
+      await logsPage.goto();
+
+      // Only the row whose provider reported cache reads shows them, next to input and output.
+      const cacheRead = page.getByTestId("logs-table").getByTestId("logs-tokens-cache-read");
+      await expect(cacheRead).toHaveCount(1);
+      await expect(cacheRead).toHaveText("400");
+
+      // Input tokens include the cache reads, so the tooltip breaks the input down.
+      await cacheRead.hover();
+      await expect(page.getByRole("tooltip")).toContainText("Cache read: 400");
+      await expect(page.getByRole("tooltip")).toContainText("Uncached input: 600");
+    });
+
     test("should display logs table", async ({ logsPage }) => {
       // Table should be visible after goto (which waits for load)
       const tableExists = await logsPage.logsTable

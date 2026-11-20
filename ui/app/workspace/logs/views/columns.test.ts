@@ -5,8 +5,9 @@ import { createTable, flexRender, getCoreRowModel } from "@tanstack/react-table"
 import type { LogEntry } from "@/lib/types/logs";
 
 import i18n from "@/lib/i18n";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 
-import { createColumns, getMessage } from "./columns";
+import { cachedInputTooltip, createColumns, getMessage } from "./columns";
 
 describe("metadata cells", () => {
 	it.each([
@@ -351,5 +352,86 @@ describe("createColumns translations", () => {
 		} finally {
 			await i18n.changeLanguage("en");
 		}
+	});
+});
+
+describe("tokens cell", () => {
+	const renderTokens = (log: Partial<LogEntry>) => {
+		const table = createTable({
+			data: [{ id: "log", ...log } as unknown as LogEntry],
+			columns: createColumns(() => {}),
+			getCoreRowModel: getCoreRowModel(),
+			state: {},
+			onStateChange: () => {},
+			renderFallbackValue: null,
+		});
+		const cell = table
+			.getRowModel()
+			.rows[0].getAllCells()
+			.find((cell) => cell.column.id === "tokens")!;
+		return renderToStaticMarkup(flexRender(cell.column.columnDef.cell, cell.getContext()));
+	};
+	const cachedReadOf = (html: string) => html.match(/data-testid="logs-tokens-cache-read"[^>]*>([^<]*)</)?.[1];
+
+	it("shows the provider's cache reads next to input and output", () => {
+		const html = renderTokens({
+			token_usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_read_tokens: 400 } },
+		});
+		expect(cachedReadOf(html)).toBe("400");
+		expect(html).toContain("bg-emerald-400");
+	});
+
+	it("renders a row without cache reads as before", () => {
+		const html = renderTokens({ token_usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100 } });
+		expect(cachedReadOf(html)).toBeUndefined();
+		expect(html).not.toContain("bg-emerald-400");
+	});
+
+	it("clamps cache reads to the input they are part of", () => {
+		const html = renderTokens({
+			token_usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_read_tokens: 5000 } },
+		});
+		expect(cachedReadOf(html)).toBe(formatCompactNumber(1000));
+	});
+
+	it("sums cache reads across a settled batch's models", () => {
+		const usage = (prompt: number, cached: number) => ({
+			prompt_tokens: prompt,
+			completion_tokens: 10,
+			total_tokens: prompt + 10,
+			prompt_tokens_details: { cached_read_tokens: cached },
+		});
+		const html = renderTokens({
+			batch_debug: {
+				accounting: {
+					model_breakdowns: {
+						a: { model: "a", request_count: 1, usage: usage(500, 200) },
+						b: { model: "b", request_count: 1, usage: usage(300, 100) },
+					},
+				},
+			},
+		} as unknown as Partial<LogEntry>);
+		expect(cachedReadOf(html)).toBe("300");
+	});
+
+	it("breaks the input down in the tooltip as the log detail does", () => {
+		const t = i18n.getFixedT("en", "observability");
+		const lines = cachedInputTooltip(
+			{
+				prompt_tokens: 1000,
+				completion_tokens: 100,
+				total_tokens: 1100,
+				prompt_tokens_details: { cached_read_tokens: 400, cached_write_tokens: 100 },
+			},
+			400,
+			t,
+		).split("\n");
+		expect(lines).toEqual([
+			t("logs.detail.inputTokensIncludeCached"),
+			t("logs.detail.uncachedInput", { value: (500).toLocaleString("en") }),
+			t("logs.detail.cacheRead", { value: (400).toLocaleString("en") }),
+			t("logs.detail.cacheWrite", { value: (100).toLocaleString("en") }),
+			t("logs.detail.inputTokensTotal", { value: (1000).toLocaleString("en") }),
+		]);
 	});
 });
