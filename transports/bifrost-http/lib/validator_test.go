@@ -265,8 +265,14 @@ func TestValidateConfigSchema_WarpSectionCoversEverySetting(t *testing.T) {
 	// Warp's configuration tools need the Bifrost MCP, which is not released yet, so
 	// the schema does not advertise their setting.
 	unadvertised := map[string]bool{"management_writes": true}
+	// vector_store is config.json only: Warp's own store, read at startup and taken out of the
+	// section before it reaches ConfigInput (see WarpFileConfig.UnmarshalJSON).
+	fileOnly := map[string]bool{"vector_store": true}
 	inputType := reflect.TypeOf(warp.ConfigInput{})
 	fields := map[string]bool{}
+	for name := range fileOnly {
+		fields[name] = true
+	}
 	for i := range inputType.NumField() {
 		name, _, _ := strings.Cut(inputType.Field(i).Tag.Get("json"), ",")
 		if name == "" || name == "-" || unadvertised[name] {
@@ -281,6 +287,19 @@ func TestValidateConfigSchema_WarpSectionCoversEverySetting(t *testing.T) {
 		if !fields[name] {
 			t.Errorf("$defs.warp_config declares %q, which warp.ConfigInput does not take", name)
 		}
+	}
+}
+
+// warp.vector_store takes the top-level vector_store's shape through a $ref, so a declared store
+// validates and one of an unknown type is refused before boot.
+func TestValidateConfigSchema_WarpVectorStore(t *testing.T) {
+	valid := `{"warp": {"max_iterations": 12, "vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "env.WARP_QDRANT_HOST", "port": 6334}}}}`
+	if err := ValidateConfigSchema([]byte(valid), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected warp.vector_store to pass validation, got error: %v", err)
+	}
+	invalid := `{"warp": {"vector_store": {"enabled": true, "type": "not-a-store"}}}`
+	if err := ValidateConfigSchema([]byte(invalid), loadLocalSchema(t)); err == nil {
+		t.Error("expected a warp.vector_store of an unknown type to fail validation")
 	}
 }
 

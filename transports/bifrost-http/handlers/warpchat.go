@@ -120,6 +120,9 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 
 	turn, err := h.service.NewTurn(ctx, &request, len(ctx.PostBody()))
 	switch {
+	case errors.Is(err, warp.ErrDedicatedVectorStoreFailed):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, warpDedicatedVectorStoreFailedMsg)
+		return
 	case errors.Is(err, warp.ErrNoVectorStore):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore,
 			"Warp requires a connected vector store for semantic log search.")
@@ -214,6 +217,11 @@ func warpHeartbeat(reader *lib.SSEStreamReader) func() bool {
 // sendUnavailable answers 503 with a machine-readable reason. The dashboard
 // branches on it: an unconfigured Warp stays visible with a link to settings,
 // while a deployment with no log store hides the launcher entirely.
+// warpDedicatedVectorStoreFailedMsg is what every Warp surface says when Warp's
+// own store failed at startup. It names the setting and the fix but not the
+// connection error, which can carry the store's host: that is in the server log.
+const warpDedicatedVectorStoreFailedMsg = "Warp's own vector store (warp.vector_store in config.json) could not be reached when Bifrost started, so Warp is unavailable. An admin can find the connection error in the server log, then fix the store or remove warp.vector_store and restart Bifrost."
+
 func (h *WarpHandler) sendUnavailable(ctx *fasthttp.RequestCtx, reason schemas.WarpUnavailableReason, message string) {
 	SendJSONWithStatus(ctx, schemas.WarpUnavailableResponse{Reason: reason, Message: message}, fasthttp.StatusServiceUnavailable)
 }

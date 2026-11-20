@@ -120,3 +120,38 @@ export function retainFinishedWarpBackfill(
 export function retainedWarpBackfillForSpace(retained: RetainedWarpBackfill | null, savedSpaceKey: string): WarpBackfillJob | null {
 	return retained && retained.spaceKey === savedSpaceKey ? retained.job : null;
 }
+
+/**
+ * syncUneditedFields hydrates a form from a fresh config without losing edits.
+ * A field still equal to what the last hydration put there was not touched, so
+ * it takes the new value; one the user changed keeps theirs. A refetch for an
+ * unrelated reason (clearing a left-behind index notice refetches the config)
+ * then leaves a draft in progress alone. With no earlier hydration, the form
+ * is the new values.
+ */
+export function syncUneditedFields<T extends object>(
+	current: T,
+	hydrated: T | null,
+	next: T,
+	groups: readonly (readonly (keyof T)[])[] = [],
+): T {
+	if (!hydrated) return next;
+	const edited = (key: keyof T) => JSON.stringify(current[key]) !== JSON.stringify(hydrated[key]);
+	const synced = { ...current };
+	// Fields that only make sense together (an embedding model belongs to its
+	// provider) move as one: an edit to any keeps the whole group as drafted,
+	// so a refetch never pairs the server's provider with the draft's model.
+	const grouped = new Set<keyof T>();
+	for (const group of groups) {
+		group.forEach((key) => grouped.add(key));
+		if (!group.some(edited)) {
+			for (const key of group) synced[key] = next[key];
+		}
+	}
+	for (const key of Object.keys(next) as (keyof T)[]) {
+		if (!grouped.has(key) && !edited(key)) {
+			synced[key] = next[key];
+		}
+	}
+	return synced;
+}

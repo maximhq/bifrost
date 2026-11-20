@@ -20,6 +20,9 @@ import (
 const qdrantMaxRecvMsgSize = 64 * 1024 * 1024 // 64 MB
 
 // QdrantConfig represents the configuration for the Qdrant vector store.
+// qdrantDefaultPort is the gRPC port the client uses when none is configured.
+const qdrantDefaultPort = 6334
+
 type QdrantConfig struct {
 	Host             schemas.SecretVar `json:"host"`                           // Qdrant server host - REQUIRED
 	Port             schemas.SecretVar `json:"port"`                           // Qdrant server port  (fallback to 6334 for gRPC)
@@ -464,7 +467,7 @@ func newQdrantStore(ctx context.Context, config *QdrantConfig, logger schemas.Lo
 
 	client, err := qdrant.NewClient(&qdrant.Config{
 		Host:                   config.Host.GetValue(),
-		Port:                   config.Port.CoerceInt(6334),
+		Port:                   config.Port.CoerceInt(qdrantDefaultPort),
 		APIKey:                 config.APIKey.GetValue(),
 		UseTLS:                 config.UseTLS.CoerceBool(false),
 		SkipCompatibilityCheck: true,

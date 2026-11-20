@@ -193,6 +193,74 @@ warp-backfill-cancel:
           Cancelling needs both: the runner to stop the work, the store to record
           it.
 
+warp-left-behind-index-delete:
+  post:
+    operationId: deleteWarpLeftBehindIndex
+    summary: Delete a Warp log index left in the shared vector store
+    description: |
+      Deletes the namespace of a log index Warp left in the shared vector store
+      when it moved to a store of its own, and takes it off
+      `left_behind_indexes`. An index in a store Bifrost no longer connects to
+      cannot be deleted from here (409).
+
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The `id` of an entry in `left_behind_indexes`.
+    responses:
+      '200':
+        description: Deleted; the entries that remain
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpLeftBehindIndexList'
+      '403':
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The index is in a store Bifrost no longer connects to; delete it there by hand, then dismiss it.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+warp-left-behind-index-dismiss:
+  post:
+    operationId: dismissWarpLeftBehindIndex
+    summary: Dismiss a Warp log index left in another vector store
+    description: |
+      Takes an entry off `left_behind_indexes` without touching its vectors,
+      for an index the admin has deleted by hand or wants to keep.
+
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The `id` of an entry in `left_behind_indexes`.
+    responses:
+      '200':
+        description: Dismissed; the entries that remain
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpLeftBehindIndexList'
+      '403':
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 warp-topics:
   post:
     operationId: startWarpTopicClustering

@@ -656,6 +656,8 @@ The settings from the dashboard's Warp page: the models Warp runs on, its behavi
 }
 ```
 
+One extra key is config.json only: `vector_store` gives Warp its own vector store, in the same shape as the top-level `vector_store`. It is read at startup and never saved from the dashboard. If it cannot be reached, Warp is unavailable rather than falling back to the shared store. See [Give Warp its own vector store](/features/warp#give-warp-its-own-vector-store).
+
 Full documentation: [Warp → Configure Warp](/features/warp#configure-warp).
 
 ---

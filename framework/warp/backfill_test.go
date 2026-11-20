@@ -941,3 +941,155 @@ func TestRegisterBackfillRegistersTopicsWithoutAnIndexer(t *testing.T) {
 	require.NoError(t, runner.Enqueue(context.Background(), "topics-1", TopicsJobKind, "{}", ""))
 	require.Error(t, runner.Enqueue(context.Background(), "backfill-1", BackfillJobKind, "{}", ""), "the backfill does need the indexer")
 }
+
+// A backfill records the store it indexed into, so one that ran against the
+// shared store (or another dedicated store) is not taken for the index of the
+// store Warp uses now. A job from before the field matches only the shared
+// store; unreadable metadata is left to BackfillMatchesConfig.
+func TestWarpBackfillMatchesOnlyTheStoreItIndexedInto(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	newService := func(source VectorStoreSource) *Service {
+		service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+			WithLogReader(&backfillLogReader{}), WithVectorStore(newFakeWarpVectorStore()),
+			WithEmbeddingExecutor(backfillEmbeddingExecutor), WithVectorStoreSource(source))
+		t.Cleanup(service.Shutdown)
+		return service
+	}
+	shared := newService(VectorStoreSource{})
+	dedicated := newService(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc"})
+	moved := newService(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "def"})
+
+	metaJSON, err := dedicated.BuildBackfillJobMeta(context.Background(), start, start.Add(time.Hour), false)
+	require.NoError(t, err)
+	var meta BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+	require.Equal(t, "abc", meta.VectorStore)
+
+	require.True(t, dedicated.BackfillMatchesStore(metaJSON))
+	require.False(t, shared.BackfillMatchesStore(metaJSON), "the shared store was not indexed")
+	require.False(t, moved.BackfillMatchesStore(metaJSON), "a moved dedicated store is empty")
+
+	legacy := `{"config_signature":"x","namespace":"BifrostWarpLogs"}`
+	require.True(t, shared.BackfillMatchesStore(legacy), "a job from before the field indexed the shared store")
+	require.False(t, dedicated.BackfillMatchesStore(legacy))
+	require.True(t, dedicated.BackfillMatchesStore("not json"))
+}
+
+// A stopped backfill resumes from its checkpoint only into the store it was
+// indexing: after warp.vector_store is added, resuming would skip every log the
+// old run had already put in the shared store, leaving the new one with gaps.
+func TestWarpBackfillDoesNotResumeIntoAnotherStore(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	cursor := start.Add(30 * time.Minute)
+	probe := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
+	t.Cleanup(probe.Shutdown)
+	config, err := probe.Config(context.Background())
+	require.NoError(t, err)
+	stopped := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: embeddingConfigSignature(config),
+		Namespace: schemas.WarpDefaultLogVectorStoreNamespace, CursorTime: &cursor, Total: 10, Scanned: 5}
+	stoppedJSON, err := marshalBackfillMeta(stopped)
+	require.NoError(t, err)
+	jobs := activeBackfillStore{active: &tables.TableSidekiqJob{ID: "stopped", Status: tables.SidekiqStatusFailed, Metadata: stoppedJSON}}
+	build := func(source VectorStoreSource) BackfillJobMeta {
+		service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+			WithLogReader(&backfillLogReader{}), WithVectorStore(newFakeWarpVectorStore()),
+			WithEmbeddingExecutor(backfillEmbeddingExecutor), WithBackfillJobStore(jobs), WithVectorStoreSource(source))
+		t.Cleanup(service.Shutdown)
+		metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, end, false)
+		require.NoError(t, err)
+		var meta BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+		return meta
+	}
+
+	require.Equal(t, 5, build(VectorStoreSource{}).Scanned, "the same store resumes from the checkpoint")
+	fresh := build(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc"})
+	require.Zero(t, fresh.Scanned, "another store starts a clean scan")
+	require.Nil(t, fresh.CursorTime)
+	require.Equal(t, "abc", fresh.VectorStore)
+}
+
+// Two persistent shared stores are two stores: a checkpoint names the shared
+// store it indexed into, so moving vector_store from A to B neither shows A's
+// run as done on B nor resumes it there. A checkpoint from before stores were
+// named is taken as the shared store's, the only one there was when it was
+// written, and never as a dedicated store's.
+func TestWarpBackfillTellsSharedStoresApart(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	sharedOn := func(fingerprint string) VectorStoreSource {
+		return VectorStoreSource{Fingerprint: fingerprint, SharedFingerprint: fingerprint}
+	}
+	newService := func(source VectorStoreSource, jobs BackfillJobStore) *Service {
+		opts := []Option{WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
+			WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithVectorStoreSource(source)}
+		if jobs != nil {
+			opts = append(opts, WithBackfillJobStore(jobs))
+		}
+		service := NewService(nil, opts...)
+		t.Cleanup(service.Shutdown)
+		return service
+	}
+	onA, onB := newService(sharedOn("shared-a"), nil), newService(sharedOn("shared-b"), nil)
+	dedicated := newService(VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc", SharedFingerprint: "shared-a"}, nil)
+
+	metaJSON, err := onA.BuildBackfillJobMeta(context.Background(), start, end, false)
+	require.NoError(t, err)
+	var meta BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(metaJSON), &meta))
+	require.Equal(t, "shared-a", meta.VectorStore, "a shared checkpoint names its store")
+	require.True(t, onA.BackfillMatchesStore(metaJSON))
+	require.False(t, onB.BackfillMatchesStore(metaJSON), "another shared store was not indexed")
+
+	legacy := `{"config_signature":"x","namespace":"BifrostWarpLogs"}`
+	require.True(t, onB.BackfillMatchesStore(legacy), "an untagged checkpoint is the shared store's")
+	require.False(t, dedicated.BackfillMatchesStore(legacy))
+
+	// A stopped run on A does not resume on B.
+	cursor := start.Add(30 * time.Minute)
+	stopped := meta
+	stopped.CursorTime, stopped.Total, stopped.Scanned = &cursor, 10, 5
+	stoppedJSON, err := marshalBackfillMeta(stopped)
+	require.NoError(t, err)
+	jobs := activeBackfillStore{active: &tables.TableSidekiqJob{ID: "stopped", Status: tables.SidekiqStatusFailed, Metadata: stoppedJSON}}
+	resume := func(source VectorStoreSource) BackfillJobMeta {
+		built, err := newService(source, jobs).BuildBackfillJobMeta(context.Background(), start, end, false)
+		require.NoError(t, err)
+		var out BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(built), &out))
+		return out
+	}
+	require.Equal(t, 5, resume(sharedOn("shared-a")).Scanned, "the same shared store resumes")
+	require.Zero(t, resume(sharedOn("shared-b")).Scanned, "another shared store starts a clean scan")
+}
+
+// A job the runner picks back up after a restart carries the checkpoint it was
+// written with. If the store has changed since, running it would skip every
+// log before the cursor in a store that never had them, so it fails and keeps
+// its checkpoint instead.
+func TestWarpBackfillRefusesARecoveredJobFromAnotherStore(t *testing.T) {
+	writtenOn := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
+		WithVectorStoreSource(VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc"}))
+	t.Cleanup(writtenOn.Shutdown)
+	start := time.Now().Add(-time.Hour)
+	metaJSON, err := writtenOn.BuildBackfillJobMeta(context.Background(), start, time.Now(), false)
+	require.NoError(t, err)
+
+	vectors := newFakeWarpVectorStore()
+	restarted := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
+		WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor),
+		WithVectorStoreSource(VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "def"}))
+	t.Cleanup(restarted.Shutdown)
+	finalJSON, err := restarted.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	require.ErrorContains(t, err, "vector store")
+	require.JSONEq(t, metaJSON, finalJSON, "the checkpoint is kept as it was")
+
+	same := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{}),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
+		WithVectorStoreSource(VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc"}))
+	t.Cleanup(same.Shutdown)
+	_, err = same.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	require.NoError(t, err, "the store it was written for runs it")
+}

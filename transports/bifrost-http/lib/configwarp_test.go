@@ -3,12 +3,16 @@ package lib
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -242,4 +246,197 @@ func TestLoadConfig_IgnoresAMalformedWarpSection(t *testing.T) {
 	} else {
 		assert.ErrorIs(t, err, configstore.ErrNotFound)
 	}
+}
+
+// warp.vector_store is boot-time infrastructure, not a setting the page saves: it is taken out
+// of the section before the settings are applied or hashed, so declaring it does not re-apply
+// the rest of the section over dashboard edits, and it is written back on marshal.
+func TestWarpFileConfig_VectorStoreIsTakenOutOfTheSettings(t *testing.T) {
+	plain := warpFile(t, `{"max_iterations": 12}`)
+	withStore := warpFile(t, `{"max_iterations": 12, "vector_store": {"enabled": true, "type": "chromem"}}`)
+
+	require.NoError(t, withStore.invalid)
+	require.NoError(t, withStore.vectorStoreInvalid)
+	require.NotNil(t, withStore.vectorStore)
+	assert.Equal(t, vectorstore.VectorStoreTypeChromem, withStore.vectorStore.Type)
+	assert.Equal(t, string(plain.raw), string(withStore.raw), "the settings and their sync hash are unchanged by the store")
+
+	out, err := json.Marshal(withStore)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"max_iterations": 12, "vector_store": {"enabled": true, "type": "chromem"}}`, string(out))
+}
+
+// A section that only gives Warp its store declares no settings. Its empty remainder must not be
+// applied: a save of {} stores enabled=false and switches Warp off.
+func TestWarpFileConfig_OnlyAVectorStoreAppliesNoSettings(t *testing.T) {
+	file := warpFile(t, `{"vector_store": {"enabled": true, "type": "chromem"}}`)
+	require.NoError(t, file.invalid)
+	require.NotNil(t, file.vectorStore)
+	assert.Empty(t, file.raw)
+
+	config := &Config{warpFileConfig: file}
+	saver := &countingWarpSaver{}
+	config.ApplyWarpFileConfig(context.Background(), saver)
+	assert.Zero(t, saver.saves, "nothing is saved for a section with no settings")
+}
+
+type countingWarpSaver struct{ saves int }
+
+func (s *countingWarpSaver) SaveConfig(context.Context, *warp.ConfigInput) (warp.ConfigView, error) {
+	s.saves++
+	return warp.ConfigView{}, nil
+}
+
+// initWarpVectorStore never fails the boot. A store that is invalid or cannot be built leaves
+// Warp unavailable (dedicated and failed, no store) instead of falling back to the shared one; a
+// disabled declaration, or one at the shared store's own location, leaves Warp on the shared store.
+func TestInitWarpVectorStore(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	load := func(t *testing.T, shared *vectorstore.Config, section string) *Config {
+		t.Helper()
+		config := &Config{}
+		initWarpVectorStore(ctx, config, &ConfigData{VectorStoreConfig: shared, Warp: warpFile(t, section)})
+		t.Cleanup(func() { config.Close(ctx) })
+		return config
+	}
+
+	t.Run("connected", func(t *testing.T) {
+		config := load(t, nil, `{"vector_store": {"enabled": true, "type": "chromem"}}`)
+		require.NotNil(t, config.WarpVectorStore)
+		source := config.WarpVectorStoreSource
+		assert.True(t, source.Dedicated)
+		assert.False(t, source.Failed)
+		assert.Equal(t, "chromem", source.Type)
+		assert.NotEmpty(t, source.Fingerprint)
+	})
+	t.Run("invalid declaration", func(t *testing.T) {
+		config := load(t, nil, `{"vector_store": {"enabled": true, "type": "not-a-store"}}`)
+		assert.Nil(t, config.WarpVectorStore)
+		assert.Equal(t, warp.VectorStoreSource{Dedicated: true, Failed: true}, config.WarpVectorStoreSource)
+	})
+	t.Run("store cannot be built", func(t *testing.T) {
+		config := load(t, nil, `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"scheme": "http"}}}`)
+		assert.Nil(t, config.WarpVectorStore)
+		source := config.WarpVectorStoreSource
+		assert.True(t, source.Dedicated)
+		assert.True(t, source.Failed)
+		assert.Equal(t, "weaviate", source.Type)
+	})
+	t.Run("disabled", func(t *testing.T) {
+		config := load(t, nil, `{"vector_store": {"enabled": false, "type": "chromem"}}`)
+		assert.Nil(t, config.WarpVectorStore)
+		assert.Equal(t, warp.VectorStoreSource{}, config.WarpVectorStoreSource)
+	})
+	t.Run("same location as the shared store", func(t *testing.T) {
+		shared := &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{Path: "/data/vectors"}}
+		config := load(t, shared, `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/data/vectors"}}}`)
+		assert.Nil(t, config.WarpVectorStore)
+		fingerprint := warpVectorStoreFingerprint(shared)
+		assert.Equal(t, warp.VectorStoreSource{Fingerprint: fingerprint, SharedFingerprint: fingerprint}, config.WarpVectorStoreSource)
+	})
+	// The client's default port is the port: a shared Qdrant with none and a Warp
+	// store on 6334 are one store, so Warp stays on the shared one, and with the
+	// same fingerprint the record of where its index lives sees no move.
+	t.Run("qdrant default port is the same store", func(t *testing.T) {
+		shared := &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeQdrant, Config: vectorstore.QdrantConfig{Host: *schemas.NewSecretVar("q.example")}}
+		config := load(t, shared, `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "q.example", "port": 6334}}}`)
+		assert.Nil(t, config.WarpVectorStore)
+		source := config.WarpVectorStoreSource
+		assert.False(t, source.Dedicated)
+		assert.Equal(t, warpVectorStoreFingerprint(shared), source.SharedFingerprint)
+		assert.Equal(t, source.SharedFingerprint, source.Fingerprint, "backfill checkpoints name the shared store they index into")
+	})
+	// http and https on one Weaviate host are two endpoints: Warp takes its own.
+	t.Run("weaviate scheme makes another store", func(t *testing.T) {
+		shared := &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeWeaviate, Config: vectorstore.WeaviateConfig{Scheme: "http", Host: schemas.NewSecretVar("127.0.0.1:1")}}
+		config := load(t, shared, `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"scheme": "https", "host": "127.0.0.1:1"}}}`)
+		source := config.WarpVectorStoreSource
+		assert.True(t, source.Dedicated, "not taken for the shared store")
+		assert.Equal(t, "weaviate", source.Type)
+	})
+	t.Run("no declaration", func(t *testing.T) {
+		config := load(t, nil, `{"max_iterations": 12}`)
+		assert.Nil(t, config.WarpVectorStore)
+		assert.Equal(t, warp.VectorStoreSource{}, config.WarpVectorStoreSource)
+	})
+	// A memory-only store is new and empty at every start, so each start is a
+	// store of its own: a backfill checkpoint from before a restart does not
+	// match it and cannot resume into it. A store on disk keeps its identity.
+	t.Run("memory-only store is new at every start", func(t *testing.T) {
+		section := `{"vector_store": {"enabled": true, "type": "chromem"}}`
+		before := load(t, nil, section).WarpVectorStoreSource
+		after := load(t, nil, section).WarpVectorStoreSource
+		assert.True(t, before.InMemory)
+		assert.NotEqual(t, before.Fingerprint, after.Fingerprint)
+		checkpoint := `{"vector_store":"` + before.Fingerprint + `"}`
+		restarted := warp.NewService(nil, warp.WithVectorStoreSource(after))
+		assert.False(t, restarted.BackfillMatchesStore(checkpoint), "the checkpoint is from the store before the restart")
+
+		onDisk := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "` + t.TempDir() + `"}}}`
+		assert.Equal(t, load(t, nil, onDisk).WarpVectorStoreSource.Fingerprint, load(t, nil, onDisk).WarpVectorStoreSource.Fingerprint)
+
+		shared := &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem}
+		sharedBefore := load(t, shared, `{"max_iterations": 12}`).WarpVectorStoreSource
+		sharedAfter := load(t, shared, `{"max_iterations": 12}`).WarpVectorStoreSource
+		assert.True(t, sharedBefore.InMemory)
+		assert.NotEqual(t, sharedBefore.Fingerprint, sharedAfter.Fingerprint, "a memory-only shared store too")
+	})
+}
+
+// A config.json whose warp section declares a store passes the schema and boots with Warp on it.
+func TestLoadConfig_WarpVectorStore(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Warp = warpFile(t, `{"max_iterations": 12, "vector_store": {"enabled": true, "type": "chromem"}}`)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	require.NotNil(t, config.WarpVectorStore)
+	assert.True(t, config.WarpVectorStoreSource.Dedicated)
+	assert.Nil(t, config.VectorStore, "the shared store is untouched")
+}
+
+// A dedicated store that accepts the connection and then never answers must
+// not hold up startup: the connect has its own deadline, after which Warp is
+// unavailable with the cause logged and the rest of Bifrost starts.
+func TestInitWarpVectorStore_StalledStoreDoesNotBlockStartup(t *testing.T) {
+	initTestLogger()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() }) // held open, never answered
+		}
+	}()
+	previous := warpVectorStoreConnectTimeout
+	warpVectorStoreConnectTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { warpVectorStoreConnectTimeout = previous })
+
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	section := `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "` + host + `", "port": ` + port + `}}}`
+	config := &Config{}
+	done := make(chan struct{})
+	go func() {
+		initWarpVectorStore(context.Background(), config, &ConfigData{Warp: warpFile(t, section)})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("startup is still waiting on a store that never answers")
+	}
+	assert.Nil(t, config.WarpVectorStore)
+	assert.True(t, config.WarpVectorStoreSource.Dedicated)
+	assert.True(t, config.WarpVectorStoreSource.Failed, "Warp is unavailable, and startup goes on")
 }

@@ -3236,3 +3236,28 @@ func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
 		t.Error("handler ran for an oversized body")
 	}
 }
+
+// Warp gets its own store when config.json gives it one and the shared store
+// otherwise. A dedicated store that failed at startup gives Warp no store at
+// all, so it is unavailable, never the shared store in its place.
+func TestWarpVectorStoreChoosesWarpsOwnStore(t *testing.T) {
+	shared := &sharedVectorStore{}
+	own := &sharedVectorStore{}
+	dedicated := warp.VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc"}
+
+	s := &BifrostHTTPServer{Config: &lib.Config{VectorStore: shared}}
+	store, source := s.warpVectorStore()
+	assert.Same(t, shared, store, "no warp.vector_store: the shared store")
+	assert.Equal(t, warp.VectorStoreSource{}, source)
+
+	s.Config.WarpVectorStore, s.Config.WarpVectorStoreSource = own, dedicated
+	store, source = s.warpVectorStore()
+	assert.Same(t, own, store)
+	assert.Equal(t, dedicated, source)
+
+	failed := warp.VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc", Failed: true}
+	s.Config.WarpVectorStore, s.Config.WarpVectorStoreSource = nil, failed
+	store, source = s.warpVectorStore()
+	assert.Nil(t, store, "a failed dedicated store does not fall back to the shared one")
+	assert.Equal(t, failed, source)
+}

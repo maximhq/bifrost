@@ -38,6 +38,14 @@ type ConfigView struct {
 	// start a discovery.
 	TopicDiscoveryMinRequests int  `json:"topic_discovery_min_requests"`
 	VectorStoreConnected      bool `json:"vector_store_connected"`
+	// VectorStoreDedicated is whether Warp has its own store (warp.vector_store
+	// in config.json); VectorStoreType names it, and VectorStoreFailed says it
+	// could not be reached at startup, which leaves Warp unavailable.
+	VectorStoreDedicated bool   `json:"vector_store_dedicated"`
+	VectorStoreType      string `json:"vector_store_type,omitempty"`
+	VectorStoreFailed    bool   `json:"vector_store_failed,omitempty"`
+	// LeftBehindIndexes are log indexes in stores Warp no longer uses (see indexstore.go).
+	LeftBehindIndexes []LeftBehindIndex `json:"left_behind_indexes,omitempty"`
 	// ManagementWrites are the kinds of change Warp may offer; empty is reads only.
 	ManagementWrites []string `json:"management_writes"`
 	// ManagementWritesAvailable is whether the Bifrost MCP serves writes at all
@@ -221,6 +229,10 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 			SemanticSearchLimit:       schemas.WarpDefaultSemanticSearchLimit,
 			TopicDiscoveryMinRequests: schemas.WarpDefaultTopicDiscoveryMinRequests,
 			VectorStoreConnected:      s.vectorStore != nil,
+			VectorStoreDedicated:      s.vectorSource.Dedicated,
+			VectorStoreType:           s.vectorSource.Type,
+			VectorStoreFailed:         s.vectorSource.Failed,
+			LeftBehindIndexes:         s.LeftBehindIndexes(),
 			ManagementWrites:          []string{},
 			ManagementWritesAvailable: catalog.hasWrites(),
 			ManagementToolSizes:       catalog.sizes(),
@@ -250,7 +262,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	if input.Enabled && s.vectorStore == nil {
-		return ConfigView{}, ErrNoVectorStore
+		return ConfigView{}, s.noVectorStore()
 	}
 	// Everything that can reject the save happens before anything is created in
 	// the vector store. Provisioning first left a namespace behind whenever the
@@ -360,7 +372,9 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		}
 		return ConfigView{}, err
 	}
-	return s.configViewFromRow(row), nil
+	view := s.configViewFromRow(row)
+	s.recordIndexNamespace(ctx, view.LogVectorStoreNamespace)
+	return view, nil
 }
 
 // mergeOmittedEmbeddingSettings fills embedding fields the write left empty
@@ -626,6 +640,10 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		SemanticSearchLimit:       config.EffectiveSemanticSearchLimit(),
 		TopicDiscoveryMinRequests: config.EffectiveTopicDiscoveryMinRequests(),
 		VectorStoreConnected:      s.vectorStore != nil,
+		VectorStoreDedicated:      s.vectorSource.Dedicated,
+		VectorStoreType:           s.vectorSource.Type,
+		VectorStoreFailed:         s.vectorSource.Failed,
+		LeftBehindIndexes:         s.LeftBehindIndexes(),
 		ManagementWrites:          nonNilStrings(config.ManagementWrites),
 		BifrostMCPAvailable:       s.bifrostMCPAvailable(),
 		BifrostMCPEnabled:         s.bifrostMCP,

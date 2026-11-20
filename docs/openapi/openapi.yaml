@@ -1472,6 +1472,10 @@ paths:
     $ref: "./paths/management/warp.yaml#/warp-backfill-status"
   /api/warp/log-index/backfill/cancel:
     $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/log-index/backfill/left-behind/{id}/delete:
+    $ref: "./paths/management/warp.yaml#/warp-left-behind-index-delete"
+  /api/warp/log-index/backfill/left-behind/{id}/dismiss:
+    $ref: "./paths/management/warp.yaml#/warp-left-behind-index-dismiss"
   /api/warp/log-index/topics:
     $ref: "./paths/management/warp.yaml#/warp-topics"
   /api/warp/log-index/topics/status:
