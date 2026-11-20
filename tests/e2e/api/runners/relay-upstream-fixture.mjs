@@ -20,6 +20,9 @@ import http from "node:http";
 //   POST /v1/stream      SSE: credits 1 on the first event, none on the second, 3 on the last
 //   POST /v1/pages       usage.chars = the request body's "chars" (block and minimum pricing)
 //   POST /v1/reported    usage.cost 0.005 (a provider-reported cost)
+//   *    /v1/gated/**     Tavily-shaped: the echo below, plus usage.credits 3 only when the body
+//                        carries "include_usage": true (the harness-relay-forced relay forces it);
+//                        /v1/gated/stream answers the same as SSE
 //   *    /v1/echo, other the method, path, query and headers the upstream received
 const port = Number(process.env.RELAY_UPSTREAM_FIXTURE_PORT || "8783");
 // Loopback by default. The proxy matrix binds every interface, because its relays address the
@@ -64,6 +67,20 @@ const server = http.createServer(async (req, res) => {
 		body = raw ? JSON.parse(raw) : {};
 	} catch {
 		body = {};
+	}
+
+	if (path.startsWith("/v1/gated/")) {
+		const echo = { data: [], method: req.method, path, headers: req.headers, body: raw };
+		const usage = body?.include_usage === true ? { credits: 3 } : undefined;
+		if (path === "/v1/gated/stream") {
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			res.write(`data: ${JSON.stringify(echo)}\n\n`);
+			res.write(`data: ${JSON.stringify(usage ? { usage } : { done: true })}\n\n`);
+			res.end();
+			return;
+		}
+		send(res, 200, usage ? { ...echo, usage } : echo);
+		return;
 	}
 
 	switch (`${req.method} ${path}`) {

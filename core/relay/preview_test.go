@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -90,7 +91,7 @@ func TestPreviewUsage(t *testing.T) {
 		require.NotNil(t, out.RouteIndex)
 		assert.Equal(t, 0, *out.RouteIndex, "with no sample copy the operator's X-Amz-Target picks the route")
 	})
-	t.Run("under sigv4 a route can match on an x-amz header the upstream never receives", func(t *testing.T) {
+	t.Run("under sigv4 an x-amz header the upstream never receives selects no route, as on the relay", func(t *testing.T) {
 		s3 := &schemas.RelayConfig{
 			Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "s3"}},
 			Routes: []schemas.RelayRouteConfig{
@@ -102,7 +103,7 @@ func TestPreviewUsage(t *testing.T) {
 		out, err := previewUsage(s3, nil, UsagePreviewInput{Method: "PUT", Path: "/bucket/key", Headers: map[string]string{"X-Amz-Storage-Class": "GLACIER"}}, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.RouteIndex)
-		assert.Equal(t, 0, *out.RouteIndex, "the caller's x-amz-storage-class picks the route")
+		assert.Equal(t, 1, *out.RouteIndex, "the caller's x-amz-storage-class is dropped under SigV4, so it picks nothing")
 	})
 	t.Run("the sample path is decoded before matching, as the transport decodes it", func(t *testing.T) {
 		files := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/files/*"}}}
@@ -235,6 +236,33 @@ func TestPreviewUsage(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, ignoring.ExtractedCost)
 		assert.InDelta(t, 0.01, ignoring.Cost, 1e-9, "only the operator's own fee remains")
+	})
+	t.Run("forced body fields are measured and read as the relay sends them", func(t *testing.T) {
+		cfg := &schemas.RelayConfig{
+			BodyOverrides: map[string]json.RawMessage{"model": json.RawMessage(`"tavily-basic"`)},
+			Usage:         &schemas.RelayUsageConfig{ModelPath: "model"},
+			Routes: []schemas.RelayRouteConfig{
+				{Method: "POST", Path: "/translate", BodyOverrides: map[string]json.RawMessage{"text": json.RawMessage(`"forced text"`)},
+					Usage: &schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsPath: "text", UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.01)}},
+				{Method: "POST", Path: "/search"},
+			},
+		}
+		out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/translate", RequestBody: `{"text":"hi","model":"mine"}`}, false)
+		require.NoError(t, err)
+		require.NotNil(t, out.Units)
+		assert.InDelta(t, 11, *out.Units, 0, "the forced text is what the relay measures")
+		assert.InDelta(t, 0.11, out.Cost, 1e-9)
+		assert.Equal(t, "tavily-basic", out.Model, "the route inherits the relay's forced model")
+
+		out, err = previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/search"}, false)
+		require.NoError(t, err)
+		assert.Equal(t, "tavily-basic", out.Model, "an empty POST gets a created body, as on the wire")
+
+		out, err = previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/search", RequestContentType: "text/plain", RequestBody: "query=x"}, false)
+		require.NoError(t, err)
+		assert.False(t, out.Counted)
+		assert.Contains(t, notes(out), "refuses this request with 400")
+		assert.Contains(t, notes(out), "must be a JSON object")
 	})
 	t.Run("invalid config is refused", func(t *testing.T) {
 		_, err := previewUsage(&schemas.RelayConfig{SkipRouteCheck: true, Auth: schemas.RelayAuthConfig{Type: "magic"}}, nil, UsagePreviewInput{Method: "POST", Path: "/"}, false)
