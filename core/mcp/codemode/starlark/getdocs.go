@@ -151,8 +151,10 @@ func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *s
 // normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
 // "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
 // "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
-// toolCandidates lists the tool names to try in order: the supplied name with only its
-// directory dropped, then without a "<server>." prefix, then without a ".py" suffix too.
+// toolCandidates lists the tool names to try in order: a bare name as supplied, with only
+// "()" dropped, so a tool named "report.pyi" keeps its suffix, then the name with its
+// directory and ".pyi" extension dropped, then without a "<server>." prefix, then without
+// a ".py" suffix too. A name with a directory is a stub path, so its ".pyi" is an extension.
 func normalizeDocsArgs(server, tool string, servers []string) (parsedServer string, toolCandidates []string) {
 	parsedServer, _, _ = parseVFSFilePath(server, servers)
 	if parsedServer == "" {
@@ -160,11 +162,15 @@ func normalizeDocsArgs(server, tool string, servers []string) (parsedServer stri
 	}
 	exactTool, _ := trimVFSPath(tool, nil)
 	exactTool = dropVFSDir(exactTool)
-	return parsedServer, []string{
+	toolCandidates = []string{
 		exactTool,
 		stripServerPrefix(exactTool, parsedServer),
 		stripServerPrefix(dropVFSDir(normalizeVFSPath(tool, nil)), parsedServer),
 	}
+	if literal := strings.TrimSuffix(strings.TrimSpace(tool), "()"); !strings.Contains(literal, "/") {
+		toolCandidates = append([]string{literal, stripServerPrefix(literal, parsedServer)}, toolCandidates...)
+	}
+	return parsedServer, toolCandidates
 }
 
 // dropVFSDir drops a directory from a normalized tool path.

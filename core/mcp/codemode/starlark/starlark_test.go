@@ -2610,21 +2610,38 @@ func TestGetToolDocsAcceptsCommonPathSpellings(t *testing.T) {
 }
 
 // A discovered tool may be named like a path, so getToolDocs tries the supplied name before
-// stripping an extension from it.
+// stripping an extension from it. pyiTool adds a tool named "report.pyi" next to "report".
 func TestGetToolDocsPrefersTheExactToolName(t *testing.T) {
 	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
-	cases := []struct{ tool, want, notWant string }{
-		{"report.py", "Does report.py\n", "Does report\n"},
-		{"report", "Does report\n", "Does report.py\n"},
-		{"report.pyi", "Does report\n", "Does report.py\n"},
-		{"report.py()", "Does report.py\n", "Does report\n"},
-		{"codey.report.py()", "Does report.py\n", "Does report\n"},
-		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n"},
-		{"report()", "Does report\n", "Does report.py\n"},
+	pyiMode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := pyiMode.clientManager.(*testClientManager)
+	manager.tools["codey"] = append(manager.tools["codey"], schemas.ChatTool{
+		Function: &schemas.ChatToolFunction{Name: "report.pyi", Description: schemas.Ptr("Does report.pyi")},
+	})
+	cases := []struct {
+		tool, want, notWant string
+		pyiTool             bool
+	}{
+		{"report.py", "Does report.py\n", "Does report\n", false},
+		{"report", "Does report\n", "Does report.py\n", false},
+		{"report.pyi", "Does report\n", "Does report.py\n", false},
+		{"report.py()", "Does report.py\n", "Does report\n", false},
+		{"codey.report.py()", "Does report.py\n", "Does report\n", false},
+		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n", false},
+		{"report()", "Does report\n", "Does report.py\n", false},
+		{"report.pyi", "Does report.pyi\n", "Does report\n", true},
+		{"report.pyi()", "Does report.pyi\n", "Does report\n", true},
+		{"codey.report.pyi", "Does report.pyi\n", "Does report\n", true},
+		{"report", "Does report\n", "Does report.pyi\n", true},
+		{"servers/codey/report.pyi", "Does report\n", "Does report.pyi\n", true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.tool, func(t *testing.T) {
-			msg, err := mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": tc.tool}))
+		m, name := mode, tc.tool
+		if tc.pyiTool {
+			m, name = pyiMode, tc.tool+" with report.pyi"
+		}
+		t.Run(name, func(t *testing.T) {
+			msg, err := m.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": tc.tool}))
 			content, isError := vfsToolResponse(t, msg, err)
 			if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
 				t.Fatalf("getToolDocs(codey, %q): want docs with %q and without %q, got (isError=%v):\n%s", tc.tool, tc.want, tc.notWant, isError, content)
