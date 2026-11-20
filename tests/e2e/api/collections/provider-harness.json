@@ -197369,6 +197369,7 @@
                 "exec": [
                   "var url = pm.response.headers.get('X-Goog-Upload-URL');",
                   "pm.test('initiation returns an upload url carrying an upload_id', function () { pm.expect(url, 'no X-Goog-Upload-URL header; body: ' + pm.response.text()).to.be.a('string').and.include('upload_id='); pm.expect(pm.response.headers.get('X-Goog-Upload-Status')).to.equal('active'); });",
+                  "pm.test('upload URL uses the reachable SDK endpoint without forwarded headers', function () { var base = pm.variables.get('baseUrl').replace(/\\/+$/, ''); pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(url, pm.response.text()).to.be.a('string'); pm.expect(url.indexOf(base + '/genai/upload/v1beta/files?upload_id='), 'unreachable upload URL: ' + url).to.equal(0); });",
                   "pm.collectionVariables.set('h153UploadUrl', url);"
                 ]
               }
@@ -346509,7 +346510,7 @@
     },
     {
       "name": "307. MCP trusted forwarded host discovery",
-      "description": "Local MCP discovery regressions for /api/oauth/client-metadata.json. Requires tests/integrations/python/config.json: server.trusted_forwarded_host=public.example.test:8443 and no client.mcp_external_client_url override. Cases 307.1-307.3 accept only the matching first forwarded authority; 307.4-307.9 reject untrusted request hosts with HTTP 400 instead of advertising internal or attacker URLs. Cases 307.10-307.12 accept Host only when it matches the configured authority, including case-insensitive matching and an untrusted forwarded header. Explicit URL priority, unconfigured fail-closed behavior and base paths are covered by Go regressions. No provider inference is called.",
+      "description": "Local MCP discovery regressions for /api/oauth/client-metadata.json. Requires the dedicated tests/integrations/forwarded-host/config.json server, with server.trusted_forwarded_host=public.example.test:8443 and no client.mcp_external_client_url override. Do not run this folder against the ordinary SDK integration server. Cases 307.1-307.3 accept only the matching first forwarded authority; 307.4-307.9 reject untrusted request hosts with HTTP 400 instead of advertising internal or attacker URLs. Cases 307.10-307.12 accept Host only when it matches the configured authority, including case-insensitive matching and an untrusted forwarded header. Explicit URL priority, unconfigured fail-closed behavior and base paths are covered by Go regressions. No provider inference is called.",
       "item": [
         {
           "name": "307.1 MCP trusted forwarded host exact authority over HTTPS",

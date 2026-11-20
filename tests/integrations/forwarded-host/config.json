@@ -1,0 +1,19 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "server": {
+    "read_buffer_size": 65536,
+    "trusted_forwarded_host": "public.example.test:8443"
+  },
+  "client": {
+    "enable_logging": false,
+    "enforce_auth_on_inference": false
+  },
+  "config_store": {
+    "enabled": false
+  },
+  "logs_store": {
+    "enabled": false
+  },
+  "providers": {}
+}
