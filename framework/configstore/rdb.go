@@ -1819,6 +1819,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 				clientConfigs[i] = &schemas.MCPClientConfig{
 					ID:                     dbClient.ClientID,
 					Name:                   dbClient.Name,
+					Description:            dbClient.Description,
 					EndpointSlug:           dbClient.EndpointSlug,
 					IsCodeModeClient:       dbClient.IsCodeModeClient,
 					ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
@@ -1888,6 +1889,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		clientConfigs[i] = &schemas.MCPClientConfig{
 			ID:                     dbClient.ClientID,
 			Name:                   dbClient.Name,
+			Description:            dbClient.Description,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
 			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
@@ -2350,6 +2352,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 	return &schemas.MCPClientConfig{
 		ID:                     dbClient.ClientID,
 		Name:                   dbClient.Name,
+		Description:            dbClient.Description,
 		EndpointSlug:           dbClient.EndpointSlug,
 		IsCodeModeClient:       dbClient.IsCodeModeClient,
 		ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
@@ -2552,6 +2555,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		dbClient := tables.TableMCPClient{
 			ClientID:               clientConfigCopy.ID,
 			Name:                   clientConfigCopy.Name,
+			Description:            clientConfigCopy.Description,
 			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
 			ServerTypeOnSlug:       clientConfigCopy.ServerTypeOnSlug,
@@ -2786,6 +2790,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 		updates := map[string]interface{}{
 			"name":                       clientConfigCopy.Name,
+			"description":                clientConfigCopy.Description,
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
 			"server_type_on_slug":        clientConfigCopy.ServerTypeOnSlug,
 			"tools_to_execute_json":      string(toolsToExecuteJSON),

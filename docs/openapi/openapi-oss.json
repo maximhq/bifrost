@@ -44659,6 +44659,10 @@
                             "type": "string",
                             "description": "Display name for the MCP client"
                           },
+                          "description": {
+                            "type": "string",
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
+                          },
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
@@ -45039,6 +45043,10 @@
                           "name": {
                             "type": "string",
                             "description": "Display name for the MCP client"
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -45429,6 +45437,10 @@
                           "name": {
                             "type": "string",
                             "description": "Display name for the MCP client"
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
@@ -45840,6 +45852,10 @@
                             "type": "string",
                             "description": "Display name for the MCP client"
                           },
+                          "description": {
+                            "type": "string",
+                            "description": "One-line summary of what the MCP server is for (for example \"Dashboards, alerts, Prometheus and Loki queries\"). Models see it in the code mode catalogue. Surrounding whitespace is trimmed, and what is left may be at most 200 characters; more than that, or any control character (newline, carriage return and tab included), is rejected with 400. Omitted or empty means no description."
+                          },
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
@@ -46241,6 +46257,10 @@
                   "name": {
                     "type": "string",
                     "description": "Display name for the MCP client"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "One-line summary of what the MCP server is for, shown to models in the code mode catalogue. Omitting it keeps the stored description; an empty string clears it. Trimmed and validated as on create (at most 200 characters after trimming, no control characters), otherwise 400."
                   },
                   "is_code_mode_client": {
                     "type": "boolean",

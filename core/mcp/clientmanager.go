@@ -2355,6 +2355,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			DiscoveredPrompts:           rebindPromptsToClientName(discovered.DiscoveredPrompts, updatedConfig.Name),
 			// Updatable fields - copy from updated config with proper cloning
 			Name:                   updatedConfig.Name,
+			Description:            updatedConfig.Description,
 			IsCodeModeClient:       updatedConfig.IsCodeModeClient,
 			ServerTypeOnSlug:       updatedConfig.ServerTypeOnSlug,
 			Headers:                maps.Clone(updatedConfig.Headers),

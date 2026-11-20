@@ -2025,6 +2025,9 @@ export const mcpOpenAPIConfigSchema = mcpOpenAPIConfigBaseSchema.superRefine((v,
 export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
 
 // MCP Client update schema
+// Mirrors the server's MaxMCPClientDescriptionLength: the description is one line of at most this many characters.
+export const MCP_CLIENT_DESCRIPTION_MAX_LENGTH = 200;
+
 export const mcpClientUpdateSchema = z
 	.object({
 		is_code_mode_client: z.boolean().optional(),
@@ -2048,6 +2051,16 @@ export const mcpClientUpdateSchema = z
 			.refine((val) => !/^[0-9]/.test(val), {
 				error: () => i18n.t("validation.clientNameCannotStartWithANumber"),
 			}),
+		description: z
+			.string()
+			.trim()
+			.refine((val) => [...val].length <= MCP_CLIENT_DESCRIPTION_MAX_LENGTH, {
+				error: () => i18n.t("validation.descriptionMustBe200CharactersOrFewer"),
+			})
+			.refine((val) => !/[\p{Cc}\u2028\u2029]/u.test(val), {
+				error: () => i18n.t("validation.descriptionMustBeASingleLine"),
+			})
+			.optional(), // "" clears it
 		headers: z.record(z.string(), secretVarSchema).optional().nullable(),
 		per_user_header_keys: z
 			.array(z.string().trim().min(1, msg("validation.headerNameCannotBeEmpty")))

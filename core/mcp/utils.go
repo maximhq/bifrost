@@ -290,9 +290,15 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			m.logger.Debug("%s Added %d tools for MCP client %s", MCPLogPrefix, len(clientTools), clientName)
 
 			// A client with a visible tool is one the caller can reach, so its
-			// instructions apply. A code mode client's ride in its stub instead
-			// (see GetAggregatedServerInstructions for the scoping rule).
-			if withInstructions && !client.ExecutionConfig.CodeModeFor(ctx) {
+			// instructions apply. A code mode client's ride in its stub instead,
+			// and it is only named (see GetAggregatedServerInstructions for the
+			// scoping rule). clientNames is sorted, so CodeModeClients is too.
+			if withInstructions && client.ExecutionConfig.CodeModeFor(ctx) {
+				// Only a client with a tool code mode can call is worth naming.
+				if modelVisibleTools(clientTools) > 0 {
+					result.CodeModeClients = append(result.CodeModeClients, clientName)
+				}
+			} else if withInstructions {
 				if instructions := discovery.GetInstructions(); instructions != "" {
 					if result.Instructions == nil {
 						result.Instructions = make([]schemas.MCPServerInstructions, 0, len(clientNames))

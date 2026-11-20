@@ -7444,6 +7444,36 @@ func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
 	assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, stored(), "an update can clear the override back to inherit")
 }
 
+// TestMCPClientDescriptionRoundTrip pins that the description is stored and read back by id and by the
+// boot-time GetMCPConfig load. Changing and clearing it through an update is pinned by the handler test.
+func TestMCPClientDescriptionRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "desc-client",
+		Name:             "desc_client",
+		Description:      "Dashboards, alerts, Prometheus and Loki queries",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+	}))
+	byID, err := store.GetMCPClientConfigByID(ctx, "desc-client")
+	require.NoError(t, err)
+	assert.Equal(t, "Dashboards, alerts, Prometheus and Loki queries", byID.Description, "the client config read by id carries the description")
+
+	config, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	var loaded *schemas.MCPClientConfig
+	for _, client := range config.ClientConfigs {
+		if client.ID == "desc-client" {
+			loaded = client
+		}
+	}
+	require.NotNil(t, loaded)
+	assert.Equal(t, "Dashboards, alerts, Prometheus and Loki queries", loaded.Description, "the loaded client config carries the description")
+}
+
 // Saving by target updates the existing row in place: same ID and created_at,
 // new patches. Delete reports a missing row as ErrNotFound.
 func TestDatasheetOverride_UpsertByTargetAndDelete(t *testing.T) {

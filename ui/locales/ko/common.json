@@ -496,6 +496,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "이 Bifrost 인스턴스에 구성된 설정 토큰을 입력하세요",
 		"giveTheFeedAName": "피드 이름을 입력하세요",
 		"nameMustBe120CharactersOrFewer": "이름은 120자 이하여야 해요",
+		"descriptionMustBe200CharactersOrFewer": "설명은 200자 이하여야 합니다",
+		"descriptionMustBeASingleLine": "설명은 탭이나 기타 제어 문자가 없는 한 줄이어야 합니다",
 		"enterTheFeedUrl": "피드 URL을 입력하세요",
 		"urlIsTooLong": "URL이 너무 길어요",
 		"urlMustStartWithHttpOrHttps": "URL은 http:// 또는 https://로 시작해야 해요",

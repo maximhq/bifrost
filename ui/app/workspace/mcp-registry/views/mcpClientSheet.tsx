@@ -381,6 +381,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		mode: "onBlur",
 		defaultValues: {
 			name: mcpClient.config.name,
+			description: mcpClient.config.description ?? "",
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			server_type_on_slug: mcpClient.config.server_type_on_slug ?? "inherit",
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
@@ -464,6 +465,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	useEffect(() => {
 		form.reset({
 			name: mcpClient.config.name,
+			description: mcpClient.config.description ?? "",
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			server_type_on_slug: mcpClient.config.server_type_on_slug ?? "inherit",
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
@@ -713,6 +715,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
+					// Sent only when edited: PUT has PATCH semantics, and "" clears it.
+					description: form.formState.dirtyFields.description ? (data.description ?? "") : undefined,
 					is_code_mode_client: data.is_code_mode_client,
 					server_type_on_slug: data.server_type_on_slug,
 					is_ping_available: data.is_ping_available,
@@ -968,6 +972,27 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															<FormControl>
 																<Input placeholder={t("registry.sheet.clientNamePlaceholder")} {...field} value={field.value || ""} />
 															</FormControl>
+															<FormMessage />
+														</div>
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={form.control}
+												name="description"
+												render={({ field }) => (
+													<FormItem className="flex flex-col gap-3">
+														<FormLabel>{t("registry.sheet.descriptionLabel")}</FormLabel>
+														<div className="space-y-1">
+															<FormControl>
+																<Input
+																	placeholder={t("registry.sheet.descriptionPlaceholder")}
+																	data-testid="mcp-client-description-input"
+																	{...field}
+																	value={field.value || ""}
+																/>
+															</FormControl>
+															<p className="text-muted-foreground text-xs">{t("registry.sheet.descriptionHelp")}</p>
 															<FormMessage />
 														</div>
 													</FormItem>

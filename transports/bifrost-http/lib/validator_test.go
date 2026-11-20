@@ -173,6 +173,35 @@ func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientDescription: the file takes a one-line MCP client description
+// and refuses one longer than 200 characters or spanning several lines, as the API does.
+func TestValidateConfigSchema_MCPClientDescription(t *testing.T) {
+	for _, tc := range []struct {
+		name, description string
+		valid             bool
+	}{
+		{"one line", "Dashboards, alerts, Prometheus and Loki queries", true},
+		{"too long", strings.Repeat("a", 201), false},
+		{"newline", "Dashboards\nalerts", false},
+		{"line separator", "Dashboards alerts", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := json.Marshal(map[string]any{"name": "grafana", "connection_type": "http", "connection_string": "https://example.com/mcp", "description": tc.description})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := `{"mcp": {"client_configs": [` + string(client) + `]}}`
+			err = ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected description %q to pass validation: %v", tc.description, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("expected description %q to fail validation", tc.description)
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_NoWorkloadIdentityMappings pins that config.json holds no
 // workload identity mappings: workloads are mapped to service accounts in the dashboard or
 // through the API, and only the trusted issuers live in the file, on the SSO provider.

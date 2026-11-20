@@ -608,6 +608,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_mcp_client_description_column"}, run: migrationAddMCPClientDescriptionColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17716,4 +17717,36 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 			return nil
 		},
 	}
+}
+
+// migrationAddMCPClientDescriptionColumn adds the description column to config_mcp_clients.
+// Existing rows take the empty default, which means no description: today's behavior.
+func migrationAddMCPClientDescriptionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_description_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "Description"); err != nil {
+				return fmt.Errorf("add description column to config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "Description"); err != nil {
+				return fmt.Errorf("drop description column from config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

@@ -51,11 +51,8 @@ type ExecutionEnvironment struct {
 func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 	executeToolCodeProps := schemas.NewOrderedMapFromPairs(
 		schemas.KV("code", map[string]interface{}{
-			"type": "string",
-			"description": "Python (Starlark) code to execute. Tool calls are synchronous: result = server.tool(param=\"value\"). " +
-				"Use print() for logging. Assign to 'result' variable to return a value. " +
-				"Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations. " +
-				"Example: items = server.list_items()\nfor item in items:\n    print(item[\"name\"])\nresult = items",
+			"type":        "string",
+			"description": "Starlark code to run. Example:\nissues = github.list_issues(state=\"open\")\nresult = [i[\"title\"] for i in issues]",
 		}),
 	)
 	return schemas.ChatTool{
@@ -63,37 +60,23 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 		Function: &schemas.ChatToolFunction{
 			Name: codemcp.ToolTypeExecuteToolCode,
 			Description: schemas.Ptr(
-				"Executes Python code in a sandboxed Starlark interpreter with MCP server tool access. " +
-					"Servers are exposed as global objects: result = serverName.toolName(param=\"value\"). " +
-					"This is the final step of the four-tool code mode workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
-					"If you have not already read a tool's .pyi stub in this conversation, do that before writing code. " +
-					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
+				"Code mode, step 4 of 4. Runs Starlark, a subset of Python, in a sandbox where each code mode server is a global object: " +
+					"r = github.create_issue(title=\"Bug\"). Use only the tool and parameter names you read with readToolFile. " +
+					"Every call starts in a fresh scope; nothing carries over between calls. " +
+					"Return a value by assigning it to result; print() output is returned too. " +
 
-					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
-					"1. NO try/except/finally/raise. A failed tool call returns an error value instead of raising: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still stops the script. " +
-					"2. NO classes — use dicts and functions. " +
-					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
-					"4. NO is operator — use == for comparison. " +
-					"5. NO f-strings — use % formatting: \"Hello %s, count=%d\" % (name, n). " +
-					"6. Each executeToolCode call runs in a FRESH ISOLATED SCOPE — no variables, functions, or state persist between calls. Re-fetch data or store it via MCP tools (e.g., SQLite, FileSystem) if needed across calls. " +
-
-					"SYNTAX NOTES: " +
-					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
-					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
-					"• Access dict values with brackets: result[\"key\"] NOT result.key (a failed call's r.error is the exception) " +
-					"• Use print() for logging/debugging " +
-					"• List comprehensions: [x for x in items if x[\"active\"]] " +
-					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
-					"• Triple-quoted strings for multiline: \"\"\"multi\\nline\"\"\" " +
-					"• chr(10) for newline character, chr(9) for tab " +
-					"• To return a value, assign to 'result': result = computed_value " +
-					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
+					"DIFFERENCES FROM PYTHON: " +
+					"1. No try/except/raise. A failed tool call returns an error value: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still ends the run. " +
+					"2. No classes, imports, async/await, f-strings or the is operator. Use dicts and functions, \"%s\" % value formatting, and ==. " +
+					"3. No direct network or file access; use MCP tools. " +
+					"4. Call tools with keyword arguments, and read results with r[\"key\"], not r.key. Strings work as in Python, including \"\\n\" and triple quotes. " +
+					"5. Tool calls are time-limited; avoid long loops. " +
 
 					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
 					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr, fail. " +
 					"MODULES: json (json.decode(s), json.encode(v)), math (math.floor, math.sqrt and the like); a server named json or math takes that name. " +
 
-					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
+					"If the code fails, fix it and run again. Before rerunning code that already called tools, check what those calls changed so you do not repeat a write.",
 			),
 
 			Parameters: &schemas.ToolFunctionParameters{

@@ -91,3 +91,22 @@ describe("Bifrost MCP URL settings", () => {
 		expect(openAPIUrlSchema.safeParse(value).success).toBe(ok);
 	});
 });
+
+describe("mcpClientUpdateSchema description", () => {
+	it.each([
+		["Dashboards, alerts, Prometheus and Loki queries", true],
+		["", true],
+		["a".repeat(200), true],
+		["a".repeat(201), false],
+		["é".repeat(200), true],
+		["é".repeat(201), false],
+		["Dashboards\nalerts", false],
+		["Dashboards\talerts", false],
+		["Dashboards\u2028alerts", false],
+	])("description %j accepted: %s", (description, ok) => {
+		expect(mcpClientUpdateSchema.safeParse({ name: "grafana", description }).success).toBe(ok);
+	});
+	it("trims surrounding whitespace", () => {
+		expect(mcpClientUpdateSchema.parse({ name: "grafana", description: "  Dashboards  " }).description).toBe("Dashboards");
+	});
+});

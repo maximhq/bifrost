@@ -2302,6 +2302,35 @@ func TestStubsExplainFailedCalls(t *testing.T) {
 	}
 }
 
+// The four descriptions name their step, so a model reading any one of them knows where it sits in
+// the workflow and what comes next, and they stay within a budget: every code mode request pays
+// for them, and the per-caller catalogue is appended to listToolFiles on top.
+func TestCodeModeToolDescriptionsNameTheirStep(t *testing.T) {
+	for _, level := range []schemas.CodeModeBindingLevel{schemas.CodeModeBindingLevelServer, schemas.CodeModeBindingLevelTool} {
+		mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{BindingLevel: level}, nil)
+		want := map[string]struct {
+			step   string
+			next   string
+			budget int
+		}{
+			codemcp.ToolTypeListToolFiles:   {"Code mode, step 1 of 4.", "Next: readToolFile", 500},
+			codemcp.ToolTypeReadToolFile:    {"Code mode, step 2 of 4.", "getToolDocs", 600},
+			codemcp.ToolTypeGetToolDocs:     {"Code mode, optional step 3 of 4.", "Next: executeToolCode", 350},
+			codemcp.ToolTypeExecuteToolCode: {"Code mode, step 4 of 4.", "readToolFile", 1600},
+		}
+		for _, tool := range mode.GetTools() {
+			w := want[tool.Function.Name]
+			description := *tool.Function.Description
+			if !strings.HasPrefix(description, w.step) || !strings.Contains(description, w.next) {
+				t.Errorf("%s/%s does not open with %q and point at %q:\n%s", level, tool.Function.Name, w.step, w.next, description)
+			}
+			if len(description) > w.budget {
+				t.Errorf("%s/%s is %d bytes, past its %d byte budget", level, tool.Function.Name, len(description), w.budget)
+			}
+		}
+	}
+}
+
 // The executeToolCode description is the one text every model reads before its first script, so
 // it must describe failed calls as values and list only names the sandbox resolves.
 func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {

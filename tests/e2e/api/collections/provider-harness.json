@@ -257679,8 +257679,10 @@
                   "  pm.expect(result.instructions, 'instructions missing entirely - sse_mcp should still contribute: ' + pm.response.text()).to.be.a('string');",
                   "  pm.expect(result.instructions, 'a non-code-mode upstream must still be aggregated: ' + result.instructions).to.include('<mcp_server name=\"sse_mcp\">');",
                   "  // Its tools were replaced by the four meta-tools, so guidance naming them does not belong",
-                  "  // in a block every request pays for. It rides in the server's .pyi stub instead.",
-                  "  pm.expect(result.instructions, 'code mode client leaked into the aggregate: ' + result.instructions).to.not.include(pm.collectionVariables.get('codeModeInstructionsClient'));",
+                  "  // in a block every request pays for. It rides in the server's .pyi stub instead; the aggregate",
+                  "  // only names the server, on the code mode pointer line.",
+                  "  var codeModeClient = pm.collectionVariables.get('codeModeInstructionsClient');",
+                  "  pm.expect(result.instructions, 'code mode client leaked into the aggregate: ' + result.instructions).to.not.include('<mcp_server name=\\\"' + codeModeClient + '\\\">');",
                   "});"
                 ]
               }
@@ -346501,6 +346503,578 @@
               "path": [
                 "v1",
                 "videos"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "372. Code mode catalogue names the code mode servers a caller can reach (code mode catalogue) [SERIAL]",
+      "description": "Code mode keeps every upstream tool out of the tool list, so a model learned that a code mode server existed only by calling listToolFiles, which it had no reason to do until a user told it to look there; the server instructions said nothing either, because code mode clients are excluded from the aggregate (folder 210). These cases pin the catalogue that now tells the model up front: the listToolFiles description ends with \"Servers available through code mode:\" and one line per reachable server (\"- <name>: <description>\", or \"- <name> (N tools: a, b, ...)\" for a client with no description), and the injected server instructions end with one pointer line, \"MCP servers available through code mode (start with listToolFiles to use them): <names>.\". Both are built per caller, so a server outside the caller's reach (x-bf-mcp-include-clients here) is never named.\n\nRoutes: /v1/chat/completions (pointer as the leading system message) and /v1/responses (pointer in instructions), both observed through extra_fields.raw_request with tool_choice none so the single upstream turn is the one asserted, as folder 225 does; the gateway /mcp initialize result (pointer in instructions) and tools/list (catalogue in the listToolFiles description, plus the step labels the four code mode tool descriptions now open with).\n\nSerial, and it provisions its own two clients on the SSE fixture (examples/mcps/remote-test-server, the same upstream as sse_mcp) for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists. One carries a description and one does not, so both catalogue forms are covered, and narrowing the model routes to the described one shows the other is not named; the queue and sweep at the end reclaim both, plus any harness_cmcat_ leftover older than an hour.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue provision a described code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run names: two runs against one gateway must not contend for the same clients, and the",
+                  "// sweep below keys off the shared harness_cmcat_ prefix to reap anything an interrupted run left behind.",
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('codeModeCatalogueClient', 'harness_cmcat_desc_' + stamp);",
+                  "pm.collectionVariables.set('codeModeCatalogueBareClient', 'harness_cmcat_bare_' + stamp);",
+                  "pm.collectionVariables.set('codeModeCatalogueDescription', 'Harness fixture server that echoes text, adds numbers and greets people');",
+                  "pm.collectionVariables.set('codeModeCatalogueQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeCatalogueSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeCatalogueClient}}\",\n  \"description\": \"{{codeModeCatalogueDescription}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue provision a second code-mode client with no description",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeCatalogueBareClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini /v1/chat/completions code-mode-catalogue: listToolFiles names the described server and a system message points at it",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// raw_request is the body Bifrost sent upstream; it may come back as an object or as a JSON string.",
+                  "function upstreamBody(body) {",
+                  "  var r = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof r === 'string') { try { r = JSON.parse(r); } catch (e) { throw new Error('raw_request is not JSON: ' + r.slice(0, 400)); } }",
+                  "  return r;",
+                  "}",
+                  "// Chat declares {type, function: {name, description}}, Responses declares {type, name, description}.",
+                  "function toolDescription(upstream, name) {",
+                  "  var tools = (upstream && upstream.tools) || [];",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    var t = tools[i] || {};",
+                  "    var fn = t.function || t;",
+                  "    if (fn.name === name) { return String(fn.description || ''); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function textOf(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (p) { return (p && (p.text || p.content)) || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "var POINTER = 'MCP servers available through code mode (start with listToolFiles to use them): ';",
+                  "var CATALOGUE = '\\n\\nServers available through code mode:';",
+                  "// The line of text that starts with marker, or null.",
+                  "function lineFrom(text, marker) {",
+                  "  var i = String(text || '').indexOf(marker);",
+                  "  return i === -1 ? null : text.slice(i).split('\\n')[0];",
+                  "}",
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "var description = pm.collectionVariables.get('codeModeCatalogueDescription');",
+                  "pm.test('chat: the listToolFiles description carries the catalogue line for the described server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  pm.expect(upstream, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  var list = toolDescription(upstream, 'listToolFiles');",
+                  "  pm.expect(list, 'listToolFiles was not declared upstream: ' + JSON.stringify(upstream.tools || null).slice(0, 2000)).to.be.a('string');",
+                  "  pm.expect(list, 'no catalogue block: ' + list).to.include(CATALOGUE);",
+                  "  pm.expect(list, 'catalogue line missing or not on its own line: ' + list).to.include('\\n- ' + described + ': ' + description);",
+                  "  // Narrowed to the described client, so the bare one must not be named to this caller.",
+                  "  pm.expect(list, 'a server outside x-bf-mcp-include-clients was named: ' + list).to.not.include(bare);",
+                  "});",
+                  "pm.test('chat: the leading system message names the code mode server', function () {",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  var first = ((upstream && upstream.messages) || [])[0] || {};",
+                  "  pm.expect(first.role, 'the gateway did not prepend a system message: ' + JSON.stringify((upstream || {}).messages || null).slice(0, 2000)).to.equal('system');",
+                  "  var text = textOf(first.content);",
+                  "  pm.expect(text, 'no code mode pointer in the system message: ' + text).to.include(POINTER);",
+                  "  pm.expect(lineFrom(text, POINTER), 'pointer did not name exactly the reachable server: ' + text).to.equal(POINTER + described + '.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "{{codeModeCatalogueClient}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini /v1/responses code-mode-catalogue: listToolFiles names the described server and instructions point at it",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// raw_request is the body Bifrost sent upstream; it may come back as an object or as a JSON string.",
+                  "function upstreamBody(body) {",
+                  "  var r = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof r === 'string') { try { r = JSON.parse(r); } catch (e) { throw new Error('raw_request is not JSON: ' + r.slice(0, 400)); } }",
+                  "  return r;",
+                  "}",
+                  "// Chat declares {type, function: {name, description}}, Responses declares {type, name, description}.",
+                  "function toolDescription(upstream, name) {",
+                  "  var tools = (upstream && upstream.tools) || [];",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    var t = tools[i] || {};",
+                  "    var fn = t.function || t;",
+                  "    if (fn.name === name) { return String(fn.description || ''); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function textOf(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (p) { return (p && (p.text || p.content)) || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "var POINTER = 'MCP servers available through code mode (start with listToolFiles to use them): ';",
+                  "var CATALOGUE = '\\n\\nServers available through code mode:';",
+                  "// The line of text that starts with marker, or null.",
+                  "function lineFrom(text, marker) {",
+                  "  var i = String(text || '').indexOf(marker);",
+                  "  return i === -1 ? null : text.slice(i).split('\\n')[0];",
+                  "}",
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "var description = pm.collectionVariables.get('codeModeCatalogueDescription');",
+                  "pm.test('responses: the listToolFiles description carries the catalogue line for the described server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  pm.expect(upstream, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  var list = toolDescription(upstream, 'listToolFiles');",
+                  "  pm.expect(list, 'listToolFiles was not declared upstream: ' + JSON.stringify(upstream.tools || null).slice(0, 2000)).to.be.a('string');",
+                  "  pm.expect(list, 'no catalogue block: ' + list).to.include(CATALOGUE);",
+                  "  pm.expect(list, 'catalogue line missing or not on its own line: ' + list).to.include('\\n- ' + described + ': ' + description);",
+                  "  pm.expect(list, 'a server outside x-bf-mcp-include-clients was named: ' + list).to.not.include(bare);",
+                  "});",
+                  "pm.test('responses: instructions name the code mode server', function () {",
+                  "  var upstream = upstreamBody(pm.response.json());",
+                  "  var instructions = String((upstream && upstream.instructions) || '');",
+                  "  pm.expect(instructions, 'no code mode pointer in instructions: ' + JSON.stringify(upstream || null).slice(0, 2000)).to.include(POINTER);",
+                  "  pm.expect(lineFrom(instructions, POINTER), 'pointer did not name exactly the reachable server: ' + instructions).to.equal(POINTER + described + '.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "{{codeModeCatalogueClient}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"input\": \"Reply with the single word ready.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai /mcp code-mode-catalogue: initialize instructions point at the code mode servers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  var body;",
+                  "  try { body = JSON.parse(line); }",
+                  "  catch (e) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  if (!body || !body.result) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  return body.result;",
+                  "}",
+                  "var POINTER = 'MCP servers available through code mode (start with listToolFiles to use them): ';",
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "var description = pm.collectionVariables.get('codeModeCatalogueDescription');",
+                  "pm.test('the handshake instructions end with the code mode pointer naming both clients', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  var instructions = result.instructions;",
+                  "  pm.expect(instructions, 'instructions missing: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(instructions, 'a non-code-mode upstream must still be aggregated: ' + instructions).to.include('<mcp_server name=\"sse_mcp\">');",
+                  "  var at = instructions.indexOf(POINTER);",
+                  "  pm.expect(at, 'no code mode pointer in the handshake instructions: ' + instructions).to.be.above(-1);",
+                  "  pm.expect(at, 'the pointer must follow the server blocks: ' + instructions).to.be.above(instructions.indexOf('<mcp_server name=\"sse_mcp\">'));",
+                  "  var line = instructions.slice(at).split('\\n')[0];",
+                  "  pm.expect(line, 'pointer did not name the described client: ' + line).to.include(described);",
+                  "  pm.expect(line, 'pointer did not name the bare client: ' + line).to.include(bare);",
+                  "  // Names only: the server's own instructions ride in its stub, never in this block.",
+                  "  pm.expect(instructions, 'a code mode client got a server block: ' + instructions).to.not.include('<mcp_server name=\"' + described + '\">');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai /mcp code-mode-catalogue: tools/list listToolFiles names both code mode servers, and the four tools open with their step labels",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  var body;",
+                  "  try { body = JSON.parse(line); }",
+                  "  catch (e) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  if (!body || !body.result) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  return body.result;",
+                  "}",
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "var description = pm.collectionVariables.get('codeModeCatalogueDescription');",
+                  "pm.test('the gateway listToolFiles description carries a catalogue line per code mode server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  var tool = result.tools.filter(function (t) { return t.name === 'listToolFiles'; })[0];",
+                  "  pm.expect(tool, 'listToolFiles is not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  var list = String(tool.description || '');",
+                  "  pm.expect(list, 'no catalogue block: ' + list).to.include('\\n\\nServers available through code mode:');",
+                  "  pm.expect(list, 'described client line missing: ' + list).to.include('\\n- ' + described + ': ' + description);",
+                  "  pm.expect(list, 'bare client tool-name line missing: ' + list).to.include('\\n- ' + bare + ' (3 tools: ');",
+                  "});",
+                  "pm.test('each code mode tool says where it sits in the four-step flow', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  var labels = {",
+                  "    listToolFiles: 'Code mode, step 1 of 4.',",
+                  "    readToolFile: 'Code mode, step 2 of 4.',",
+                  "    getToolDocs: 'Code mode, optional step 3 of 4.',",
+                  "    executeToolCode: 'Code mode, step 4 of 4.'",
+                  "  };",
+                  "  Object.keys(labels).forEach(function (name) {",
+                  "    var tool = result.tools.filter(function (t) { return t.name === name; })[0];",
+                  "    pm.expect(tool, name + ' is not listed: ' + pm.response.text()).to.be.an('object');",
+                  "    var description = String(tool.description || '');",
+                  "    pm.expect(description.indexOf(labels[name]), name + ' does not open with its step label: ' + description).to.equal(0);",
+                  "  });",
+                  "  // The rewrite must keep the failed-call guidance folder 255 pins.",
+                  "  var exec = result.tools.filter(function (t) { return t.name === 'executeToolCode'; })[0];",
+                  "  pm.expect(String(exec.description || ''), 'executeToolCode lost its failed-call check').to.include('hasattr(r, \"error\")');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue queue this run's clients, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var described = pm.collectionVariables.get('codeModeCatalogueClient');",
+                  "var bare = pm.collectionVariables.get('codeModeCatalogueBareClient');",
+                  "var description = pm.collectionVariables.get('codeModeCatalogueDescription');",
+                  "// The names carry the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be reading: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode clients are listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = [], stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf('harness_cmcat_') !== 0) { continue; }",
+                  "    if (cfg.name === described || cfg.name === bare) { mine.push(cfg.client_id); continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(cfg.name.lastIndexOf('_') + 1), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  // Queued before the assertion, so a run that set up only one client still has it cleaned up.",
+                  "  // This run's clients first, so they are reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeCatalogueQueue', JSON.stringify(mine.concat(stale)));",
+                  "  pm.expect(mine.length, 'this run\\'s clients are not both listed (the ones that are still get cleaned up): ' + pm.response.text()).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-catalogue remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeCatalogueQueue') || '[]');",
+                  "pm.collectionVariables.set('codeModeCatalogueClientId', queue.length ? queue[0] : 'none-queued');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeCatalogueQueue') || '[]');",
+                  "queue.shift();",
+                  "pm.collectionVariables.set('codeModeCatalogueQueue', JSON.stringify(queue));",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeCatalogueSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeCatalogueSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeCatalogueClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeCatalogueClientId}}"
               ]
             }
           }

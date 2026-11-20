@@ -1880,6 +1880,68 @@ func TestGetMCPClients_ReturnsMaxInstructionsLength(t *testing.T) {
 	assert.Equal(t, 50, list.Clients[0].Config.MaxInstructionsLength)
 }
 
+// TestMCPClientDescription pins the description on create and update, in both the runtime config and
+// the stored row: create trims it; an update that omits it keeps it, one that sends it replaces it,
+// and "" clears it; and a description longer than schemas.MaxMCPClientDescriptionLength characters
+// or not on one line is answered 400 before anything is stored or applied.
+func TestMCPClientDescription(t *testing.T) {
+	invalid := []struct{ name, description, wantErr string }{
+		{"too long", strings.Repeat("é", schemas.MaxMCPClientDescriptionLength+1), "description must be at most 200 characters"},
+		{"control character", "Dashboards\nalerts", "description must be a single line without control characters"},
+		{"line separator", "Dashboards\u2028alerts", "description must be a single line without control characters"},
+	}
+	h, mgr := newOpenAPITestHandler(t)
+	create := func(description string) (int, string) {
+		body, _ := json.Marshal(map[string]any{
+			"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+			"description":      description,
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		return doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	}
+
+	for _, tc := range invalid {
+		status, respBody := create(tc.description)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "create %s: %s", tc.name, respBody)
+		assert.Contains(t, respBody, tc.wantErr, "create %s", tc.name)
+	}
+	require.Empty(t, mgr.added, "a refused create applies nothing")
+
+	status, respBody := create("  Pets: list, adopt and return  ")
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	id := mgr.added[0].ID
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	stored := func() string {
+		row, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+		require.NoError(t, err)
+		return row.Description
+	}
+	assert.Equal(t, "Pets: list, adopt and return", mgr.added[0].Description, "create trims the description")
+	assert.Equal(t, "Pets: list, adopt and return", stored(), "create stores the trimmed description")
+
+	for _, tc := range invalid {
+		body, _ := json.Marshal(map[string]any{"description": tc.description})
+		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, string(body), id, false)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "update %s: %s", tc.name, respBody)
+		assert.Contains(t, respBody, tc.wantErr, "update %s", tc.name)
+	}
+	require.Empty(t, mgr.updated, "a refused update applies nothing")
+	assert.Equal(t, "Pets: list, adopt and return", stored(), "a refused update stores nothing")
+
+	for _, tc := range []struct{ name, body, want string }{
+		{"omitted keeps it", `{"name":"petstore_renamed"}`, "Pets: list, adopt and return"},
+		{"sent replaces it", `{"description":" Pet adoption "}`, "Pet adoption"},
+		{"empty clears it", `{"description":""}`, ""},
+	} {
+		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, tc.body, id, false)
+		require.Equal(t, fasthttp.StatusOK, status, "%s: %s", tc.name, respBody)
+		assert.Equal(t, tc.want, mgr.updated[len(mgr.updated)-1].Description, "%s: runtime config", tc.name)
+		assert.Equal(t, tc.want, stored(), "%s: stored row", tc.name)
+	}
+}
+
 // dialFailingUpdateManager applies every update and then reports the dial that
 // followed as failed, as the runtime does for an enable whose upstream is down.
 type dialFailingUpdateManager struct {
@@ -2519,6 +2581,8 @@ type verificationRecorder struct {
 	verified  []string
 	activated []*schemas.MCPClientConfig // configs handed over as recording the verification
 	added     []*schemas.MCPClientConfig
+	updated   []*schemas.MCPClientConfig // configs handed to the runtime as an update
+	onVerify  func()                     // runs while a per-user OAuth verification is in flight
 }
 
 // verifiedDiscovery is what verification finds: a tool, the server's instructions, a resource and
@@ -2538,10 +2602,16 @@ func (r *verificationRecorder) VerifyHeadersConnection(_ context.Context, config
 }
 
 func (r *verificationRecorder) VerifyPerUserOAuthConnection(_ context.Context, config *schemas.MCPClientConfig, _ string) (*schemas.MCPDiscovery, error) {
+	if r.onVerify != nil {
+		r.onVerify()
+	}
 	return r.verifiedDiscovery(config)
 }
 
-func (r *verificationRecorder) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+func (r *verificationRecorder) UpdateMCPClient(_ context.Context, _ string, config *schemas.MCPClientConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.updated = append(r.updated, config)
 	return nil
 }
 
@@ -3106,6 +3176,42 @@ func TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothi
 	require.NoError(t, err)
 	assert.Nil(t, stored.DiscoveredTools)
 	assert.Empty(t, recorder.toolsSet)
+}
+
+// TestCompleteMCPClientOAuth_KeepsADescriptionEditedDuringVerification: verification is a call to
+// the upstream and can take a while. A description edited meanwhile is the latest one, so
+// completing the sign-in must not write the description it read before verifying back over it, in
+// the database or in the runtime.
+func TestCompleteMCPClientOAuth_KeepsADescriptionEditedDuringVerification(t *testing.T) {
+	ctx := context.Background()
+	h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+	require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+		ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+		AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-wiki", Name: "wiki", Description: "Wiki search", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+		OauthConfigID: schemas.Ptr("oauth-wiki"), PendingOAuthConfig: &schemas.OAuth2Config{}, ToolsToExecute: []string{"*"},
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+		ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+	}))
+	recorder.onVerify = func() {
+		row, err := h.store.ConfigStore.GetMCPClientByID(ctx, "client-wiki")
+		require.NoError(t, err)
+		row.Description = "Edited while verifying"
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientConfig(ctx, "client-wiki", row))
+	}
+
+	status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Equal(t, "Edited while verifying", stored.Description)
+	require.Len(t, recorder.updated, 1)
+	assert.Equal(t, "Edited while verifying", recorder.updated[0].Description, "the runtime follows the database")
 }
 
 // assertKeepsNoDiscovery checks config keeps nothing the admin's verification found: no tools,

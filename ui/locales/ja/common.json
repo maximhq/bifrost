@@ -496,6 +496,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "この Bifrost インスタンスに設定されたセットアップトークンを入力してください",
 		"giveTheFeedAName": "フィードに名前を付けてください",
 		"nameMustBe120CharactersOrFewer": "名前は 120 文字以内にしてください",
+		"descriptionMustBe200CharactersOrFewer": "説明は 200 文字以下にしてください",
+		"descriptionMustBeASingleLine": "説明はタブやその他の制御文字を含まない 1 行にしてください",
 		"enterTheFeedUrl": "フィードの URL を入力してください",
 		"urlIsTooLong": "URL が長すぎます",
 		"urlMustStartWithHttpOrHttps": "URL は http:// または https:// で始まる必要があります",

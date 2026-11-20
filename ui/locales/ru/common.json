@@ -514,6 +514,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "Введите токен настройки, заданный для этого экземпляра Bifrost",
 		"giveTheFeedAName": "Укажите название ленты",
 		"nameMustBe120CharactersOrFewer": "Название должно содержать не более 120 символов",
+		"descriptionMustBe200CharactersOrFewer": "Описание должно содержать не более 200 символов",
+		"descriptionMustBeASingleLine": "Описание должно быть одной строкой без табуляций и других управляющих символов",
 		"enterTheFeedUrl": "Введите URL ленты",
 		"urlIsTooLong": "URL слишком длинный",
 		"urlMustStartWithHttpOrHttps": "URL должен начинаться с http:// или https://",

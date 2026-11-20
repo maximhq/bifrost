@@ -496,6 +496,8 @@
 		"enterTheSetupTokenConfiguredForThisBifrostInstance": "请输入为此 Bifrost 实例配置的设置令牌",
 		"giveTheFeedAName": "请为订阅源命名",
 		"nameMustBe120CharactersOrFewer": "名称不得超过 120 个字符",
+		"descriptionMustBe200CharactersOrFewer": "描述不能超过 200 个字符",
+		"descriptionMustBeASingleLine": "描述必须是单行文本，不能包含制表符或其他控制字符",
 		"enterTheFeedUrl": "请输入订阅源 URL",
 		"urlIsTooLong": "URL 过长",
 		"urlMustStartWithHttpOrHttps": "URL 必须以 http:// 或 https:// 开头",

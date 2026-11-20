@@ -388,9 +388,51 @@ When Code Mode clients are connected, Bifrost automatically adds four meta-tools
 When the request carries a virtual key, `listToolFiles`, `readToolFile`, and `getToolDocs` only show the tools that key is allowed to execute (its MCP `tools_to_execute` grant), on every route including `POST /v1/mcp/tool/execute`. A tool the key does not grant does not appear in discovery; grant it on the key to make it visible. Requests without a virtual key see every code mode tool, as before.
 </Note>
 
+### What the model knows up front
+
+Code mode keeps every server's tools out of the request, so a model would otherwise learn that a
+server exists only by calling `listToolFiles`, and it has no reason to do that until a user tells it
+to look. Bifrost tells it up front which code mode servers the caller can reach, without sending
+any of their tools:
+
+- The `listToolFiles` description ends with a catalogue, one line per server. A server with a
+  description shows it; one without shows its tool count and first few tool names.
+
+  ```
+  Servers available through code mode:
+  - grafana: Dashboards, alerts, Prometheus and Loki queries
+  - zoom (8 tools: create_meeting, delete_meeting, get_meeting, get_recording, list_meetings, ...)
+  ```
+
+- The server instructions end with one line naming the same servers: as a system message on chat
+  requests, in `instructions` on Responses requests, and in the `/mcp` `initialize` response.
+
+  ```
+  MCP servers available through code mode (start with listToolFiles to use them): grafana, zoom.
+  ```
+
+Both are built per caller, from the same visibility rules as the tools: a server a virtual key,
+`x-bf-mcp-include-clients` or a Virtual MCP does not grant is never named, and `server_type_on_slug`
+is followed on `/mcp/<slug>`. They list up to 30 servers and count the rest. The text only changes
+when the set of reachable servers or their descriptions change, so it does not churn the prompt
+cache. A request that reaches no code mode server is unchanged.
+
+Set a server's description on the client: the **Description** field in the MCP client sheet, or
+`description` in `config.json` and the API. Keep it to one line saying what the server is for; it is
+at most 200 characters, and is sent to the model on every request that reaches the server.
+
+```json
+{
+  "name": "grafana",
+  "description": "Dashboards, alerts, Prometheus and Loki queries",
+  "is_code_mode_client": true
+}
+```
+
 ### 1. listToolFiles
 
-Lists all available virtual `.pyi` stub files for connected code mode servers.
+Lists all available virtual `.pyi` stub files for connected code mode servers. Its description
+carries the catalogue above.
 
 **Example output (Server-level binding):**
 ```
@@ -442,8 +484,9 @@ nothing contribute no block. `listToolFiles` names which servers have guidance, 
 repeats it alongside the full tool documentation. Long guidance is trimmed to the server's
 instruction limit.
 
-This is the only place a code mode server's guidance appears. It is deliberately left out of the
-aggregate that non-code-mode servers contribute to (see
+This is the only place a code mode server's guidance appears; the server instructions only name
+the server. Its guidance is deliberately left out of the aggregate that non-code-mode servers
+contribute to (see
 [Server Instructions](/mcp/overview#server-instructions)), which every request carries: in code
 mode that would describe tools the model was not given, and would put back a per-server prompt
 cost that code mode exists to remove.
