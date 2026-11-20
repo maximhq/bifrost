@@ -14,6 +14,7 @@ import {
 	Construction,
 	Database,
 	DatabaseZap,
+	FileSpreadsheet,
 	Flag,
 	FolderGit,
 	Gavel,
@@ -41,7 +42,9 @@ import {
 	Shuffle,
 	Siren,
 	SlidersHorizontal,
+	Split,
 	SquareKanban,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -50,8 +53,8 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
-	Webhook,
 	Waypoints,
+	Webhook,
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
@@ -124,6 +127,7 @@ export function useNavItems(): NavItem[] {
 	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasDatasheetAccess = useRbac(RbacResource.Datasheet, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasAgentGatewayAccess = useRbac(RbacResource.AgentGateway, RbacOperation.View);
 	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
@@ -142,6 +146,7 @@ export function useNavItems(): NavItem[] {
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
+	const hasRoutersAccess = useRbac(RbacResource.Routers, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
@@ -296,7 +301,15 @@ export function useNavItems(): NavItem[] {
 						title: t("nav.complexityRouter"),
 						url: "/workspace/complexity-router",
 						icon: GitCompareArrows,
-						hasAccess: hasRoutingRulesAccess,
+						// The Complexity Router APIs are gated on Governance.
+						hasAccess: hasGovernanceLegacyAccess,
+					},
+					{
+						id: "models.routers",
+						title: t("nav.routers"),
+						url: "/workspace/model-routers",
+						icon: Split,
+						hasAccess: hasRoutersAccess,
 					},
 					{
 						id: "models.circuit-breaker",
@@ -312,6 +325,14 @@ export function useNavItems(): NavItem[] {
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						id: "models.datasheet",
+						testId: "datasheet",
+						title: t("nav.datasheet"),
+						url: "/workspace/datasheet-editor",
+						icon: FileSpreadsheet,
+						hasAccess: hasDatasheetAccess,
 					},
 					{
 						id: "models.settings",
@@ -777,6 +798,14 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasSettingsAccess,
 					},
 					{
+						id: "settings.gateways",
+						title: t("nav.gateways"),
+						url: "/workspace/config/gateways",
+						icon: SquareTerminal,
+						description: t("navDesc.gateways"),
+						hasAccess: hasSettingsAccess,
+					},
+					{
 						id: "settings.warp",
 						title: t("nav.warp"),
 						url: "/workspace/config/warp",
@@ -869,6 +898,7 @@ export function useNavItems(): NavItem[] {
 			hasGovernanceLegacyAccess,
 			hasAnyGovernanceAccess,
 			hasRoutingRulesAccess,
+			hasRoutersAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
 			hasCircuitBreakerAccess,

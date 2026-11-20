@@ -318,6 +318,18 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "machgen": {
+      "keys": [
+        {
+          "name": "MachGen API Key",
+          "value": "env.MACHGEN_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "nebius": {
       "keys": [
         {

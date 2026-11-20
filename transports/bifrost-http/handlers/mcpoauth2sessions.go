@@ -4,10 +4,12 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -43,6 +45,9 @@ type oauth2SessionsListResponse struct {
 	TotalCount int                            `json:"total_count"`
 	Limit      int                            `json:"limit"`
 	Offset     int                            `json:"offset"`
+	// AccessTokenTTL is the configured access token lifetime in seconds, so the
+	// page can estimate expiry without reading settings it may not have access to.
+	AccessTokenTTL int `json:"access_token_ttl"`
 }
 
 // oauth2SessionsListQuery is the parsed query string for GET /api/oauth2/sessions.
@@ -138,12 +143,22 @@ func (h *OAuth2SessionsHandler) listSessions(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, oauth2SessionsListResponse{
-		Sessions:   sessions,
-		Count:      len(sessions),
-		TotalCount: int(totalCount),
-		Limit:      q.Limit,
-		Offset:     q.Offset,
+		Sessions:       sessions,
+		Count:          len(sessions),
+		TotalCount:     int(totalCount),
+		Limit:          q.Limit,
+		Offset:         q.Offset,
+		AccessTokenTTL: accessTokenTTLSeconds(h.store),
 	})
+}
+
+// accessTokenTTLSeconds returns the configured access token lifetime, falling
+// back to the default when unset, matching what token issuance applies.
+func accessTokenTTLSeconds(store *lib.Config) int {
+	if ttl := oauth2ServerCfg(store).AccessTokenTTL; ttl > 0 {
+		return ttl
+	}
+	return configtables.DefaultAccessTokenTTL
 }
 
 // DELETE /api/oauth2/sessions/{id} — revoke a specific downstream grant.
@@ -187,6 +202,10 @@ func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
 		logger.Error("oauth2 sessions: failed to revoke session: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to revoke session")
 		return
+	}
+	if grant != nil {
+		logger.Debug(oauth2TokenLogPrefix+" event=family.revoked at=%s reason=session_revoked refresh_token_id=%s client_id=%q",
+			time.Now().UTC().Format(time.RFC3339Nano), id, grant.ClientID)
 	}
 	var before map[string]any
 	targetName := id

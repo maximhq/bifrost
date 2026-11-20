@@ -94,6 +94,14 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			if tc.Custom != nil {
+				copyCustom := *tc.Custom
+				if tc.Custom.Name != nil {
+					copyName := *tc.Custom.Name
+					copyCustom.Name = &copyName
+				}
+				copyTc.Custom = &copyCustom
+			}
 			// Deep copy ExtraContent (json.RawMessage is a []byte)
 			if len(tc.ExtraContent) > 0 {
 				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
@@ -197,6 +205,7 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 		typ          *string
 		name         *string
 		args         strings.Builder
+		custom       *strings.Builder // input of a custom tool call
 		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
@@ -308,6 +317,16 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
 			}
+			if custom := deltaToolCall.Custom; custom != nil {
+				if acc.custom == nil {
+					acc.custom = &strings.Builder{}
+				}
+				if custom.Name != nil {
+					n := *custom.Name
+					acc.name = &n
+				}
+				acc.custom.WriteString(custom.Input)
+			}
 			if len(deltaToolCall.ExtraContent) > 0 {
 				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
 				copy(acc.extraContent, deltaToolCall.ExtraContent)
@@ -418,6 +437,10 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
+			}
+			if acc.custom != nil {
+				tc.Function = schemas.ChatAssistantMessageToolCallFunction{}
+				tc.Custom = &schemas.ChatAssistantMessageToolCallCustom{Name: acc.name, Input: acc.custom.String()}
 			}
 			if len(acc.extraContent) > 0 {
 				tc.ExtraContent = acc.extraContent

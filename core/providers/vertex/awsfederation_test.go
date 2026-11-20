@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
 )
 
@@ -557,6 +558,85 @@ func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
 	_, err = provider.getAuthTokenSource(bad)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "aws2")
+}
+
+// Malformed auth_credentials must not reach the error text: sonic quotes the input around the
+// syntax error, and that text lands in logs, the UI key status and API error bodies.
+func TestGetAuthTokenSource_MalformedCredentialsNotEchoed(t *testing.T) {
+	provider := &VertexProvider{}
+	secret := "PRIVATEKEYMATERIAL"
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		AuthCredentials: *schemas.NewSecretVar(`{"type":"service_account","private_key":"` + secret + `" oops}`),
+	}}
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+
+	_, err := provider.getAuthTokenSource(key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse auth credentials JSON")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// oauth2 appends the raw executable output to its parse error ("\nResponse: ..."); a malformed
+// output holding an id_token must not reach the error, which feeds messages, logs and nested causes.
+func TestGetAuthTokenSource_ExecutableResponseNotEchoed(t *testing.T) {
+	provider := &VertexProvider{}
+	secret := "IDTOKENMATERIAL"
+	script := filepath.Join(t.TempDir(), "token.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho '{\"id_token\":\""+secret+"\" oops'\n"), 0o700))
+	t.Setenv("GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES", "1")
+	creds := `{"type":"external_account","audience":"` + testWIFAudience + `",` +
+		`"subject_token_type":"urn:ietf:params:oauth:token-type:id_token","token_url":"https://sts.googleapis.com/v1/token",` +
+		`"credential_source":{"executable":{"command":"` + script + `","timeout_millis":5000}}}`
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{AuthCredentials: *schemas.NewSecretVar(creds)}}
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+
+	ts, err := provider.getAuthTokenSource(key)
+	require.NoError(t, err)
+	_, err = ts.Token()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unable to parse response")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// An executable's failure message is copied verbatim into oauth2's error with no delimiter; keep
+// the code, drop the message.
+func TestGetAuthTokenSource_ExecutableFailureMessageNotEchoed(t *testing.T) {
+	provider := &VertexProvider{}
+	secret := "IDTOKENMATERIAL"
+	script := filepath.Join(t.TempDir(), "token.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho '{\"version\":1,\"success\":false,\"code\":\"401\",\"message\":\"bad "+secret+"\"}'\n"), 0o700))
+	t.Setenv("GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES", "1")
+	creds := `{"type":"external_account","audience":"` + testWIFAudience + `",` +
+		`"subject_token_type":"urn:ietf:params:oauth:token-type:id_token","token_url":"https://sts.googleapis.com/v1/token",` +
+		`"credential_source":{"executable":{"command":"` + script + `","timeout_millis":5000}}}`
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{AuthCredentials: *schemas.NewSecretVar(creds)}}
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+
+	ts, err := provider.getAuthTokenSource(key)
+	require.NoError(t, err)
+	_, err = ts.Token()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsuccessful response: (401)")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// A RetrieveError with an error code hides its Body from Error(), but the nested cause must not
+// keep it either.
+func TestSanitizedTokenSource_DropsRetrieveErrorBody(t *testing.T) {
+	secret := "ACCESSTOKENMATERIAL"
+	ts := &sanitizedTokenSource{erroringTokenSource{err: &oauth2.RetrieveError{
+		ErrorCode: "invalid_grant",
+		Body:      []byte(`{"error":"invalid_grant","access_token":"` + secret + `"}`),
+	}}}
+
+	_, err := ts.Token()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid_grant")
+	var retrieveErr *oauth2.RetrieveError
+	assert.False(t, errors.As(err, &retrieveErr), "nested cause must not carry the RetrieveError body")
+	marshaled, mErr := json.Marshal(&schemas.ErrorField{Message: err.Error(), Error: err})
+	require.NoError(t, mErr)
+	assert.NotContains(t, string(marshaled), secret)
 }
 
 // TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount covers the other way the gcloud file is
