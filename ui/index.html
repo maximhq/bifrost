@@ -8,6 +8,22 @@
 		<link rel="dns-prefetch" href="https://getbifrost.ai" />
 		<link rel="preconnect" href="https://getbifrost.ai" />
 		<script>
+			// Apply the saved theme before first paint. next-themes only sets the class after React mounts, so without
+			// this a dark-mode reload paints the browser's white canvas for a frame. Mirrors next-themes' "theme" key.
+			!(function () {
+				var d = document.documentElement,
+					t;
+				try {
+					t = localStorage.getItem("theme");
+				} catch (e) {}
+				try {
+					var k = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+					d.classList.add(k);
+					d.style.colorScheme = k;
+				} catch (e) {}
+			})();
+		</script>
+		<script>
 			// Pre-boot fallback for a shell whose own chunks fail to load. Mirrors lib/utils/versionSkew.ts: the failed
 			// asset is re-requested, and only Bifrost's own missing-asset 404 is treated as an upgrade. Anything else
 			// (proxy, firewall, extension, network) gets a neutral message and no auto-reload.
