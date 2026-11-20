@@ -128,6 +128,15 @@ type Settings struct {
 	// decision-model router: a run suggests no more for a tier than it has
 	// room for (MaxPerTier less its live examples). Zero means no bound.
 	MaxPerTier int
+	// MaxSignalsPerTier is how many signals each tier may hold, for a
+	// decision-model router. Set, a run in ModeExamples also asks for each
+	// tier's signals once its groups are written (see suggestSignals), and
+	// writes no more than a tier has room for; zero writes none. Signals and
+	// Definitions are each tier's signals and definition as its decision
+	// model reads them now.
+	MaxSignalsPerTier int
+	Signals           map[string][]string
+	Definitions       map[string]string
 	// MaxPhrases is the phrase bank's capacity. A run suggests no more
 	// phrases than the bank has room for (MaxPhrases less the live phrases),
 	// keeping the heaviest clusters' phrases. Zero means no bound.
@@ -449,14 +458,39 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		run.Error = fmt.Sprintf("%d of %d clusters failed and were left for the next run: %v", failed, asked, firstErr)
 	}
 
-	// 5. Reconcile.
+	scope := rowScope{routerID: s.RouterID, routerVersion: s.RouterVersion, namespace: space.Namespace(), runID: s.RunID}
+
+	// 5. A decision-model router's signals, per tier, from the groups the
+	//    run moved into it. A tier whose call fails keeps what it had and is
+	//    noted on a run that still succeeds, like a failed cluster.
+	var signals signalPlan
+	if s.Mode == suggest.ModeExamples && s.MaxSignalsPerTier > 0 {
+		run.Stage = logstore.ComplexitySuggestionRunStageSignals
+		if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+			return result, fmt.Errorf("record suggestion run progress: %w", err)
+		}
+		signals = suggestSignals(ctx, space, llm, s, suggestions, stored, scope, s.Now)
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if signals.failed > 0 {
+			note := fmt.Sprintf("signals for %d of %d tiers failed and were left for the next run: %v", signals.failed, signalCallsPerRun, signals.first)
+			run.Error = strings.TrimPrefix(run.Error+"; "+note, "; ")
+		}
+	} else {
+		// A router that no longer takes signals (its classifier changed)
+		// leaves none open.
+		signals = supersedeSignals(stored, s.Now)
+	}
+
+	// 6. Reconcile.
 	run.Stage = logstore.ComplexitySuggestionRunStageSaving
 	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
 		return result, fmt.Errorf("record suggestion run progress: %w", err)
 	}
-	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, rowScope{
-		routerID: s.RouterID, routerVersion: s.RouterVersion, namespace: space.Namespace(), runID: s.RunID,
-	}, s.Now)
+	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, scope, s.Now)
+	writes = append(writes, signals.writes...)
+	created, refreshed, superseded = created+signals.created, refreshed+signals.refreshed, superseded+signals.superseded
 	// A suggestion the user accepted or dismissed while the run was going is
 	// left as they decided, and not counted as refreshed or superseded.
 	skipped, err := store.ReconcileComplexitySuggestions(ctx, writes)
@@ -665,6 +699,9 @@ func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logsto
 		if row.Status != logstore.ComplexitySuggestionStatusOpen || proposed[row.ID] {
 			continue
 		}
+		if row.Category == logstore.ComplexitySuggestionCategorySignal {
+			continue // a tier's signal, reconciled by suggestSignals
+		}
 		if row.EmbeddingSignature == namespace && plan.claimed[row.ID] {
 			continue // matched, but not sent this run (past the cluster bound): kept as it is
 		}
@@ -762,7 +799,8 @@ type Estimate struct {
 	Skipped   int `json:"skipped"`
 	// MaxModelCalls bounds the model calls: at most three per cluster sent
 	// (two phrase attempts and one tier decision), and at most
-	// MaxSuggestedClusters clusters are sent.
+	// MaxSuggestedClusters clusters are sent; a decision-model router's run
+	// that writes signals adds one per tier.
 	MaxModelCalls int `json:"max_model_calls"`
 	// Backfill is how many of the window's requests the run would first embed
 	// from their logs, because they came before the router captured them; they
@@ -789,6 +827,9 @@ func EstimateRun(requests int, s Settings) Estimate {
 	minCluster := ClusterFloor(s.MinClusterRequests, s.MinClusterShare, e.Clustered+e.Assigned)
 	clusters := (e.Clustered + e.Assigned) / minCluster
 	e.MaxModelCalls = callsPerCluster * min(clusters, maxSuggested)
+	if s.Mode == suggest.ModeExamples && s.MaxSignalsPerTier > 0 && clusters > 0 {
+		e.MaxModelCalls += signalCallsPerRun
+	}
 	return e
 }
 

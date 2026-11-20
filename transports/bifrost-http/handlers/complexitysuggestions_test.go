@@ -56,6 +56,7 @@ type suggestionManagerFake struct {
 	// draftExamples and requested are what an examples test was given;
 	// examplesErr answers it.
 	draftExamples []complexity.SuggestionPhrase
+	draftSignals  []complexity.SuggestionPhrase
 	requested     []suggestrun.TestExample
 	examplesErr   error
 }
@@ -81,8 +82,8 @@ func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (str
 	return m.version, routerID == "default" || routerID == "decision"
 }
 
-func (m *suggestionManagerFake) TestComplexitySuggestionExamples(_ context.Context, _ string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
-	m.draftExamples, m.requested = draft, requests
+func (m *suggestionManagerFake) TestComplexitySuggestionExamples(_ context.Context, _ string, examples, signals []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
+	m.draftExamples, m.draftSignals, m.requested = examples, signals, requests
 	if m.examplesErr != nil {
 		return suggestrun.ExampleTest{}, m.examplesErr
 	}
@@ -1013,10 +1014,19 @@ func TestComplexitySuggestionsTestExamples(t *testing.T) {
 	assert.Equal(t, 0.004, body["cost"])
 	assert.Equal(t, []any{}, body["requests"])
 
+	// Signals are tried the same way, alone or beside examples.
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples",
+		`{"signals":[{"tier":" medium ","text":" Weigh a few dependent steps "}],"suggestion_id":""}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Empty(t, manager.draftExamples)
+	assert.Equal(t, []complexity.SuggestionPhrase{{Tier: "MEDIUM", Text: "Weigh a few dependent steps"}}, manager.draftSignals)
+
 	for name, payload := range map[string]string{
 		"no examples": `{"examples":[]}`,
-		"too many":    `{"examples":[` + strings.TrimSuffix(strings.Repeat(`{"tier":"SIMPLE","text":"x"},`, suggestrun.MaxTestPhrases+1), ",") + `]}`,
-		"not json":    `{`,
+		"too many together": `{"examples":[` + strings.TrimSuffix(strings.Repeat(`{"tier":"SIMPLE","text":"x"},`, suggestrun.MaxTestPhrases), ",") +
+			`],"signals":[{"tier":"SIMPLE","text":"y"}]}`,
+		"too many": `{"examples":[` + strings.TrimSuffix(strings.Repeat(`{"tier":"SIMPLE","text":"x"},`, suggestrun.MaxTestPhrases+1), ",") + `]}`,
+		"not json": `{`,
 	} {
 		code, _ := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples", payload)
 		assert.Equal(t, fasthttp.StatusBadRequest, code, name)
@@ -1035,6 +1045,58 @@ func TestComplexitySuggestionsTestExamples(t *testing.T) {
 		code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/suggestions/test-examples", `{"examples":[{"tier":"SIMPLE","text":"x"}]}`)
 		assert.Equal(t, tc.code, code, "%v: %v", tc.err, body)
 	}
+}
+
+// A decision-model router's signal suggestions are accepted through the same
+// endpoint: signals are added to the tier's signals (one never edited keeping
+// its shipped ones), alone or beside examples, and the suggestion is marked
+// accepted. A semantic router has no signals to add to.
+func TestModelRouterAddSignals(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	ctx := context.Background()
+	signal := logstore.ComplexitySuggestion{ID: "s-signal", RouterID: "decision", Tier: "MEDIUM", Category: logstore.ComplexitySuggestionCategorySignal, RequestCount: 30, EmbeddingSignature: "ns"}
+	require.NoError(t, signal.SetPhrases([]string{"Weigh a few dependent steps"}))
+	require.NoError(t, manager.store.UpsertComplexitySuggestions(ctx, []logstore.ComplexitySuggestion{signal}))
+
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/phrases",
+		`{"signals":{"MEDIUM":["Weigh a few dependent steps"]},"suggestion_ids":["s-signal"]}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	saved := body["router"].(map[string]any)
+	medium := saved["decision"].(map[string]any)["criteria"].(map[string]any)["MEDIUM"].(map[string]any)
+	shipped := configstore.DefaultComplexityDecisionGuidance().Criteria["MEDIUM"].Signals
+	signals := medium["signals"].([]any)
+	assert.Len(t, signals, len(shipped)+1, "the shipped signals are kept")
+	assert.Equal(t, "Weigh a few dependent steps", signals[len(signals)-1])
+	assert.Equal(t, map[string]any{"MEDIUM": []any{"Weigh a few dependent steps"}}, body["signals"].(map[string]any)["added"])
+	assert.Equal(t, map[string]any{}, body["added"], "no examples were given")
+	assert.Equal(t, []any{"s-signal"}, body["accepted"])
+	assert.Equal(t, 1, manager.reloads["decision"])
+
+	// Examples and signals together; a signal the tier holds is skipped.
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/decision/phrases",
+		`{"phrases":{"SIMPLE":["Convert a unit"]},"signals":{"MEDIUM":["Weigh a few dependent steps"]}}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, map[string]any{"SIMPLE": []any{"Convert a unit"}}, body["added"])
+	assert.Equal(t, []any{map[string]any{"tier": "MEDIUM", "text": "Weigh a few dependent steps"}}, body["signals"].(map[string]any)["skipped"])
+
+	for name, tc := range map[string]struct{ path, body string }{
+		"a semantic router":   {"default", `{"signals":{"SIMPLE":["One short answer"]}}`},
+		"another tier's":      {"decision", `{"signals":{"SIMPLE":["Weigh a few dependent steps"]}}`},
+		"nothing to add":      {"decision", `{"phrases":{},"signals":{}}`},
+		"past the tier limit": {"decision", `{"signals":{"COMPLEX":["` + strings.Join(distinctSignals(configstore.MaxComplexityDecisionSignals), `","`) + `"]}}`},
+	} {
+		code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/"+tc.path+"/phrases", tc.body)
+		assert.Equal(t, fasthttp.StatusBadRequest, code, "%s: %v", name, body)
+	}
+}
+
+// distinctSignals returns n signals no tier holds.
+func distinctSignals(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("Distinct trait number %d", i)
+	}
+	return out
 }
 
 // A decision-model router's suggestions are examples: accepting adds them to

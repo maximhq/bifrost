@@ -56,14 +56,36 @@ func AppendPhrases(keywords EditableKeywordConfig, add map[string][]string) (Edi
 // an override would otherwise replace. Only tiers given an example are
 // written. decision is not modified; nil is the shipped guidance.
 func AppendDecisionExamples(decision *DecisionConfig, add map[string][]string) (*DecisionConfig, PhraseAppend, error) {
-	resolved := decision.ResolvedCriteria()
-	lists := make(map[string][]string, len(resolved))
-	for tier, criteria := range resolved {
-		lists[tier] = criteria.Examples
+	out, examples, _, err := AppendDecisionCriteria(decision, add, nil)
+	return out, examples, err
+}
+
+// AppendDecisionCriteria appends examples and signals to a copy of a
+// decision-model router's guidance, each as AppendDecisionExamples appends
+// examples, with the signals' own limit; at least one of either must be
+// given, and a refusal of either appends neither.
+func AppendDecisionCriteria(decision *DecisionConfig, examples, signals map[string][]string) (*DecisionConfig, PhraseAppend, PhraseAppend, error) {
+	empty := PhraseAppend{Added: map[string][]string{}}
+	if countItems(examples) == 0 && countItems(signals) == 0 {
+		return decision, empty, empty, fmt.Errorf("%w: no examples or signals given", ErrPhraseAppend)
 	}
-	lists, result, err := appendToTiers(lists, add, decisionExampleLimits)
-	if err != nil {
-		return decision, result, err
+	resolved := decision.ResolvedCriteria()
+	exampleLists := make(map[string][]string, len(resolved))
+	signalLists := make(map[string][]string, len(resolved))
+	for tier, criteria := range resolved {
+		exampleLists[tier], signalLists[tier] = criteria.Examples, criteria.Signals
+	}
+	exampleResult, signalResult := empty, PhraseAppend{Added: map[string][]string{}}
+	var err error
+	if countItems(examples) > 0 {
+		if exampleLists, exampleResult, err = appendToTiers(exampleLists, examples, decisionExampleLimits); err != nil {
+			return decision, exampleResult, signalResult, err
+		}
+	}
+	if countItems(signals) > 0 {
+		if signalLists, signalResult, err = appendToTiers(signalLists, signals, decisionSignalLimits); err != nil {
+			return decision, exampleResult, signalResult, err
+		}
 	}
 	out := &DecisionConfig{}
 	if decision != nil {
@@ -74,14 +96,27 @@ func AppendDecisionExamples(decision *DecisionConfig, add map[string][]string) (
 	if out.Criteria == nil {
 		out.Criteria = map[string]configstore.ComplexityDecisionTierCriteria{}
 	}
-	for tier, added := range result.Added {
-		if len(added) > 0 {
-			criteria := out.Criteria[tier]
-			criteria.Examples = lists[tier]
+	for _, tier := range OrderedTiers() {
+		criteria, changed := out.Criteria[tier], false
+		if len(exampleResult.Added[tier]) > 0 {
+			criteria.Examples, changed = exampleLists[tier], true
+		}
+		if len(signalResult.Added[tier]) > 0 {
+			criteria.Signals, changed = signalLists[tier], true
+		}
+		if changed {
 			out.Criteria[tier] = criteria
 		}
 	}
-	return out, result, nil
+	return out, exampleResult, signalResult, nil
+}
+
+func countItems(lists map[string][]string) int {
+	n := 0
+	for _, items := range lists {
+		n += len(items)
+	}
+	return n
 }
 
 // tierAppendLimits are what an append to per-tier lists checks, and the word
@@ -97,6 +132,7 @@ type tierAppendLimits struct {
 var (
 	phraseBankLimits      = tierAppendLimits{item: "phrase", oneTier: "a phrase routes to one tier", maxChars: configstore.MaxComplexitySemanticPhraseCharacters, maxTotal: configstore.MaxComplexitySemanticPhrases}
 	decisionExampleLimits = tierAppendLimits{item: "example", oneTier: "an example describes one tier", maxChars: configstore.MaxComplexityDecisionCriteriaItemCharacters, maxPerTier: configstore.MaxComplexityDecisionExamples}
+	decisionSignalLimits  = tierAppendLimits{item: "signal", oneTier: "a signal describes one tier", maxChars: configstore.MaxComplexityDecisionCriteriaItemCharacters, maxPerTier: configstore.MaxComplexityDecisionSignals}
 )
 
 // appendToTiers appends items, keyed by tier in any case, to copies of

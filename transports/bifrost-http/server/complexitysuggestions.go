@@ -205,13 +205,13 @@ func (s *BifrostHTTPServer) TestComplexitySuggestionPhrases(ctx context.Context,
 }
 
 // TestComplexitySuggestionExamples asks one decision-model router's decision
-// model about requests with and without draft examples.
-func (s *BifrostHTTPServer) TestComplexitySuggestionExamples(ctx context.Context, routerID string, draft []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
+// model about requests with and without draft examples and signals.
+func (s *BifrostHTTPServer) TestComplexitySuggestionExamples(ctx context.Context, routerID string, examples, signals []complexity.SuggestionPhrase, requests []suggestrun.TestExample) (suggestrun.ExampleTest, error) {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return suggestrun.ExampleTest{}, err
 	}
-	return routingPlugin.TestComplexitySuggestionExamples(ctx, routerID, draft, requests)
+	return routingPlugin.TestComplexitySuggestionExamples(ctx, routerID, examples, signals, requests)
 }
 
 // The server backs the phrase-suggestion endpoints; a missing method would
