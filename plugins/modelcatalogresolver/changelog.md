@@ -1,2 +1,3 @@
-- chore: upgraded core to v1.15.2 and framework to v1.12.2
+- fix: honor `SkipKeySelection` before catalog-based provider resolution, so bare model names work on keyless passthrough providers (thanks [@cgtarmenta](https://github.com/cgtarmenta)!)
 - fix: decisions - a bare decision model id that more than one provider serves (after the virtual key's allowlist) is no longer sent to the alphabetically first one; the request fails with a 400 naming the candidates. A bare model on the TypeSafe route prefers `typesafe`, as the OpenAI route prefers `openai` (thanks [@Xytronix](https://github.com/Xytronix)!)
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

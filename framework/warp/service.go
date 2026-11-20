@@ -105,6 +105,14 @@ type Service struct {
 	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
 	// them so a run crosses its thresholds on a handful of requests.
 	topicLimits topicLimits
+	// management is the gateway's Bifrost MCP, nil until the server binds it
+	// with SetManagementTools. Guarded by mu.
+	management ManagementTools
+	bifrostMCP bool // Warp uses management; BifrostMCPEnabled unless WithBifrostMCP says otherwise
+	// usedConfirmations is the confirmation tokens this instance has seen
+	// claimed, by when; the durable claim is in the conversation store (see
+	// claimConfirmation).
+	usedConfirmations sync.Map
 }
 
 // topicLister returns the topic reader as the tool interface, or a nil
@@ -140,8 +148,22 @@ func (s *Service) buildTopicReader() *TopicReader {
 	return NewTopicReader(s.store, topics)
 }
 
+// BifrostMCPEnabled is whether Warp reaches the gateway's /api through the
+// Bifrost MCP: configuration reads, confirmed writes, and refusing to answer
+// while the Bifrost MCP is not loaded. It is off for now, so Warp answers from
+// its own traffic tools only, as it did before the two were coupled. The wiring
+// stays in place - the gateway still binds its tools with SetManagementTools -
+// and turning this back on restores all of it.
+const BifrostMCPEnabled = false
+
 // Option configures a Service.
 type Option func(*Service)
+
+// WithBifrostMCP overrides BifrostMCPEnabled for one service, so the coupled
+// behaviour stays tested while it is switched off.
+func WithBifrostMCP(enabled bool) Option {
+	return func(s *Service) { s.bifrostMCP = enabled }
+}
 
 // WithLogger sets the logger used for warnings the service cannot surface to a
 // caller (a failed write after a successful answer, for example).
@@ -239,7 +261,7 @@ func WithCallerRestrictionResolver(resolver CallerRestrictionResolver) Option {
 // does not implement WarpStore is supported: the service then reports
 // ErrUnavailable from every configuration call.
 func NewService(store configstore.ConfigStore, opts ...Option) *Service {
-	service := &Service{}
+	service := &Service{bifrostMCP: BifrostMCPEnabled}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
 		service.backfillJobs, _ = store.(BackfillJobStore)
@@ -344,6 +366,10 @@ func (s *Service) Shutdown() {
 	if s.indexer != nil {
 		s.indexer.Close()
 	}
+	if s.management != nil {
+		closeManagementTools(s.management)
+		s.management = nil
+	}
 	s.mu.Unlock()
 }
 
@@ -372,6 +398,59 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// Live assignment files through the same store, so it follows too.
 	if s.indexer != nil {
 		s.indexer.SetTopicStore(topicStoreOf(logs))
+	}
+}
+
+// SetManagementTools binds the gateway's Bifrost MCP. The gateway builds it
+// after Warp's routes are registered, so it arrives late; nil unbinds it.
+func (s *Service) SetManagementTools(tools ManagementTools) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		closeManagementTools(tools)
+		return
+	}
+	// The replaced tools close their client once the turns still using it end.
+	if previous := s.management; previous != nil && previous != tools {
+		closeManagementTools(previous)
+	}
+	s.management = tools
+}
+
+// managementTools returns the bound Bifrost MCP and its current catalog,
+// read together so a turn never pairs a catalog with another binding.
+func (s *Service) managementTools() (ManagementTools, *ManagementCatalog) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	// Decoupled: the binding is kept but nothing reads through it.
+	if tools == nil || !s.bifrostMCP {
+		return nil, nil
+	}
+	return tools, tools.Catalog()
+}
+
+// leaseManagementTools is managementTools for a turn: the release keeps the
+// catalog's load open until the turn ends (see ManagementLeaser). Always non-nil.
+func (s *Service) leaseManagementTools() (ManagementTools, *ManagementCatalog, func()) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	if tools == nil || !s.bifrostMCP {
+		return nil, nil, func() {}
+	}
+	if leaser, ok := tools.(ManagementLeaser); ok {
+		catalog, release := leaser.LeaseCatalog()
+		return tools, catalog, release
+	}
+	return tools, tools.Catalog(), func() {}
+}
+
+// closeManagementTools closes tools that hold resources of their own, such as
+// the gateway's in-process client.
+func closeManagementTools(tools ManagementTools) {
+	if closer, ok := tools.(interface{ Close() error }); ok {
+		_ = closer.Close()
 	}
 }
 
