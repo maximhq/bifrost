@@ -193,6 +193,10 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over the fixed geminiCountTokensUnsupportedFields package var",
 	},
+	"gemini.settingsInEffect": {
+		status: bounded,
+		reason: "loops over the fixed liveLateSettings or liveLateContextSettings package var (4 or 7 paths)",
+	},
 	"vertex.stripVertexCountTokensUnsupportedFields": {
 		status: bounded,
 		reason: "loops over the fixed vertexCountTokensUnsupportedFields package var",

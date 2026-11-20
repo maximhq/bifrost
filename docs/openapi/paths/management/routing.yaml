@@ -267,6 +267,10 @@ complexity:
     operationId: getComplexityAnalyzerConfig
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -275,7 +279,7 @@ complexity:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM classifier settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
@@ -297,6 +301,10 @@ complexity:
     operationId: updateComplexityAnalyzerConfig
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -334,8 +342,13 @@ complexity:
 complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
+    x-bifrost-destructive: true
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -397,6 +410,10 @@ complexity-status:
     operationId: getComplexityAnalyzerStatus
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -429,6 +446,10 @@ complexity-status-retry:
     operationId: retryComplexityAnalyzerWarmup
     x-mint:
       content: |
+        <Warning>
+          The Complexity Router is deprecated and will be replaced by Routers in Bifrost v3.0.0, which will migrate your setup. We recommend [Routers](/features/routers) (`/api/routing/model-routers`) for both existing and new setups; see [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+        </Warning>
+
         **Required Permissions**
 
         | Permission | Granted via |
@@ -945,7 +966,7 @@ complexity-suggestion-runs:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Start a phrase suggestion run now
     description: |
-      Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).
+      Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. It needs the router's suggestions settings and a suggestion model, not suggestions turned on: with enabled false the run is a one-off, never scheduled, and first embeds the router's logged requests in its window that are not yet captured (the sample_rate share of those whose content was logged, newest first, up to max_clustered_requests). A run started without a suggestion model is accepted and then fails. Refused while the router has no suggestions settings, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).
     tags:
       - Routing
     security:
@@ -988,7 +1009,7 @@ complexity-suggestion-runs:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: Suggestions are off, or a run is already queued or running
+        description: The router has no suggestions settings, or a run is already queued or running
         content:
           application/json:
             schema:
@@ -1060,7 +1081,7 @@ complexity-suggestion-run-estimate:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: Suggestions are off for this router
+        description: The router has no suggestions settings
         content:
           application/json:
             schema:
@@ -1637,7 +1658,7 @@ complexity-suggestion-run-cancel:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: The run has already ended, or suggestions are off
+        description: The run has already ended, or suggestions have nowhere to be kept
         content:
           application/json:
             schema:
@@ -1717,7 +1738,7 @@ complexity-suggestion-impact:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: Suggestions are off for this router, or the stored router is in a form this version cannot read; save or reset it
+        description: The router has no suggestions settings, or the stored router is in a form this version cannot read; save or reset it
         content:
           application/json:
             schema:

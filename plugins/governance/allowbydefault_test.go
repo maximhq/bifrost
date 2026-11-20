@@ -62,7 +62,7 @@ func (m *mockInMemoryStore) GetMCPClientBySlug(slug string) (string, string, boo
 // everything, a wildcard pattern) live in the permit and the fold, so they are asked of the
 // request's access rather than of the key directly.
 func accessFor(vk *configstoreTables.TableVirtualKey, openClients map[string]string) schemas.Access {
-	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, "", nil, "", nil)
 }
 
 // newPluginWithInMemoryStore builds a minimal GovernancePlugin wired with a mock InMemoryStore.
@@ -163,7 +163,7 @@ func TestIsMCPToolAllowedByVK_UsesInMemoryStore(t *testing.T) {
 		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	}
 	permit := (&LocalGovernanceStore{inMemoryStore: store}).permitForVirtualKey(emptyCtx(), buildVKNoMCPConfigs())
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	assert.True(t, access.IsMCPToolAllowed("youtube-search"),
 		"the store resolves AllowByDefault clients when it builds the key's permit")
@@ -172,7 +172,7 @@ func TestIsMCPToolAllowedByVK_UsesInMemoryStore(t *testing.T) {
 // A store with no view of open clients → nothing is granted, so the tool is blocked
 func TestToolChecks_StoreWithoutOpenClients_Blocked(t *testing.T) {
 	permit := (&LocalGovernanceStore{}).permitForVirtualKey(emptyCtx(), buildVKNoMCPConfigs())
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	assert.False(t, access.IsMCPToolAllowed("youtube-search"),
 		"no open clients means no permit for the client, so no tool is allowed")
@@ -279,7 +279,7 @@ func TestPermitForVirtualKeyGrantsEveryConfiguredProvider(t *testing.T) {
 			Provider: string(schemas.Bedrock), AllowedModels: schemas.WhiteList{"anthropic.claude-haiku-4-5"}, AllowAllKeys: true,
 		}},
 	}
-	access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), vk)}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), vk)}, "", nil, "", nil)
 
 	assert.ElementsMatch(t, []string{"openai", "anthropic", "bedrock"}, access.GrantedProvidersForModel(""),
 		"a provider the key names no config for is still granted")
@@ -291,7 +291,7 @@ func TestPermitForVirtualKeyGrantsEveryConfiguredProvider(t *testing.T) {
 
 	t.Run("without the flag only the named providers are granted", func(t *testing.T) {
 		vk.AllowAllProviders = false
-		access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), vk)}, nil, "", nil)
+		access := grant.NewAccess([]schemas.Permit{store.permitForVirtualKey(emptyCtx(), vk)}, "", nil, "", nil)
 
 		assert.Equal(t, []string{"bedrock"}, access.GrantedProvidersForModel(""))
 		assert.False(t, access.IsModelAllowed("anthropic", "claude-haiku-4-5"))

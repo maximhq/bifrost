@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "预算用量",
 		"override": "覆盖",
-		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}"
+		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}",
+		"sharedTag": "共享"
 	},
 	"rateLimit": {
 		"tokens": "token",
@@ -302,6 +303,11 @@
 	},
 	"configSyncAlert": {
 		"message": "此配置已从 <code0>config.json</code0> 同步。今后对 config.json 的任何更新都会覆盖在界面中所做的更改。如果你只是用 config.json 引导初始配置，可以忽略此提示。"
+	},
+	"configIssuesAlert": {
+		"title": "config.json 声明的部分内容未被应用",
+		"badge": "配置问题",
+		"hint": "声明的其余部分已应用。上面的每一项会在其引用的对象存在后自动消失，例如注册缺失的 MCP 客户端之后。"
 	},
 	"breadcrumb": {
 		"label": "面包屑导航",
@@ -509,6 +515,9 @@
 		"maxNumber": "不得大于 {{maximum}}",
 		"maxChars": "不得超过 {{maximum}} 个字符",
 		"validUrl": "必须是有效的 URL",
+		"publicUrlNoUserinfoQueryOrFragment": "不得包含用户信息、查询参数或片段",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "必须是 http(s) URL 或相对于应用目录的路径",
+		"openapiUrlMustStayInAppDir": "必须是相对于应用目录且不超出该目录的路径",
 		"validEmail": "必须是有效的邮箱",
 		"grpcHostPortFormat": "gRPC 地址必须采用 <host>:<port> 格式（例如 {{example}}）",
 		"invalidInput": "输入无效",

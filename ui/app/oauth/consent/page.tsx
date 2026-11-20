@@ -16,6 +16,7 @@ import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
+import { formatUserCode, isCompleteUserCode, recallDeviceUserCode } from "@/lib/utils/deviceUserCode";
 import { buildLoginHref } from "@/lib/utils/loginGoto";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
@@ -42,7 +43,8 @@ export default function OAuth2ConsentPage() {
 		);
 	}
 
-	return <ConsentView flowId={flowId} />;
+	// Keyed so a different flow never inherits the previous flow's state.
+	return <ConsentView key={flowId} flowId={flowId} />;
 }
 
 // isSafeRedirect rejects URLs whose scheme could execute script when assigned to
@@ -60,11 +62,17 @@ function isSafeRedirect(url: string): boolean {
 function ConsentView({ flowId }: { flowId: string }) {
 	const { t } = useTranslation("login");
 	const { t: tc } = useTranslation("common");
-	const { data: flow, isLoading, isError, error } = useGetOAuth2ConsentFlowQuery(flowId);
+	const { data: flow, isLoading, isError, error, refetch } = useGetOAuth2ConsentFlowQuery(flowId);
 	const { data: authState } = useIsAuthEnabledQuery();
 	const [submitFlow, { isLoading: submitting }] = useSubmitOAuth2ConsentFlowMutation();
 	const [vkValue, setVkValue] = useState("");
 	const [selectedMode, setSelectedMode] = useState<"vk" | "session" | "user" | null>(null);
+	// A device sign-in is approved with the code from the terminal. The device page keeps it
+	// for this tab; a consent link opened anywhere else has none, so the user types it.
+	const [userCode, setUserCode] = useState(() => recallDeviceUserCode(flowId));
+	const [codeRecalled] = useState(() => recallDeviceUserCode(flowId) !== "");
+	const isDeviceFlow = !!flow && !flow.redirect_uri;
+	const codeMissing = isDeviceFlow && !isCompleteUserCode(userCode);
 
 	// TempTokenScope installs the token during its own render, so any
 	// sessionStorage restore has already happened by now.
@@ -78,12 +86,36 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
 	const showLoginOption = usingTempToken && signedOut;
 
+	// The auth probe can refresh an expired SSO session while the flow read is in
+	// flight, so the flow misses a user the probe sees. Re-read the flow once.
+	const [flowRechecked, setFlowRechecked] = useState(false);
+	const flowMissedSession = !!flow?.available_modes.includes("user") && !flow.logged_in_user && authState?.has_valid_token === true;
+	const awaitingRecheck = flowMissedSession && !flowRechecked;
+	useEffect(() => {
+		if (!awaitingRecheck) return;
+		void Promise.resolve(refetch()).finally(() => setFlowRechecked(true));
+	}, [awaitingRecheck, refetch]);
+
+	// Refusing a device sign-in (Claude Code's /login) ends the device's polling at once.
+	const handleDeny = async () => {
+		try {
+			const res = await submitFlow({ flowId, body: { deny: true } }).unwrap();
+			if (!isSafeRedirect(res.redirect_url)) {
+				toast.error(t("consent.authFailed"), { description: t("consent.invalidRedirect") });
+				return;
+			}
+			window.location.href = res.redirect_url;
+		} catch (err) {
+			toast.error(t("consent.authFailed"), { description: getErrorMessage(err) });
+		}
+	};
+
 	const handleSubmit = async (mode: "vk" | "session" | "user") => {
 		setSelectedMode(mode);
 		try {
 			const res = await submitFlow({
 				flowId,
-				body: { mode, value: mode === "vk" ? vkValue : undefined },
+				body: { mode, value: mode === "vk" ? vkValue : undefined, user_code: isDeviceFlow ? userCode : undefined },
 			}).unwrap();
 			// Defence-in-depth: the server validates redirect_uri against the
 			// registered client, but never hand a javascript:/data: URL to
@@ -102,7 +134,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 		}
 	};
 
-	if (isLoading) return <FullPageLoader />;
+	if (isLoading || awaitingRecheck) return <FullPageLoader />;
 
 	if (isError || !flow) {
 		const status = (error as { status?: number } | undefined)?.status;
@@ -128,6 +160,9 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const hasVK = flow.available_modes.includes("vk");
 	const hasSession = flow.available_modes.includes("session");
 	const hasAnyMode = hasUser || hasVK || hasSession;
+	// Never leave user mode without an action: when it is the only mode, offer sign-in
+	// even if the probe disagrees with the flow about the session.
+	const showSignIn = hasUser && !flow.logged_in_user && (showLoginOption || (!hasVK && !hasSession));
 	const clientName = flow.client_name || t("consent.mcpClient");
 
 	return (
@@ -149,20 +184,59 @@ function ConsentView({ flowId }: { flowId: string }) {
 					</p>
 				)}
 				<p className="text-muted-foreground mt-1.5 text-sm">{t("consent.chooseIdentity")}</p>
-				<p className="mt-4 text-sm">{t("consent.recognizeApplication")}</p>
-				<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
-					{flow.redirect_host}
-				</p>
-				<p className="text-muted-foreground mt-1 font-mono text-xs break-all" data-testid="oauth-consent-redirect-uri">
-					{flow.redirect_uri}
-				</p>
-				{flow.localhost_only_redirect && (
-					<p
-						className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
-						data-testid="oauth-consent-localhost-warning"
-					>
-						{t("consent.localhostWarning")}
-					</p>
+				{flow.redirect_uri ? (
+					<>
+						<p className="mt-4 text-sm">{t("consent.recognizeApplication")}</p>
+						<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
+							{flow.redirect_host}
+						</p>
+						<p className="text-muted-foreground mt-1 font-mono text-xs break-all" data-testid="oauth-consent-redirect-uri">
+							{flow.redirect_uri}
+						</p>
+						{flow.localhost_only_redirect && (
+							<p
+								className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
+								data-testid="oauth-consent-localhost-warning"
+							>
+								{t("consent.localhostWarning")}
+							</p>
+						)}
+					</>
+				) : (
+					// Device sign-ins (client gateways) have no callback; the device polls for the result.
+					<>
+						<div className="mt-4 rounded-sm border p-3 text-left" data-testid="oauth-consent-device-code">
+							{codeRecalled ? (
+								<>
+									<p className="text-muted-foreground text-xs">{t("consent.deviceCodeLabel")}</p>
+									<p className="mt-1 text-center font-mono text-lg tracking-widest" data-testid="oauth-consent-device-code-value">
+										{userCode}
+									</p>
+								</>
+							) : (
+								<>
+									<label htmlFor="oauth-consent-device-code-input" className="text-sm font-medium">
+										{t("consent.deviceCodeEnter")}
+									</label>
+									<Input
+										id="oauth-consent-device-code-input"
+										data-testid="oauth-consent-device-code-input"
+										autoComplete="off"
+										autoCapitalize="characters"
+										spellCheck={false}
+										placeholder="XXXX-XXXX" // i18n-ignore: the user-code format, not prose
+										className="mt-2 text-center font-mono text-lg tracking-widest"
+										value={userCode}
+										onChange={(e) => setUserCode(formatUserCode(e.target.value))}
+										disabled={submitting}
+									/>
+								</>
+							)}
+						</div>
+						<p className="mt-3 text-sm" data-testid="oauth-consent-device-signin">
+							{t("consent.deviceSignInConfirm")}
+						</p>
+					</>
 				)}
 			</div>
 
@@ -191,7 +265,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							data-testid="oauth-consent-continue-user-btn"
 							className="mt-4 w-full"
 							onClick={() => handleSubmit("user")}
-							disabled={submitting}
+							disabled={submitting || codeMissing}
 						>
 							{submitting && selectedMode === "user" ? (
 								<>
@@ -206,7 +280,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 				)}
 
 				{/* User mode — sign in prompt when not logged in */}
-				{hasUser && !flow.logged_in_user && showLoginOption && (
+				{showSignIn && (
 					<div className="rounded-sm border p-4">
 						<div className="flex items-center gap-3">
 							<div className="bg-muted flex size-9 shrink-0 items-center justify-center rounded-full">
@@ -256,7 +330,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							value={vkValue}
 							onChange={(e) => setVkValue(e.target.value)}
 							onKeyDown={(e) => {
-								if (e.key === "Enter" && vkValue.trim()) {
+								if (e.key === "Enter" && vkValue.trim() && !codeMissing) {
 									void handleSubmit("vk");
 								}
 							}}
@@ -267,7 +341,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							data-testid="oauth-consent-connect-vk-btn"
 							className="w-full"
 							onClick={() => handleSubmit("vk")}
-							disabled={submitting || !vkValue.trim()}
+							disabled={submitting || !vkValue.trim() || codeMissing}
 						>
 							{submitting && selectedMode === "vk" ? (
 								<>
@@ -298,7 +372,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 						variant="ghost"
 						className="text-muted-foreground hover:text-foreground h-auto w-full justify-start gap-3 px-4 py-3"
 						onClick={() => handleSubmit("session")}
-						disabled={submitting}
+						disabled={submitting || codeMissing}
 					>
 						<Fingerprint className="size-4 shrink-0" />
 						<div className="text-left">
@@ -310,6 +384,19 @@ function ConsentView({ flowId }: { flowId: string }) {
 					</Button>
 				)}
 			</div>
+
+			{/* Refusing comes last, after the ways to approve. */}
+			{isDeviceFlow && (
+				<Button
+					variant="ghost"
+					className="text-destructive hover:text-destructive mt-4 w-full"
+					onClick={() => void handleDeny()}
+					disabled={submitting}
+					data-testid="oauth-consent-deny-btn"
+				>
+					{t("consent.denyButton")}
+				</Button>
+			)}
 
 			{/* Expiry */}
 			<p className="text-muted-foreground mt-6 text-center text-xs">

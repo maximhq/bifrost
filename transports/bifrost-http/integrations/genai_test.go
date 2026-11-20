@@ -361,6 +361,75 @@ func TestExtractAndSetModelAndRequestTypeDetectsImageEditAtAnyPartPosition(t *te
 	}
 }
 
+// TestExtractAndSetModelAndRequestTypeAudioFileDataIsNotTranscription pins that an audio
+// fileData part routes to Responses (which carries the URI), while inline audio stays transcription.
+func TestExtractAndSetModelAndRequestTypeAudioFileDataIsNotTranscription(t *testing.T) {
+	cases := []struct {
+		name     string
+		part     string
+		wantType schemas.RequestType
+	}{
+		{"fileData audio", `{"fileData":{"fileUri":"https://example.com/clip.m4a","mimeType":"audio/mp4"}}`, schemas.ResponsesRequest},
+		{"inlineData audio", `{"inlineData":{"mimeType":"audio/wav","data":"UklGRg=="}}`, schemas.TranscriptionRequest},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[` + tc.part + `,{"text":"Describe this."}]}]}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", "gemini/gemini-3.8-flash:generateContent")
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			_, reqType := extractModelAndRequestType(ctx)
+			assert.Equal(t, tc.wantType, reqType)
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+			assert.Equal(t, tc.wantType == schemas.TranscriptionRequest, req.IsTranscription)
+			if tc.wantType != schemas.ResponsesRequest {
+				return
+			}
+
+			responsesReq := req.ToBifrostResponsesRequest(bifrostCtx)
+			require.NotNil(t, responsesReq)
+			var file *schemas.ResponsesInputMessageContentBlockFile
+			for _, msg := range responsesReq.Input {
+				if msg.Content == nil {
+					continue
+				}
+				for _, block := range msg.Content.ContentBlocks {
+					if block.ResponsesInputMessageContentBlockFile != nil {
+						file = block.ResponsesInputMessageContentBlockFile
+					}
+				}
+			}
+			require.NotNil(t, file, "audio fileData must reach the Responses request as a file block")
+			require.NotNil(t, file.FileURL)
+			assert.Equal(t, "https://example.com/clip.m4a", *file.FileURL)
+			require.NotNil(t, file.FileType)
+			assert.Equal(t, "audio/mp4", *file.FileType)
+
+			geminiOut, err := gemini.ToGeminiResponsesRequest(bifrostCtx, responsesReq)
+			require.NoError(t, err)
+			var outFile *gemini.FileData
+			for _, content := range geminiOut.Contents {
+				for _, part := range content.Parts {
+					if part != nil && part.FileData != nil {
+						outFile = part.FileData
+					}
+				}
+			}
+			require.NotNil(t, outFile, "Gemini egress must carry the audio as fileData")
+			assert.Equal(t, "https://example.com/clip.m4a", outFile.FileURI)
+			assert.Equal(t, "audio/mp4", outFile.MIMEType)
+		})
+	}
+}
+
 func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	rawBody := []byte(`{"batch":{"inputConfig":{"requests":{"requests":[{"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"temperature":0.2}},"metadata":{"key":"req-1"}}]}}}}`)
 	ctx := &fasthttp.RequestCtx{}

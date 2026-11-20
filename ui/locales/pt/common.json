@@ -263,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilização do orçamento",
 		"override": "sobreposição",
-		"baseTooltip": "Base {{base}} + {{override}} de sobreposição"
+		"baseTooltip": "Base {{base}} + {{override}} de sobreposição",
+		"sharedTag": "compartilhado"
 	},
 	"rateLimit": {
 		"tokens": "tokens",
@@ -302,6 +303,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Esta configuração é sincronizada a partir de <code0>config.json</code0>. Quaisquer atualizações futuras ao config.json substituirão as alterações feitas na IU. Se estiver a usar o config.json para inicializar a configuração, pode ignorar este alerta."
+	},
+	"configIssuesAlert": {
+		"title": "Parte da declaração do config.json não foi aplicada",
+		"badge": "Problemas de configuração",
+		"hint": "O restante da declaração está aplicado. Cada item acima desaparece sozinho quando o que ele nomeia passa a existir, por exemplo ao registrar o cliente MCP ausente."
 	},
 	"breadcrumb": {
 		"label": "caminho de navegação",
@@ -509,6 +515,9 @@
 		"maxNumber": "Tem de ser, no máximo, {{maximum}}",
 		"maxChars": "Tem de ter, no máximo, {{maximum}} carateres",
 		"validUrl": "Tem de ser um URL válido",
+		"publicUrlNoUserinfoQueryOrFragment": "Não deve conter informações de usuário, uma consulta ou um fragmento",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Deve ser uma URL http(s) ou um caminho relativo ao diretório do aplicativo",
+		"openapiUrlMustStayInAppDir": "Deve ser um caminho relativo ao diretório do aplicativo que permaneça dentro dele",
 		"validEmail": "Tem de ser um e-mail válido",
 		"grpcHostPortFormat": "Tem de estar no formato <host>:<port> para gRPC (ex.: {{example}})",
 		"invalidInput": "Entrada inválida",

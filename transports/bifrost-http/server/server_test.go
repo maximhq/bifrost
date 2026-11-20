@@ -1,15 +1,24 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,12 +33,14 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -2574,4 +2585,621 @@ func TestDropCapturesOfDisabledRouting(t *testing.T) {
 	assert.Empty(t, namespaces(), "a disabled plugin's captures are dropped")
 
 	(&BifrostHTTPServer{Config: &lib.Config{}}).dropCapturesOfDisabledRouting(ctx) // no vector store: nothing to do
+}
+
+// setOpenAPIURL sets the framework config's openapi_url the way a config save
+// publishes it: a whole new FrameworkConfig.
+func setOpenAPIURL(cfg *lib.Config, value string) {
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+}
+
+// The Bifrost MCP's settings come from the config: the spec (the framework config's
+// openapi_url, else the build's default), the writes switch (on unless turned off),
+// and the base its calls address, which is bifrost_url's origin, and nothing
+// without it: never the listen address or a request's Host.
+func TestBifrostMCPOptionsFollowClientConfig(t *testing.T) {
+	server := &BifrostHTTPServer{
+		Host: "0.0.0.0", Port: "8080", defaultOpenAPIURL: handlers.DefaultOpenAPIURL,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	opts := server.bifrostMCPOptions(handlers.BifrostMCPOptions{AppDir: "/app"})
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL)
+	assert.True(t, opts.AllowWrites)
+	assert.Empty(t, opts.BaseURL, "no bifrost_url, no base: the Bifrost MCP does not load")
+	assert.False(t, opts.BaseIsEdge)
+	assert.Equal(t, "/app", opts.AppDir, "options outside the settings are kept")
+
+	setOpenAPIURL(server.Config, "specs/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.Config.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com/bifrost/")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "specs/openapi.json", opts.SpecURL)
+	assert.False(t, opts.AllowWrites)
+	assert.Equal(t, "https://gw.example.com", opts.BaseURL, "the origin only: the in-process router accepts paths without the base path")
+	assert.True(t, opts.BaseIsEdge)
+
+	setOpenAPIURL(server.Config, "  ")
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, handlers.DefaultOpenAPIURL, opts.SpecURL, "a blank openapi_url falls back to the build's default")
+
+	server.defaultOpenAPIURL = "https://example.com/other-build/openapi.json"
+	opts = server.bifrostMCPOptions(opts)
+	assert.Equal(t, "https://example.com/other-build/openapi.json", opts.SpecURL, "a build's own default replaces DefaultOpenAPIURL")
+}
+
+// Without -app-dir the gateway loads config from the OS default directory, and a
+// relative openapi_url resolves against that directory: the one config
+// was loaded from, not the empty -app-dir.
+func TestStartBifrostMCPResolvesRelativeSpecAgainstConfigDir(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	lib.SetLogger(noopTestLogger{})
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	spec, err := os.ReadFile("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openapi.json"), spec, 0o600))
+	cfg, err := lib.LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	setOpenAPIURL(cfg, "openapi.json")
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("https://gw.example.com")
+
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {}) // a routed operation, so the server has a tool to serve
+	server := &BifrostHTTPServer{AppDir: "", Config: cfg, Router: r}
+	server.StartBifrostMCP(ctx, handlers.DefaultOpenAPIURL, func(*fasthttp.RequestCtx) {}, 4<<20, 64<<10)
+	t.Cleanup(func() { _ = server.bifrostMCPExec.Close() })
+	assert.Equal(t, dir, server.BifrostMCP.Options().AppDir, "the spec resolves against the directory config was loaded from")
+
+	deadline := time.Now().Add(10 * time.Second)
+	var loadErr error
+	for time.Now().Before(deadline) {
+		if _, loadErr = server.BifrostMCP.Server(ctx); loadErr == nil {
+			return
+		}
+		if !strings.Contains(loadErr.Error(), "still loading") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the relative spec did not load: %v", loadErr)
+}
+
+// A config save that changes a Bifrost MCP setting rebuilds it; one that does not
+// leaves the loaded server alone; a rebuild that fails keeps the previous server.
+func TestReloadBifrostMCPOnSettingsChange(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	before, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served := before.ListTools()["createVirtualKey"]
+	require.True(t, served, "writes are on by default")
+
+	server.reloadBifrostMCP(context.Background())
+	unchanged, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, before, unchanged, "a save that changed nothing must not rebuild")
+
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	after, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = after.ListTools()["createVirtualKey"]
+	assert.False(t, served, "turning writes off rebuilt the server without them")
+
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	kept, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, after, kept, "a failed rebuild keeps the previous server")
+
+	// One save that turns writes back on and points at the missing spec restricts
+	// nothing, so the server stays; one that then turns writes off again cannot
+	// keep a server built with them on, and unloads it.
+	setOpenAPIURL(server.Config, "")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = nil
+	server.reloadBifrostMCP(context.Background())
+	withWrites, err := server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+	_, served = withWrites.ListTools()["createVirtualKey"]
+	require.True(t, served)
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.Config.ClientConfig.BifrostMCPAllowWrites = new(false)
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "writes off with a spec that does not load must not keep the write-capable server")
+}
+
+// Clearing bifrost_url while the spec is unavailable cannot leave the server
+// built for the old URL serving.
+func TestReloadBifrostMCPClearedBifrostURLUnloads(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	handlers.SetLogger(noopTestLogger{})
+	spec, err := filepath.Abs("../../../docs/openapi/openapi.json")
+	require.NoError(t, err)
+	server := &BifrostHTTPServer{
+		Host: "localhost", Port: "8080", defaultOpenAPIURL: spec,
+		Config: &lib.Config{ClientConfig: &configstore.ClientConfig{BifrostURL: schemas.NewSecretVar("https://gw.example.com")}},
+	}
+	server.BifrostMCP = handlers.NewBifrostMCP(server.bifrostMCPOptions(handlers.BifrostMCPOptions{ExecClient: http.DefaultClient}))
+	_, err = server.BifrostMCP.Server(context.Background())
+	require.NoError(t, err)
+
+	server.Config.ClientConfig.BifrostURL = nil
+	setOpenAPIURL(server.Config, "missing/openapi.json")
+	server.reloadBifrostMCP(context.Background())
+	_, err = server.BifrostMCP.Server(context.Background())
+	assert.Error(t, err, "the server built for the cleared bifrost_url must not keep serving")
+}
+
+// fixedUserGovernance answers for any user with an empty limits projection.
+type fixedUserGovernance struct{}
+
+func (fixedUserGovernance) DescribeUserGovernance(_ context.Context, userID string) (*warp.UserGovernance, error) {
+	return &warp.UserGovernance{UserID: userID}, nil
+}
+
+// TestRegisterUserLimitsRoutes: without a user governance reader (the OSS build)
+// the user limits routes are not registered; with one they are, behind the
+// middleware chain RegisterAPIRoutes passes.
+func TestRegisterUserLimitsRoutes(t *testing.T) {
+	paths := []string{"/api/governance/users/me/limits", "/api/governance/users/u-1/limits"}
+	serve := func(s *BifrostHTTPServer, path string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(path)
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		s.Router.Handler(&ctx)
+		return &ctx
+	}
+
+	without := &BifrostHTTPServer{Router: router.New()}
+	without.registerUserLimitsRoutes()
+	for _, path := range paths {
+		ctx := serve(without, path)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s is registered without a reader", path)
+	}
+
+	ran := 0
+	mark := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ran++
+			ctx.Response.Header.Set("X-Test-Middleware", "ran")
+			next(ctx)
+		}
+	})
+	with := &BifrostHTTPServer{Router: router.New(), WarpUserGovernanceReader: fixedUserGovernance{}}
+	with.registerUserLimitsRoutes(mark)
+	for _, path := range paths {
+		ctx := serve(with, path)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s: %s", path, ctx.Response.Body())
+		require.Equal(t, "ran", string(ctx.Response.Header.Peek("X-Test-Middleware")), "%s skipped the middleware chain", path)
+	}
+	require.Equal(t, len(paths), ran)
+}
+
+// callerMarkerKey stands in for the caller identity a request context carries.
+type callerMarkerKey struct{}
+
+// reloadModelConfigConfigStore answers a model config read and records whether the read carried
+// the caller marker, the way a scoped store would narrow a read for that caller.
+type reloadModelConfigConfigStore struct {
+	configstore.ConfigStore
+	sawCaller bool
+}
+
+// GetModelConfigByID records whether ctx carries the caller marker and returns the row.
+func (s *reloadModelConfigConfigStore) GetModelConfigByID(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	s.sawCaller = ctx.Value(callerMarkerKey{}) != nil
+	return &configstoreTables.TableModelConfig{ID: id, ModelName: "gpt-4o", Scope: "global"}, nil
+}
+
+// TestReloadModelConfigReadsWithoutTheCallersContext checks that the reload's store read does not
+// carry the caller's context, so a caller's row-visibility scope cannot hide the config it just
+// wrote from the in-memory reload.
+func TestReloadModelConfigReadsWithoutTheCallersContext(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	store := &reloadModelConfigConfigStore{}
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: &lib.Config{ConfigStore: store}}
+
+	callerCtx := context.WithValue(context.Background(), callerMarkerKey{}, "alice")
+	_, _ = server.ReloadModelConfig(callerCtx, "mc-1") // no governance plugin: only the read matters here
+	if store.sawCaller {
+		t.Fatal("the reload read the model config on the caller's context")
+	}
+}
+
+// gatewayTestServer serves root through newFastHTTPServer, the production server settings, on an
+// in-memory listener, and returns a client for it.
+func gatewayTestServer(tb testing.TB, limitMB int, router fasthttp.RequestHandler, buffered bool) *fasthttp.Client {
+	tb.Helper()
+	handlers.SetLogger(noopTestLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	srv := newFastHTTPServer(handlers.ServerRootHandler(handlers.NewCorsMiddleware(config), config, router), limitMB, 64<<10, nil)
+	if buffered {
+		// The settings before uploads were streamed, for comparison benchmarks.
+		srv.StreamRequestBody, srv.DisablePreParseMultipartForm = false, false
+	}
+	// A loopback TCP listener, not fasthttputil's in-memory pipe, which copies every write into
+	// new buffers and would count the whole upload as gateway allocations.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	tb.Cleanup(func() { ln.Close() })
+	addr := ln.Addr().String()
+	return &fasthttp.Client{Dial: func(string) (net.Conn, error) { return net.Dial("tcp", addr) }, MaxConnsPerHost: 1, MaxResponseBodySize: 1 << 20}
+}
+
+// multipartUploadRequest builds a Files API upload request carrying file.
+func multipartUploadRequest(tb testing.TB, file []byte) *fasthttp.Request {
+	tb.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("purpose", "batch")
+	part, err := w.CreateFormFile("file", "batch.jsonl")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	part.Write(file)
+	w.Close()
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/files")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType(w.FormDataContentType())
+	req.SetBody(body.Bytes())
+	return req
+}
+
+// TestGatewayServerStreamsMultipartUploads pins that the gateway server never buffers an upload: a
+// 17 MB file reaches the handler unread on the connection, is parsed into a temp file, and costs
+// a small fraction of its size. fasthttp's parse while reading the request (the previous settings)
+// buffered the first 16 MB of every file before spilling it, ~64 MB allocated per upload.
+func TestGatewayServerStreamsMultipartUploads(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte("0123456789abcdef"), fileSize/16)
+	wantSum := sha256.Sum256(file)
+	var onDisk, streamed bool
+	var gotSum [sha256.Size]byte
+	var purpose string
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		streamed = ctx.Request.IsBodyStream() // not parsed yet: the handler reads it from the connection
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			ctx.Error(err.Error(), fasthttp.StatusBadRequest)
+			return
+		}
+		purpose = form.Value["purpose"][0]
+		f, err := form.File["file"][0].Open()
+		if err != nil {
+			ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		_, onDisk = f.(*os.File)
+		h := sha256.New()
+		io.Copy(h, f)
+		copy(gotSum[:], h.Sum(nil))
+	}, false)
+	req := multipartUploadRequest(t, file)
+	resp := &fasthttp.Response{}
+
+	// TotalAlloc is process-wide, so goroutines left by other tests in the package add noise;
+	// the smallest of three uploads is the upload's own cost.
+	allocated := uint64(math.MaxUint64)
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if err := client.Do(req, resp); err != nil {
+			t.Fatal(err)
+		}
+		runtime.ReadMemStats(&after)
+		allocated = min(allocated, after.TotalAlloc-before.TotalAlloc)
+
+		if resp.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode(), resp.Body())
+		}
+		if purpose != "batch" || gotSum != wantSum {
+			t.Errorf("handler got purpose=%q and a file that differs from the upload", purpose)
+		}
+		if !onDisk {
+			t.Error("uploaded file was held in memory, want it in a temp file")
+		}
+		if !streamed {
+			t.Error("the upload reached the handler already parsed, want it unread on the connection (parsing while reading buffers 16 MB per file)")
+		}
+	}
+	t.Logf("%d-byte upload allocated %d bytes", fileSize, allocated)
+	// Alone this upload allocates ~0.2 MB; the bound leaves room for the package's background
+	// goroutines and still fails the read-time parse, which allocates ~64 MB.
+	if allocated > 32<<20 {
+		t.Errorf("a %d-byte upload allocated %d bytes; the file must be streamed to disk, not buffered", fileSize, allocated)
+	}
+}
+
+// TestGatewayServerBuffersOtherBodies asserts every body that is not a plain multipart upload
+// reaches handlers as a buffering server delivered it: in memory, with no body stream left, which
+// code such as GenAI request-type detection reads as "large payload". Bodies larger than
+// fasthttp's 8 KB streaming prefetch, compressed bodies and chunked bodies are covered.
+func TestGatewayServerBuffersOtherBodies(t *testing.T) {
+	jsonBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"` + strings.Repeat("hello ", 40_000) + `"}]}`)
+	var gzipped bytes.Buffer
+	zw := gzip.NewWriter(&gzipped)
+	zw.Write(jsonBody)
+	zw.Close()
+
+	var gotBody []byte
+	var hadStream bool
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		hadStream = ctx.RequestBodyStream() != nil
+		gotBody = append([]byte(nil), ctx.Request.Body()...)
+	}, false)
+	for _, tc := range []struct {
+		name string
+		set  func(req *fasthttp.Request)
+	}{
+		{"json over the prefetch", func(req *fasthttp.Request) { req.SetBody(jsonBody) }},
+		{"gzip json", func(req *fasthttp.Request) {
+			req.Header.Set("Content-Encoding", "gzip")
+			req.SetBody(gzipped.Bytes())
+		}},
+		{"chunked json", func(req *fasthttp.Request) { req.SetBodyStream(bytes.NewReader(jsonBody), -1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &fasthttp.Request{}
+			req.SetRequestURI("http://bifrost/v1/chat/completions")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			tc.set(req)
+			resp := &fasthttp.Response{}
+			if err := client.Do(req, resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status %d: %s", resp.StatusCode(), resp.Body())
+			}
+			if hadStream {
+				t.Error("handler saw a request body stream, want the body buffered as before")
+			}
+			if !bytes.Equal(gotBody, jsonBody) {
+				t.Errorf("handler got %d bytes, want the %d-byte body", len(gotBody), len(jsonBody))
+			}
+		})
+	}
+}
+
+// TestGatewayServerEnforcesBodyLimit asserts max_request_body_size_mb still answers 413 with the
+// explanatory message and closes the connection, for every body shape. A streaming fasthttp server
+// does not reject an oversized body itself, so RequestBodyMiddleware must: from Content-Length, and
+// while reading a chunked body. Each oversized request is written on a raw connection only as far
+// as the server reads before it answers, so the 413 is always delivered rather than lost to a
+// reset, and a server that drops the connection without answering fails. A chunked body under the
+// limit still goes through whole.
+func TestGatewayServerEnforcesBodyLimit(t *testing.T) {
+	const limitMB = 1
+	const limit = limitMB << 20
+	handlerRan := false
+	var handlerBody int
+	root := func(ctx *fasthttp.RequestCtx) {
+		handlerRan = true
+		handlerBody = len(ctx.Request.Body())
+	}
+	upload := multipartUploadRequest(t, nil)
+	for _, tc := range []struct {
+		name  string
+		write func(conn net.Conn)
+	}{
+		{"json over the limit", func(conn net.Conn) {
+			// Headers declaring 2 MB, then only fasthttp's 8 KB streaming prefetch.
+			fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: bifrost\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", 2*limit)
+			conn.Write(bytes.Repeat([]byte("x"), 8<<10))
+		}},
+		{"chunked over the limit", func(conn net.Conn) {
+			// One chunk of limit+1 bytes and its closing CRLF (fasthttp reads it with the chunk's
+			// last bytes), but no final chunk: exactly what the middleware reads before refusing.
+			fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: bifrost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n", limit+1)
+			conn.Write(bytes.Repeat([]byte("x"), limit+1))
+			conn.Write([]byte("\r\n"))
+		}},
+		{"multipart upload over the limit", func(conn net.Conn) {
+			fmt.Fprintf(conn, "POST /v1/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", upload.Header.ContentType(), 2*limit)
+			conn.Write(bytes.Repeat([]byte("x"), 8<<10))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handlerRan = false
+			resp := rawGatewayRequest(t, limitMB, root, tc.write)
+			if resp.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+				t.Fatalf("status %d, want 413: %s", resp.StatusCode(), resp.Body())
+			}
+			if body := string(resp.Body()); !strings.Contains(body, "request_too_large") || !strings.Contains(body, "max_request_body_size_mb") {
+				t.Errorf("413 body lost the explanatory message: %s", body)
+			}
+			if !resp.ConnectionClose() {
+				t.Error("413 for an unread body must close the connection")
+			}
+			if handlerRan {
+				t.Error("handler ran for an oversized body")
+			}
+		})
+	}
+
+	t.Run("chunked under the limit", func(t *testing.T) {
+		under := bytes.Repeat([]byte("y"), 512<<10)
+		client := gatewayTestServer(t, limitMB, root, false)
+		req := &fasthttp.Request{}
+		req.SetRequestURI("http://bifrost/v1/chat/completions")
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetBodyStream(bytes.NewReader(under), -1)
+		resp := &fasthttp.Response{}
+		if err := client.Do(req, resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode() != fasthttp.StatusOK || handlerBody != len(under) {
+			t.Errorf("status %d, handler got %d bytes; want 200 and %d bytes", resp.StatusCode(), handlerBody, len(under))
+		}
+	})
+}
+
+// rawGatewayRequest serves root through the production server settings and root chain, writes a
+// request with write on a raw connection, and reads the response.
+func rawGatewayRequest(t *testing.T, limitMB int, root fasthttp.RequestHandler, write func(conn net.Conn)) *fasthttp.Response {
+	t.Helper()
+	handlers.SetLogger(noopTestLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	srv := newFastHTTPServer(handlers.ServerRootHandler(handlers.NewCorsMiddleware(config), config, root), limitMB, 64<<10, nil)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	write(conn)
+	resp := &fasthttp.Response{}
+	if err := resp.Read(bufio.NewReader(conn)); err != nil {
+		t.Fatalf("no response: %v", err)
+	}
+	return resp
+}
+
+// BenchmarkGatewayServerJSONBody measures a JSON request end to end through the gateway's server
+// settings and root middleware chain, against the previous buffered settings: the common path
+// must not regress now that request bodies are streamed and read back into memory by
+// RequestBodyMiddleware.
+func BenchmarkGatewayServerJSONBody(b *testing.B) {
+	for _, size := range []int{1 << 10, 64 << 10, 1 << 20} {
+		body := []byte(`{"model":"openai/gpt-4o-mini","input":"` + strings.Repeat("a", size) + `"}`)
+		for _, mode := range []struct {
+			name     string
+			buffered bool
+		}{{"buffered", true}, {"streaming", false}} {
+			b.Run(fmt.Sprintf("%dKB/%s", size>>10, mode.name), func(b *testing.B) {
+				client := gatewayTestServer(b, 100, func(ctx *fasthttp.RequestCtx) {
+					if len(ctx.Request.Body()) != len(body) {
+						ctx.SetStatusCode(fasthttp.StatusBadRequest)
+					}
+				}, mode.buffered)
+				req := &fasthttp.Request{}
+				req.SetRequestURI("http://bifrost/v1/responses")
+				req.Header.SetMethod(fasthttp.MethodPost)
+				req.Header.SetContentType("application/json")
+				req.SetBody(body)
+				resp := &fasthttp.Response{}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if err := client.Do(req, resp); err != nil || resp.StatusCode() != fasthttp.StatusOK {
+						b.Fatalf("status %d err %v", resp.StatusCode(), err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestGatewayServerRejectedUploadKeepsNextRequestIntact pins that an upload answered before its
+// body is read (here a 401, as an auth failure or a rate limit answers) reaches the client with
+// its status and does not leave the rest of the body on the keep-alive connection. A streaming
+// fasthttp server does not drain it, so the next request on that connection would be parsed from
+// the leftover upload bytes; RequestBodyMiddleware drains it. Both requests must share one
+// connection: closing it after the 401 would also keep the next request intact, but would lose
+// keep-alive reuse for every refused upload.
+func TestGatewayServerRejectedUploadKeepsNextRequestIntact(t *testing.T) {
+	jsonBody := []byte(`{"model":"openai/gpt-4o-mini","input":"next request"}`)
+	var gotBody []byte
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		if string(ctx.Path()) == "/v1/files" {
+			ctx.Error("unauthorized", fasthttp.StatusUnauthorized) // the upload is never read
+			return
+		}
+		gotBody = append([]byte(nil), ctx.Request.Body()...)
+	}, false)
+	var dials atomic.Int32
+	dial := client.Dial
+	client.Dial = func(addr string) (net.Conn, error) {
+		dials.Add(1)
+		return dial(addr)
+	}
+
+	upload := multipartUploadRequest(t, bytes.Repeat([]byte("u"), 4<<20))
+	resp := &fasthttp.Response{}
+	if err := client.Do(upload, resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("upload status %d, want 401", resp.StatusCode())
+	}
+
+	next := &fasthttp.Request{}
+	next.SetRequestURI("http://bifrost/v1/responses")
+	next.Header.SetMethod(fasthttp.MethodPost)
+	next.Header.SetContentType("application/json")
+	next.SetBody(jsonBody)
+	if err := client.Do(next, resp); err != nil {
+		t.Fatalf("next request failed: %v", err)
+	}
+	if resp.StatusCode() != fasthttp.StatusOK || !bytes.Equal(gotBody, jsonBody) {
+		t.Errorf("next request: status %d, handler body %q; want 200 and the JSON body", resp.StatusCode(), gotBody)
+	}
+	if n := dials.Load(); n != 1 {
+		t.Errorf("dialed %d connections, want 1: the next request must reuse the rejected upload's keep-alive connection", n)
+	}
+}
+
+// TestGatewayServerOversizedBodyAnswered413BeforeBody asserts a request whose Content-Length is
+// over max_request_body_size_mb is answered 413, with the explanatory message, from its headers:
+// the client gets the reply after sending only fasthttp's 8 KB streaming prefetch of a 2 MB body.
+func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
+	handlerRan := false
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	handlers.SetLogger(noopTestLogger{})
+	srv := newFastHTTPServer(handlers.ServerRootHandler(handlers.NewCorsMiddleware(config), config, func(*fasthttp.RequestCtx) { handlerRan = true }), 1, 64<<10, nil)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	defer ln.Close()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "POST /v1/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: %d\r\n\r\n", 2<<20)
+	conn.Write(bytes.Repeat([]byte("p"), 8<<10))
+	resp := &fasthttp.Response{}
+	if err := resp.Read(bufio.NewReader(conn)); err != nil {
+		t.Fatalf("no reply before the body was sent: %v", err)
+	}
+	if resp.StatusCode() != fasthttp.StatusRequestEntityTooLarge || !strings.Contains(string(resp.Body()), "max_request_body_size_mb") {
+		t.Errorf("status %d body %s, want 413 naming max_request_body_size_mb", resp.StatusCode(), resp.Body())
+	}
+	if handlerRan {
+		t.Error("handler ran for an oversized body")
+	}
 }

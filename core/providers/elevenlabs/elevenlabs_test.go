@@ -163,6 +163,255 @@ func TestElevenlabsSpeechRawBodyNamesTheResolvedModel(t *testing.T) {
 	}
 }
 
+// The last bytes of a stream can arrive in the same read as its end, and they are audio: a chunked body whose data and
+// terminating chunk are written together ends in the read that returns the data.
+func TestElevenlabsSpeechStreamKeepsTheBytesThatArriveWithTheEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nb\r\naudio-bytes\r\n0\r\n\r\n")
+		_ = rw.Flush()
+	}))
+	defer server.Close()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := &schemas.BifrostSpeechRequest{
+		Provider: schemas.Elevenlabs,
+		Model:    "eleven_v4_turbo",
+		Input:    &schemas.SpeechInput{Input: "hi"},
+		Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: new("voice-id")}},
+	}
+	passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	stream, bifrostErr := passthroughProvider(t, server.URL).SpeechStream(ctx, passthrough, nil, schemas.Key{Value: *schemas.NewSecretVar("xi-test")}, request)
+
+	require.Nil(t, bifrostErr)
+	var audio []byte
+	for chunk := range stream {
+		if chunk.BifrostSpeechStreamResponse != nil {
+			audio = append(audio, chunk.BifrostSpeechStreamResponse.Audio...)
+		}
+	}
+	require.Equal(t, "audio-bytes", string(audio))
+}
+
+// A body forwarded as the client wrote it names the model ElevenLabs knows on a stream as on a unary call.
+func TestElevenlabsSpeechStreamNamesTheModelInARawBody(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = string(body)
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	request := &schemas.BifrostSpeechRequest{
+		Provider:       schemas.Elevenlabs,
+		Model:          "eleven_v4_turbo",
+		Input:          &schemas.SpeechInput{Input: "hi"},
+		Params:         &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: new("voice-id")}},
+		RawRequestBody: []byte(`{"text":"hi","model_id":"elevenlabs/eleven_v4_turbo","seed":3}`),
+	}
+	passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	stream, bifrostErr := passthroughProvider(t, server.URL).SpeechStream(ctx, passthrough, nil, schemas.Key{Value: *schemas.NewSecretVar("xi-test")}, request)
+
+	require.Nil(t, bifrostErr)
+	for range stream {
+	}
+	require.Equal(t, `{"text":"hi","model_id":"eleven_v4_turbo","seed":3}`, got)
+}
+
+// A stream is billed by the characters it spoke, which its last chunk reports as a unary response does.
+func TestElevenlabsSpeechStreamReportsTheCharactersItSpoke(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := &schemas.BifrostSpeechRequest{
+		Provider: schemas.Elevenlabs,
+		Model:    "eleven_v4_turbo",
+		Input:    &schemas.SpeechInput{Input: "नमस्ते"}, // 6 characters in 18 bytes
+		Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: new("voice-id")}},
+	}
+	passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	stream, bifrostErr := passthroughProvider(t, server.URL).SpeechStream(ctx, passthrough, nil, schemas.Key{Value: *schemas.NewSecretVar("xi-test")}, request)
+
+	require.Nil(t, bifrostErr)
+	var done *schemas.BifrostSpeechStreamResponse
+	for chunk := range stream {
+		if r := chunk.BifrostSpeechStreamResponse; r != nil && r.Type == schemas.SpeechStreamResponseTypeDone {
+			done = r
+		}
+	}
+	require.NotNil(t, done, "the stream ends with a done chunk")
+	require.NotNil(t, done.Usage, "the done chunk carries the usage the cost is computed from")
+	require.Equal(t, 6, done.Usage.InputChars)
+}
+
+func BenchmarkSpeechStreamFinalChunkUsage(b *testing.B) {
+	request := &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: strings.Repeat("नमस्ते ", 700)}}
+	b.ReportAllocs()
+	for b.Loop() {
+		done := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone}
+		done.BackfillParams(request)
+	}
+}
+
+// ElevenLabs bills a batch transcription for the audio it transcribed, which it reports as audio_duration_secs, trailing
+// silence included, and per channel when the channels are transcribed apart.
+func TestElevenlabsTranscriptionReportsTheAudioDurationAsUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		seconds *float64
+	}{
+		{"one transcript", `{"language_code":"eng","text":"hi","words":[{"text":"hi","type":"word","start":0,"end":1}],"audio_duration_secs":9.144}`, new(9.144)},
+		{"a transcript per channel", `{"transcripts":[{"language_code":"eng","text":"a","words":[],"channel_index":0,"audio_duration_secs":6.144},{"language_code":"eng","text":"b","words":[],"channel_index":1,"audio_duration_secs":6.144}],"audio_duration_secs":12.288}`, new(12.288)},
+		{"no duration", `{"language_code":"eng","text":"hi","words":[{"text":"hi","type":"word","start":0,"end":1}]}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			response, bifrostErr := passthroughProvider(t, server.URL).Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xi-test")}, &schemas.BifrostTranscriptionRequest{
+				Provider: schemas.Elevenlabs,
+				Model:    "scribe_v2",
+				Input:    &schemas.TranscriptionInput{File: []byte("audio")},
+			})
+
+			require.Nil(t, bifrostErr)
+			if tc.seconds == nil {
+				require.Nil(t, response.Usage, "without the duration there is nothing to bill")
+				return
+			}
+			require.NotNil(t, response.Usage)
+			require.Equal(t, "duration", response.Usage.Type)
+			require.NotNil(t, response.Usage.Seconds)
+			require.InDelta(t, *tc.seconds, *response.Usage.Seconds, 1e-9)
+		})
+	}
+}
+
+// ElevenLabs serves WAV only for non-streaming requests, so wav is a real WAV there and stays raw PCM on a stream.
+func TestElevenlabsSpeechOutputFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name, format string
+		stream       bool
+		want         string
+	}{
+		{"wav", "wav", false, "wav_44100"},
+		{"wav on a stream", "wav", true, "pcm_44100"},
+		{"pcm", "pcm", false, "pcm_44100"},
+		{"pcm on a stream", "pcm", true, "pcm_44100"},
+		{"mp3 by default", "", false, "mp3_44100_128"},
+		{"opus", "opus", false, "opus_48000_128"},
+		{"a native format", "ulaw_8000", false, "ulaw_8000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query().Get("output_format")
+				w.Header().Set("Content-Type", "audio/mpeg")
+				_, _ = w.Write([]byte("audio-bytes"))
+			}))
+			defer server.Close()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			key := schemas.Key{Value: *schemas.NewSecretVar("xi-test")}
+			request := &schemas.BifrostSpeechRequest{
+				Provider: schemas.Elevenlabs,
+				Model:    "eleven_v4_turbo",
+				Input:    &schemas.SpeechInput{Input: "hi"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: new("voice-id")}, ResponseFormat: tc.format},
+			}
+
+			if tc.stream {
+				passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				stream, bifrostErr := passthroughProvider(t, server.URL).SpeechStream(ctx, passthrough, nil, key, request)
+				require.Nil(t, bifrostErr)
+				for range stream {
+				}
+			} else {
+				_, bifrostErr := passthroughProvider(t, server.URL).Speech(ctx, key, request)
+				require.Nil(t, bifrostErr)
+			}
+
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// A request that lacks the voice or the audio is the caller's mistake, so it is a 400 and never reaches ElevenLabs.
+func TestElevenlabsRefusesAMissingVoiceOrFileAsABadRequest(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	}))
+	defer server.Close()
+	provider := passthroughProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("xi-test")}
+	withoutVoice := func() *schemas.BifrostSpeechRequest {
+		return &schemas.BifrostSpeechRequest{
+			Provider: schemas.Elevenlabs,
+			Model:    "eleven_v4_turbo",
+			Input:    &schemas.SpeechInput{Input: "hi"},
+			Params:   &schemas.SpeechParameters{},
+		}
+	}
+
+	for name, call := range map[string]func() *schemas.BifrostError{
+		"speech without a voice": func() *schemas.BifrostError {
+			_, err := provider.Speech(ctx, key, withoutVoice())
+			return err
+		},
+		"speech stream without a voice": func() *schemas.BifrostError {
+			_, err := provider.SpeechStream(ctx, func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}, nil, key, withoutVoice())
+			return err
+		},
+		"transcription without a file or a URL": func() *schemas.BifrostError {
+			_, err := provider.Transcription(ctx, key, &schemas.BifrostTranscriptionRequest{
+				Provider: schemas.Elevenlabs,
+				Model:    "scribe_v2",
+				Input:    &schemas.TranscriptionInput{},
+			})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostErr := call()
+
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode, "an error without a status is a 500 to the client")
+			require.Equal(t, 400, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error.Type)
+			require.Equal(t, "invalid_request_error", *bifrostErr.Error.Type)
+		})
+	}
+	require.Zero(t, calls, "a refused request must not reach ElevenLabs")
+}
+
 func TestElevenlabs(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")) == "" {

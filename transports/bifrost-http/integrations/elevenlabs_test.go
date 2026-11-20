@@ -58,6 +58,7 @@ type elevenlabsObserver struct {
 	mu          sync.Mutex
 	types       []schemas.RequestType
 	speech      []*schemas.BifrostSpeechRequest
+	rawResponse []bool // whether the call asked for a raw copy of ElevenLabs' answer
 	passthrough []*schemas.BifrostPassthroughRequest
 	usage       *schemas.BifrostPassthroughUsage
 	denyWith    *schemas.BifrostError
@@ -75,6 +76,8 @@ func (o *elevenlabsObserver) PreLLMHook(ctx *schemas.BifrostContext, req *schema
 	o.types = append(o.types, req.RequestType)
 	if req.SpeechRequest != nil {
 		o.speech = append(o.speech, req.SpeechRequest)
+		raw, _ := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+		o.rawResponse = append(o.rawResponse, raw)
 	}
 	if req.PassthroughRequest != nil {
 		copied := *req.PassthroughRequest
@@ -186,10 +189,14 @@ func TestElevenlabsRouterServesTextToSpeech(t *testing.T) {
 	const body = `{"text":"hello world","model_id":"elevenlabs/eleven_v4_turbo","voice_settings":{"stability":0.4},"seed":3,"apply_text_normalization":"on"}`
 	for _, tc := range []struct {
 		name, path, wantBody, wantType string
+		wantRequest                    schemas.RequestType
 		withTimestamps                 bool
+		wantRawResponse                bool
 	}{
-		{"audio", "/v1/text-to-speech/voice123", "audio-bytes", "audio/mpeg", false},
-		{"with timestamps", "/v1/text-to-speech/voice123/with-timestamps", elevenlabsTimestampsAnswer, "application/json", true},
+		{"audio", "/v1/text-to-speech/voice123", "audio-bytes", "audio/mpeg", schemas.SpeechRequest, false, true},
+		{"with timestamps", "/v1/text-to-speech/voice123/with-timestamps", elevenlabsTimestampsAnswer, "application/json", schemas.SpeechRequest, true, true},
+		// A stream is the audio itself, so keeping a raw copy of each chunk would only double it.
+		{"stream", "/v1/text-to-speech/voice123/stream", "audio-bytes", "audio/mpeg", schemas.SpeechStreamRequest, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gateway := newElevenlabsGateway(t)
@@ -213,7 +220,8 @@ func TestElevenlabsRouterServesTextToSpeech(t *testing.T) {
 
 			require.Len(t, gateway.observer.speech, 1)
 			speech := gateway.observer.speech[0]
-			assert.Equal(t, schemas.SpeechRequest, gateway.observer.types[0])
+			assert.Equal(t, tc.wantRequest, gateway.observer.types[0])
+			assert.Equal(t, tc.wantRawResponse, gateway.observer.rawResponse[0])
 			assert.Equal(t, schemas.Elevenlabs, speech.Provider)
 			assert.Equal(t, "eleven_v4_turbo", speech.Model)
 			assert.Equal(t, "hello world", speech.Input.Input)
@@ -266,7 +274,9 @@ func TestElevenlabsRouterServesOnlyItsEndpoints(t *testing.T) {
 		{fasthttp.MethodGet, "/elevenlabs/v1/text-to-speech/voice123", fasthttp.StatusMethodNotAllowed},
 		{fasthttp.MethodPost, "/elevenlabs/v1/models", fasthttp.StatusMethodNotAllowed},
 		{fasthttp.MethodGet, "/elevenlabs/v1/voices", fasthttp.StatusNotFound},
-		{fasthttp.MethodPost, "/elevenlabs/v1/text-to-speech/voice123/stream", fasthttp.StatusNotFound},
+		{fasthttp.MethodPost, "/elevenlabs/v1/text-to-speech/voice123/stream", fasthttp.StatusOK},
+		{fasthttp.MethodGet, "/elevenlabs/v1/text-to-speech/voice123/stream", fasthttp.StatusMethodNotAllowed},
+		{fasthttp.MethodPost, "/elevenlabs/v1/text-to-speech/voice123/stream/with-timestamps", fasthttp.StatusNotFound},
 		{fasthttp.MethodPost, "/elevenlabs/v1/text-to-dialogue", fasthttp.StatusNotFound},
 		{fasthttp.MethodPost, "/v1/text-to-speech/voice123", fasthttp.StatusNotFound},
 	} {
@@ -333,6 +343,49 @@ func TestElevenlabsRouterWritesElevenlabsErrors(t *testing.T) {
 		assert.Contains(t, string(ctx.Response.Body()), `"detail":{`)
 		assert.Contains(t, string(ctx.Response.Body()), "Invalid API key")
 	})
+	// Before its first audio byte a stream is still an ordinary HTTP answer, so its failure keeps its status.
+	t.Run("an error of ElevenLabs on the stream endpoint", func(t *testing.T) {
+		gateway := newElevenlabsGateway(t)
+		*gateway.status = http.StatusUnauthorized
+		ctx := gateway.do(fasthttp.MethodPost, "/elevenlabs/v1/text-to-speech/voice123/stream", `{"text":"hi","model_id":"elevenlabs/eleven_v4_turbo"}`)
+		require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+		assert.NotContains(t, string(ctx.Response.Header.ContentType()), "event-stream")
+		assert.Contains(t, string(ctx.Response.Body()), `"detail":{`)
+		assert.Contains(t, string(ctx.Response.Body()), "Invalid API key")
+	})
+	t.Run("a refusal by a plugin on the stream endpoint", func(t *testing.T) {
+		gateway := newElevenlabsGateway(t)
+		gateway.observer.denyWith = &schemas.BifrostError{Type: new("model_blocked"), StatusCode: new(403), Error: &schemas.ErrorField{Message: "model is not allowed"}}
+		ctx := gateway.do(fasthttp.MethodPost, "/elevenlabs/v1/text-to-speech/voice123/stream", `{"text":"hi","model_id":"elevenlabs/eleven_v4_turbo"}`)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+		assert.JSONEq(t, `{"detail":{"status":"model_blocked","message":"model is not allowed"}}`, string(ctx.Response.Body()))
+		assert.Empty(t, *gateway.received)
+	})
+}
+
+// A stream is labelled with the media type of the format asked for, as the unary call is, and carries no SSE framing.
+func TestElevenlabsRouterStreamsUnderTheMediaTypeOfItsFormat(t *testing.T) {
+	for _, tc := range []struct{ format, want string }{
+		{"", "audio/mpeg"},
+		{"mp3_44100_128", "audio/mpeg"},
+		{"opus_48000_32", "audio/opus"},
+		{"pcm_16000", "application/octet-stream"},
+		{"ulaw_8000", "application/octet-stream"},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			gateway := newElevenlabsGateway(t)
+			uri := "/elevenlabs/v1/text-to-speech/voice123/stream"
+			if tc.format != "" {
+				uri += "?output_format=" + tc.format
+			}
+
+			ctx := gateway.do(fasthttp.MethodPost, uri, `{"text":"hi","model_id":"elevenlabs/eleven_v4_turbo"}`)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Equal(t, tc.want, string(ctx.Response.Header.ContentType()))
+			assert.Equal(t, "audio-bytes", string(ctx.Response.Body()), "the body is the audio, not SSE events")
+		})
+	}
 }
 
 // The rest of the ElevenLabs API is forwarded as sent on /elevenlabs_passthrough, under the key's credential, and

@@ -888,6 +888,33 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
 		},
+		// thinking.block_binding tests
+		{
+			name:     "Anthropic gets thinking binding controls header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			expectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
+		{
+			name:     "Vertex skips thinking binding controls header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			unexpectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking binding controls header when thinking is disabled",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "disabled", BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}},
+			},
+			unexpectHeaders: []string{AnthropicThinkingBindingControlsBetaHeader},
+		},
 		// Interleaved thinking tests
 		{
 			name:     "Anthropic gets interleaved thinking header for enabled",
@@ -4795,6 +4822,10 @@ func betaHeaderCorpus() map[string]string {
 		"thinking display summarized (must NOT trigger)":   `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`,
 		"thinking display updates but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
 
+		// thinking.block_binding is read off the same decoded thinking object.
+		"thinking block binding":                         `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking block binding but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"messages":[{"role":"user","content":"hi"}]}`,
+
 		// --- everything at once, to catch ordering/dedup divergence ---
 		"kitchen sink": `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},` +
 			`"tools":[{"type":"computer_20250124","name":"computer"},{"name":"t","input_schema":{"type":"object"},"strict":true,"defer_loading":true,"input_examples":[{"a":1}],"allowed_callers":["assistant"],"eager_input_streaming":true}],` +
@@ -4919,7 +4950,7 @@ func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
 func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	usage := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 		InputTokens:   105,
 		OutputTokens:  6039,
 		ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 2},
@@ -5063,7 +5094,7 @@ func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
 			usageToProcess = event.Message.Usage
 		}
 		if usageToProcess != nil {
-			accumulateAnthropicResponsesUsage(usage, billed, usageToProcess)
+			accumulateResponsesUsageFromStruct(usage, billed, usageToProcess)
 			if usageToProcess.Speed != nil {
 				servedSpeed = usageToProcess.Speed
 			}
@@ -6043,6 +6074,8 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 		{"claude-opus-5-5", true},
 		{"claude-sonnet-5-5", true},
 		{"claude-fable-5-1", true},
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20261101", true},
 		{"claude-sonnet-5", false},
 		{"claude-opus-4-7", false},
 		{"claude-haiku-4-5", false},

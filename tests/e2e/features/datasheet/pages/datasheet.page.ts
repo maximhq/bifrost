@@ -42,6 +42,18 @@ export class DatasheetPage extends BasePage {
     return this.page.getByTestId(`datasheet-limit-input-${field}`)
   }
 
+  limitReset(field: 'context_length' | 'max_input_tokens' | 'max_output_tokens'): Locator {
+    return this.page.getByTestId(`datasheet-limit-reset-${field}`)
+  }
+
+  flagSelect(flag: string): Locator {
+    return this.page.getByTestId(`datasheet-flag-select-${flag}`)
+  }
+
+  editBtn(provider: string, model: string, mode: string): Locator {
+    return this.page.getByTestId(`datasheet-edit-${datasheetRowKey(provider, model, mode)}`)
+  }
+
   async chooseCustomProvider(provider: string): Promise<void> {
     await this.page.getByTestId('datasheet-custom-provider').click()
     await this.page.getByTestId(`datasheet-custom-provider-option-${provider}`).click()
