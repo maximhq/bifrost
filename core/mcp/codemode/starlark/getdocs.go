@@ -197,7 +197,8 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		}
 
 		// Generate function signature
-		params := formatPythonParams(tool.Function.Parameters)
+		parameters := stubParameters(tool.Function.Parameters)
+		params := formatPythonParams(parameters)
 		sb.WriteString(fmt.Sprintf("def %s(%s) -> dict:\n", toolName, params))
 
 		// Generate docstring
@@ -208,11 +209,11 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		}
 
 		// Args section
-		if tool.Function.Parameters != nil && tool.Function.Parameters.Properties != nil {
-			props := tool.Function.Parameters.Properties
+		if parameters != nil && parameters.Properties != nil {
+			props := parameters.Properties
 			required := make(map[string]bool)
-			if tool.Function.Parameters.Required != nil {
-				for _, req := range tool.Function.Parameters.Required {
+			if parameters.Required != nil {
+				for _, req := range parameters.Required {
 					required[req] = true
 				}
 			}
@@ -236,18 +237,16 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 				for _, propName := range propNames {
 					prop, _ := props.Get(propName)
-					propSchema, ok := asJSONSchema(prop)
+					pyType, ok := propertyType(prop)
 					if !ok {
 						continue
 					}
-
-					pyType := jsonSchemaToPython(propSchema)
-					propDesc := ""
-					descVal, _ := propSchema.Get("description")
-					if desc, ok := descVal.(string); ok && desc != "" {
-						propDesc = desc
-					} else {
-						propDesc = fmt.Sprintf("%s parameter", propName)
+					propDesc := fmt.Sprintf("%s parameter", propName)
+					if propSchema, ok := asJSONSchema(prop); ok {
+						descVal, _ := propSchema.Get("description")
+						if desc, ok := descVal.(string); ok && desc != "" {
+							propDesc = desc
+						}
 					}
 
 					requiredNote := ""
@@ -272,7 +271,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 		// Example section
 		sb.WriteString("    Example:\n")
-		sb.WriteString(fmt.Sprintf("        result = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
+		sb.WriteString(fmt.Sprintf("        result = %s.%s(%s)\n", clientName, toolName, getExampleParams(parameters)))
 		sb.WriteString("        print(type(result))  # check the shape before indexing it\n")
 		sb.WriteString("        value = result.get(\"key\") if type(result) == \"dict\" else result\n")
 		sb.WriteString("    \"\"\"\n")

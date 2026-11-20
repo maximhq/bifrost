@@ -1169,6 +1169,22 @@ func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionP
 		inputSchema.Defs = defs
 	}
 
+	// A root-level oneOf/anyOf/allOf (a tagged union) carries the tool's arguments; mcp-go writes
+	// AdditionalFields back out as top-level keywords.
+	for keyword, branches := range map[string][]schemas.OrderedMap{"oneOf": params.OneOf, "anyOf": params.AnyOf, "allOf": params.AllOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		if inputSchema.AdditionalFields == nil {
+			inputSchema.AdditionalFields = make(map[string]any, 1)
+		}
+		members := make([]any, len(branches))
+		for i := range branches {
+			members[i] = &branches[i]
+		}
+		inputSchema.AdditionalFields[keyword] = members
+	}
+
 	return inputSchema
 }
 

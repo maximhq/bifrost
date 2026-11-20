@@ -1972,6 +1972,267 @@ func TestStubsRenderFreshAndRestoredToolsIdentically(t *testing.T) {
 	}
 }
 
+// fetchReportTool is a tool whose arguments are a root-level oneOf, as discovery keeps it.
+func fetchReportTool() schemas.ChatTool {
+	branch := func(tag, field string) schemas.OrderedMap {
+		return *schemas.OrderedMapFromMap(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"kind": map[string]interface{}{"type": "string", "const": tag},
+				field:  map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"kind"},
+		})
+	}
+	return schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "codey-fetch_report",
+			Description: schemas.Ptr("Fetch a report."),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type:       "object",
+				Properties: schemas.NewOrderedMap(),
+				OneOf:      []schemas.OrderedMap{branch("sales", "region"), branch("inventory", "warehouse")},
+			},
+		},
+	}
+}
+
+// A root-level oneOf is flattened into one parameter list, so the stub and the docs show the
+// arguments instead of def fetch_report() -> dict.
+func TestStubsFlattenRootComposition(t *testing.T) {
+	const signature = `def fetch_report(kind: Literal["sales", "inventory"], region: str = None, warehouse: str = None) -> dict`
+	for name, tool := range map[string]schemas.ChatTool{
+		"fresh":    fetchReportTool(),
+		"restored": restoreDiscoveredTool(t, fetchReportTool()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			mode := newSearchCodeMode(tool)
+			msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("tool-call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+			})
+			stub := instructionsToolResponse(t, msg, err)
+			if !strings.Contains(stub, signature) {
+				t.Fatalf("readToolFile dropped the union's parameters, got:\n%s", stub)
+			}
+
+			msg, err = mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("tool-call-2"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"fetch_report"}`},
+			})
+			docs := instructionsToolResponse(t, msg, err)
+			for _, want := range []string{
+				signature,
+				`kind (Literal["sales", "inventory"]): kind parameter (required)`,
+				"region (str): region parameter (optional)",
+				"warehouse (str): warehouse parameter (optional)",
+				`codey.fetch_report(kind="...")`,
+			} {
+				if !strings.Contains(docs, want) {
+					t.Fatalf("getToolDocs is missing %q, got:\n%s", want, docs)
+				}
+			}
+		})
+	}
+}
+
+// A union too complex to flatten falls back to the root's own properties instead of failing the stub.
+func TestStubsFallBackWhenTheUnionIsTooComplex(t *testing.T) {
+	members := make([]schemas.OrderedMap, 7) // 2^7 combinations exceed the flattening limit.
+	for i := range members {
+		members[i] = *schemas.OrderedMapFromMap(map[string]interface{}{"anyOf": []interface{}{
+			map[string]interface{}{"type": "object", "properties": map[string]interface{}{"left": map[string]interface{}{"type": "string"}}},
+			map[string]interface{}{"type": "object", "properties": map[string]interface{}{"right": map[string]interface{}{"type": "string"}}},
+		}})
+	}
+	params := &schemas.ToolFunctionParameters{
+		Type:       "object",
+		Properties: schemas.OrderedMapFromMap(map[string]interface{}{"id": map[string]interface{}{"type": "string"}}),
+		Required:   []string{"id"},
+		AllOf:      members,
+	}
+	if got := formatPythonParams(stubParameters(params)); got != "id: str" {
+		t.Fatalf("formatPythonParams() = %q, want the root's own parameters", got)
+	}
+}
+
+// A union property renders as the Python union of its members, not Any.
+func TestJSONSchemaToPythonRendersUnions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema map[string]interface{}
+		want   string
+	}{
+		{"consts", map[string]interface{}{"anyOf": []interface{}{
+			map[string]interface{}{"type": "string", "const": "sales"},
+			map[string]interface{}{"type": "string", "const": "inventory"},
+		}}, `Literal["sales", "inventory"]`},
+		{"consts and enums", map[string]interface{}{"oneOf": []interface{}{
+			map[string]interface{}{"const": "a"},
+			map[string]interface{}{"enum": []interface{}{"b", "c"}},
+		}}, `Literal["a", "b", "c"]`},
+		{"types", map[string]interface{}{"anyOf": []interface{}{
+			map[string]interface{}{"type": "string"},
+			map[string]interface{}{"type": "integer"},
+		}}, "str | int"},
+		{"nullable", map[string]interface{}{"oneOf": []interface{}{
+			map[string]interface{}{"type": "string"},
+			map[string]interface{}{"type": "null"},
+		}}, "str | None"},
+		{"duplicates", map[string]interface{}{"anyOf": []interface{}{
+			map[string]interface{}{"type": "string", "format": "date"},
+			map[string]interface{}{"type": "string"},
+		}}, "str"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jsonSchemaToPython(plainSchema(tc.schema)); got != tc.want {
+				t.Fatalf("jsonSchemaToPython() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Fixed values render as Python literals: strings quoted, numbers and booleans bare, null as
+// None. A value Literal cannot hold (an object or a list) leaves the type to the schema's type.
+func TestJSONSchemaToPythonRendersLiterals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema string
+		want   string
+	}{
+		{"string enum", `{"type": "string", "enum": ["a", "b"]}`, `Literal["a", "b"]`},
+		{"integer enum", `{"type": "integer", "enum": [1, 2, 3]}`, "Literal[1, 2, 3]"},
+		{"number enum", `{"type": "number", "enum": [0.5, 2]}`, "Literal[0.5, 2]"},
+		{"mixed enum with null", `{"enum": ["a", 1, null]}`, `Literal["a", 1, None]`},
+		{"boolean const", `{"const": true}`, "Literal[True]"},
+		{"integer const", `{"const": 7}`, "Literal[7]"},
+		{"const narrows its enum", `{"enum": ["auto", "fixed"], "const": "fixed"}`, `Literal["fixed"]`},
+		{"numeric consts in a union", `{"anyOf": [{"const": 1}, {"const": 2}]}`, "Literal[1, 2]"},
+		{"object const keeps the type", `{"type": "object", "const": {"a": 1}}`, "dict"},
+		{"list in an enum keeps the type", `{"type": "array", "items": {"type": "integer"}, "enum": [[1, 2]]}`, "list[int]"},
+		{"type list", `{"type": ["string", "null"]}`, "str | None"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.schema), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			restored := schemas.NewOrderedMap()
+			if err := sonic.Unmarshal([]byte(tc.schema), restored); err != nil {
+				t.Fatal(err)
+			}
+			for shape, schema := range map[string]jsonSchema{"fresh": plainSchema(decoded), "restored": restored} {
+				if got := jsonSchemaToPython(schema); got != tc.want {
+					t.Fatalf("%s: jsonSchemaToPython() = %q, want %q", shape, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A property-level allOf (what flattening a root allOf leaves on a property its members define
+// differently) renders as its narrowest member: fixed values win, enums intersect, the same type
+// stays, and types that cannot both hold give Any.
+func TestJSONSchemaToPythonRendersAllOf(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema string
+		want   string
+	}{
+		{"const and type", `{"allOf": [{"type": "string", "const": "sales"}, {"type": "string"}]}`, `Literal["sales"]`},
+		{"enums intersect", `{"allOf": [{"enum": ["a", "b", "c"]}, {"enum": ["b", "c", "d"]}]}`, `Literal["b", "c"]`},
+		{"same type", `{"allOf": [{"type": "string", "format": "date"}, {"type": "string", "minLength": 1}]}`, "str"},
+		{"own type with untyped members", `{"type": "string", "allOf": [{"minLength": 1}]}`, "str"},
+		{"number narrowed to integer", `{"allOf": [{"type": "number"}, {"type": "integer"}]}`, "int"},
+		{"conflicting types", `{"allOf": [{"type": "string"}, {"type": "integer"}]}`, "Any"},
+		{"disjoint enums", `{"allOf": [{"enum": ["a"]}, {"enum": ["b"]}]}`, "Any"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.schema), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			restored := schemas.NewOrderedMap()
+			if err := sonic.Unmarshal([]byte(tc.schema), restored); err != nil {
+				t.Fatal(err)
+			}
+			for shape, schema := range map[string]jsonSchema{"fresh": plainSchema(decoded), "restored": restored} {
+				if got := jsonSchemaToPython(schema); got != tc.want {
+					t.Fatalf("%s: jsonSchemaToPython() = %q, want %q", shape, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Boolean members follow their operator: true in a union accepts anything (Any), false never
+// matches and drops out; in allOf, true adds nothing and false leaves no valid value (Any).
+// {"not": {}} is how discovery stores false.
+func TestJSONSchemaToPythonBooleanMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema string
+		want   string
+	}{
+		{"anyOf with true", `{"anyOf": [true, {"type": "string"}]}`, "Any"},
+		{"oneOf with true", `{"oneOf": [true, {"type": "string"}]}`, "Any"},
+		{"anyOf with false", `{"anyOf": [false, {"type": "string"}]}`, "str"},
+		{"anyOf with never", `{"anyOf": [{"not": {}}, {"type": "string"}]}`, "str"},
+		{"allOf with true", `{"allOf": [true, {"type": "string"}]}`, "str"},
+		{"allOf with false", `{"allOf": [false, {"type": "string"}]}`, "Any"},
+		{"allOf with never", `{"allOf": [{"not": {}}, {"type": "string"}]}`, "Any"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.schema), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			restored := schemas.NewOrderedMap()
+			if err := sonic.Unmarshal([]byte(tc.schema), restored); err != nil {
+				t.Fatal(err)
+			}
+			for shape, schema := range map[string]jsonSchema{"fresh": plainSchema(decoded), "restored": restored} {
+				if got := jsonSchemaToPython(schema); got != tc.want {
+					t.Fatalf("%s: jsonSchemaToPython() = %q, want %q", shape, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A property whose schema is true accepts anything, so it is listed as Any rather than dropped;
+// one whose schema is false is never allowed and stays out.
+func TestStubsListPropertiesWithBooleanSchemas(t *testing.T) {
+	tool := schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "codey-search",
+			Description: schemas.Ptr("Searches the index"),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+					"extra": true,
+					"never": false,
+				}),
+				Required: []string{"query"},
+			},
+		},
+	}
+	for name, tool := range map[string]schemas.ChatTool{"fresh": tool, "restored": restoreDiscoveredTool(t, tool)} {
+		t.Run(name, func(t *testing.T) {
+			stub, docs := readSearchStubs(t, newSearchCodeMode(tool))
+			if !strings.Contains(stub, "def search(query: str, extra: Any = None) -> dict") {
+				t.Fatalf("readToolFile dropped the true-schema property or listed the false one, got:\n%s", stub)
+			}
+			if !strings.Contains(docs, "extra (Any): extra parameter (optional)") || strings.Contains(docs, "never (") {
+				t.Fatalf("getToolDocs should list extra and not never, got:\n%s", docs)
+			}
+		})
+	}
+}
+
 func BenchmarkFormatPythonParams(b *testing.B) {
 	data, err := json.Marshal(map[string]schemas.ChatTool{"codey-search": searchToolSchema()})
 	if err != nil {

@@ -8452,6 +8452,91 @@ const INF80 = folder("INF-80 Responses and non-auto tools on Anthropic and Gemin
   agentTeardown("INF-80"),
 ]);
 
+// ================================================================ tools whose arguments are a root-level union
+
+// FETCH_REPORT declares its arguments as a root-level oneOf, as schema generators emit for a tagged union (allowed by
+// the 2026-07-28 spec). Bifrost must keep the union for clients and providers and flatten it only where one parameter
+// list is needed: code-mode stubs and providers that reject a root union.
+const FETCH_REPORT = {
+  name: "fetch_report",
+  description: "Fetch a report.",
+  inputSchema: {
+    type: "object",
+    oneOf: [
+      { type: "object", properties: { kind: { type: "string", const: "sales" }, region: { type: "string" } }, required: ["kind"] },
+      { type: "object", properties: { kind: { type: "string", const: "inventory" }, warehouse: { type: "string" } }, required: ["kind"] },
+    ],
+  },
+};
+const FETCH_REPORT_TEXT = "fetch_report, whose arguments are a root-level oneOf of {kind: \"sales\", region} and {kind: \"inventory\", warehouse}";
+const FETCH_REPORT_STUB = 'def fetch_report(kind: Literal["sales", "inventory"], region: str = None, warehouse: str = None) -> dict';
+
+const INF81 = folder("INF-81 Code-mode stubs flatten a root-level union", `Setup: cm serves ${FETCH_REPORT_TEXT}; cm registered as a code-mode client, auth none, per call, tools_to_execute ["*"].`, [
+  ...serveTools("INF-81", "cm", [FETCH_REPORT], FETCH_REPORT_TEXT),
+  createClient("INF-81", httpClient("inf-81-cm", "cm", "cm", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register cm as a code-mode client"),
+  meta("INF-81", "readToolFile servers/cm.pyi", "readToolFile", { fileName: "servers/cm.pyi" }, [A.status(200), noIsError(), contentHas(FETCH_REPORT_STUB)]),
+  meta("INF-81", "getToolDocs cm/fetch_report", "getToolDocs", { server: "cm", tool: "fetch_report" }, [A.status(200), noIsError(), contentHas(FETCH_REPORT_STUB),
+    contentHas('kind (Literal["sales", "inventory"]): kind parameter (required)'), contentHas("warehouse (str): warehouse parameter (optional)"),
+    contentHas('cm.fetch_report(kind="...")')]),
+  cmTeardown("INF-81"),
+]);
+
+// FETCH_DECL finds alpha-fetch_report among request 1's declared tools as `decl`, in each provider's own shape.
+const FETCH_DECL = {
+  openai: "var decl = (reqs[0].json.tools || []).filter(function (t) { return t.function && t.function.name === 'alpha-fetch_report'; })[0];",
+  anthropic: "var decl = (reqs[0].json.tools || []).filter(function (t) { return t.name === 'alpha-fetch_report'; })[0];",
+  gemini: "var decl = (((reqs[0].json.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'alpha-fetch_report'; })[0];",
+};
+const FETCH_SHAPE = {
+  openai: A.custom("OpenAI receives the root oneOf as declared: two branches, each with its kind, its own field and required kind", [REQS, FETCH_DECL.openai,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "var branches = (decl.function.parameters || {}).oneOf;",
+    "pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ]),
+  anthropic: A.custom("Anthropic receives one flattened object: no root oneOf, kind (sales or inventory) required, region and warehouse optional", [REQS, FETCH_DECL.anthropic,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "pm.expect(decl.input_schema).to.not.have.property('oneOf');",
+    "pm.expect(Object.keys(decl.input_schema.properties).sort()).to.eql(['kind', 'region', 'warehouse']);",
+    "pm.expect(decl.input_schema.required).to.eql(['kind']);",
+    "var kinds = (decl.input_schema.properties.kind.anyOf || []).map(function (m) { return m.const; });",
+    "pm.expect(kinds, 'kind: ' + JSON.stringify(decl.input_schema.properties.kind)).to.eql(['sales', 'inventory']);",
+  ]),
+  gemini: A.custom("Gemini receives the root oneOf as declared: two branches, each with its kind, its own field and required kind", [REQS, FETCH_DECL.gemini,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "var branches = (decl.parametersJsonSchema || {}).oneOf;",
+    "pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ]),
+};
+
+const INF82 = folder("INF-82 A root-level union reaches /mcp clients and models intact", `Setup: alpha serves ${FETCH_REPORT_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"]; ${LLM_TEXT}; a chat to openai/mock-model, anthropic/mock-model, then gemini/mock-model.`, [
+  ...serveTools("INF-82", "alpha", [FETCH_REPORT], FETCH_REPORT_TEXT),
+  alphaClient("INF-82"),
+  list("INF-82", "/mcp lists alpha-fetch_report with its root oneOf", "/mcp", [], [A.status(200), A.custom("the inputSchema keeps both alternatives, each with its kind, its own field and required kind", [
+    "var tool = pm.response.json().result.tools.filter(function (t) { return t.name === 'alpha-fetch_report'; })[0];",
+    "pm.expect(tool, 'body: ' + pm.response.text()).to.be.an('object');",
+    "var branches = tool.inputSchema.oneOf;",
+    "pm.expect(branches, 'body: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ])]),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-82", `inf82-${prov}`, TEXT_OK),
+    infPost("INF-82", `${prov}: chat that declares alpha's tools`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf82-${prov}`)] }, [A.status(200)]),
+    llmCaptured("INF-82", `${prov}: the model request carries alpha-fetch_report's arguments`, `inf82-${prov}`, [reqCount(1), FETCH_SHAPE[prov]]),
+  ]),
+  deleteClient("INF-82", "inf-82-alpha"),
+]);
+
 // ================================================================ client metadata documents
 
 // Bifrost signs in with its client metadata document only from a public HTTPS address. These tests point
@@ -13589,7 +13674,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF81, INF82]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
