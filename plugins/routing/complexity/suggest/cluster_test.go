@@ -294,3 +294,32 @@ func TestClustererRescuesFragmentsOfSmallTypes(t *testing.T) {
 		t.Errorf("a negative RescueSimilarity disables rescue, got %d", len(got))
 	}
 }
+
+// A request the router logged a tier for counts under that tier, at full
+// similarity, whatever live phrase sits nearest: a decision-model router's
+// requests went where its decision model sent them.
+func TestClustererCountsRoutedTiers(t *testing.T) {
+	rng := rand.New(rand.NewSource(40))
+	reqs := typeRequests("refund", 0, 10, rng)
+	for i := range reqs {
+		reqs[i].RoutedTier = "COMPLEX"
+		if i < 3 {
+			reqs[i].RoutedTier = "MEDIUM"
+		}
+	}
+	live := []Phrase{{Tier: "SIMPLE", Text: "where is my refund", Vector: anchor(0)}}
+	c := NewClusterer(ClusterOptions{MinRequests: 1}, live, 0.4)
+	c.Add(reqs)
+	clusters := c.Clusters()
+	if len(clusters) != 1 {
+		t.Fatalf("expected one cluster, got %d", len(clusters))
+	}
+	if got := clusters[0].CurrentRouting(); got["COMPLEX"] != 7 || got["MEDIUM"] != 3 || got["SIMPLE"] != 0 {
+		t.Fatalf("routing %v, want the logged tiers", got)
+	}
+	for _, m := range clusters[0].Members {
+		if m.CurrentSim != 1 || m.CurrentTier != m.RoutedTier {
+			t.Errorf("member %s routed %s at %.2f, want its logged tier %s at 1", m.ID, m.CurrentTier, m.CurrentSim, m.RoutedTier)
+		}
+	}
+}

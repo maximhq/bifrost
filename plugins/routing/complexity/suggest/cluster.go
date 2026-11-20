@@ -102,8 +102,8 @@ func (o ClusterOptions) withDefaults() ClusterOptions {
 type Member struct {
 	Request
 	Similarity  float32 // to the cluster centre
-	CurrentTier string  // tier of its nearest live phrase
-	CurrentSim  float32 // similarity to that phrase
+	CurrentTier string  // tier of its nearest live phrase, or the tier it was routed to (RoutedTier)
+	CurrentSim  float32 // similarity to that phrase; 1 for a routed tier
 }
 
 // Cluster is a group of requests the router's embedding space puts together.
@@ -165,6 +165,12 @@ func (c *Clusterer) prepare(batch []Request) []Member {
 	}
 	parallelRange(len(members), func(lo, hi int) {
 		for i := lo; i < hi; i++ {
+			// A request the router logged a tier for went there; it is not
+			// routed again against the live set.
+			if tier := members[i].RoutedTier; tier != "" {
+				members[i].CurrentTier, members[i].CurrentSim = tier, 1
+				continue
+			}
 			if p, sim := nearest(members[i].Vector, c.live); p >= 0 {
 				members[i].CurrentTier, members[i].CurrentSim = c.live[p].Tier, sim
 			}

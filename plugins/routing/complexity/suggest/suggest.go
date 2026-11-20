@@ -1,5 +1,6 @@
 // Package suggest turns routed traffic into phrase-bank suggestions for the
-// semantic complexity router.
+// semantic complexity router, and into tier examples for a decision-model
+// router (ModeExamples, below).
 //
 // It clusters requests in the router's own embedding space, asks an LLM per
 // cluster for one or two reference phrases written as minimal edits of the
@@ -10,6 +11,17 @@
 // step (TierDecider: an LLM or a decision model) then picks the cluster's
 // tier.
 //
+// A decision-model router routes by asking its decision model, which reads
+// each tier's definition, signals and examples, so there is no nearest phrase
+// to beat. In ModeExamples each request carries the tier the router routed it
+// to (RoutedTier), which stands where its nearest phrase's tier does, and the
+// steps run the other way round: the tier is decided first, a cluster the
+// router already routes there is covered without asking for anything, and
+// otherwise the model writes abstract task examples for that tier. Those pass
+// the same leak filters and are dropped when they repeat an example the
+// router has; nothing measures coverage, since no example is matched by
+// similarity.
+//
 // The package does no I/O of its own. Request vectors come from the caller
 // (the router already computed them), and embedding new phrases and calling
 // the models go through the Embedder, LLM and TierDecider interfaces.
@@ -18,17 +30,27 @@ package suggest
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 )
 
 // Request is one distinct request text as the router embedded it.
 type Request struct {
-	ID     string    // identifies the request to the caller, e.g. a log ID
-	Text   string    // the text the router embedded
-	Count  int       // how many requests carried this exact text; <1 counts as 1
-	Vector []float32 // unit length, in the router's embedding space
+	ID         string    // identifies the request to the caller, e.g. a log ID
+	Text       string    // the text the router embedded
+	Count      int       // how many requests carried this exact text; <1 counts as 1
+	Vector     []float32 // unit length, in the router's embedding space
+	RoutedTier string    // the tier the router routed it to, when it logged one; empty routes it against the live phrases
 }
+
+// Mode is what a run writes for each cluster.
+type Mode string
+
+const (
+	// ModePhrases writes reference phrases for a semantic router's phrase bank.
+	ModePhrases Mode = ""
+	// ModeExamples writes tier examples for a decision-model router's guidance.
+	ModeExamples Mode = "examples"
+)
 
 // Phrase is one phrase-bank entry with its vector.
 type Phrase struct {
@@ -104,9 +126,12 @@ type Options struct {
 	MaxPhrases int
 	// DuplicateSimilarity drops a suggested phrase this similar to a live one.
 	DuplicateSimilarity float32
+	// Mode is what the run writes: phrases (the default) or examples.
+	Mode Mode
 	// Instructions replace the default phrase-step instructions
-	// (DefaultInstructions); empty means the default. The fixed JSON and
-	// injection reinforcement is added after them.
+	// (DefaultInstructions, or DefaultExampleInstructions in ModeExamples);
+	// empty means the default. The fixed JSON and injection reinforcement is
+	// added after them.
 	Instructions string
 	// Tier picks each coherent cluster's tier; required.
 	Tier TierDecider
@@ -150,13 +175,15 @@ type Suggestion struct {
 	Tier       string
 	Confidence string
 	Reason     string
-	// Phrases are the suggested phrase texts, safe to show and add.
+	// Phrases are the suggested phrase texts (in ModeExamples, the example
+	// texts), safe to show and add.
 	Phrases []string
 	// Coverage is the request-weighted share of the cluster's kept members
-	// the phrases would take over routing for.
+	// the phrases would take over routing for; always 0 in ModeExamples.
 	Coverage float64
 	// Attempts is how many phrase-step calls the cluster took; the tier step
-	// is one more for a coherent cluster.
+	// is one more for a coherent cluster (for every readable one in
+	// ModeExamples).
 	Attempts int
 	// Leaked are phrases the LLM wrote that carried request-specific
 	// material and were rejected; Sanitized reports that Phrases came from
@@ -255,6 +282,43 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	if s.opts.Tier == nil {
 		return Suggestion{}, fmt.Errorf("no tier decider configured")
 	}
+	base, err := s.base(ctx, cl)
+	if err != nil || base.Category == CategoryUnreadable {
+		return base, err
+	}
+	if s.opts.Mode == ModeExamples {
+		return s.suggestExamples(ctx, base)
+	}
+	reps := base.Examples
+	messages := buildPrompt(s.opts.Instructions, reps, cl.Weight)
+	if base.Template != "" {
+		messages[1].Content += "\n" + templateNote(base.Template)
+	}
+
+	sg, err := s.ask(ctx, base, messages)
+	if err != nil {
+		return Suggestion{}, err
+	}
+	if err := s.sanitizeLeaked(ctx, &sg); err != nil {
+		return Suggestion{}, err
+	}
+	// Categorizing needs a tier only when there are phrases or duplicates to
+	// judge; an incoherent or empty cluster costs no tier call.
+	if sg.coherent && (len(sg.Phrases) > 0 || len(sg.Duplicates) > 0) {
+		v, err := s.opts.Tier.DecideTier(ctx, TierInput{Requests: texts(reps), Total: cl.Weight, Template: base.Template})
+		if err != nil {
+			return Suggestion{}, err
+		}
+		sg.Tier, sg.Confidence, sg.Reason = v.Tier, v.Confidence, v.Reason
+	}
+	s.finish(&sg)
+	return sg, nil
+}
+
+// base reads the cluster's representatives and finds its nearest live
+// phrase: what both modes start from. A cluster none of whose
+// representatives can be read comes back unreadable.
+func (s *Suggester) base(ctx context.Context, cl *Cluster) (Suggestion, error) {
 	reps, err := s.withTexts(ctx, representatives(cl, s.opts.Representatives))
 	if err != nil {
 		return Suggestion{}, err
@@ -266,11 +330,95 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	if i, sim := nearest(cl.Centroid, s.live); i >= 0 {
 		base.Nearest, base.NearestSim = s.live[i], sim
 	}
-	messages := buildPrompt(s.opts.Instructions, reps, cl.Weight)
+	return base, nil
+}
+
+// sanitizeLeaked falls back, for a coherent cluster whose every phrase leaked
+// even after the retry, to those phrases with the specifics removed.
+func (s *Suggester) sanitizeLeaked(ctx context.Context, sg *Suggestion) error {
+	if !sg.coherent || len(sg.Phrases) > 0 || len(sg.Leaked) == 0 {
+		return nil
+	}
+	var cleaned []string
+	for _, p := range sg.Leaked {
+		if c := sanitize(p); c != "" && !leaks(c) && !pastedFrom(c, sg.Template, sg.Examples) {
+			cleaned = append(cleaned, c)
+		}
+	}
+	if err := s.adopt(ctx, sg, cleaned); err != nil {
+		return err
+	}
+	sg.Sanitized = len(sg.Phrases) > 0
+	return nil
+}
+
+// finish categorizes a cluster once its tier and phrases are known.
+func (s *Suggester) finish(sg *Suggestion) {
+	sg.Category = s.categorize(sg)
+	// A template cluster is worth suggesting for whatever its routing is
+	// today; saying it is a template is what tells the reviewer why its
+	// phrase reads like the template's opening.
+	if sg.Template != "" && sg.Category.Actionable() {
+		sg.Category = CategoryTemplate
+	}
+}
+
+// suggestExamples is Suggest in ModeExamples. The tier comes first, since it
+// decides whether to ask for anything: a cluster the router reliably routes
+// to the tier it belongs in is covered, and costs one call. Otherwise the
+// model writes examples for that tier, shown the tier's examples so far. An
+// answer whose every example leaked is sent back once; there is no coverage
+// to retry for.
+func (s *Suggester) suggestExamples(ctx context.Context, base Suggestion) (Suggestion, error) {
+	cl, reps := base.Cluster, base.Examples
+	v, err := s.opts.Tier.DecideTier(ctx, TierInput{Requests: texts(reps), Total: cl.Weight, Template: base.Template})
+	if err != nil {
+		return Suggestion{}, err
+	}
+	base.Tier, base.Confidence, base.Reason = v.Tier, v.Confidence, v.Reason
+	if base.Tier == "" {
+		base.Category = CategoryIncoherent
+		return base, nil
+	}
+	if top, _, reliable := topRoutedTier(cl); reliable && top == base.Tier {
+		base.coherent = true
+		base.Category = CategoryCovered
+		return base, nil
+	}
+	var existing []string
+	for _, p := range s.live {
+		if p.Tier == base.Tier {
+			existing = append(existing, p.Text)
+		}
+	}
+	messages := buildExamplePrompt(s.opts.Instructions, reps, cl.Weight, base.Tier, existing)
 	if base.Template != "" {
 		messages[1].Content += "\n" + templateNote(base.Template)
 	}
+	sg, err := s.ask(ctx, base, messages)
+	if err != nil {
+		return Suggestion{}, err
+	}
+	if !sg.coherent {
+		sg.Category = CategoryIncoherent
+		return sg, nil
+	}
+	if err := s.sanitizeLeaked(ctx, &sg); err != nil {
+		return Suggestion{}, err
+	}
+	s.finish(&sg)
+	return sg, nil
+}
 
+// ask runs the phrase or example step, at most twice, and returns the
+// attempt kept: one with phrases over one without, then the higher coverage,
+// the earlier on a tie. An answer that is not JSON is one failed attempt. An
+// attempt is sent back when every phrase leaked, with what leaked; in
+// ModePhrases also when its phrases cover too little of the cluster, with
+// requests they miss (examples are not matched by similarity, so there is no
+// coverage to retry for). One whose phrases all repeat live ones is not: the
+// bank already says this, so another attempt would only say it again.
+func (s *Suggester) ask(ctx context.Context, base Suggestion, messages []Message) (Suggestion, error) {
 	var best *Suggestion
 	for attempt := 1; attempt <= 2; attempt++ {
 		raw, err := s.llm.CompleteJSON(ctx, messages)
@@ -279,7 +427,6 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		}
 		v, err := parseVerdict(raw, s.opts.MaxPhrases)
 		if err != nil {
-			// An unparseable answer is one failed attempt, not a failed run.
 			if best == nil {
 				b := base
 				b.Attempts = attempt
@@ -291,7 +438,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		cand.Attempts = attempt
 		cand.coherent = v.Coherent
 		kept, leaked := filterLeaks(v.Phrases)
-		kept, leaked = withoutPasted(kept, leaked, base.Template, reps)
+		kept, leaked = withoutPasted(kept, leaked, base.Template, base.Examples)
 		cand.Leaked = leaked
 		if !v.Coherent {
 			if best == nil || !best.coherent {
@@ -302,61 +449,27 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		if err := s.adopt(ctx, &cand, kept); err != nil {
 			return Suggestion{}, err
 		}
-		// Prefer an attempt with phrases, then higher coverage; on a tie
-		// keep the earlier one.
 		if best == nil || !best.coherent || (len(cand.Phrases) > 0 && (len(best.Phrases) == 0 || cand.Coverage > best.Coverage)) {
 			best = &cand
 		}
-		if len(cand.Phrases) > 0 && cand.Coverage >= s.opts.MinCoverage {
-			break
-		}
-		if len(cand.Phrases) == 0 && len(leaked) == 0 {
-			// Every phrase was a near-copy of a live one: the bank already
-			// says this, so another attempt would only say it again.
-			break
-		}
-		messages = append(messages, Message{Role: "assistant", Content: raw})
-		if len(cand.Phrases) == 0 && len(leaked) > 0 {
-			messages = append(messages, Message{Role: "user", Content: leakFeedback(leaked)})
-		} else {
-			missed, err := s.withTexts(ctx, s.missed(cl, cand.vectors, 5))
+		var feedback string
+		switch {
+		case len(cand.Phrases) == 0 && len(leaked) == 0:
+		case len(cand.Phrases) == 0:
+			feedback = leakFeedback(leaked)
+		case s.opts.Mode == ModePhrases && cand.Coverage < s.opts.MinCoverage:
+			missed, err := s.withTexts(ctx, s.missed(base.Cluster, cand.vectors, 5))
 			if err != nil {
 				return Suggestion{}, err
 			}
-			messages = append(messages, Message{Role: "user", Content: coverageFeedback(cand.Coverage, missed)})
+			feedback = coverageFeedback(cand.Coverage, missed)
 		}
-	}
-
-	sg := *best
-	if sg.coherent && len(sg.Phrases) == 0 && len(sg.Leaked) > 0 {
-		var cleaned []string
-		for _, p := range sg.Leaked {
-			if c := sanitize(p); c != "" && !leaks(c) && !pastedFrom(c, sg.Template, reps) {
-				cleaned = append(cleaned, c)
-			}
+		if feedback == "" {
+			break
 		}
-		if err := s.adopt(ctx, &sg, cleaned); err != nil {
-			return Suggestion{}, err
-		}
-		sg.Sanitized = len(sg.Phrases) > 0
+		messages = append(messages, Message{Role: "assistant", Content: raw}, Message{Role: "user", Content: feedback})
 	}
-	// Categorizing needs a tier only when there are phrases or duplicates to
-	// judge; an incoherent or empty cluster costs no tier call.
-	if sg.coherent && (len(sg.Phrases) > 0 || len(sg.Duplicates) > 0) {
-		v, err := s.opts.Tier.DecideTier(ctx, TierInput{Requests: texts(reps), Total: cl.Weight, Template: base.Template})
-		if err != nil {
-			return Suggestion{}, err
-		}
-		sg.Tier, sg.Confidence, sg.Reason = v.Tier, v.Confidence, v.Reason
-	}
-	sg.Category = s.categorize(&sg)
-	// A template cluster is worth suggesting for whatever its routing is
-	// today; saying it is a template is what tells the reviewer why its
-	// phrase reads like the template's opening.
-	if sg.Template != "" && sg.Category.Actionable() {
-		sg.Category = CategoryTemplate
-	}
-	return sg, nil
+	return *best, nil
 }
 
 // withTexts fills in the text of members clustered without it, through
@@ -397,9 +510,14 @@ func (s *Suggester) adopt(ctx context.Context, sg *Suggestion, phrases []string)
 	if len(phrases) == 0 {
 		return nil
 	}
+	// A phrase is kept as the router compares it, lowercased; an example as
+	// written, since the decision model reads it as written.
 	norm := make([]string, len(phrases))
 	for i, p := range phrases {
 		norm[i] = normalizePhrase(p)
+		if s.opts.Mode == ModeExamples {
+			norm[i] = strings.Join(strings.Fields(p), " ")
+		}
 	}
 	vecs, err := s.emb.Embed(ctx, norm)
 	if err != nil {
@@ -412,15 +530,18 @@ func (s *Suggester) adopt(ctx context.Context, sg *Suggestion, phrases []string)
 	for _, p := range s.live {
 		liveText[normalizePhrase(p.Text)] = true
 	}
+	seen := map[string]bool{}
 	for i, p := range norm {
 		v := normalize(vecs[i])
-		if _, sim := nearest(v, s.live); liveText[p] || (len(s.live) > 0 && sim >= s.opts.DuplicateSimilarity) {
+		key := normalizePhrase(p)
+		if _, sim := nearest(v, s.live); liveText[key] || (len(s.live) > 0 && sim >= s.opts.DuplicateSimilarity) {
 			sg.Duplicates = append(sg.Duplicates, p)
 			continue
 		}
-		if slices.Contains(sg.Phrases, p) {
+		if seen[key] {
 			continue
 		}
+		seen[key] = true
 		sg.Phrases = append(sg.Phrases, p)
 		sg.vectors = append(sg.vectors, v)
 	}
