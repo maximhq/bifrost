@@ -94,6 +94,8 @@ function authHelpText(authType: MCPAuthType | string | undefined, t: TFunction<"
 			return t("library.install.helpPerUserHeaders");
 		case "token_exchange":
 			return t("library.install.helpTokenExchange");
+		case "client_credentials":
+			return t("library.install.helpClientCredentials");
 		default:
 			return t("library.install.helpNone");
 	}

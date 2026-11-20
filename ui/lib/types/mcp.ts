@@ -116,7 +116,7 @@ export type MCPConnectionState =
 	// single-instance deployment.
 	| "degraded";
 
-export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
+export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange" | "client_credentials";
 
 // Which step of Bifrost's own connection handling failed. Mirrors the Go
 // MCPConnectionFailureStage constants.
@@ -214,6 +214,25 @@ export type MCPResourceClientAuthMethod = "" | "client_secret_basic" | "client_s
 
 export type MCPResourceAuthMode = "secret" | "private_key";
 
+// OAuth client_credentials grant for auth_type === "client_credentials", with
+// credentials registered at the upstream's authorization server beforehand.
+// token_url, auth_method and signing_algorithm are filled in on save when empty.
+export interface MCPClientCredentialsConfig {
+	token_url?: string; // discovered on save when empty
+	client_id?: SecretVar; // Redacted on GET.
+	client_secret?: SecretVar; // or private_key, never both. Redacted on GET.
+	auth_method?: MCPResourceClientAuthMethod; // how the secret is sent; "" follows the server
+	private_key?: SecretVar; // PEM RSA or EC key signing the client assertion. Redacted on GET.
+	key_id?: string; // kid header of the client assertion
+	signing_algorithm?: string; // "" chooses from the key on save
+	assertion_audience?: string; // client assertion aud; defaults to token_url
+	scopes?: string[];
+	resource?: string; // resource indicator; omitted = the server URL
+	auth_mode?: MCPResourceAuthMode; // form only, never sent
+	scopes_text?: string; // form only: comma-separated scopes
+	omit_resource?: boolean; // form only: send resource "" so none is sent
+}
+
 export interface OAuthConfig {
 	client_id: SecretVar;
 	client_secret?: SecretVar; // Optional for public clients using PKCE
@@ -276,6 +295,7 @@ export interface MCPClientConfig {
 	// token_exchange-only: audience/scopes the exchanged tokens are scoped to.
 	// Required (with a non-empty audience) for token_exchange auth.
 	token_exchange?: MCPTokenExchangeConfig;
+	client_credentials?: MCPClientCredentialsConfig; // client_credentials only
 	is_ping_available?: boolean;
 	// Only meaningful when connection_type === "http": whether this client
 	// maintains one persistent connection reused across every caller (true)
@@ -437,6 +457,7 @@ export interface CreateMCPClientRequest {
 	// identity-provider token is the exchange subject); sessions without one
 	// (e.g. API-key auth) create the client in pending_verification.
 	token_exchange?: MCPTokenExchangeConfig;
+	client_credentials?: MCPClientCredentialsConfig; // client_credentials only
 	// per_user_headers-only: a sample set of header values supplied by the
 	// admin so the server can verify upstream + discover tools in the same
 	// create call. Discarded after verification (never persisted). Mirrors
@@ -518,6 +539,7 @@ export interface UpdateMCPClientRequest {
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
+	client_credentials?: MCPClientCredentialsConfig; // Only for existing client_credentials clients; replaced whole, omitted = preserve
 	// openapi clients only: replaces the document and/or credentials (merged
 	// onto the stored block; a redacted credential keeps the stored secret) and
 	// rebuilds the server. Omitted = preserve.
@@ -533,7 +555,7 @@ export interface GetMCPClientsParams {
 	server?: string;
 	// Comma-separated exact-match filters (OR semantics), mirroring the library page.
 	connection_type?: string; // http,sse,stdio
-	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange
+	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange,client_credentials
 	state?: string; // connected,disconnected — resolved against live engine state
 	virtual_keys?: string; // comma-separated VK IDs the client is assigned to
 	// Boolean facets — omit for "no filter".

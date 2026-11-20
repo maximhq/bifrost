@@ -84,8 +84,21 @@ export const privateKeyRequiredMessage = () => i18n.t("validation.mcp.privateKey
 // Message for a send method chosen without the secret it sends.
 export const secretRequiredForMethodMessage = () => i18n.t("validation.mcp.secretRequiredForMethod");
 
-// The id_jag upstream-authentication fields the form checks below read.
-interface IDJAGUpstreamAuthFields {
+// UpstreamClientAuthFields is how Bifrost authenticates at an upstream token endpoint: a client
+// secret, or a private key signing a client assertion. Mirrors the server's UpstreamClientAuth.
+export interface UpstreamClientAuthFields {
+	authMode?: string;
+	secret?: { value?: string; ref?: string };
+	method?: string;
+	key?: { value?: string; ref?: string };
+	keyId?: string;
+	alg?: string;
+	audience?: string;
+}
+
+// idjagUpstreamAuth returns a token_exchange block's id_jag upstream authentication, or undefined
+// for the direct profile, whose hidden fields must not be checked.
+export function idjagUpstreamAuth(te?: {
 	profile?: string;
 	resource_auth_mode?: string;
 	resource_client_secret?: { value?: string; ref?: string };
@@ -94,23 +107,80 @@ interface IDJAGUpstreamAuthFields {
 	resource_key_id?: string;
 	resource_signing_algorithm?: string;
 	resource_assertion_audience?: string;
+}): UpstreamClientAuthFields | undefined {
+	if (te?.profile !== "id_jag") return undefined;
+	return {
+		authMode: te.resource_auth_mode,
+		secret: te.resource_client_secret,
+		method: te.resource_client_auth_method,
+		key: te.resource_private_key,
+		keyId: te.resource_key_id,
+		alg: te.resource_signing_algorithm,
+		audience: te.resource_assertion_audience,
+	};
 }
 
-// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// hasPrivateKeySettingsWithoutKey reports authentication set to private_key_jwt, or carrying a key
 // ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
-// store a public client, so the forms refuse it.
-export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
-	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
-	return (
-		te.resource_auth_mode === "private_key" ||
-		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
-	);
+// drop the key settings, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(a?: UpstreamClientAuthFields): boolean {
+	if (!a || isSecretVarSet(a.key)) return false;
+	return a.authMode === "private_key" || !!(a.keyId?.trim() || a.alg || a.audience?.trim());
 }
 
-// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
-// has none. The payload would drop the method and store a public client, which the server refuses.
-export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
-	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
+// hasSendMethodWithoutSecret reports authentication that names how to send the client secret but
+// has none. The payload would drop the method, which the server refuses.
+export function hasSendMethodWithoutSecret(a?: UpstreamClientAuthFields): boolean {
+	return !!a?.method && !isSecretVarSet(a.secret);
+}
+
+// The client_credentials fields clientCredentialsIssues checks.
+interface ClientCredentialsFields {
+	token_url?: string;
+	client_id?: { value?: string; ref?: string };
+	client_secret?: { value?: string; ref?: string };
+	auth_method?: string;
+	private_key?: { value?: string; ref?: string };
+	key_id?: string;
+	signing_algorithm?: string;
+	assertion_audience?: string;
+	auth_mode?: string;
+}
+
+// clientCredentialsIssues mirrors the server's check of a client_credentials block: a client ID, a
+// secret or a private key but not both, key settings only with a key, and https URLs. The create
+// form and the edit sheet both report these beside the field they name.
+export function clientCredentialsIssues(cc?: ClientCredentialsFields): { path: keyof ClientCredentialsFields; message: string }[] {
+	const issues: { path: keyof ClientCredentialsFields; message: string }[] = [];
+	const auth: UpstreamClientAuthFields = {
+		authMode: cc?.auth_mode,
+		secret: cc?.client_secret,
+		method: cc?.auth_method,
+		key: cc?.private_key,
+		keyId: cc?.key_id,
+		alg: cc?.signing_algorithm,
+		audience: cc?.assertion_audience,
+	};
+	if (!isSecretVarSet(cc?.client_id)) {
+		issues.push({ path: "client_id", message: i18n.t("registry.clientCredentials.clientIdRequired", { ns: "mcp" }) });
+	}
+	if (isSecretVarSet(auth.secret) && isSecretVarSet(auth.key)) {
+		issues.push({ path: "private_key", message: i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }) });
+	} else if (hasPrivateKeySettingsWithoutKey(auth)) {
+		issues.push({ path: "private_key", message: privateKeyRequiredMessage() });
+	} else if (!isSecretVarSet(auth.secret) && !isSecretVarSet(auth.key)) {
+		issues.push({ path: "client_secret", message: i18n.t("registry.clientCredentials.secretRequired", { ns: "mcp" }) });
+	}
+	if (hasSendMethodWithoutSecret(auth)) {
+		issues.push({ path: "client_secret", message: secretRequiredForMethodMessage() });
+	}
+	if (cc?.token_url?.trim() && !isHTTPSOrLoopbackURL(cc.token_url.trim())) {
+		issues.push({ path: "token_url", message: i18n.t("registry.form.resourceTokenEndpointHttps", { ns: "mcp" }) });
+	}
+	if (auth.audience?.trim() && !isHTTPSOrLoopbackURL(auth.audience.trim())) {
+		issues.push({ path: "assertion_audience", message: i18n.t("registry.form.assertionAudienceHttps", { ns: "mcp" }) });
+	}
+	return issues;
 }
 
 // Azure key config schema
@@ -424,11 +494,38 @@ export function resourceCredentialResendRequired(
 		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
 		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
 	if (!targetChanged) return undefined;
-	// A credential kept as an env or vault reference is resent as the reference, which the server
-	// accepts; only a saved literal, shown masked, has to be typed again.
-	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
-	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
-	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	if (isSavedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (isSavedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
+
+// A credential kept as an env or vault reference is resent as the reference, which the server
+// accepts; only a saved literal, shown masked, has to be typed again.
+const isSavedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+
+// The client_credentials fields clientCredentialsResendRequired compares.
+interface ClientCredentialsTarget {
+	token_url?: string;
+	assertion_audience?: string;
+	client_secret?: { value?: string; ref?: string; type?: string };
+	private_key?: { value?: string; ref?: string; type?: string };
+}
+
+// clientCredentialsResendMessage explains why a saved secret or key must be typed again.
+export const clientCredentialsResendMessage = () => i18n.t("registry.clientCredentials.credentialResend", { ns: "mcp" });
+
+// clientCredentialsResendRequired is resourceCredentialResendRequired for a client_credentials
+// block: a changed token URL (an emptied one is discovered again) or assertion audience needs the
+// saved literal secret or key typed again. It returns the field to re-enter, or undefined.
+export function clientCredentialsResendRequired(
+	saved: ClientCredentialsTarget | undefined,
+	edited: ClientCredentialsTarget | undefined,
+): "client_secret" | "private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	if (same(saved.token_url, edited.token_url) && same(saved.assertion_audience, edited.assertion_audience)) return undefined;
+	if (isSavedLiteral(edited.client_secret)) return "client_secret";
+	if (isSavedLiteral(edited.private_key)) return "private_key";
 	return undefined;
 }
 
@@ -2180,11 +2277,32 @@ export const mcpClientUpdateSchema = z
 				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
 					issue("resource_private_key", i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }));
 				}
-				if (hasPrivateKeySettingsWithoutKey(te)) {
+				if (hasPrivateKeySettingsWithoutKey(idjagUpstreamAuth(te))) {
 					issue("resource_private_key", privateKeyRequiredMessage());
 				}
-				if (hasSendMethodWithoutSecret(te)) {
+				if (hasSendMethodWithoutSecret(idjagUpstreamAuth(te))) {
 					issue("resource_client_secret", secretRequiredForMethodMessage());
+				}
+			})
+			.optional(),
+		client_credentials: z
+			.object({
+				token_url: z.string().optional(),
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				private_key: secretVarSchema.optional(),
+				key_id: z.string().optional(),
+				signing_algorithm: z.string().optional(),
+				assertion_audience: z.string().optional(),
+				resource: z.string().optional(),
+				auth_mode: z.enum(["secret", "private_key"]).optional(),
+				scopes_text: z.string().optional(),
+				omit_resource: z.boolean().optional(),
+			})
+			.superRefine((cc, ctx) => {
+				for (const { path, message } of clientCredentialsIssues(cc)) {
+					ctx.addIssue({ code: "custom", path: [path], message });
 				}
 			})
 			.optional(),

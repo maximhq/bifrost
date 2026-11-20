@@ -70,6 +70,8 @@ export function authTypeLabel(type: string | undefined): string {
 			return "OAuth";
 		case "token_exchange":
 			return i18n.t("registry.filter.tokenExchange", { ns: "mcp" });
+		case "client_credentials":
+			return i18n.t("registry.clientCredentials.authType", { ns: "mcp" });
 		default:
 			return type;
 	}
