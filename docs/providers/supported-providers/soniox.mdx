@@ -1,0 +1,204 @@
+---
+title: "Soniox"
+description: "Soniox conversion guide - async and real-time speech-to-text and text-to-speech with custom mapping"
+icon: "s"
+---
+
+## Overview
+
+Soniox is a speech provider. Bifrost supports its REST workloads and its real-time transcription:
+- **Speech-to-Text (async)** - One transcription call uploads the audio, creates a Soniox job, polls it to completion, reads the transcript, and then tries to delete the job and the uploaded file in the background
+- **Real-time Speech-to-Text** - A Soniox WebSocket stream is translated to OpenAI Realtime transcription events on `/v1/realtime?intent=transcription`
+- **Text-to-Speech** - Soniox streams audio as the body of `POST /tts`; Bifrost returns it whole, forwards the chunks, or serves incremental WebSocket sessions
+- **Model listing** - Soniox lists speech-to-text and text-to-speech models on separate endpoints; Bifrost merges them
+- **Authentication** - `Authorization: Bearer <key>` on every call
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Speech (TTS) | ✅ | ✅ | `/tts` |
+| Transcription (STT) | ✅ | ❌ | `/v1/files`, `/v1/transcriptions` |
+| Real-time transcription | - | ✅ | `/transcribe-websocket` |
+| List Models | ✅ | - | `/v1/models`, `/v1/tts-models` |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Chat, Responses, Text Completions, Embeddings, Images, Files, Batch, and streaming transcription over HTTP return `UnsupportedOperationError`. Real-time transcription is served on `/v1/realtime` only.
+</Note>
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Soniox** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Soniox**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.SONIOX_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "soniox": {
+      "keys": [
+        {
+          "name": "soniox-key-1",
+          "value": "env.SONIOX_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Soniox:
+    return []schemas.Key{{
+        Name:   "soniox-key-1",
+        Value:  *schemas.NewSecretVar("env.SONIOX_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Speech (Text-to-Speech)
+
+Soniox returns raw audio as a chunked response body. Bifrost returns the full body for a unary request, and forwards each chunk as a `speech.audio.delta` event for a streaming request, followed by `speech.audio.done`. For text that arrives in pieces, open a WebSocket session on `/v1/audio/speech/stream`.
+
+### Parameter Mapping
+
+| Bifrost Field | Soniox Field | Notes |
+|---------------|--------------|-------|
+| `model` | `model` | For example `tts-rt-v2` |
+| `input` | `text` | |
+| `voice` | `voice` | Required. A voice name such as `Daniel`; the list is Soniox's `GET /v1/tts-models` |
+| `language_code` | `language` | Required. A code such as `hi` or `en`; there is no default |
+| `response_format` | `audio_format` | `mp3`, `opus`, `aac`, `flac`, `wav` pass through, `pcm` becomes `pcm_s16le`, empty becomes `mp3`. Native values such as `pcm_mulaw` are sent unchanged |
+| `speed` | `speed` | `0.7` to `1.3` |
+| `sample_rate`, `bitrate`, `reduce_silence`, `client_reference_id` (extra params) | same names | |
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  --output speech.mp3 \
+  -d '{
+    "model": "soniox/tts-rt-v2",
+    "input": "नमस्ते, यह एक परीक्षण है।",
+    "voice": "Daniel",
+    "language_code": "hi",
+    "response_format": "mp3"
+  }'
+```
+
+---
+
+# 2. Transcription (Speech-to-Text)
+
+Soniox transcribes asynchronously. A single Bifrost call uploads the file, creates the job, polls it until it completes (for at most the provider's request timeout), and reads the transcript. The job and the file are then deleted in the background, and a failed delete is only logged. A job that has not finished when the call ends, after a polling timeout or a cancel, is not deleted and stays at Soniox with its file. If Soniox never answers the request that creates the job, such as after a lost connection, nothing is deleted: the file stays at Soniox, and so does the job if it was created.
+
+### Parameter Mapping
+
+| Bifrost Field | Soniox Field | Notes |
+|---------------|--------------|-------|
+| `model` | `model` | For example `stt-async-v6` |
+| `file` | uploaded file | |
+| `language` | `language_hints` | Sent as a one-element list |
+| `enable_speaker_diarization`, `enable_language_identification`, `client_reference_id` (extra params) | same names | |
+| `prompt`, `temperature` | - | Not used |
+
+### Response Mapping
+
+| Soniox | Bifrost |
+|--------|---------|
+| transcript `text` | `text` |
+| tokens | `words`. Soniox tokens are sub-word units; a token that starts with whitespace opens a new word |
+| token `speaker` (with diarization) | `words[].speaker` |
+| token `language` (with language identification) | `language` |
+| job `audio_duration_ms` | `duration` and `usage` with `type` `duration` and `seconds` |
+
+A job that ends with status `error` is an HTTP 200 from Soniox. Bifrost returns `invalid_audio_file` as a `400` and any other job failure as a `502`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=soniox/stt-async-v6" \
+  -F "file=@speech.wav" \
+  -F "language=hi"
+```
+
+---
+
+# 3. Real-time Transcription
+
+Open a WebSocket to `/v1/realtime?intent=transcription` and name a Soniox real-time model in the first `session.update`. Bifrost opens Soniox's `transcribe-websocket` and translates both directions.
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "type": "transcription",
+    "audio": {
+      "input": {
+        "format": { "type": "audio/pcm", "rate": 16000 },
+        "transcription": { "model": "soniox/stt-rt-v6", "language": "hi" }
+      }
+    }
+  }
+}
+```
+
+Soniox takes every setting in a start frame and cannot change one afterwards, so a later `session.update` can only repeat the settings.
+
+### Session Mapping
+
+| Bifrost Field | Soniox Field | Notes |
+|---------------|--------------|-------|
+| `audio.input.transcription.model` | `model` | `stt-rt-v5`, `stt-rt-v6` |
+| `audio.input.format` | `audio_format`, `sample_rate` | `audio/pcm` (default 24000 Hz) is `pcm_s16le`; `audio/pcmu` is `mulaw` and `audio/pcma` is `alaw`, both at 8000 Hz. Other types are refused |
+| `audio.input.transcription.language` | `language_hints` | Joined with `language_hints` below |
+| `audio.input.transcription.prompt` | `context.text` | `context.text` wins when both are set |
+| `audio.input.transcription.language_hints`, `context`, `enable_speaker_diarization`, `enable_language_identification`, `client_reference_id` | same names | `context` takes `text` and `terms` |
+| `audio.input.turn_detection` absent, `server_vad` or `semantic_vad` | `enable_endpoint_detection` | `silence_duration_ms` becomes `max_endpoint_delay_ms`. Soniox decides where a segment ends |
+| `audio.input.turn_detection` `null` | endpoint detection off | The client commits |
+
+### Events
+
+| Client event | Sent to Soniox |
+|--------------|----------------|
+| `input_audio_buffer.append` | A binary audio frame |
+| `input_audio_buffer.commit` | `{"type":"finalize"}`. Refused when no audio was sent since the last commit |
+| `input_audio_buffer.clear` | Nothing. Accepted only when no audio was sent since the last commit, because Soniox cannot discard audio |
+
+| Soniox | Client event |
+|--------|--------------|
+| Non-final tokens | `conversation.item.input_audio_transcription.delta`. `delta` is the finished words that add to what was sent, and `transcript` is the whole partial text |
+| An `<end>` token (Soniox ended the utterance) | `input_audio_buffer.committed`, then `conversation.item.input_audio_transcription.completed` |
+| A `<fin>` token (the answer to a commit) | The same events for the committed segment, without `committed`. If an `<end>` token already completed the commit, `<fin>` completes only the text after it, as a segment of its own, and sends nothing when there is none |
+| Error frame | An `error` event |
+
+`completed.usage` is `{"type":"duration","seconds":...}`: the audio Soniox had processed when the segment ended, less what earlier segments reported.
+
+A session that sets `session.bifrost.extensions` to `true` also receives `bifrost.transcription.words` after each completed segment that has words. Each word carries its timing and, when Soniox identifies speakers, a `speaker`. `language` is on the event, taken from the first token that has one.

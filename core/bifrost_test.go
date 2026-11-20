@@ -1222,6 +1222,94 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}
 }
 
+// passthroughBodyRewritingPlugin replaces the request in PreLLMHook with a new passthrough
+// request carrying a different body, the way a guardrail redacts a passthrough turn.
+type passthroughBodyRewritingPlugin struct {
+	body []byte
+}
+
+func (p *passthroughBodyRewritingPlugin) GetName() string { return "passthrough-body-rewriting" }
+func (p *passthroughBodyRewritingPlugin) Cleanup() error  { return nil }
+func (p *passthroughBodyRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughBodyRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	rewritten := *req.PassthroughRequest
+	rewritten.Body = p.body
+	return &schemas.BifrostRequest{RequestType: req.RequestType, PassthroughRequest: &rewritten}, nil, nil
+}
+func (p *passthroughBodyRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRunStreamPreHooks_ReturnsPreHookRequest pins that a request a pre-hook replaces comes back
+// on WSStreamHooks.Request, so a websocket relay forwards the rewritten body instead of the frame
+// it received. With no plugin rewriting, the original request comes back unchanged.
+func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
+	original := []byte(`{"type":"response.create","model":"gpt-5","input":"secret"}`)
+	rewrittenBody := []byte(`{"type":"response.create","model":"gpt-5","input":"[redacted]"}`)
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughStreamRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Method:   "POST",
+				Path:     "/backend-api/codex/responses",
+				Body:     original,
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5",
+			},
+		}
+	}
+
+	t.Run("rewritten", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account:    NewMockAccount(),
+			Logger:     NewNoOpLogger(),
+			LLMPlugins: []schemas.LLMPlugin{&passthroughBodyRewritingPlugin{body: rewrittenBody}},
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request == nil || hooks.Request == req {
+			t.Fatalf("expected the pre-hook's replacement request, got %p (original %p)", hooks.Request, req)
+		}
+		if got := string(hooks.Request.PassthroughRequest.Body); got != string(rewrittenBody) {
+			t.Fatalf("expected rewritten body %s, got %s", rewrittenBody, got)
+		}
+		if got := string(req.PassthroughRequest.Body); got != string(original) {
+			t.Fatalf("original request body changed to %s", got)
+		}
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request != req {
+			t.Fatalf("expected the original request back when no plugin rewrites it")
+		}
+	})
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex
@@ -9508,4 +9596,1090 @@ func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
 	// An unknown name is ignored with a warning; it must not enable anything.
 	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
 	expect("update to an unknown family", "cl100k_base")
+}
+
+// TestPatternKeyAliasRoutesAndNamesModel pins that a regex: key alias sends the expanded template upstream and sets no model name.
+func TestPatternKeyAliasRoutesAndNamesModel(t *testing.T) {
+	server, models := agentLoopServer(t, 0)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 100,
+		Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "claude-fable-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"global.anthropic.claude-fable-5"}) {
+		t.Fatalf("upstream models = %v, want [global.anthropic.claude-fable-5]", got)
+	}
+	alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+	if alias == nil || alias.ModelID != "global.anthropic.claude-fable-5" || alias.ModelName != nil {
+		t.Fatalf("ResolvedKeyAlias = %+v, want model_id global.anthropic.claude-fable-5 and no model_name", alias)
+	}
+
+	_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		t.Error("a model outside the key's allow list was served; a pattern alias must not widen the allow list")
+	}
+}
+
+// patternAliasServer records the bearer token and model of each upstream call and answers 429 for a "fail." model.
+func patternAliasServer(t *testing.T) (*httptest.Server, func() [][2]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls [][2]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [2]string{strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), model})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() [][2]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][2]string(nil), calls...)
+	}
+}
+
+// patternAliasChat sends one chat request for model on the OpenAI mock provider.
+func patternAliasChat(client *Bifrost, model string) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	return client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+}
+
+// TestPatternKeyAliasBlockListChecksRequestedName pins that a blocked name is refused without falling through to a pattern, and that the upstream id is never checked.
+func TestPatternKeyAliasBlockListChecksRequestedName(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+		BlacklistedModels: schemas.BlackList{"claude-opus-5", "regex:claude-haiku-.*", "global.anthropic.claude-sonnet-5"},
+		Aliases: schemas.KeyAliases{
+			"claude-opus-5":     {ModelID: "exact-target"},
+			"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	for _, model := range []string{"claude-opus-5", "CLAUDE-OPUS-5", "claude-haiku-5"} {
+		if _, bifrostErr := patternAliasChat(client, model); bifrostErr == nil {
+			t.Errorf("blocked model %q was served", model)
+		}
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("blocked requests reached upstream: %v", got)
+	}
+	resp, bifrostErr := patternAliasChat(client, "claude-sonnet-5")
+	if bifrostErr != nil {
+		t.Fatalf("claude-sonnet-5 failed: %s", bifrostErr.Error.Message)
+	}
+	if alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias; alias == nil || alias.ModelID != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("ResolvedKeyAlias = %+v, want global.anthropic.claude-sonnet-5", alias)
+	}
+	if got := calls(); len(got) != 1 || got[0][1] != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("upstream calls = %v, want one for global.anthropic.claude-sonnet-5", got)
+	}
+}
+
+// TestPatternKeyAliasTemplateFollowsSelectedKey pins that every attempt sends the template of the key it used, across key selection and retries.
+func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 2
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+	templates := map[string]string{"sk-us": "us.", "sk-eu": "eu.", "sk-fail": "fail."}
+	keys := make([]schemas.Key, 0, len(templates))
+	for value, prefix := range templates {
+		keys = append(keys, schemas.Key{
+			ID: value, Name: value, Value: *schemas.NewSecretVar(value), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 1,
+			Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: prefix + "$1"}},
+		})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	served := map[string]int{}
+	for i := 0; i < 60; i++ {
+		model := fmt.Sprintf("claude-fable-%d", i)
+		resp, bifrostErr := patternAliasChat(client, model)
+		got := calls()
+		last := got[len(got)-1]
+		if bifrostErr != nil {
+			if last[1] != "fail."+model {
+				t.Fatalf("request %d failed after upstream call %v", i, last)
+			}
+			continue
+		}
+		alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+		if alias == nil || alias.ModelID != last[1] || resp.ExtraFields.RoutingInfo.Key != last[0] {
+			t.Fatalf("request %d: routing info key=%q alias=%+v, upstream call %v", i, resp.ExtraFields.RoutingInfo.Key, alias, last)
+		}
+		served[last[0]]++
+	}
+	for _, call := range calls() {
+		prefix, ok := templates[call[0]]
+		if !ok || !strings.HasPrefix(call[1], prefix+"claude-fable-") {
+			t.Errorf("key %q sent %q, want its own template %q", call[0], call[1], prefix)
+		}
+	}
+	if served["sk-us"] == 0 || served["sk-eu"] == 0 || served["sk-fail"] != 0 {
+		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
+	}
+}
+
+// TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
+func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
+	var mu sync.Mutex
+	var calls [][3]string // key, request model, advisor model
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [3]string{r.Header.Get("x-api-key"), model, gjson.GetBytes(body, "tools.0.model").String()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m",`+
+			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	lastCall := func() [3]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[len(calls)-1]
+	}
+
+	const requested = "anthropic.claude-opus-5"
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    requested,
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                 schemas.ResponsesToolTypeAdvisor,
+				ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: requested},
+			}}},
+			RawRequestBody: []byte(`{"model":"` + requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+				`"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + requested + `"}]}`),
+		}
+	}
+	send := func(client *Bifrost, request *schemas.BifrostResponsesRequest, raw bool) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		defer ctx.Cancel()
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+		_, bifrostErr := client.ResponsesRequest(ctx, request)
+		return bifrostErr
+	}
+
+	t.Run("single key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+			ID: "sk-alias", Value: *schemas.NewSecretVar("sk-alias"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			Aliases: schemas.KeyAliases{requested: {ModelID: "claude-opus-5"}},
+		}})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for _, raw := range []bool{false, true} {
+			request := newRequest()
+			if bifrostErr := send(client, request, raw); bifrostErr != nil {
+				t.Fatalf("raw=%v: request failed: %s", raw, bifrostErr.Error.Message)
+			}
+			if got := lastCall(); got[1] != "claude-opus-5" || got[2] != "claude-opus-5" {
+				t.Errorf("raw=%v: upstream model=%q advisor model=%q, want both claude-opus-5", raw, got[1], got[2])
+			}
+			if got := request.Params.Tools[0].ResponsesToolAdvisor.Model; got != requested {
+				t.Errorf("raw=%v: caller's advisor model rewritten to %q", raw, got)
+			}
+			if got := gjson.GetBytes(request.RawRequestBody, "tools.0.model").String(); got != requested {
+				t.Errorf("raw=%v: caller's raw advisor model rewritten to %q", raw, got)
+			}
+		}
+
+		// An advisor declared in an additional_tools item is hoisted into the tools during prep.
+		declared := json.RawMessage(`[{"type":"advisor","model":"` + requested + `"}]`)
+		request := newRequest()
+		request.Params = nil
+		request.RawRequestBody = nil
+		request.Input = append(request.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: declared})
+		if bifrostErr := send(client, request, false); bifrostErr != nil {
+			t.Fatalf("additional_tools: request failed: %s", bifrostErr.Error.Message)
+		}
+		if got := lastCall(); got[2] != "claude-opus-5" {
+			t.Errorf("additional_tools: upstream advisor model=%q, want claude-opus-5", got[2])
+		}
+		if got := string(request.Input[1].AdditionalTools); got != string(declared) {
+			t.Errorf("additional_tools: caller's declaration rewritten to %s", got)
+		}
+	})
+
+	t.Run("each retry follows its key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 2
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffInitial = time.Millisecond
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+			{ID: "sk-fail", Value: *schemas.NewSecretVar("sk-fail"), Models: schemas.WhiteList{"*"}, Weight: 1,
+				Aliases: schemas.KeyAliases{requested: {ModelID: "fail.claude-opus-5"}}},
+			{ID: "sk-plain", Value: *schemas.NewSecretVar("sk-plain"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for i := 0; i < 20; i++ {
+			for _, raw := range []bool{false, true} {
+				if bifrostErr := send(client, newRequest(), raw); bifrostErr != nil {
+					t.Fatalf("raw=%v: request %d failed: %s", raw, i, bifrostErr.Error.Message)
+				}
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, call := range calls {
+			if call[0] == "sk-fail" && call[2] != "fail.claude-opus-5" || call[0] == "sk-plain" && call[2] != requested {
+				t.Errorf("key %q sent advisor model %q with request model %q", call[0], call[2], call[1])
+			}
+		}
+	})
+}
+
+// customToolProvider answers with a function call to apply_patch, the way a wire that
+// took the rewritten custom tool does, and records what it was sent.
+type customToolProvider struct {
+	stubProvider
+	gotResponses *schemas.BifrostResponsesRequest
+	gotChat      *schemas.BifrostChatRequest
+}
+
+func applyPatchFunctionCallResponse() *schemas.BifrostResponsesResponse {
+	return &schemas.BifrostResponsesResponse{
+		Status: schemas.Ptr(schemas.ResponsesResponseStatusCompleted),
+		Output: []schemas.ResponsesMessage{{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr("call_1"),
+				Name:      schemas.Ptr("apply_patch"),
+				Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`),
+			},
+		}},
+	}
+}
+
+func (p *customToolProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.gotResponses = req
+	return applyPatchFunctionCallResponse(), nil
+}
+
+func (p *customToolProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.gotChat = req
+	return applyPatchFunctionCallResponse().ToBifrostChatResponse(), nil
+}
+
+// ResponsesStream replays a function-call stream through the runner it was handed and
+// records what the post hooks received.
+func (p *customToolProvider) ResponsesStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.gotResponses = req
+	item := applyPatchFunctionCallResponse().Output[0]
+	item.Arguments = schemas.Ptr("")
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(`{"input":"*** Begin`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(` Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, ItemID: item.ID, Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: applyPatchFunctionCallResponse()},
+	}
+	out := make(chan *schemas.BifrostStreamChunk, len(events))
+	for _, event := range events {
+		result, bifrostErr := runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		if bifrostErr != nil {
+			continue
+		}
+		out <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: result.ResponsesStreamResponse}
+	}
+	close(out)
+	return out, nil
+}
+
+// stubCustomToolsRows gives openai/gpt-5 a supports_custom_tools true row; nothing else has one.
+func stubCustomToolsRows(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.OpenAI && model == "gpt-5" {
+			return &schemas.ModelCapabilities{SupportsCustomTools: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+func applyPatchResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("patch it")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:        schemas.ResponsesToolTypeCustom,
+			Name:        schemas.Ptr("apply_patch"),
+			Description: schemas.Ptr("Apply a patch"),
+			ResponsesToolCustom: &schemas.ResponsesToolCustom{Format: &schemas.ResponsesToolCustomFormat{
+				Type: "grammar", Syntax: schemas.Ptr("lark"), Definition: schemas.Ptr("start: /.+/"),
+			}},
+		}}},
+	}
+}
+
+// Without a supports_custom_tools true row, every provider gets the custom tool as a
+// function tool and the client gets a custom_tool_call back, on the native Responses
+// route and on the chat fallback, which used to drop the tool.
+func TestDispatchResponses_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		chatFallback bool
+	}{
+		{"anthropic native", schemas.Anthropic, "claude-sonnet-4-5", false},
+		{"openai without a row", schemas.OpenAI, "gpt-4.1-mini", false},
+		{"groq chat fallback", schemas.Groq, "openai/gpt-oss-120b", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.chatFallback {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+			}
+			provider := &customToolProvider{stubProvider: stubProvider{key: tc.provider}}
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+			if bifrostErr != nil {
+				t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+			}
+
+			var sentType, sentName string
+			if tc.chatFallback {
+				if provider.gotChat == nil || len(provider.gotChat.Params.Tools) != 1 {
+					t.Fatalf("the chat fallback must keep the tool, got %+v", provider.gotChat)
+				}
+				sentType, sentName = string(provider.gotChat.Params.Tools[0].Type), provider.gotChat.Params.Tools[0].Function.Name
+			} else {
+				sentType, sentName = string(provider.gotResponses.Params.Tools[0].Type), *provider.gotResponses.Params.Tools[0].Name
+			}
+			if sentType != "function" || sentName != "apply_patch" {
+				t.Fatalf("want function apply_patch on the wire, got %s %s", sentType, sentName)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom {
+				t.Fatal("the caller's request must stay untouched")
+			}
+
+			var call *schemas.ResponsesMessage
+			for i := range resp.Output {
+				if resp.Output[i].Type != nil && *resp.Output[i].Type == schemas.ResponsesMessageTypeCustomToolCall {
+					call = &resp.Output[i]
+				}
+			}
+			if call == nil || call.ResponsesCustomToolCall == nil || call.ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a restored custom_tool_call with the raw input, got %+v", resp.Output)
+			}
+		})
+	}
+}
+
+// A stored response created with a rewritten custom tool is restored on GET /v1/responses/{id},
+// plain and streamed, with no prepared request to carry the names.
+func TestResponsesRetrieve_RestoresCustomToolCalls(t *testing.T) {
+	rewritten := providerUtils.RewriteResponsesCustomTools(nil, schemas.OpenAI, applyPatchResponsesRequest(schemas.OpenAI, "gpt-4.1"))
+	tools, err := providerUtils.MarshalSorted(rewritten.Params.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := `{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}","status":"completed"}`
+	stored := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","tools":` + string(tools) + `,"output":[` + call + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "true" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(stored))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"response.created","sequence_number":0,"response":` + strings.Replace(stored, `"output":[`+call+`]`, `"output":[]`, 1) + `}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":` + strings.Replace(call, `{\"input\":\"*** Begin Patch\"}`, "", 1) + `}`,
+			`{"type":"response.function_call_arguments.done","sequence_number":2,"output_index":0,"item_id":"fc_1","arguments":"{\"input\":\"*** Begin Patch\"}"}`,
+			`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":` + call + `}`,
+			`{"type":"response.completed","sequence_number":4,"response":` + stored + `}`,
+		} {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+	}))
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	client := newStreamTestClient(t, account)
+	isRestored := func(item *schemas.ResponsesMessage) bool {
+		return item != nil && item.Type != nil && *item.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			item.ResponsesCustomToolCall != nil && item.ResponsesCustomToolCall.Input == "*** Begin Patch"
+	}
+
+	resp, bifrostErr := client.ResponsesRetrieveRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve failed: %+v", bifrostErr.Error)
+	}
+	if len(resp.Output) != 1 || !isRestored(&resp.Output[0]) {
+		t.Fatalf("want a restored custom_tool_call, got %+v", resp.Output)
+	}
+
+	stream, bifrostErr := client.ResponsesRetrieveStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1", Stream: schemas.Ptr(true)})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve stream failed: %+v", bifrostErr.Error)
+	}
+	var inputDone, itemDone, completed bool
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			t.Fatalf("a restored call must not stream function argument events: %+v", event)
+		case schemas.ResponsesStreamResponseTypeCustomToolCallInputDone:
+			inputDone = event.Input != nil && *event.Input == "*** Begin Patch"
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			itemDone = isRestored(event.Item)
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = event.Response != nil && len(event.Response.Output) == 1 && isRestored(&event.Response.Output[0])
+		}
+	}
+	if !inputDone || !itemDone || !completed {
+		t.Fatalf("stream not restored: input_done=%v item_done=%v completed=%v", inputDone, itemDone, completed)
+	}
+}
+
+// A model whose row says true gets the custom tool unchanged and its call is not touched.
+func TestDispatchResponses_CustomToolsPassThroughWithTrueRow(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+	req := applyPatchResponsesRequest(schemas.OpenAI, "gpt-5")
+	resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	if got := provider.gotResponses.Params.Tools[0].Type; got != schemas.ResponsesToolTypeCustom {
+		t.Fatalf("want the custom tool forwarded, got %s", got)
+	}
+	if got := *resp.Output[0].Type; got != schemas.ResponsesMessageTypeFunctionCall {
+		t.Fatalf("a function call to a tool that was not rewritten must stay as-is, got %s", got)
+	}
+}
+
+func TestDispatchResponsesStream_RestoresCustomToolCallEvents(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	req := applyPatchResponsesRequest(schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	identity := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	stream, bifrostErr := (&Bifrost{}).dispatchResponsesStream(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, identity, nil)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	var types []schemas.ResponsesStreamResponseType
+	input := ""
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		types = append(types, event.Type)
+		if event.Type == schemas.ResponsesStreamResponseTypeCustomToolCallInputDone {
+			input = *event.Input
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted && *event.Response.Output[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+			t.Fatalf("the completed response must carry the custom_tool_call, got %s", *event.Response.Output[0].Type)
+		}
+	}
+	want := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}
+	if !slices.Equal(types, want) {
+		t.Fatalf("event types:\n got  %v\n want %v", types, want)
+	}
+	if input != "*** Begin Patch" {
+		t.Fatalf("the done event must carry the raw input, got %q", input)
+	}
+}
+
+// Codex sends its exec custom tool inside an additional_tools item, nested in the
+// "functions" namespace. OpenAI takes additional_tools items, but a model without a
+// true row must still get exec as a function tool, so the item is lifted first.
+func TestPrepareResponsesRequest_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	for _, tc := range []struct {
+		model     string
+		rewritten bool
+	}{{"gpt-4.1-mini", true}, {"gpt-5", false}} {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			if !tc.rewritten {
+				if prepared.CustomToolNames != nil || len(prepared.Input) != 1 {
+					t.Fatalf("a model with a true row keeps the additional_tools item, got %+v", prepared)
+				}
+				return
+			}
+			if len(prepared.Input) != 0 || prepared.Params == nil || len(prepared.Params.Tools) != 1 {
+				t.Fatalf("want exec lifted to the top level, got input %d tools %+v", len(prepared.Input), prepared.Params)
+			}
+			exec := prepared.Params.Tools[0]
+			if exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+				t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+			}
+			if _, ok := prepared.CustomToolNames["exec"]; !ok {
+				t.Fatalf("exec must be restored on the way out, got %v", prepared.CustomToolNames)
+			}
+		})
+	}
+}
+
+// The chat route rewrites too, for every provider without a true row.
+func TestPrepareChatRequest_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chat := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:   schemas.ChatToolTypeCustom,
+			Custom: &schemas.ChatToolCustom{Name: "ApplyPatch", Format: &schemas.ChatToolCustomFormat{Type: "text"}},
+		}}}}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Groq, schemas.Gemini, schemas.Bedrock} {
+		prepared := prepareChatRequest(ctx, nil, provider, chat(provider, "some-model"))
+		tool := prepared.Params.Tools[0]
+		if tool.Type != schemas.ChatToolTypeFunction || tool.Function == nil || tool.Function.Name != "ApplyPatch" {
+			t.Fatalf("%s: want function ApplyPatch, got %+v", provider, tool)
+		}
+	}
+	supported := chat(schemas.OpenAI, "gpt-5")
+	if got := prepareChatRequest(ctx, nil, schemas.OpenAI, supported).Params.Tools[0].Type; got != schemas.ChatToolTypeCustom {
+		t.Fatalf("a model with a true row keeps the custom tool, got %s", got)
+	}
+}
+
+// countTokensProvider records the count tokens and compaction requests it was sent.
+type countTokensProvider struct {
+	stubProvider
+	gotCount      *schemas.BifrostResponsesRequest
+	gotCompaction *schemas.BifrostCompactionRequest
+	compactOutput []schemas.ResponsesMessage
+}
+
+func (p *countTokensProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	p.gotCount = req
+	return &schemas.BifrostCountTokensResponse{}, nil
+}
+
+func (p *countTokensProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	p.gotCompaction = req
+	return &schemas.BifrostCompactionResponse{Output: p.compactOutput}, nil
+}
+
+// handleCountTokens runs one count tokens attempt and returns what the provider received.
+func handleCountTokens(t *testing.T, ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	t.Helper()
+	provider := &countTokensProvider{stubProvider: stubProvider{key: req.Provider}}
+	msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CountTokensRequest, CountTokensRequest: req}}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, config, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("count tokens failed: %v", bifrostErr.Error.Message)
+	}
+	if provider.gotCount == nil {
+		t.Fatal("the provider never received the count tokens request")
+	}
+	return provider.gotCount
+}
+
+// Count tokens must measure the request dispatch would send. It used to reach OpenAI's
+// converter, which rewrote custom tools for pre-GPT-5 models; moving the rewrite to
+// prepareResponsesRequest left count tokens sending custom tools those models reject.
+func TestCountTokens_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{
+		{schemas.OpenAI, "gpt-4.1-mini", true},
+		{schemas.Anthropic, "claude-sonnet-4-5", true},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{schemas.OpenAI, "gpt-5", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeCustom, Name: schemas.Ptr("apply_patch"),
+			}}
+			req.Input = append(req.Input, schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+					ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+				},
+			})
+			got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+
+			tool, choice, call := got.Params.Tools[0], got.Params.ToolChoice.ResponsesToolChoiceStruct, got.Input[1]
+			if !tc.rewritten {
+				if tool.Type != schemas.ResponsesToolTypeCustom || *call.Type != schemas.ResponsesMessageTypeCustomToolCall {
+					t.Fatalf("a model with a true row keeps custom tools and calls, got %s / %s", tool.Type, *call.Type)
+				}
+				return
+			}
+			if tool.Type != schemas.ResponsesToolTypeFunction || *tool.Name != "apply_patch" {
+				t.Fatalf("want function apply_patch counted, got %s %v", tool.Type, tool.Name)
+			}
+			if choice.Type != schemas.ResponsesToolChoiceTypeFunction {
+				t.Fatalf("want the custom choice pointed at the function, got %s", choice.Type)
+			}
+			if *call.Type != schemas.ResponsesMessageTypeFunctionCall || call.Arguments == nil || *call.Arguments != `{"input":"*** Begin Patch"}` {
+				t.Fatalf("want the replayed call counted as a function call, got %s %v", *call.Type, call.Arguments)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom || *req.Input[1].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched, since fallbacks re-run the preparation")
+			}
+		})
+	}
+}
+
+// Codex declares exec inside an additional_tools item; count tokens lifts it out and
+// rewrites it, like dispatch, instead of sending the custom tool in the raw item.
+func TestCountTokens_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4.1-mini", Input: []schemas.ResponsesMessage{
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+	}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if len(got.Input) != 0 || got.Params == nil || len(got.Params.Tools) != 1 {
+		t.Fatalf("want exec lifted to the top level, got input %d params %+v", len(got.Input), got.Params)
+	}
+	if exec := got.Params.Tools[0]; exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+		t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+	}
+}
+
+// Namespaces are flattened for count tokens on wires without namespace support, as for dispatch.
+func TestCountTokens_FlattensNamespaceTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: schemas.Ptr("clock"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("sleep"), ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}}},
+	}}}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	for _, tool := range got.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeNamespace {
+			t.Fatalf("namespace sent to a wire without namespace support: %+v", got.Params.Tools)
+		}
+	}
+}
+
+// Prompt-cache breakpoints change no token count, so count tokens does not inject them;
+// the billing header is part of the measured request, so it is restored.
+func TestCountTokens_SkipsPromptCacheInjectionKeepsBillingHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	got := handleCountTokens(t, ctx, promptCacheOn(), responsesReqWithText("stable prefix"))
+	if got.Input[0].Content.ContentBlocks[0].CacheControl != nil {
+		t.Fatal("count tokens must not inject prompt-cache breakpoints")
+	}
+
+	ctx, req := billingHeaderRequest(t)
+	req.Provider, req.Model = schemas.Anthropic, "claude-sonnet-4"
+	got = handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if blocks := got.Input[0].Content.ContentBlocks; len(blocks) != 2 || *blocks[0].Text != billingHeaderFixture {
+		t.Fatalf("want the billing header restored into the counted system message, got %+v", blocks)
+	}
+}
+
+// Compaction replays the conversation, so custom calls in it are sent as function calls
+// to a model without a true row, and come back as custom calls.
+func TestCompaction_ReplayedCustomCallsAsFunctions(t *testing.T) {
+	stubCustomToolsRows(t)
+	customCall := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+				ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+			},
+		}
+	}
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{{schemas.XAI, "grok-4", true}, {schemas.OpenAI, "gpt-5", false}} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostCompactionRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{customCall()}}
+			echoed := applyPatchFunctionCallResponse().Output
+			provider := &countTokensProvider{stubProvider: stubProvider{key: tc.provider}, compactOutput: echoed}
+			msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CompactionRequest, CompactionRequest: req}}
+			resp, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil)
+			if bifrostErr != nil {
+				t.Fatalf("compaction failed: %v", bifrostErr.Error.Message)
+			}
+			sent, out := *provider.gotCompaction.Input[0].Type, *resp.CompactionResponse.Output[0].Type
+			if !tc.rewritten {
+				if sent != schemas.ResponsesMessageTypeCustomToolCall || out != schemas.ResponsesMessageTypeFunctionCall {
+					t.Fatalf("a model with a true row is left alone, sent %s got %s", sent, out)
+				}
+				return
+			}
+			if sent != schemas.ResponsesMessageTypeFunctionCall {
+				t.Fatalf("want the replayed custom call sent as a function call, got %s", sent)
+			}
+			if out != schemas.ResponsesMessageTypeCustomToolCall || resp.CompactionResponse.Output[0].ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a function call kept by compaction restored, got %+v", resp.CompactionResponse.Output[0])
+			}
+			if *req.Input[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched")
+			}
+		})
+	}
+}
+
+// grammarLimitRequest is a chat request for the structured-output grammar-limit retry tests.
+func grammarLimitRequest(requestType schemas.RequestType) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Invent an invoice.")}}},
+		},
+	}
+}
+
+func grammarLimitError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error:      &schemas.ErrorField{Message: "The model returned the following errors: The compiled grammar is too large, which would cause performance issues."},
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool pins the one re-send after a provider
+// marks a native structured-output request as rejected for grammar size: granted at MaxRetries 0,
+// immediate, on the same key, with the context switched to force the synthetic tool.
+func TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			config := createTestConfig(0, 3*time.Second, 3*time.Second)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			logger := NewDefaultLogger(schemas.LogLevelError)
+
+			callCount := 0
+			var secondState any
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				callCount++
+				if callCount == 1 {
+					ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+					return "", grammarLimitError()
+				}
+				secondState = ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				return "success", nil
+			}
+
+			start := time.Now()
+			result, err := executeRequestWithRetries(ctx, config, handler, nil,
+				requestType, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(requestType), logger)
+			elapsed := time.Since(start)
+
+			if err != nil {
+				t.Fatalf("expected the tool-path retry to succeed, got %v", err)
+			}
+			if result != "success" || callCount != 2 {
+				t.Fatalf("expected success on the 2nd attempt, got %q after %d attempts", result, callCount)
+			}
+			if secondState != schemas.StructuredOutputForceTool {
+				t.Fatalf("second attempt must force the synthetic tool, context held %v", secondState)
+			}
+			if elapsed > time.Second {
+				t.Fatalf("the tool-path retry must skip the %s backoff, took %s", config.NetworkConfig.RetryBackoffInitial, elapsed)
+			}
+			if got := ctx.Value(schemas.BifrostContextKeyNumberOfRetries); got != 1 {
+				t.Fatalf("expected number_of_retries 1, got %v", got)
+			}
+		})
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce: a tool-path attempt that fails too returns
+// its own error, and the provider cannot re-mark it since it carries no outputConfig.
+func TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	second := &schemas.BifrostError{StatusCode: schemas.Ptr(400), Error: &schemas.ErrorField{Message: "tool path failed"}}
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == nil {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return "", grammarLimitError()
+		}
+		return "", second
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if err == nil || err.Error == nil || err.Error.Message != "tool path failed" {
+		t.Fatalf("expected the tool-path attempt's error, got %+v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked: a body the converter does not
+// build (raw body, outputConfig passed through extra params) is marked again; it still gets one retry.
+func TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount > 10 {
+			return "stopped a runaway loop", nil
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+		return "", grammarLimitError()
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+	if err == nil {
+		t.Fatal("expected the second rejection to be returned")
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried: the same 400 without the provider's
+// mark (a tool-path request, or any other client error) is returned as is.
+func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		return "", grammarLimitError()
+	}
+
+	if _, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger); err == nil {
+		t.Fatal("expected the 400 to be returned")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected a single attempt, got %d", callCount)
+	}
+}
+
+// plainFileProvider is a provider that does not stream uploads (no FileSourceUploader).
+type plainFileProvider struct{ schemas.Provider }
+
+// streamingFileProvider is a provider that streams BifrostFileUploadRequest.FileSource.
+type streamingFileProvider struct{ schemas.Provider }
+
+func (streamingFileProvider) UploadsFileSource() {}
+
+// openCountingSource is a BodySource that counts Open calls, to assert a file is not read.
+type openCountingSource struct {
+	schemas.BodySource
+	opens int
+}
+
+func (s *openCountingSource) Open() (io.ReadCloser, error) {
+	s.opens++
+	return s.BodySource.Open()
+}
+
+// TestPrepareFileUploadContent asserts an upload passed as a FileSource is read into File only
+// for a provider that needs the bytes, and is left as a handle for one that streams it.
+func TestPrepareFileUploadContent(t *testing.T) {
+	newReq := func() *schemas.BifrostFileUploadRequest {
+		return &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	}
+
+	req := newReq()
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.File) != "file-bytes" {
+		t.Errorf("plain provider: File = %q, want the source read into memory", req.File)
+	}
+
+	source := &openCountingSource{BodySource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	req = &schemas.BifrostFileUploadRequest{FileSource: source}
+	if err := prepareFileUploadContent(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.File != nil {
+		t.Errorf("streaming provider: File = %q, want nil (the file must stay a stream)", req.File)
+	}
+	if req.FileSource != schemas.BodySource(source) {
+		t.Errorf("streaming provider: FileSource = %v, want the caller's source kept for the provider to stream", req.FileSource)
+	}
+	if source.opens != 0 {
+		t.Errorf("streaming provider: the source was opened %d times, want 0 (preparation must not read the file)", source.opens)
+	}
+
+	req = &schemas.BifrostFileUploadRequest{File: []byte("sdk-bytes")}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil || string(req.File) != "sdk-bytes" {
+		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
+	}
+
+	// FileSource is used instead of File, for every provider: a provider that needs bytes must
+	// read the source even when File already holds other bytes, as OpenAI streams the source.
+	// The source is cleared once read, so a retry or fallback reuses File instead of reading again.
+	req = &schemas.BifrostFileUploadRequest{File: []byte("stale"), FileSource: schemas.NewBytesBodySource([]byte("from source"))}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider with File and FileSource: %v", err.Error.Message)
+	}
+	if string(req.File) != "from source" || req.FileSource != nil {
+		t.Errorf("plain provider with File and FileSource: File = %q, FileSource set = %v; want the source's bytes and the source cleared", req.File, req.FileSource != nil)
+	}
+	got, readErr := schemas.ReadBodySource(providerUtils.FileUploadSource(req))
+	if readErr != nil || string(got) != "from source" {
+		t.Errorf("a fallback to a streaming provider would send %q, want the same bytes", got)
+	}
+}
+
+func (streamingFileProvider) SendsPassthroughBodySource() {}
+
+// TestPreparePassthroughBody asserts a passthrough body passed as a BodySource is read into Body
+// only for a provider that needs the bytes, and stays a stream for one that sends it.
+func TestPreparePassthroughBody(t *testing.T) {
+	newReq := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("form-bytes"))}
+	}
+
+	req := newReq()
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.Body) != "form-bytes" {
+		t.Errorf("plain provider: Body = %q, want the source read into memory", req.Body)
+	}
+
+	req = newReq()
+	if err := preparePassthroughBody(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.Body != nil {
+		t.Errorf("streaming provider: Body = %q, want nil (the body must stay a stream)", req.Body)
+	}
+
+	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
+		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
 }

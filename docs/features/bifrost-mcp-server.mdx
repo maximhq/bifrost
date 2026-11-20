@@ -1,0 +1,223 @@
+---
+title: "Bifrost MCP Server"
+description: "Connect an MCP client such as Claude Code or Cursor to /v1/mcp and use Bifrost's own HTTP API as tools: read and change the gateway's configuration, query logs, and make inference calls."
+icon: "server"
+---
+
+## Overview
+
+The Bifrost MCP server at `/v1/mcp` turns Bifrost's own HTTP API into MCP tools. Connect an agent such as Claude Code or Cursor to it, and the agent can do what an API client can: list providers and virtual keys, read logs, change configuration, or send a chat completion through the gateway.
+
+- **One tool per API operation.** Each tool is named after the operation's `operationId`, for example `getConfig`, `listVirtualKeys`, `createVirtualKey` or `createChatCompletion`, and takes that operation's parameters and body.
+- **Your credential, your permissions.** Every tool call runs as the caller, through the same authentication as a direct API request. The server grants nothing the credential does not already allow.
+- **Writes are a switch.** Configuration changes can be turned off as a whole, leaving a read-only management server that still serves inference.
+
+Bifrost has three MCP endpoints, and they do different things:
+
+| Endpoint | What it serves |
+|----------|----------------|
+| `/v1/mcp` | Bifrost's own HTTP API as tools (this page) |
+| [`/mcp`](../mcp/overview#bifrost-as-an-mcp-gateway) | The tools of the MCP servers you connect to Bifrost, filtered per virtual key |
+| [`/v1/mcp/tool/execute`](../mcp/tool-execution) | A plain HTTP endpoint that runs one tool from your connected MCP servers |
+
+---
+
+## Set it up
+
+The server needs one setting: the **Bifrost URL**, the address clients use to reach the gateway. Until it is set, `/v1/mcp` answers `503`.
+
+Bifrost makes every tool call through that address rather than through the `Host` header the client sent, which the client controls. Links and redirects the API builds then point at your real public URL.
+
+- **Include the base path.** If Bifrost is served under a prefix with `server.base_path`, the Bifrost URL must include it, for example `https://bifrost.example.com/bifrost`.
+- **Format.** An absolute `http` or `https` URL, with no username, query string or fragment.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Settings → Client Settings**.
+2. Enter the gateway's public address in **Bifrost URL**, then save. **OpenAPI URL**, below it, is only needed for air-gapped installs (see [Where the tools come from](#where-the-tools-come-from)).
+
+![Bifrost URL and OpenAPI URL fields in Client Settings](../media/ui-bifrost-mcp-bifrost-url.png)
+
+3. To turn off configuration changes through the server, open **Settings → Security** and switch off **Allow configuration changes through the Bifrost MCP**. It is on by default.
+
+![Allow configuration changes through the Bifrost MCP switch in Security settings](../media/ui-bifrost-mcp-allow-writes.png)
+
+</Tab>
+<Tab title="API">
+
+[`PUT /api/config`](/api-reference/configuration/update-configuration) saves the `client_config` you send, so read the current one, change the two fields, and send it back whole:
+
+```bash
+curl -s -u admin:your-password http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {bifrost_url: "https://bifrost.example.com", bifrost_mcp_allow_writes: true})}' \
+  | curl -X PUT http://localhost:8080/api/config \
+      -u admin:your-password \
+      -H "Content-Type: application/json" -d @-
+```
+
+Sending an empty `bifrost_url` clears it, which turns the server off.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "bifrost_url": "https://bifrost.example.com",
+    "bifrost_mcp_allow_writes": true
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `client.bifrost_url` | string or secret reference | Yes, for `/v1/mcp` | The gateway's public base URL, including any base path. Accepts `env.MY_VAR` and vault references |
+| `client.bifrost_mcp_allow_writes` | boolean | No (default `true`) | Whether the server offers configuration changes as tools. See [What it serves](#what-it-serves) |
+
+On Helm, set `bifrost.client.bifrostUrl` and `bifrost.client.bifrostMcpAllowWrites`.
+
+</Tab>
+</Tabs>
+
+---
+
+## Connect a client
+
+The server speaks MCP over Streamable HTTP. Point a client at `<Bifrost URL>/v1/mcp` and send a management credential in the `Authorization` header (see [Authentication](#authentication)).
+
+<Tabs group="mcp-client">
+<Tab title="Claude Code">
+
+```bash
+claude mcp add --transport http bifrost https://bifrost.example.com/v1/mcp \
+  --header "Authorization: Basic $(printf 'admin:your-password' | base64)"
+```
+
+</Tab>
+<Tab title="mcp.json">
+
+Cursor and most other MCP clients accept a remote server in this shape:
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "url": "https://bifrost.example.com/v1/mcp",
+      "headers": {
+        "Authorization": "Basic YWRtaW46eW91ci1wYXNzd29yZA=="
+      }
+    }
+  }
+}
+```
+
+The value after `Basic` is the base64 of `admin:your-password`.
+
+</Tab>
+</Tabs>
+
+Behind a base path, the URL carries it: `https://bifrost.example.com/bifrost/v1/mcp`. Locally, use `http://localhost:8080/v1/mcp`.
+
+### Inference tools and virtual keys
+
+Tool calls forward the headers your client sent, so headers that steer inference work as they do on a direct request. To have inference tools such as `createChatCompletion` run under a [virtual key](./governance/virtual-keys), with its budgets, rate limits and routing, send the key in `x-bf-vk` alongside the management credential:
+
+```bash
+claude mcp add --transport http bifrost https://bifrost.example.com/v1/mcp \
+  --header "Authorization: Basic $(printf 'admin:your-password' | base64)" \
+  --header "x-bf-vk: sk-bf-your-virtual-key"
+```
+
+---
+
+## Authentication
+
+`/v1/mcp` sits behind the same authentication as the management API (`/api`), and every MCP message needs a management credential, `tools/list` included:
+
+| Credential | How to send it | When |
+|------------|----------------|------|
+| Admin username and password | `Authorization: Basic <base64 of username:password>` | Dashboard authentication is on |
+| Dashboard session token | `Authorization: Bearer <token>` from `POST /api/session/login` | Dashboard authentication is on |
+| Setup token | `X-Bifrost-Setup-Token: <token>` | Before dashboard authentication is turned on (the OSS setup lock). Set with `setup_token` in `config.json` or `BIFROST_SETUP_TOKEN` |
+
+- **A virtual key alone is refused.** A request whose only credential is a virtual key gets `401` with a message saying to send a management credential alongside it. Send the virtual key in `x-bf-vk` next to one, as shown above.
+- **Every tool call is checked again.** A call runs through the full middleware chain of the route it reaches, with your forwarded headers, the same way a direct request to that route would.
+- **Cookies are not forwarded.** A tool call never rides a browser's dashboard session, so a web page cannot act through `/v1/mcp` with an administrator's cookie. Use the `Authorization` header.
+
+---
+
+## What it serves
+
+The server builds its tools from Bifrost's OpenAPI spec. Every operation becomes a tool, except:
+
+- **Deprecated operations.**
+- **Operations a request-and-response tool cannot carry:** login, logout and other session endpoints, the browser steps of OAuth flows, streams and WebSocket upgrades (such as `/v1/realtime` and Warp's chat stream), binary downloads, and the two MCP endpoints themselves.
+- **Routes this gateway does not serve.** On Bifrost OSS that removes the Enterprise-only operations.
+- **Configuration changes, when writes are off.** With **Allow configuration changes through the Bifrost MCP** off, every non-GET operation under `/api` is left out. Inference, batch and file routes stay available, since they are the caller's own requests rather than changes to the gateway.
+
+Each tool carries MCP hints a client can use to decide what to confirm with the user:
+
+| Tool | Hints |
+|------|-------|
+| `GET` operations | Read-only |
+| `DELETE` operations | Destructive |
+| `POST` and `PUT` operations | Destructive only when the operation invalidates state, such as rotating a virtual key or resetting a configuration |
+| `/api` operations | Closed world: they act on this gateway only |
+| Inference, batch and file operations | Open world: they reach providers beyond the gateway |
+
+A tool call always returns one complete answer. The `stream` argument is removed from inference tools, so a chat completion comes back whole rather than as a stream of chunks.
+
+---
+
+## Where the tools come from
+
+By default the server reads the published OSS spec, `https://getbifrost.ai/openapi-oss.json`, when Bifrost starts. To use another copy, set **OpenAPI URL** under **Settings → Client Settings**, `framework_config.openapi_url` in `PUT /api/config`, or `framework.pricing.openapi_url` in `config.json` (`bifrost.framework.pricing.openapiUrl` on Helm). It takes an `http(s)` URL, or a path relative to the app directory.
+
+<Note>
+**Air-gapped installs:** Bifrost cannot reach `getbifrost.ai`, so copy the spec into the app directory and set the OpenAPI URL to its relative path, such as `openapi.json`. Without it the server does not load, and `/v1/mcp` answers `503`.
+</Note>
+
+If the spec cannot be loaded when Bifrost starts, the server retries it in the background, at most once every 30 seconds as requests arrive, so a source that was briefly unreachable needs no restart. A save is different: saving a new OpenAPI URL rebuilds the tools, and if the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again only on the next save or restart. See [`pricing.openapi_url`](/deployment-guides/config-json/schema-reference) for how a save that also changes the Bifrost URL or the writes switch is applied.
+
+---
+
+## Troubleshooting
+
+### `503`: the Bifrost MCP needs bifrost_url set
+
+**Cause:** The Bifrost URL is not set.
+**Fix:** Set it as described in [Set it up](#set-it-up).
+
+### `503`: the Bifrost MCP spec is unavailable
+
+**Cause:** The spec has not loaded yet, or its source cannot be reached. The gateway log has a `[Bifrost MCP]` warning with the reason.
+**Fix:** Wait for the background retry, or point the OpenAPI URL at a reachable copy (see [Where the tools come from](#where-the-tools-come-from)).
+
+### `401`: /v1/mcp takes a management credential
+
+**Cause:** The request carried only a virtual key, or no credential.
+**Fix:** Send a management credential in `Authorization` (or the setup token), and put the virtual key in `x-bf-vk` if you need it for inference tools.
+
+### `405` on `GET /v1/mcp`
+
+**Cause:** The client tried to open a server-sent events stream. `/v1/mcp` does not offer one and answers every message over `POST`.
+**Fix:** None needed. MCP clients fall back to `POST` on their own.
+
+### Configuration tools are missing from the tool list
+
+**Cause:** **Allow configuration changes through the Bifrost MCP** is off, so non-GET `/api` operations are left out.
+**Fix:** Turn it on under **Settings → Security**, or set `client.bifrost_mcp_allow_writes` to `true`.
+
+### Links in tool results point at the wrong address
+
+**Cause:** The Bifrost URL does not match the address clients use, often because it is missing the base path.
+**Fix:** Set it to the full public URL, including `server.base_path`.
+
+---
+
+## Next steps
+
+- **[MCP Gateway](../mcp/overview)** - Serve the tools of your own MCP servers on `/mcp`
+- **[Client configuration](/deployment-guides/config-json/client)** - All `client` settings in `config.json`
+- **[Bifrost MCP message](/api-reference/infrastructure/bifrost-mcp-message)** - The `/v1/mcp` endpoint in the API reference

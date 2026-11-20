@@ -2905,7 +2905,7 @@ func TestRestoreResponsesNamespaceToolCalls_BareNameFallback(t *testing.T) {
 		Output: []schemas.ResponsesMessage{call("unique_fn"), call("js"), call("shadowed")},
 	}}
 
-	RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
+	restoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
 
 	out := resp.ResponsesResponse.Output
 	if *out[0].Name != "unique_fn" || out[0].Namespace == nil || *out[0].Namespace != "namespace_a" {
@@ -2943,7 +2943,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
 			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js"), functionCall("plain")},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, &resp.ResponsesResponse.Output[0])
 		if plain := resp.ResponsesResponse.Output[1]; *plain.Name != "plain" || plain.Namespace != nil {
 			t.Fatal("a tool that was never aliased must not be touched")
@@ -2956,7 +2956,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
 			Item: &item,
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, resp.ResponsesStreamResponse.Item)
 	})
 
@@ -2965,7 +2965,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 			Type:     schemas.ResponsesStreamResponseTypeCompleted,
 			Response: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")}},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, &resp.ResponsesStreamResponse.Response.Output[0])
 	})
 
@@ -2973,7 +2973,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
 			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(false), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(false), resp)
 		if got := resp.ResponsesResponse.Output[0]; *got.Name != "namespace_a__js" || got.Namespace != nil {
 			t.Fatal("without an alias map nothing may be rewritten")
 		}
@@ -3096,7 +3096,7 @@ func TestFlattenResponsesNamespaceTools_CapsAliasLength(t *testing.T) {
 		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new(names[0]), Arguments: new("{}")},
 	}}}}
-	RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, resp)
+	restoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, resp)
 	restored := resp.ResponsesResponse.Output[0]
 	if *restored.Name != longFunction || restored.Namespace == nil || *restored.Namespace != longNamespace {
 		t.Fatalf("restore gave name=%q namespace=%v", *restored.Name, restored.Namespace)

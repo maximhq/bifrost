@@ -108,6 +108,7 @@ type BedrockConverseRequest struct {
 	PromptVariables                   map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
 	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 	ServiceTier                       *BedrockServiceTier              `json:"serviceTier,omitempty"`                       // Service tier configuration (note: camelCase in both request and response)
+	OutputConfig                      json.RawMessage                  `json:"outputConfig,omitempty"`                      // Native Converse structured-output configuration
 	Stream                            bool                             `json:"-"`                                           // Whether streaming is requested (internal, not in JSON)
 
 	// Extra params for advanced use cases
@@ -471,6 +472,29 @@ const (
 // BedrockSystemTool represents a Nova-managed system tool
 type BedrockSystemTool struct {
 	Name BedrockSystemToolType `json:"name"` // "nova_grounding" | "nova_code_interpreter"
+}
+
+// BedrockOutputConfig is Converse's outputConfig, which carries native structured output.
+type BedrockOutputConfig struct {
+	TextFormat *BedrockOutputTextFormat `json:"textFormat,omitempty"`
+}
+
+// BedrockOutputTextFormat is outputConfig.textFormat; Type is always "json_schema".
+type BedrockOutputTextFormat struct {
+	Type      string                     `json:"type"`
+	Structure BedrockOutputTextStructure `json:"structure"`
+}
+
+// BedrockOutputTextStructure wraps the JSON schema of a textFormat.
+type BedrockOutputTextStructure struct {
+	JSONSchema BedrockOutputJSONSchema `json:"jsonSchema"`
+}
+
+// BedrockOutputJSONSchema carries the schema as a JSON string, as Converse requires.
+type BedrockOutputJSONSchema struct {
+	Schema      string  `json:"schema"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
 }
 
 // BedrockToolSpec represents the specification of a tool

@@ -74,7 +74,7 @@ interface DecisionModelSelectorProps {
 }
 
 // DecisionModelSelector follows the provider: providers whose catalogs mix in
-// chat models (OpenAI, OpenRouter, Cloudflare, Perplexity, Ollama, Azure, Databricks)
+// chat models (OpenAI, Gemini, OpenRouter, Cloudflare, Perplexity, Ollama, Azure, Databricks)
 // list only the models the datasheet marks as decision models, Typesafe offers Jev
 // releases, a Cloudflare URL on a custom provider fixes its Clef model, and a
 // self-hosted provider offers the models it lists, or the known Laya, Nimble,
