@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -390,6 +391,9 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		}
 		if candidate.ContinuationToken != "" {
 			extraFields["continuationToken"] = candidate.ContinuationToken
+		}
+		if candidate.GroundingMetadata != nil {
+			extraFields["groundingMetadata"] = candidate.GroundingMetadata
 		}
 		if len(response.Candidates) > 1 {
 			extraFields["additionalCandidates"] = response.Candidates[1:]
@@ -923,9 +927,32 @@ func buildGeminiTerminalCandidate(
 		if token, ok := bifrostResp.ProviderExtraFields["continuationToken"].(string); ok {
 			candidate.ContinuationToken = token
 		}
+		if grounding := extractGeminiGroundingMetadata(bifrostResp.ProviderExtraFields["groundingMetadata"]); grounding != nil {
+			candidate.GroundingMetadata = grounding
+		}
 	}
 
 	return candidate
+}
+
+// extractGeminiGroundingMetadata recovers *GroundingMetadata from ProviderExtraFields["groundingMetadata"],
+// from the in-memory pointer or a JSON-decoded map.
+func extractGeminiGroundingMetadata(v interface{}) *GroundingMetadata {
+	if v == nil {
+		return nil
+	}
+	if metadata, ok := v.(*GroundingMetadata); ok {
+		return metadata
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var metadata GroundingMetadata
+	if err := sonic.Unmarshal(b, &metadata); err != nil {
+		return nil
+	}
+	return &metadata
 }
 
 // extractGeminiURLContextMetadata recovers *URLContextMetadata from
@@ -1361,6 +1388,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if token, ok := bifrostResp.Response.ProviderExtraFields["continuationToken"].(string); ok {
 					candidate.ContinuationToken = token
 				}
+				if grounding := extractGeminiGroundingMetadata(bifrostResp.Response.ProviderExtraFields["groundingMetadata"]); grounding != nil {
+					candidate.GroundingMetadata = grounding
+				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
 				}
@@ -1440,6 +1470,7 @@ type GeminiResponsesStreamState struct {
 	AvgLogprobs        float64
 	URLContextMetadata *URLContextMetadata // may arrive on any chunk, not only the terminal one
 	ContinuationToken  string              // latest long-decode token; the terminal one is the next hop's
+	GroundingMetadata  *GroundingMetadata  // may arrive on any chunk, not only the terminal one
 
 	// Finish reason from a chunk that could not close the stream (no item opened yet);
 	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
@@ -1562,6 +1593,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.AvgLogprobs = 0
 	state.URLContextMetadata = nil
 	state.ContinuationToken = ""
+	state.GroundingMetadata = nil
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
 	state.PromptBlockError = nil
@@ -1641,6 +1673,33 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 	return responses, bifrostErr
 }
 
+// mergeGeminiGroundingMetadata accumulates metadata whose grounding chunks arrive incrementally during streaming.
+func mergeGeminiGroundingMetadata(accumulated, incoming *GroundingMetadata) *GroundingMetadata {
+	if accumulated == nil {
+		return incoming
+	}
+	if incoming == nil || accumulated == incoming {
+		return accumulated
+	}
+
+	accumulated.GroundingChunks = append(accumulated.GroundingChunks, incoming.GroundingChunks...)
+	accumulated.GroundingSupports = append(accumulated.GroundingSupports, incoming.GroundingSupports...)
+	accumulated.RetrievalQueries = append(accumulated.RetrievalQueries, incoming.RetrievalQueries...)
+	accumulated.SourceFlaggingUris = append(accumulated.SourceFlaggingUris, incoming.SourceFlaggingUris...)
+	accumulated.WebSearchQueries = append(accumulated.WebSearchQueries, incoming.WebSearchQueries...)
+	accumulated.ImageSearchQueries = append(accumulated.ImageSearchQueries, incoming.ImageSearchQueries...)
+	if incoming.GoogleMapsWidgetContextToken != "" {
+		accumulated.GoogleMapsWidgetContextToken = incoming.GoogleMapsWidgetContextToken
+	}
+	if incoming.RetrievalMetadata != nil {
+		accumulated.RetrievalMetadata = incoming.RetrievalMetadata
+	}
+	if incoming.SearchEntryPoint != nil {
+		accumulated.SearchEntryPoint = incoming.SearchEntryPoint
+	}
+	return accumulated
+}
+
 func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
@@ -1694,6 +1753,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		if candidate.ContinuationToken != "" {
 			state.ContinuationToken = candidate.ContinuationToken
 		}
+		if candidate.GroundingMetadata != nil {
+			state.GroundingMetadata = mergeGeminiGroundingMetadata(state.GroundingMetadata, candidate.GroundingMetadata)
+		}
 
 		// Check for finish reason (indicates end of generation)
 		// Only close if we've actually started emitting content (text, tool calls, etc.)
@@ -1701,10 +1763,10 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		if candidate.FinishReason != "" && len(state.ItemIDs) > 0 {
 			// Check for grounding metadata (web search results), or a server-side search the
 			// model reported itself via toolCall parts.
-			if (candidate.GroundingMetadata != nil || len(state.ServerSearchRounds) > 0) && !state.HasEmittedWebSearch {
+			if (state.GroundingMetadata != nil || len(state.ServerSearchRounds) > 0) && !state.HasEmittedWebSearch {
 				// Emit web search events before closing
 				webSearchResponses := emitWebSearchFromGroundingMetadata(
-					candidate.GroundingMetadata,
+					state.GroundingMetadata,
 					state,
 					sequenceNumber+len(responses),
 				)
@@ -1715,7 +1777,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			recordGeminiOutputItems(state, responses)
 
 			// Close any open items
-			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
+			closeResponses := closeGeminiOpenItems(state, state.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
 			responses = append(responses, closeResponses...)
 		}
 	}
@@ -2853,6 +2915,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if state.ContinuationToken != "" {
 		extraFields["continuationToken"] = state.ContinuationToken
 	}
+	if state.GroundingMetadata != nil {
+		extraFields["groundingMetadata"] = state.GroundingMetadata
+	}
 	if len(extraFields) > 0 {
 		completedResp.ProviderExtraFields = extraFields
 	}
@@ -3887,7 +3952,8 @@ func textBlockOf(messages []schemas.ResponsesMessage, idx int) *schemas.Response
 
 // groundingChunkSource converts a grounding chunk to a neutral search source. Image chunks
 // attribute to the containing page, as Google's display terms require, and carry the asset
-// URL alongside. Reports false for chunk types that expose no citable URL.
+// URL alongside. Maps places use their place URI as the citable URL. Reports false for
+// chunk types that expose no citable URL.
 func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchToolCallActionSearchSource, bool) {
 	if chunk == nil {
 		return schemas.ResponsesWebSearchToolCallActionSearchSource{}, false
@@ -3910,6 +3976,11 @@ func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchTool
 		}
 		if chunk.Image.Domain != "" {
 			source.Domain = schemas.Ptr(chunk.Image.Domain)
+		}
+	case chunk.Maps != nil && chunk.Maps.URI != "":
+		source.URL = chunk.Maps.URI
+		if chunk.Maps.Title != "" {
+			source.Title = schemas.Ptr(chunk.Maps.Title)
 		}
 	default:
 		return source, false
@@ -5740,6 +5811,20 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 	return nil, nil
 }
 
+// isGoogleMapsGroundingURI reports whether a source URL identifies a Google Maps place.
+func isGoogleMapsGroundingURI(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "maps.google.com" || host == "maps.app.goo.gl" {
+		return true
+	}
+	return (host == "google.com" || strings.HasSuffix(host, ".google.com") || strings.HasSuffix(host, ".google.co.uk")) &&
+		strings.HasPrefix(parsed.Path, "/maps")
+}
+
 // buildGroundingMetadataFromWebSearch converts a Bifrost web_search_call message to Gemini GroundingMetadata
 func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage, annotations []schemas.ResponsesOutputMessageContentTextAnnotation, renderedContent *string) *GroundingMetadata {
 	if webSearchCall == nil || webSearchCall.ResponsesToolMessage == nil || webSearchCall.ResponsesToolMessage.Action == nil {
@@ -5795,6 +5880,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			if source.Domain != nil {
 				chunk.Image.Domain = *source.Domain
 			}
+		} else if isGoogleMapsGroundingURI(source.URL) {
+			chunk.Maps = &GroundingChunkMaps{URI: source.URL, Title: title}
 		} else {
 			chunk.Web = &GroundingChunkWeb{
 				URI:   source.URL,
@@ -5883,9 +5970,19 @@ func emitWebSearchFromGroundingMetadata(
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// A server-side toolCall is enough to emit an item even when grounding metadata is
-	// absent or query-less: the model told us it searched.
+	// absent or query-less: the model told us it searched. Maps grounding also has no
+	// query, so a citable place source must be sufficient on its own.
 	hasGroundingQueries := metadata != nil && (len(metadata.WebSearchQueries) > 0 || len(metadata.ImageSearchQueries) > 0)
-	if !hasGroundingQueries && len(state.ServerSearchRounds) == 0 {
+	hasGroundingSources := false
+	if metadata != nil {
+		for _, chunk := range metadata.GroundingChunks {
+			if _, ok := groundingChunkSource(chunk); ok {
+				hasGroundingSources = true
+				break
+			}
+		}
+	}
+	if !hasGroundingQueries && !hasGroundingSources && len(state.ServerSearchRounds) == 0 {
 		return responses
 	}
 
