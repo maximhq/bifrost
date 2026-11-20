@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "ベース URL は http:// または https:// で始まる必要があります",
 		"atLeastOneApiKeyIsRequired": "API キーが少なくとも 1 つ必要です",
 		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません",
-		"deploymentPatternInvalid": "デプロイメントのパターンが無効か、モデル ID がパターンにないキャプチャグループを使用しています"
+		"deploymentPatternInvalid": "デプロイメントのパターンが無効か、モデル ID がパターンにないキャプチャグループを使用しています",
+		"listModelsTimeoutMustBeANumber": "モデル一覧タイムアウトは数値で指定してください",
+		"listModelsTimeoutMustBeAWholeNumberOf": "モデル一覧タイムアウトは整数の秒数で指定してください",
+		"listModelsTimeoutMustBeAtLeast1Second": "モデル一覧タイムアウトは 1 秒以上にしてください",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "モデル一覧タイムアウトは最大 3600 秒（60 分）までにしてください"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}を作成する権限がありません。",

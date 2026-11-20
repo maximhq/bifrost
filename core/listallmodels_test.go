@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -452,5 +453,94 @@ func TestListModelsRequestDoesNotServeLastKnownModels(t *testing.T) {
 	resp, bfErr := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{Provider: schemas.Groq})
 	if bfErr == nil {
 		t.Fatalf("expected the poll error from a single-provider list call; got %v", modelIDs(resp))
+	}
+}
+
+// TestListAllModelsRespectsProviderListModelsTimeout verifies that a provider with
+// a custom ListModelsTimeoutInSeconds in its NetworkConfig respects its configured
+// timeout rather than the default listAllModelsProviderTimeout.
+func TestListAllModelsRespectsProviderListModelsTimeout(t *testing.T) {
+	hang := make(chan struct{})
+	hangingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hang
+	}))
+	t.Cleanup(func() {
+		close(hang)
+		hangingSrv.Close()
+	})
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, hangingSrv.URL)
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	// Configure a short custom timeout on the provider's NetworkConfig (1 second)
+	// while keeping the HTTP read timeout above the 5-second fallback so that
+	// returning under 3 seconds proves the 1-second page deadline fired.
+	cfg := account.configs[schemas.Groq]
+	cfg.NetworkConfig.DefaultRequestTimeoutInSeconds = 10
+	cfg.NetworkConfig.ListModelsTimeoutInSeconds = 1
+
+	// Ensure the default timeout is distinctly higher (5 seconds) so we can assert
+	// the provider poll ended around the 1s custom deadline.
+	oldTimeout := listAllModelsProviderTimeout
+	listAllModelsProviderTimeout = 5 * time.Second
+	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
+
+	client := newListModelsTestClient(t, account, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	start := time.Now()
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	elapsed := time.Since(start)
+
+	if ctx.Err() != nil {
+		t.Fatalf("caller context unexpectedly canceled: %v", ctx.Err())
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("ListAllModels waited %v; expected custom timeout around 1s, well under default 5s", elapsed)
+	}
+	if elapsed < 800*time.Millisecond {
+		t.Fatalf("ListAllModels returned too fast (%v); expected to wait ~1s for custom timeout", elapsed)
+	}
+	// When the single provider hits the 1s page deadline, no models are returned.
+	if resp != nil && len(resp.Data) > 0 {
+		t.Fatalf("expected no models when hanging provider hits 1s page deadline, got %v (err=%v)", modelIDs(resp), bfErr)
+	}
+}
+
+// TestResolveListModelsProviderTimeoutClampsBounds verifies that non-positive
+// values fall back to listAllModelsProviderTimeout and oversized values are
+// clamped to ListModelsTimeoutUpperBoundSeconds before converting to time.Duration.
+func TestResolveListModelsProviderTimeoutClampsBounds(t *testing.T) {
+	maxDur := time.Duration(schemas.ListModelsTimeoutUpperBoundSeconds) * time.Second
+
+	if got := resolveListModelsProviderTimeout(nil); got != listAllModelsProviderTimeout {
+		t.Fatalf("nil config: got %v, want %v", got, listAllModelsProviderTimeout)
+	}
+	if got := resolveListModelsProviderTimeout(&schemas.ProviderConfig{}); got != listAllModelsProviderTimeout {
+		t.Fatalf("zero timeout: got %v, want %v", got, listAllModelsProviderTimeout)
+	}
+	if got := resolveListModelsProviderTimeout(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{ListModelsTimeoutInSeconds: -5},
+	}); got != listAllModelsProviderTimeout {
+		t.Fatalf("negative timeout: got %v, want %v", got, listAllModelsProviderTimeout)
+	}
+	if got := resolveListModelsProviderTimeout(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{ListModelsTimeoutInSeconds: 12},
+	}); got != 12*time.Second {
+		t.Fatalf("explicit 12s timeout: got %v, want 12s", got)
+	}
+	if got := resolveListModelsProviderTimeout(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{ListModelsTimeoutInSeconds: schemas.ListModelsTimeoutUpperBoundSeconds + 1},
+	}); got != maxDur {
+		t.Fatalf("above upper bound: got %v, want %v", got, maxDur)
+	}
+	if got := resolveListModelsProviderTimeout(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{ListModelsTimeoutInSeconds: math.MaxInt},
+	}); got != maxDur {
+		t.Fatalf("math.MaxInt overflow case: got %v, want %v", got, maxDur)
 	}
 }

@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "L’URL de base doit commencer par http:// ou https://",
 		"atLeastOneApiKeyIsRequired": "Au moins une clé API est obligatoire",
 		"apiKeyValueCannotBeEmpty": "La valeur de la clé API ne peut pas être vide",
-		"deploymentPatternInvalid": "Un motif de déploiement est invalide ou son ID de modèle utilise un groupe de capture que le motif ne définit pas"
+		"deploymentPatternInvalid": "Un motif de déploiement est invalide ou son ID de modèle utilise un groupe de capture que le motif ne définit pas",
+		"listModelsTimeoutMustBeANumber": "Le délai d’expiration de la liste des modèles doit être un nombre",
+		"listModelsTimeoutMustBeAWholeNumberOf": "Le délai d’expiration de la liste des modèles doit être un nombre entier de secondes",
+		"listModelsTimeoutMustBeAtLeast1Second": "Le délai d’expiration de la liste des modèles doit être d’au moins 1 seconde",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "Le délai d’expiration de la liste des modèles ne doit pas dépasser 3600 secondes, soit 60 minutes"
 	},
 	"permissionDenied": {
 		"create": "Vous n’avez pas la permission de créer {{entity}}.",

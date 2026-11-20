@@ -1181,6 +1181,66 @@ func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	assert.Equal(t, HTTP2PingIntervalUpperBoundSeconds, cfgOverflow.NetworkConfig.HTTP2PingIntervalInSeconds)
 }
 
+// TestNetworkConfig_ListModelsTimeout verifies JSON round-tripping, defaulting,
+// and upper-bound clamping for NetworkConfig.ListModelsTimeoutInSeconds.
+func TestNetworkConfig_ListModelsTimeout(t *testing.T) {
+	nc := NetworkConfig{ListModelsTimeoutInSeconds: 12}
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 12, decoded.ListModelsTimeoutInSeconds, "list_models_timeout_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"list_models_timeout_in_seconds":12`)
+
+	cfgDefault := &ProviderConfig{}
+	cfgDefault.CheckAndSetDefaults()
+	assert.Equal(t, DefaultListModelsTimeoutInSeconds, cfgDefault.NetworkConfig.ListModelsTimeoutInSeconds)
+
+	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{ListModelsTimeoutInSeconds: 2}}
+	cfgExplicit.CheckAndSetDefaults()
+	assert.Equal(t, 2, cfgExplicit.NetworkConfig.ListModelsTimeoutInSeconds)
+
+	cfgOverflow := &ProviderConfig{NetworkConfig: NetworkConfig{ListModelsTimeoutInSeconds: ListModelsTimeoutUpperBoundSeconds + 1}}
+	cfgOverflow.CheckAndSetDefaults()
+	assert.Equal(t, ListModelsTimeoutUpperBoundSeconds, cfgOverflow.NetworkConfig.ListModelsTimeoutInSeconds)
+
+	// Whole-valued JSON numbers (12 and 12.0) must both decode to 12 while fractional values (12.5) must fail.
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    int
+		wantErr bool
+	}{
+		{name: "integer 12", payload: `{"list_models_timeout_in_seconds":12}`, want: 12},
+		{name: "whole float 12.0", payload: `{"list_models_timeout_in_seconds":12.0}`, want: 12},
+		{name: "fractional 12.5", payload: `{"list_models_timeout_in_seconds":12.5}`, wantErr: true},
+		{name: "string 12", payload: `{"list_models_timeout_in_seconds":"12"}`, wantErr: true},
+		{name: "null", payload: `{"list_models_timeout_in_seconds":null}`, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdDecoded NetworkConfig
+			err := json.Unmarshal([]byte(tc.payload), &stdDecoded)
+			var sonicDecoded NetworkConfig
+			sonicErr := Unmarshal([]byte(tc.payload), &sonicDecoded)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Error(t, sonicErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, sonicErr)
+			assert.Equal(t, tc.want, stdDecoded.ListModelsTimeoutInSeconds)
+			assert.Equal(t, tc.want, sonicDecoded.ListModelsTimeoutInSeconds)
+
+			if tc.want == 0 {
+				cfg := &ProviderConfig{NetworkConfig: stdDecoded}
+				cfg.CheckAndSetDefaults()
+				assert.Equal(t, DefaultListModelsTimeoutInSeconds, cfg.NetworkConfig.ListModelsTimeoutInSeconds)
+			}
+		})
+	}
+}
+
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
 // strings are normalized to their canonical ResponsesToolType values.
 func TestNormalizeResponsesToolType(t *testing.T) {

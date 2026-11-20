@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "基础 URL 必须以 http:// 或 https:// 开头",
 		"atLeastOneApiKeyIsRequired": "至少需要一个 API 密钥",
 		"apiKeyValueCannotBeEmpty": "API 密钥值不能为空",
-		"deploymentPatternInvalid": "部署模式无效，或其模型 ID 使用了模式中未定义的捕获组"
+		"deploymentPatternInvalid": "部署模式无效，或其模型 ID 使用了模式中未定义的捕获组",
+		"listModelsTimeoutMustBeANumber": "模型列表超时必须是数字",
+		"listModelsTimeoutMustBeAWholeNumberOf": "模型列表超时必须为整数秒",
+		"listModelsTimeoutMustBeAtLeast1Second": "模型列表超时不得少于 1 秒",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "模型列表超时不得超过 3600 秒，即 60 分钟"
 	},
 	"permissionDenied": {
 		"create": "你没有创建{{entity}}的权限。",

@@ -568,3 +568,84 @@ func TestModelRetrieveTarget(t *testing.T) {
 		})
 	}
 }
+
+// GET /v1/models must enforce a provider's configured list_models_timeout_in_seconds
+// so a slow provider responding after its page deadline (but before the 5s default)
+// does not block returning the fast provider's models.
+func TestListModelsSlowProviderRespectsConfiguredTimeout(t *testing.T) {
+	fastSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"fast-model","object":"model","created":1700000000,"owned_by":"openai"}]}`)
+	}))
+	t.Cleanup(fastSrv.Close)
+
+	slowDone := make(chan struct{})
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2500 * time.Millisecond):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"slow-model","object":"model","created":1700000000,"owned_by":"groq"}]}`)
+		case <-slowDone:
+		}
+	}))
+	t.Cleanup(func() {
+		close(slowDone)
+		slowSrv.Close()
+	})
+
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {
+				Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-fast"), Weight: 1}},
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL:                        fastSrv.URL,
+					AllowPrivateNetwork:            true,
+					DefaultRequestTimeoutInSeconds: 10,
+					MaxRetries:                     0,
+				},
+				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+			},
+			schemas.Groq: {
+				Keys: []schemas.Key{{ID: "groq-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-slow"), Weight: 1}},
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL:                        slowSrv.URL,
+					AllowPrivateNetwork:            true,
+					DefaultRequestTimeoutInSeconds: 10,
+					ListModelsTimeoutInSeconds:     1,
+					MaxRetries:                     0,
+				},
+				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+			},
+		},
+	}
+
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(config),
+		Logger:  log,
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	handler := NewInferenceHandler(nil, client, config)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/models")
+
+	start := time.Now()
+	handler.listModels(ctx)
+	elapsed := time.Since(start)
+
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Less(t, elapsed, 2200*time.Millisecond, "GET /v1/models waited too long (%v); expected 1s page deadline", elapsed)
+
+	var response schemas.BifrostListModelsResponse
+	require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
+	require.True(t, slices.ContainsFunc(response.Data, func(m schemas.Model) bool {
+		return m.ID == "openai/fast-model"
+	}), "fast provider model missing: %s", ctx.Response.Body())
+	require.False(t, slices.ContainsFunc(response.Data, func(m schemas.Model) bool {
+		return m.ID == "groq/slow-model"
+	}), "slow provider model should not arrive before 1s deadline: %s", ctx.Response.Body())
+}

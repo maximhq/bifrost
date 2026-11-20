@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "La URL base debe comenzar con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "Se requiere al menos una clave de API",
 		"apiKeyValueCannotBeEmpty": "El valor de la clave de API no puede estar vacío",
-		"deploymentPatternInvalid": "Un patrón de despliegue no es válido o su ID de modelo usa un grupo de captura que el patrón no define"
+		"deploymentPatternInvalid": "Un patrón de despliegue no es válido o su ID de modelo usa un grupo de captura que el patrón no define",
+		"listModelsTimeoutMustBeANumber": "El tiempo de espera de la lista de modelos debe ser un número",
+		"listModelsTimeoutMustBeAWholeNumberOf": "El tiempo de espera de la lista de modelos debe ser un número entero de segundos",
+		"listModelsTimeoutMustBeAtLeast1Second": "El tiempo de espera de la lista de modelos debe ser de al menos 1 segundo",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "El tiempo de espera de la lista de modelos debe ser de 3600 segundos como máximo, es decir, 60 minutos"
 	},
 	"permissionDenied": {
 		"create": "No tienes permiso para crear {{entity}}.",

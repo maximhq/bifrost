@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "Die Basis-URL muss mit http:// oder https:// beginnen",
 		"atLeastOneApiKeyIsRequired": "Mindestens ein API-Schlüssel ist erforderlich",
 		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein",
-		"deploymentPatternInvalid": "Ein Deployment-Muster ist ungültig oder seine Modell-ID nutzt eine Erfassungsgruppe, die das Muster nicht definiert"
+		"deploymentPatternInvalid": "Ein Deployment-Muster ist ungültig oder seine Modell-ID nutzt eine Erfassungsgruppe, die das Muster nicht definiert",
+		"listModelsTimeoutMustBeANumber": "Das Timeout für die Modellliste muss eine Zahl sein",
+		"listModelsTimeoutMustBeAWholeNumberOf": "Das Timeout für die Modellliste muss eine ganze Zahl in Sekunden sein",
+		"listModelsTimeoutMustBeAtLeast1Second": "Das Timeout für die Modellliste muss mindestens 1 Sekunde betragen",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "Das Timeout für die Modellliste darf höchstens 3600 Sekunden betragen, also 60 Minuten"
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",

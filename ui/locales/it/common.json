@@ -593,7 +593,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "L'URL di base deve iniziare con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "È richiesta almeno una chiave API",
 		"apiKeyValueCannotBeEmpty": "Il valore della chiave API non può essere vuoto",
-		"deploymentPatternInvalid": "Un pattern di deployment non è valido o il suo ID modello usa un gruppo di cattura che il pattern non definisce"
+		"deploymentPatternInvalid": "Un pattern di deployment non è valido o il suo ID modello usa un gruppo di cattura che il pattern non definisce",
+		"listModelsTimeoutMustBeANumber": "Il timeout dell'elenco modelli deve essere un numero",
+		"listModelsTimeoutMustBeAWholeNumberOf": "Il timeout dell'elenco modelli deve essere un numero intero di secondi",
+		"listModelsTimeoutMustBeAtLeast1Second": "Il timeout dell'elenco modelli deve essere di almeno 1 secondo",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "Il timeout dell'elenco modelli deve essere al massimo di 3600 secondi, ovvero 60 minuti"
 	},
 	"permissionDenied": {
 		"create": "Non hai l'autorizzazione per creare {{entity}}.",

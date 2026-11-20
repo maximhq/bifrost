@@ -181,7 +181,9 @@
 			"day_other": "{{count}} 日",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0秒"
+			"zeroSeconds": "0秒",
+			"listModelsTimeout": "モデル一覧タイムアウト（秒）",
+			"listModelsTimeoutHelp": "/v1/models でこのプロバイダーのモデル一覧を取得する際のタイムアウト（デフォルト: 5秒）。"
 		},
 		"proxy": "プロキシ",
 		"apiKeys": "API キー",

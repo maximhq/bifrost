@@ -102,6 +102,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					provider.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -155,6 +157,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toOptionalSecretVarPayload(data.network_config?.ca_cert_pem),
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					data.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -194,6 +198,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					provider.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -467,6 +473,40 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									</FormItem>
 								)}
 							/>
+							<FormField
+								control={form.control}
+								name="network_config.list_models_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>{t("providers.network.listModelsTimeout")}</FormLabel>
+										<FormControl>
+											<Input
+												data-testid="network-config-list-models-timeout-input"
+												placeholder="5"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														form.trigger("network_config");
+														return;
+													}
+													const parsed = Number(value);
+													field.onChange(Number.isNaN(parsed) ? (value as unknown as number) : parsed);
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											{typeof field.value === "number" && !Number.isNaN(field.value) ? secondsToHumanReadable(field.value, t) : ""}{" "}
+											{t("providers.network.listModelsTimeoutHelp")}
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 						</div>
 						<FormField
 							control={form.control}
@@ -650,7 +690,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+								<Button
+									type="submit"
+									disabled={!isDirty || !form.formState.isValid || !hasUpdateProviderAccess}
+									isLoading={isUpdatingProvider}
+								>
 									{t("providers.saveNetworkConfig")}
 								</Button>
 							</TooltipTrigger>

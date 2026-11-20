@@ -189,7 +189,9 @@
 			"day_other": "{{count}} дня",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0 секунд"
+			"zeroSeconds": "0 секунд",
+			"listModelsTimeout": "Таймаут списка моделей (секунды)",
+			"listModelsTimeoutHelp": "Таймаут опроса списка моделей этого провайдера в /v1/models (по умолчанию: 5 с)."
 		},
 		"proxy": "Прокси",
 		"apiKeys": "API-ключи",

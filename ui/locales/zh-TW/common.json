@@ -383,7 +383,11 @@
 		"baseUrlMustStartWithHttpOrHttps": "基礎 URL 必須以 http:// 或 https:// 開頭",
 		"atLeastOneApiKeyIsRequired": "至少需要一個 API 金鑰",
 		"apiKeyValueCannotBeEmpty": "API 金鑰值不能為空",
-		"deploymentPatternInvalid": "部署模式無效，或其模型 ID 使用了模式中未定義的擷取群組"
+		"deploymentPatternInvalid": "部署模式無效，或其模型 ID 使用了模式中未定義的擷取群組",
+		"listModelsTimeoutMustBeANumber": "模型清單逾時必須是數字",
+		"listModelsTimeoutMustBeAWholeNumberOf": "模型清單逾時必須是整數秒",
+		"listModelsTimeoutMustBeAtLeast1Second": "模型清單逾時至少為 1 秒",
+		"listModelsTimeoutMustBeAtMost3600Seconds": "模型清單逾時最多為 3600 秒，即 60 分鐘"
 	},
 	"permissionDenied": {
 		"create": "你沒有許可權建立{{entity}}。",

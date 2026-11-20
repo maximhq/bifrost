@@ -2,10 +2,14 @@
 package schemas
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"math"
+	"math/big"
 	"slices"
 	"strings"
 	"time"
@@ -25,6 +29,12 @@ const (
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
+	DefaultListModelsTimeoutInSeconds = 5 // Default timeout in seconds when querying a provider for its model list in ListAllModels
+	// ListModelsTimeoutUpperBoundSeconds matches the sibling *_in_seconds fields
+	// on NetworkConfig (StreamIdleTimeoutInSeconds, KeepAliveTimeoutInSeconds),
+	// which cap at 3600 in config.schema.json — preventing overlong deadlines or
+	// int64 overflow when multiplied by time.Second.
+	ListModelsTimeoutUpperBoundSeconds = 3600
 	// HTTP2PingIntervalUpperBoundSeconds matches the sibling *_in_seconds fields
 	// on NetworkConfig (StreamIdleTimeoutInSeconds, KeepAliveTimeoutInSeconds),
 	// which cap at 3600 in config.schema.json — a sensible range for this field
@@ -79,6 +89,7 @@ type NetworkConfig struct {
 	HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
 	BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+	ListModelsTimeoutInSeconds     int                  `json:"list_models_timeout_in_seconds,omitempty"` // Timeout for listing models from the provider (0 = use default 5s)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -105,6 +116,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`
+		ListModelsTimeoutInSeconds     json.RawMessage      `json:"list_models_timeout_in_seconds,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -126,6 +138,16 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.HTTP2PingIntervalInSeconds = alias.HTTP2PingIntervalInSeconds
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
+
+	// Parse ListModelsTimeoutInSeconds: accept whole-valued JSON numbers (e.g. 12 or 12.0)
+	// while rejecting fractional inputs like 12.5 without rounding.
+	if len(alias.ListModelsTimeoutInSeconds) > 0 && string(bytes.TrimSpace(alias.ListModelsTimeoutInSeconds)) != "null" {
+		timeoutSec, err := parseWholeJSONInt(alias.ListModelsTimeoutInSeconds, "list_models_timeout_in_seconds")
+		if err != nil {
+			return err
+		}
+		nc.ListModelsTimeoutInSeconds = timeoutSec
+	}
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -179,6 +201,48 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
+// parseWholeJSONInt decodes a JSON number that represents an exact integer (e.g. 12 or 12.0)
+// and rejects fractional numbers such as 12.5 or non-numeric JSON values.
+func parseWholeJSONInt(data json.RawMessage, fieldName string) (int, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return 0, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var tok any
+	if err := dec.Decode(&tok); err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", fieldName, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return 0, fmt.Errorf("invalid %s: unexpected trailing tokens", fieldName)
+	}
+	num, ok := tok.(json.Number)
+	if !ok {
+		return 0, fmt.Errorf("invalid %s: expected a whole number", fieldName)
+	}
+	if i, err := num.Int64(); err == nil {
+		if i < int64(math.MinInt) || i > int64(math.MaxInt) {
+			return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+		}
+		return int(i), nil
+	}
+	rat, ok := new(big.Rat).SetString(num.String())
+	if !ok || !rat.IsInt() {
+		return 0, fmt.Errorf("invalid %s: expected a whole number, got %s", fieldName, num.String())
+	}
+	numInt := rat.Num()
+	if !numInt.IsInt64() {
+		return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+	}
+	i := numInt.Int64()
+	if i < int64(math.MinInt) || i > int64(math.MaxInt) {
+		return 0, fmt.Errorf("invalid %s: integer %s out of range", fieldName, num.String())
+	}
+	return int(i), nil
+}
+
 // extraHeadersAsStrings serializes header values the way CACertPEM is: an env.* or
 // vault.* reference stays a reference and a literal stays literal. This keeps the
 // stored and API shape a plain string map, so existing config.json files and DB rows
@@ -215,6 +279,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
+		ListModelsTimeoutInSeconds     int               `json:"list_models_timeout_in_seconds,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -233,6 +298,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		HTTP2PingIntervalInSeconds: nc.HTTP2PingIntervalInSeconds,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
 		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
+		ListModelsTimeoutInSeconds: nc.ListModelsTimeoutInSeconds,
 	}
 	if nc.CACertPEM != nil {
 		alias.CACertPEM = SecretVarAsString(nc.CACertPEM)
@@ -303,6 +369,7 @@ var DefaultNetworkConfig = NetworkConfig{
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
 	KeepAliveTimeoutInSeconds:      DefaultKeepAliveTimeoutInSeconds,
 	MaxConnsPerHost:                DefaultMaxConnsPerHost,
+	ListModelsTimeoutInSeconds:     DefaultListModelsTimeoutInSeconds,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -755,6 +822,12 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.KeepAliveTimeoutInSeconds <= 0 {
 		config.NetworkConfig.KeepAliveTimeoutInSeconds = DefaultKeepAliveTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.ListModelsTimeoutInSeconds <= 0 {
+		config.NetworkConfig.ListModelsTimeoutInSeconds = DefaultListModelsTimeoutInSeconds
+	} else if config.NetworkConfig.ListModelsTimeoutInSeconds > ListModelsTimeoutUpperBoundSeconds {
+		config.NetworkConfig.ListModelsTimeoutInSeconds = ListModelsTimeoutUpperBoundSeconds
 	}
 
 	if config.NetworkConfig.MaxConnsPerHost <= 0 {

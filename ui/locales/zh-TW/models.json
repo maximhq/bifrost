@@ -181,7 +181,9 @@
 			"day_other": "{{count}} 天",
 			"baseUrlCustomPlaceholder": "https://api.your-provider.com",
 			"baseUrlPlaceholder": "https://api.example.com",
-			"zeroSeconds": "0 秒"
+			"zeroSeconds": "0 秒",
+			"listModelsTimeout": "模型清單逾時（秒）",
+			"listModelsTimeoutHelp": "在 /v1/models 中輪詢此供應商模型清單的逾時時間（預設：5秒）。"
 		},
 		"proxy": "代理",
 		"apiKeys": "API 金鑰",
