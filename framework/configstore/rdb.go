@@ -6987,7 +6987,7 @@ func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) er
 				mc.RateLimit = &rl
 			}
 		}
-		tables.StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+		tables.StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, mc.RateLimit)
 	}
 	return nil
 }

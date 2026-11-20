@@ -241,6 +241,16 @@ func (b *TableBudget) WindowStart(now time.Time) time.Time {
 	return RollingWindowStart(anchor, duration, now)
 }
 
+// NextReset returns when the budget's current window closes: the WindowStart
+// boundary that follows the one at or before now. Nil when the budget never
+// resets. See NextResetAt.
+func (b *TableBudget) NextReset(now time.Time) *time.Time {
+	if b == nil {
+		return nil
+	}
+	return NextResetAt(b.ResetDuration, b.IsCalendarAligned, b.CreatedAt, b.LastReset, now, b.QuarterStartMonth())
+}
+
 // AdoptCalendarAlignment re-anchors an already-open window onto the calendar grid
 // it has just been told to follow, and reports whether it moved.
 //

@@ -751,3 +751,62 @@ func TestAdoptCalendarAlignmentOnRateLimits(t *testing.T) {
 		assert.True(t, rl.TokenLastReset.Equal(stale))
 	})
 }
+
+// TestNextResetAt verifies the next reset is the boundary that closes the window
+// containing now, and that it is exactly the boundary WindowStart reports once
+// that window has closed, so the quota response and the reset path agree.
+func TestNextResetAt(t *testing.T) {
+	now := utcDate(2026, time.November, 15, 10) // a Sunday
+	longAgo := utcDate(2020, time.January, 1, 0)
+	at := func(t time.Time) *time.Time { return &t }
+	tests := []struct {
+		name         string
+		duration     string
+		aligned      bool
+		anchor       time.Time
+		lastReset    time.Time
+		quarterStart time.Month
+		now          time.Time
+		want         *time.Time
+	}{
+		{name: "day", duration: "1d", aligned: true, now: now, want: at(utcDate(2026, time.November, 16, 0))},
+		{name: "day at the boundary moves to the next one", duration: "1d", aligned: true, now: utcDate(2026, time.November, 15, 0), want: at(utcDate(2026, time.November, 16, 0))},
+		{name: "week from a Sunday", duration: "1w", aligned: true, now: now, want: at(utcDate(2026, time.November, 16, 0))},
+		{name: "week from a Monday", duration: "1w", aligned: true, now: utcDate(2026, time.November, 16, 10), want: at(utcDate(2026, time.November, 23, 0))},
+		{name: "month", duration: "1M", aligned: true, lastReset: longAgo, now: now, want: at(utcDate(2026, time.December, 1, 0))},
+		{name: "month across the year end", duration: "1M", aligned: true, now: utcDate(2026, time.December, 31, 23), want: at(utcDate(2027, time.January, 1, 0))},
+		{name: "calendar quarter", duration: "1Q", aligned: true, quarterStart: time.January, now: now, want: at(utcDate(2027, time.January, 1, 0))},
+		{name: "fiscal quarter starting in February", duration: "1Q", aligned: true, quarterStart: time.February, now: now, want: at(utcDate(2027, time.February, 1, 0))},
+		{name: "year", duration: "1Y", aligned: true, now: now, want: at(utcDate(2027, time.January, 1, 0))},
+		{name: "rolling day", duration: "1d", anchor: utcDate(2026, time.November, 10, 6), now: now, want: at(utcDate(2026, time.November, 16, 6))},
+		{name: "multi-unit duration stays rolling when aligned", duration: "7d", aligned: true, anchor: utcDate(2026, time.November, 1, 0), now: now, want: at(utcDate(2026, time.November, 22, 0))},
+		{name: "rolling month is 30 days", duration: "1M", anchor: utcDate(2026, time.October, 1, 0), now: now, want: at(utcDate(2026, time.November, 30, 0))},
+		{name: "Go duration", duration: "1h30m", anchor: utcDate(2026, time.November, 15, 0), now: now, want: at(time.Date(2026, time.November, 15, 10, 30, 0, 0, time.UTC))},
+		{name: "last reset far in the past anchors when created_at is zero", duration: "1h", lastReset: longAgo, now: now, want: at(utcDate(2026, time.November, 15, 11))},
+		{name: "empty duration", duration: "", anchor: longAgo, now: now},
+		{name: "unparseable duration", duration: "soon", anchor: longAgo, now: now},
+		{name: "zero duration", duration: "0h", anchor: longAgo, now: now},
+		{name: "no anchor", duration: "1h", now: now},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NextResetAt(tt.duration, tt.aligned, tt.anchor, tt.lastReset, tt.now, tt.quarterStart)
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.True(t, got.Equal(*tt.want), "got %v, want %v", *got, *tt.want)
+			assert.True(t, got.After(tt.now))
+
+			budget := TableBudget{ResetDuration: tt.duration, IsCalendarAligned: tt.aligned, CreatedAt: tt.anchor, LastReset: tt.lastReset}
+			if IsQuarterlyDuration(tt.duration) {
+				budget.ResetConfig = &BudgetResetConfig{QuarterStartMonth: int(tt.quarterStart)}
+			}
+			require.NotNil(t, budget.NextReset(tt.now))
+			assert.True(t, budget.NextReset(tt.now).Equal(*got))
+			assert.True(t, budget.WindowStart(*got).Equal(*got), "the reset path opens a window at the next reset")
+			assert.True(t, budget.WindowStart(got.Add(-time.Nanosecond)).Before(*got), "and not before it")
+		})
+	}
+}

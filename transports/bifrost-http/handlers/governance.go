@@ -5832,6 +5832,9 @@ type quotaModelSpend struct {
 // (both measured since last_reset). models is empty when logging is disabled.
 type quotaBudget struct {
 	configstoreTables.TableBudget
+	// When the gateway next resets this budget, from the same window rules it resets by.
+	// Omitted for a budget that never resets.
+	NextReset *time.Time `json:"next_reset,omitempty"`
 	// Identifies what governs this budget (e.g. an access profile), when the caller
 	// supplied one. Empty for a VK's own budget rows.
 	configstoreTables.SourceRef
@@ -5879,9 +5882,24 @@ func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usa
 				}
 			}
 		}
+		entry.NextReset = b.NextReset(now)
 		out = append(out, entry)
 	}
 	return out, nil
+}
+
+// quotaRateLimit is a rate limit plus when the gateway next resets each of its
+// counters. The source fields are empty for a virtual key's own rate limit.
+type quotaRateLimit struct {
+	SourcedRateLimit
+	TokenNextReset   *time.Time `json:"token_next_reset,omitempty"`
+	RequestNextReset *time.Time `json:"request_next_reset,omitempty"`
+}
+
+func newQuotaRateLimit(rl SourcedRateLimit, now time.Time) quotaRateLimit {
+	out := quotaRateLimit{SourcedRateLimit: rl}
+	out.TokenNextReset, out.RequestNextReset = rl.NextResets(now)
+	return out
 }
 
 // getVirtualKeyQuota handles GET /api/governance/virtual-keys/quota
@@ -5961,18 +5979,29 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 
 	// Each budget carries its actual per-model spend (from request logs) for the current
 	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
-	budgets, err := h.buildBudgetsWithUsage(ctx, vk.ID, usageUserID, budgetRows, time.Now())
+	now := time.Now()
+	budgets, err := h.buildBudgetsWithUsage(ctx, vk.ID, usageUserID, budgetRows, now)
 	if err != nil {
 		SendError(ctx, 500, "Failed to load per-model usage")
 		return
+	}
+	var rateLimitOut *quotaRateLimit
+	if rateLimit != nil {
+		rl := newQuotaRateLimit(SourcedRateLimit{TableRateLimit: *rateLimit}, now)
+		rateLimitOut = &rl
+	}
+	rateLimitsOut := make([]quotaRateLimit, len(rateLimits))
+	for i := range rateLimits {
+		rateLimitsOut[i] = newQuotaRateLimit(rateLimits[i], now)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
+		"calendar_aligned": vk.CalendarAligned,
 		"budgets":          budgets,
-		"rate_limit":       rateLimit,
-		"rate_limits":      rateLimits,
+		"rate_limit":       rateLimitOut,
+		"rate_limits":      rateLimitsOut,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})
