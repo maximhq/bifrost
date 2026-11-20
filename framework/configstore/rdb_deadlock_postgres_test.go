@@ -363,7 +363,8 @@ func TestPostgresGrantRevocationCatchesConcurrentCodeExchange(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_revocation") })
 
-	require.NoError(t, store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race"))
+	_, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race")
+	require.NoError(t, err)
 
 	var exchangeErr error
 	select {
@@ -399,7 +400,7 @@ func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
 	var once sync.Once
 	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_refresh", func(db *gorm.DB) {
 		once.Do(func() {
-			go func() { revokeDone <- store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh") }()
+			go func() { _, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh"); revokeDone <- err }()
 			time.Sleep(500 * time.Millisecond)
 		})
 	}))

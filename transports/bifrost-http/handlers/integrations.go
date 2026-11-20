@@ -14,6 +14,7 @@ import (
 type IntegrationHandler struct {
 	extensions            []integrations.ExtensionRouter
 	wsResponses           *WSResponsesHandler
+	wsCodexPassthrough    *WSCodexPassthroughHandler
 	wsRealtime            *WSRealtimeHandler
 	webrtcRealtime        *WebRTCRealtimeHandler
 	realtimeClientSecrets *RealtimeClientSecretsHandler
@@ -55,9 +56,16 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
 
+	// The Codex relay is a Responses WebSocket too, so it is served wherever that one is.
+	var wsCodexPassthrough *WSCodexPassthroughHandler
+	if wsResponses != nil {
+		wsCodexPassthrough = newWSCodexPassthroughHandler(wsResponses.client, wsResponses.config, wsResponses.handlerStore)
+	}
+
 	return &IntegrationHandler{
 		extensions:            extensions,
 		wsResponses:           wsResponses,
+		wsCodexPassthrough:    wsCodexPassthrough,
 		wsRealtime:            wsRealtime,
 		webrtcRealtime:        webrtcRealtime,
 		realtimeClientSecrets: realtimeClientSecrets,
@@ -73,6 +81,9 @@ func (h *IntegrationHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	// Register WebSocket routes (base path + integration paths)
 	if h.wsResponses != nil {
 		h.wsResponses.RegisterRoutes(r, middlewares...)
+	}
+	if h.wsCodexPassthrough != nil {
+		h.wsCodexPassthrough.RegisterRoutes(r, middlewares...)
 	}
 	if h.wsRealtime != nil {
 		h.wsRealtime.RegisterRoutes(r, middlewares...)
@@ -91,6 +102,9 @@ func (h *IntegrationHandler) Close() {
 	}
 	if h.wsResponses != nil {
 		h.wsResponses.Close()
+	}
+	if h.wsCodexPassthrough != nil {
+		h.wsCodexPassthrough.Close()
 	}
 	if h.wsRealtime != nil {
 		h.wsRealtime.Close()

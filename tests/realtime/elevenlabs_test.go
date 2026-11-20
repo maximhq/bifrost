@@ -521,7 +521,7 @@ func elevenlabsSpeechBody(text string) string {
 }
 
 // Every text-to-speech endpoint an ElevenLabs SDK calls is relayed as it was sent, under the key's credential, and logged
-// with its model and cost: the two Bifrost serves natively on /elevenlabs, and the streams on /elevenlabs_passthrough.
+// with its model: the three Bifrost serves natively on /elevenlabs, and the stream with timestamps on /elevenlabs_passthrough.
 func TestElevenlabs_NativeRESTEndpointsAreRelayedAndLogged(t *testing.T) {
 	for _, tc := range []struct {
 		name, base, suffix string
@@ -529,7 +529,8 @@ func TestElevenlabs_NativeRESTEndpointsAreRelayedAndLogged(t *testing.T) {
 	}{
 		{"text to speech", "/elevenlabs", "", false, false},
 		{"text to speech with timestamps", "/elevenlabs", "/with-timestamps", false, true},
-		{"text to speech stream", "/elevenlabs_passthrough", "/stream", true, false},
+		{"text to speech stream", "/elevenlabs", "/stream", true, false},
+		{"text to speech stream on the passthrough", "/elevenlabs_passthrough", "/stream", true, false},
 		{"text to speech stream with timestamps", "/elevenlabs_passthrough", "/stream/with-timestamps", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

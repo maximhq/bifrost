@@ -81,6 +81,29 @@ func TestCollectToolCallsPrefersChatMessage(t *testing.T) {
 	}
 }
 
+func TestCollectToolCallsFlattensChatCustomCalls(t *testing.T) {
+	custom := schemas.ChatAssistantMessageToolCall{
+		Type:   schemas.Ptr("custom"),
+		ID:     schemas.Ptr("call_1"),
+		Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: schemas.Ptr("code_exec"), Input: "print(1)"},
+	}
+	msg := assistantWithToolCalls(chatToolCall("a", "{}"), custom)
+	got := collectToolCalls(msg, nil)
+	if names := toolCallNames(got); !reflect.DeepEqual(names, []string{"a", "code_exec"}) {
+		t.Fatalf("names = %v", names)
+	}
+	if got[1].Function.Arguments != "print(1)" || *got[1].Type != "custom" || got[1].Custom != nil {
+		t.Fatalf("custom call = %+v", got[1])
+	}
+	if orig := msg.ChatAssistantMessage.ToolCalls[1]; orig.Custom == nil || orig.Function.Name != nil {
+		t.Fatalf("response message was mutated: %+v", orig)
+	}
+	plain := assistantWithToolCalls(chatToolCall("a", "{}"))
+	if got := collectToolCalls(plain, nil); &got[0] != &plain.ChatAssistantMessage.ToolCalls[0] {
+		t.Fatal("a message with no custom call must return its own slice")
+	}
+}
+
 func TestToolCallNames(t *testing.T) {
 	calls := []schemas.ChatAssistantMessageToolCall{
 		chatToolCall(" get_weather ", "{}"),

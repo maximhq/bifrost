@@ -167,3 +167,84 @@ test.describe('Virtual MCP lookups past the first page', () => {
     await expect(page.getByText(row.clientName, { exact: true })).toBeVisible()
   })
 })
+
+/**
+ * env/config.json declares e2e_config_issues_vmcp naming an MCP client that is not registered. The
+ * virtual MCP is still created, without that client's tools, and the omission is shown on the row and
+ * in the sheet until the client is registered, which links it in without a restart.
+ *
+ * The issue is written only by config.json reconciliation at boot, and no API restores it, so the
+ * fixture is one-shot per backend: a retry would reuse the server whose issue the first attempt
+ * cleared. Retries are off for this block, and beforeEach checks the fixture so a reused backend
+ * fails with a clear message instead of a misleading assertion.
+ */
+test.describe('Virtual MCP config.json issues', () => {
+  test.describe.configure({ retries: 0 })
+
+  const VMCP_NAME = 'e2e_config_issues_vmcp'
+  const CLIENT_ID = 'e2e-config-issues-client'
+  const CLIENT_NAME = 'e2e_config_issues_client'
+
+  test.beforeEach(async ({ page, request }) => {
+    const listed = await request.get(`/api/mcp/virtual-mcps?search=${VMCP_NAME}`)
+    expect(listed.ok(), await listed.text()).toBeTruthy()
+    const seeded = (await listed.json()).virtual_mcps.find((v: { name: string }) => v.name === VMCP_NAME)
+    expect(
+      seeded?.config_issues,
+      `${VMCP_NAME} no longer carries its config.json issue: the fixture was already used on this backend and needs a fresh one (it is seeded only at boot from env/config.json)`,
+    ).toContain(CLIENT_NAME)
+    await page.goto(`/workspace/virtual-mcps?q=${VMCP_NAME}`)
+  })
+
+  async function openSheet(page: Page) {
+    await page.getByRole('row').filter({ hasText: VMCP_NAME }).getByRole('button', { name: 'Virtual MCP actions' }).click()
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+  }
+
+  const createdClientIds: string[] = []
+
+  test.afterEach(async ({ request }) => {
+    for (const id of createdClientIds.splice(0)) {
+      const deleted = await request.delete(`/api/mcp/client/${id}`)
+      expect(deleted.status(), await deleted.text()).toBe(200)
+    }
+  })
+
+  test('shows the missing client until it is registered, then clears without a restart', async ({ page, request }) => {
+    const row = page.getByRole('row').filter({ hasText: VMCP_NAME })
+    await expect(row.getByTestId('config-issues-badge')).toBeVisible()
+    await openSheet(page)
+    const alert = page.getByRole('dialog').getByTestId('config-issues-alert')
+    await expect(alert).toBeVisible()
+    await expect(alert).toContainText(CLIENT_NAME)
+
+    const client = await request.post('/api/mcp/client', {
+      data: {
+        client_id: CLIENT_ID,
+        name: CLIENT_NAME,
+        connection_type: 'openapi',
+        auth_type: 'none',
+        tools_to_execute: ['listA', 'getB'],
+        openapi_config: { spec: OPENAPI_SPEC, base_url: 'https://api.example.com' },
+      },
+    })
+    expect(client.status(), await client.text()).toBe(200)
+    createdClientIds.push(CLIENT_ID)
+
+    // Registration links the client's tools in, not just clears the warning.
+    const listed = await request.get(`/api/mcp/virtual-mcps?search=${VMCP_NAME}`)
+    expect(listed.ok(), await listed.text()).toBeTruthy()
+    const vmcp = (await listed.json()).virtual_mcps.find((v: { name: string }) => v.name === VMCP_NAME)
+    expect(vmcp.tools).toEqual([{ mcp_client_id: CLIENT_ID, tool_names: ['*'] }])
+    expect(vmcp.config_issues).toBeUndefined()
+
+    await page.goto(`/workspace/virtual-mcps?q=${VMCP_NAME}`)
+    await expect(page.getByRole('row').filter({ hasText: VMCP_NAME })).toBeVisible()
+    await expect(page.getByTestId('config-issues-badge')).toHaveCount(0)
+    await openSheet(page)
+    await expect(page.getByTestId('virtual-mcp-tab-general')).toBeVisible()
+    // The record loaded, so the alert's absence means no issues, not an empty form.
+    await expect(page.getByTestId('virtual-mcp-name-input')).toHaveValue(VMCP_NAME)
+    await expect(page.getByTestId('config-issues-alert')).toHaveCount(0)
+  })
+})

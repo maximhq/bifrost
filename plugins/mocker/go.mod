@@ -1,10 +1,10 @@
 module github.com/maximhq/bifrost/plugins/mocker
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/jaswdr/faker/v2 v2.8.0
-	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/core v1.15.2
 )
 
 require (
@@ -70,6 +70,8 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 replace github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1

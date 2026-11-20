@@ -35,6 +35,7 @@ You need:
 | [Static virtual key](#static-virtual-key) | Virtual key in `ANTHROPIC_AUTH_TOKEN` | OSS, CI, and personal use | Manual rotation |
 | [Claude subscription](#use-a-claude-subscription-through-bifrost) | claude.ai login, plus a virtual key in `x-bf-vk` | Subscription billing with Bifrost governance | Managed by Claude Code |
 | [Dynamic credentials](#dynamic-credentials-with-apikeyhelper) | Output of an `apiKeyHelper` command | Enterprise rollouts, rotating or short-lived credentials | Claude Code re-runs the helper |
+| [Sign in with `/login`](#sign-in-with-login-cloud-gateway) | Short-lived token bound to a virtual key or account, issued after a browser sign-in | Rollouts where admins deploy managed settings and developers should never handle a key | Claude Code refreshes silently |
 
 <Tip>
   For enterprise developers, use [dynamic credentials with Bifrost CLI SSO](#use-bifrost-cli-sso-recommended-for-enterprise). Each request is attributed to the signed-in user, no long-lived secret is stored in Claude Code settings, and expired sessions refresh automatically.
@@ -255,6 +256,134 @@ For an identity-provider token, replace the `vault` command with your provider's
 <Warning>
   Send only one credential type per request. If you also send a virtual key, for example through `ANTHROPIC_CUSTOM_HEADERS: x-bf-vk: ...`, alongside an identity-provider JWT, Bifrost applies the gateway's [dual-credential policy](/enterprise/user-provisioning#requests-with-both-an-identity-token-and-a-virtual-key): it uses the JWT identity by default, and can instead prefer the virtual key or reject the request.
 </Warning>
+
+## Sign in with `/login` (Cloud gateway)
+
+Instead of handing every developer a virtual key, you can let them sign in to Bifrost from inside Claude Code. Bifrost serves Claude Code's gateway sign-in protocol under `/gateway/claude-code`: the developer runs `/login`, picks **Cloud gateway**, confirms a code in the browser, and chooses which identity to use. Claude Code then sends a short-lived token that it refreshes on its own. The virtual key itself never reaches the laptop; Claude Code keeps only its gateway session (access and refresh token) in the machine's secure storage, and that session can be revoked from Bifrost.
+
+### Enable it
+
+<Tabs>
+<Tab title="Web UI">
+Go to **Settings → Gateways**, set the **Issuer URL** (Bifrost's stable public URL), turn on **Enable Claude Code sign-in** and save. The page shows the URL to give developers.
+</Tab>
+<Tab title="config.json">
+```json
+{
+  "client": {
+    "oauth2_server_config": {
+      "issuer_url": "https://bifrost.example.com",
+      "gateways": {
+        "claude_code": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+</Tab>
+</Tabs>
+
+`issuer_url` is required. It is the same issuer the [MCP OAuth server](/mcp/gateway-auth) uses, but the gateway does not depend on `mcp_server_auth_mode`: `/mcp` can stay on header authentication.
+
+Claude Code only signs in to a gateway that:
+
+- is served over `https://` (plain `http://` is accepted only on `localhost`, `127.0.0.1` or `::1`), and
+- resolves to a private network address (RFC 1918, loopback, link-local, CGNAT or IPv6 ULA). Developers going through a corporate HTTPS proxy should add the Bifrost host to `NO_PROXY`.
+
+On first connect Claude Code shows the TLS certificate fingerprint and asks the developer to trust it, then pins it, so serve the same certificate from every node behind the hostname.
+
+### Connect Claude Code
+
+Claude Code takes the gateway URL only from **machine-level managed settings**: `/login` has no field to type it in. An administrator first deploys these two keys to each developer machine, through MDM or the per-OS [`managed-settings.json` file](https://code.claude.com/docs/en/managed-settings#delivery-mechanisms):
+
+```json
+{
+  "forceLoginMethod": "gateway",
+  "forceLoginGatewayUrl": "https://bifrost.example.com/gateway/claude-code"
+}
+```
+
+The developer then runs `/login` in Claude Code, presses Enter on the **Cloud gateway** screen (which shows the preconfigured URL), and completes the browser sign-in below.
+
+### What happens at sign-in
+
+1. Claude Code opens `https://bifrost.example.com/oauth/device?user_code=XXXX-XXXX`. The developer checks that the code matches the terminal and selects **Continue**.
+2. Bifrost shows its OAuth consent page for **Claude Code**. The developer picks an identity:
+   - **Virtual key**: paste a Bifrost virtual key. Requests then run under that key's budgets, rate limits and model access.
+   - **Signed-in account**: available when an identity provider is configured (Enterprise).
+   - **Anonymous session**: only offered to a signed-in dashboard user while *Enforce authentication on inference* is off.
+
+   If the developer did not start this sign-in, or the code does not match their terminal, they select **This wasn't me - deny**. Claude Code's next poll is refused with `access_denied` and the sign-in ends at once instead of waiting for the code to expire.
+3. The browser confirms the sign-in, and Claude Code receives its token.
+
+Claude Code never receives the virtual key itself. It gets a signed token bound to the key (audience `https://bifrost.example.com/gateway/claude-code`, so it is refused on `/mcp`), which Bifrost resolves back to the key on every request. Access tokens last for the configured `access_token_ttl` (10 minutes by default, set under **Settings → Gateways** and shared with MCP OAuth), and Claude Code refreshes them silently.
+
+<Note>
+Deactivating or deleting the key, or deactivating the user, cuts the session off on the next request: Bifrost re-checks the identity on every call. Revoking the grant under **OAuth grants**, or signing out with `/logout`, stops the session from refreshing, but the access token Claude Code already holds keeps working until it expires, for up to the `access_token_ttl` in effect when it was issued. To cut a session off immediately, deactivate the key or the user. Lowering `access_token_ttl` shortens the window only for tokens issued after the change, including on refresh.
+</Note>
+
+### Who can approve a sign-in
+
+By default only someone signed in to the Bifrost dashboard can approve a sign-in, so every approval is tied to a Bifrost account. With an identity provider (Enterprise), the consent page sends a signed-out developer through SSO first, so this needs no extra setup.
+
+When developers sign in with a virtual key and have **no** Bifrost dashboard account (the usual OSS setup), turn on **Allow Temp Token Auth Links** under **Settings → Gateways**. The sign-in link then carries a short-lived token, valid only for that one sign-in, that lets them approve it with their key. It is the same setting as `client.mcp_enable_temp_token_auth` on the MCP page, so it also applies to MCP OAuth consent and MCP per-user headers pages. Anonymous sessions still require a signed-in dashboard user.
+
+On an OSS deployment with no admin account yet, or with dashboard authentication disabled, the setup lock refuses the consent page until dashboard authentication is enabled, whatever this setting says.
+
+### Models, managed settings and telemetry
+
+- **Inference** goes to `/gateway/claude-code/v1/messages` and behaves like the [`/anthropic` route](#static-virtual-key), including model resolution and provider-prefixed model IDs. Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` on the client (for example via managed settings below) to fill the `/model` picker from `/gateway/claude-code/v1/models`.
+- **Managed settings**: anything you put in `gateways.claude_code.managed_settings` (or the **Managed settings** editor in the UI) is served to every signed-in Claude Code client as its `managed-settings.json`, and refreshed about hourly:
+
+  ```json
+  "gateways": {
+    "claude_code": {
+      "enabled": true,
+      "managed_settings": {
+        "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" },
+        "permissions": { "deny": ["WebFetch"] }
+      }
+    }
+  }
+  ```
+
+- **Telemetry**: while signed in to a gateway, Claude Code sends its OpenTelemetry exports (metrics, logs and traces) to the gateway. By default Bifrost acknowledges and discards them. Turn on `telemetry` to forward them to your own OTLP/HTTP collectors instead:
+
+  ```json
+  "gateways": {
+    "claude_code": {
+      "enabled": true,
+      "telemetry": {
+        "enabled": true,
+        "destinations": [
+          { "endpoint": "https://otel-collector.example.com", "headers": { "authorization": "env.OTEL_COLLECTOR_TOKEN" } }
+        ],
+        "drop_attributes": ["prompt"]
+      }
+    }
+  }
+  ```
+
+  Each export is sent as OTLP/HTTP protobuf to `<endpoint>/v1/metrics`, `/v1/logs` or `/v1/traces`. Before forwarding, Bifrost:
+
+  - stamps the identity the developer signed in as on every resource: `bifrost.gateway.client`, `bifrost.auth.mode`, and `bifrost.virtual_key.id`, `bifrost.virtual_key.name`, `bifrost.team.id` and `bifrost.customer.id` for a virtual key, or `enduser.id` for an account. Any of these attributes the client sent itself are removed first, so one developer's telemetry cannot be made to look like another's;
+  - removes every attribute named in `drop_attributes`, at every level. Claude Code includes prompt text and tool details only when developers enable that in their own settings; list those keys here if they must not leave Bifrost.
+
+  Header values can be plain values or `env.`/`vault.` references, like provider keys. A plain value is stored in the configuration database and is redacted in the dashboard and the config API; `config.json` keeps it readable as written. Use an `env.`/`vault.` reference to keep the credential out of both. Forwarding is asynchronous: the client is answered as soon as an export is queued, and a slow or unavailable collector never slows a session. The queue holds at most 10,000 exports or 64 MB; past that, new exports are dropped and counted. Queue depth, drops and forwarding errors are exported on `/metrics` as `bifrost_client_gateway_telemetry_*`.
+
+| Endpoint (under `/gateway/claude-code`) | Purpose |
+| --- | --- |
+| `GET /.well-known/oauth-authorization-server` | Sign-in discovery |
+| `POST /oauth/device_authorization`, `POST /oauth/token`, `POST /oauth/revoke` | Device sign-in, token refresh, sign-out |
+| `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` | Inference |
+| `GET /managed/settings` | Managed settings |
+| `POST /v1/metrics`, `/v1/logs`, `/v1/traces` | Telemetry (discarded, or forwarded when `telemetry` is on) |
+
+<Note>
+Gateway sign-in always runs the browser flow, so it does not suit unattended CI jobs. Use a virtual key with `ANTHROPIC_AUTH_TOKEN` there.
+</Note>
 
 ## Verify requests reach Bifrost
 

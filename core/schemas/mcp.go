@@ -254,6 +254,8 @@ type MCPConfig struct {
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
 	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
+	// ServerMaxProtocolVersion caps the MCP protocol version Bifrost's own /mcp serves to clients ("" or "auto" = newest supported).
+	ServerMaxProtocolVersion string `json:"server_max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -649,6 +651,28 @@ func ValidateMCPMaxProtocolVersion(field, v string) error {
 		return nil
 	}
 	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
+}
+
+// MCPProtocolVersionsUpTo returns the protocol versions the SDK implements at or below maxVersion,
+// newest first, or nil when maxVersion is "", "auto" or invalid (uncapped).
+func MCPProtocolVersionsUpTo(maxVersion string) []string {
+	if maxVersion == "" || maxVersion == MCPMaxProtocolVersionAuto || !IsValidMCPMaxProtocolVersion(maxVersion) {
+		return nil
+	}
+	versions := make([]string, 0, len(mcp.ValidProtocolVersions))
+	for _, v := range mcp.ValidProtocolVersions {
+		if v <= maxVersion {
+			versions = append(versions, v)
+		}
+	}
+	return versions
+}
+
+// MCPAllowsClientMetadataDocuments reports whether a server capped at maxVersion offers Client ID
+// Metadata Documents, which arrived in 2025-11-25.
+func MCPAllowsClientMetadataDocuments(maxVersion string) bool {
+	versions := MCPProtocolVersionsUpTo(maxVersion)
+	return versions == nil || versions[0] >= MCPProtocolVersion20251125
 }
 
 // MCPAuthType defines the authentication type for MCP connections

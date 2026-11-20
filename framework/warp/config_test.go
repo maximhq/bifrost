@@ -824,3 +824,38 @@ func TestWarpTopicDiscoveryMinRequestsIsConfigurable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultTopicDiscoveryMinRequests, unset.TopicDiscoveryMinRequests)
 }
+
+// Warp offers reads only until its settings allow kinds of change. A write is
+// normalized (case, duplicates, order), an unknown kind - reads among them,
+// which are always on - is refused, an omitted field keeps what is stored, and
+// [] goes back to reads only.
+func TestWarpManagementWritesAreConfigurable(t *testing.T) {
+	base := `"enabled": true, "provider": "openai", "model": "gpt-4o",
+		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536`
+	store := &recordingStore{}
+	service := newTestService(store)
+
+	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{}, view.ManagementWrites, "reads only by default, shown as an empty list")
+	require.Nil(t, store.row.ManagementWrites)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": [" DELETE", "create", "create"]}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, view.ManagementWrites)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, configFromRow(store.row).ManagementWrites)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, view.ManagementWrites, "omitted keeps what is stored")
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": []}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{}, view.ManagementWrites, "[] is reads only again")
+	require.Nil(t, store.row.ManagementWrites)
+
+	for _, bad := range []string{`["read"]`, `["patch"]`, `["create", "everything"]`} {
+		_, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": `+bad+`}`))
+		require.ErrorIs(t, err, ErrInvalidConfig, bad)
+	}
+}
