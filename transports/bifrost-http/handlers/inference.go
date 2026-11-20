@@ -1172,6 +1172,16 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp.WithPreservedUsage())
 }
 
+// missingChatMessageRoleError distinguishes role validation from existing preparation errors
+// so only role failures gain the invalid_request_error response type.
+type missingChatMessageRoleError struct {
+	index int
+}
+
+func (e *missingChatMessageRoleError) Error() string {
+	return fmt.Sprintf("messages[%d].role is required", e.index)
+}
+
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
 func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req, base, err := prepareRequest[ChatRequest](ctx, config, chatParamsKnownFields)
@@ -1180,6 +1190,11 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 	}
 	if len(req.Messages) == 0 {
 		return nil, nil, fmt.Errorf("messages is required for chat completion")
+	}
+	for i := range req.Messages {
+		if req.Messages[i].Role == "" {
+			return nil, nil, &missingChatMessageRoleError{index: i}
+		}
 	}
 	if req.ChatParameters == nil {
 		req.ChatParameters = &schemas.ChatParameters{}
@@ -1217,7 +1232,18 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		pt.EndSpan(ph, schemas.SpanStatusOk, "")
 	}
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		var roleErr *missingChatMessageRoleError
+		if !errors.As(err, &roleErr) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		SendBifrostError(ctx, &schemas.BifrostError{
+			StatusCode: schemas.Ptr(fasthttp.StatusBadRequest),
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr("invalid_request_error"),
+				Message: err.Error(),
+			},
+		})
 		return
 	}
 
