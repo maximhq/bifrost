@@ -2,6 +2,7 @@ package anthropic_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -145,4 +146,41 @@ func TestAnthropicModelRetrieve(t *testing.T) {
 	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+}
+
+// An Anthropic-compatible upstream may add a machine-readable error.code to the envelope.
+// The code must survive the provider's HTTP error path and appear in the serialized
+// Bifrost error a client receives.
+func TestAnthropicChatCompletionPreservesUpstreamErrorCode(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down","code":"quota_exceeded"}}`))
+	}))
+	defer server.Close()
+
+	provider := anthropic.NewAnthropicProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-ant-test")}
+	_, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	})
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusTooManyRequests), bifrostErr.StatusCode)
+	require.NotNil(t, bifrostErr.Error)
+	require.Equal(t, schemas.Ptr("quota_exceeded"), bifrostErr.Error.Code)
+
+	wire, err := json.Marshal(bifrostErr)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"code":"quota_exceeded"`)
 }
