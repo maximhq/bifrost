@@ -2096,6 +2096,50 @@ func TestResponsesMessageUnmarshalReasoningWrapperSummary(t *testing.T) {
 	})
 }
 
+// TestResponsesMessageSummaryOnlyOnReasoningItems: a non-reasoning item that carries a
+// top-level encrypted_content decodes into the embedded ResponsesReasoning. It must not
+// gain "summary": null on re-marshal (OpenAI answers "Unknown parameter:
+// 'input[N].summary'"), and it must keep its encrypted_content and arguments. Reasoning
+// items keep the field, since OpenAI requires it on them.
+func TestResponsesMessageSummaryOnlyOnReasoningItems(t *testing.T) {
+	for _, tc := range []struct {
+		name, in    string
+		wantSummary string // raw summary JSON expected on the wire, "" = absent
+		wantArgs    string // arguments string expected on the wire, "" = not checked
+	}{
+		{"custom_tool_call", `{"type":"custom_tool_call","id":"ctc_1","call_id":"c1","name":"exec","input":"ls","status":"completed","encrypted_content":"enc"}`, "", ""},
+		{"function_call", `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"a\":1}","encrypted_content":"enc"}`, "", `{"a":1}`},
+		{"function_call_null_summary", `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}","summary":null,"encrypted_content":"enc"}`, "", "{}"},
+		{"compaction", `{"type":"compaction","id":"cmp_1","encrypted_content":"enc"}`, "", ""},
+		{"compaction_null_summary", `{"type":"compaction","id":"cmp_1","summary":null,"encrypted_content":"enc"}`, "", ""},
+		{"compaction_empty_summary", `{"type":"compaction","id":"cmp_1","summary":[],"encrypted_content":"enc"}`, "", ""},
+		{"compaction_filled_summary", `{"type":"compaction","id":"cmp_1","summary":[{"type":"summary_text","text":"t"}],"encrypted_content":"enc"}`, "", ""},
+		{"reasoning_null_summary", `{"type":"reasoning","id":"rs_1","summary":null,"encrypted_content":"enc"}`, "[]", ""},
+		{"message", `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}],"summary":null,"encrypted_content":"enc"}`, "", ""},
+		{"typeless_message", `{"role":"assistant","content":[{"type":"output_text","text":"hi"}],"encrypted_content":"enc"}`, "", ""},
+		{"reasoning_empty_summary", `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`, "[]", ""},
+		{"reasoning_with_summary", `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"t"}],"encrypted_content":"enc"}`, `[{"type":"summary_text","text":"t"}]`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tc.in), &msg))
+			out, err := Marshal(msg)
+			require.NoError(t, err)
+
+			summary := gjson.GetBytes(out, "summary")
+			if tc.wantSummary == "" {
+				assert.False(t, summary.Exists(), "summary must be absent, got %s", out)
+			} else {
+				assert.JSONEq(t, tc.wantSummary, summary.Raw)
+			}
+			assert.Equal(t, "enc", gjson.GetBytes(out, "encrypted_content").String(), "encrypted_content must survive, got %s", out)
+			if tc.wantArgs != "" {
+				assert.Equal(t, tc.wantArgs, gjson.GetBytes(out, "arguments").String())
+			}
+		})
+	}
+}
+
 // An output_text history block that omits logprobs must not gain "logprobs": null on
 // re-marshal (strict upstreams 400 on it), while an explicit empty array stays an array.
 func TestResponsesOutputTextLogProbsNotNulled(t *testing.T) {

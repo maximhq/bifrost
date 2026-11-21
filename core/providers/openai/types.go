@@ -14,7 +14,6 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const MinMaxCompletionTokens = 16
@@ -907,11 +906,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			data, err := providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
-			if err != nil {
-				return nil, err
-			}
-			return stripCompactionItemSummary(data, r.OpenAIResponsesRequestInputArray), nil
+			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
 		}
 
 		// Only copy messages that have CacheControl
@@ -1095,62 +1090,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		data, err := providerUtils.MarshalSorted(messagesCopy)
-		if err != nil {
-			return nil, err
-		}
-		return stripCompactionItemSummary(data, messagesCopy), nil
+		return providerUtils.MarshalSorted(messagesCopy)
 	}
 	return providerUtils.MarshalSorted(nil)
-}
-
-// stripCompactionItemSummary removes the "summary" field from compaction input items.
-// OpenAI's Responses API rejects "summary" on a compaction item ("Unknown parameter:
-// input[N].summary"). Bifrost has no first-class compaction item model, so the item's
-// encrypted_content rides the embedded *ResponsesReasoning, whose (no-omitempty) Summary
-// re-injects "summary": null. Reasoning items legitimately carry summary and are left intact.
-func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) []byte {
-	// Each item's summary is dropped from that item's own JSON and the array is written
-	// back once. Deleting "<i>.summary" through the whole array would reserialise it per
-	// compaction item, making this O(items x payload).
-	// Pinned by TestStripCompactionItemSummary_AllocationScaling.
-	parsed := gjson.ParseBytes(data)
-	if !parsed.IsArray() {
-		return data
-	}
-
-	var rebuilt [][]byte
-	changed := false
-	index := 0
-	parsed.ForEach(func(_, element gjson.Result) bool {
-		raw := []byte(element.Raw)
-		if index < len(items) {
-			if msg := items[index]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction {
-				if updated, err := sjson.DeleteBytes(raw, "summary"); err == nil {
-					raw = updated
-					changed = true
-				}
-			}
-		}
-		rebuilt = append(rebuilt, raw)
-		index++
-		return true
-	})
-	if !changed {
-		return data
-	}
-
-	var joined bytes.Buffer
-	joined.Grow(len(data))
-	joined.WriteByte('[')
-	for i, element := range rebuilt {
-		if i > 0 {
-			joined.WriteByte(',')
-		}
-		joined.Write(element)
-	}
-	joined.WriteByte(']')
-	return joined.Bytes()
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
