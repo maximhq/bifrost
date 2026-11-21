@@ -304,6 +304,11 @@
 	"configSyncAlert": {
 		"message": "この設定は <code0>config.json</code0> から同期されています。今後 config.json が更新されると、UI での変更は上書きされます。config.json を初期設定のブートストラップにのみ使用している場合は、このアラートを無視して問題ありません。"
 	},
+	"configIssuesAlert": {
+		"title": "config.json の宣言の一部が適用されませんでした",
+		"badge": "設定の問題",
+		"hint": "宣言の残りは適用済みです。上の各項目は、参照先が存在するようになると自動的に消えます（例: 不足している MCP クライアントを登録したとき）。"
+	},
 	"breadcrumb": {
 		"label": "パンくずリスト",
 		"more": "その他"
