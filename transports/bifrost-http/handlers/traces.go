@@ -522,6 +522,7 @@ type tracingKeyPayload struct {
 	LogContent        *bool    `json:"log_content"`
 	CanCreateProjects bool     `json:"can_create_projects"`
 	CanReadPrompts    bool     `json:"can_read_prompts"`
+	CanUseDatasets    bool     `json:"can_use_datasets"`
 	Enabled           *bool    `json:"enabled"`
 }
 
@@ -553,7 +554,7 @@ func (h *TracesHandler) validateKey(ctx context.Context, payload *tracingKeyPayl
 
 func (p *tracingKeyPayload) apply(key *tables.TableTracingKey) {
 	key.Name, key.ProjectIDs, key.DefaultProjectID, key.VirtualKeyIDs = p.Name, p.ProjectIDs, p.DefaultProjectID, p.VirtualKeyIDs
-	key.CanCreateProjects, key.CanReadPrompts = p.CanCreateProjects, p.CanReadPrompts
+	key.CanCreateProjects, key.CanReadPrompts, key.CanUseDatasets = p.CanCreateProjects, p.CanReadPrompts, p.CanUseDatasets
 	key.LogContent = p.LogContent == nil || *p.LogContent
 	key.Enabled = p.Enabled == nil || *p.Enabled
 }

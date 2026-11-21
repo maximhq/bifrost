@@ -240,6 +240,11 @@ func (h *TraceIngestHandler) braintrustLogs3(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	rows, _ := request.Rows.([]any)
+	// Dataset records go to their evals dataset. The rest of the flush is spans.
+	if _, err := h.addBraintrustDatasetRows(storeCtx, principal, rows); err != nil {
+		h.fail(ctx, err)
+		return
+	}
 	rowIDs, projects, err := h.ingestBraintrustRows(principal, rows)
 	if err != nil {
 		h.fail(ctx, err)
@@ -275,8 +280,8 @@ func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Princip
 				projectRef = fromExperiment
 			}
 		}
-		if mapped.DatasetID != "" && mapped.ExperimentID == "" && mapped.ProjectID == "" {
-			continue // a dataset record, not a span
+		if mapped.DatasetID != "" && mapped.ExperimentID == "" {
+			continue // a dataset record, not a span: it went to its evals dataset
 		}
 		byProject[projectRef] = append(byProject[projectRef], mapped)
 	}
