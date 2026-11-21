@@ -109,7 +109,7 @@ func RewriteToolBooleanSchemaNodesJSON(body []byte) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("cannot locate tools in the request body")
 	}
 	var edits []rawSchemaEdit
-	if err := collectToolSchemaEdits(tools.Raw, "", &edits); err != nil {
+	if err := collectToolSchemaEdits(tools.Raw, gjson.Parse(tools.Raw), "", &edits); err != nil {
 		return nil, false, err
 	}
 	if len(edits) == 0 {
@@ -137,51 +137,57 @@ type rawSchemaEdit struct {
 	raw        []byte
 }
 
-// collectToolSchemaEdits records one edit per tool schema in the tools array at
-// prefix (a gjson path into toolsRaw, empty for toolsRaw itself) that holds a
-// boolean subschema.
-func collectToolSchemaEdits(toolsRaw, prefix string, edits *[]rawSchemaEdit) error {
-	list := gjson.Parse(toolsRaw)
-	if prefix != "" {
-		list = gjson.Get(toolsRaw, prefix)
-	}
-	for i := range len(list.Array()) {
-		path := strconv.Itoa(i)
-		if prefix != "" {
-			path = prefix + "." + path
-		}
-		switch gjson.Get(toolsRaw, path+".type").String() {
+// collectToolSchemaEdits records one edit per tool schema in list, the tools array at
+// prefix (a gjson path into toolsRaw, empty for toolsRaw itself, used in errors), that
+// holds a boolean subschema. The array is walked once: ForEach and Result.Get carry
+// offsets relative to toolsRaw, so no lookup rescans the array from its start.
+func collectToolSchemaEdits(toolsRaw string, list gjson.Result, prefix string, edits *[]rawSchemaEdit) error {
+	var err error
+	i := -1
+	list.ForEach(func(_, tool gjson.Result) bool {
+		i++
+		switch tool.Get("type").String() {
 		case "", string(schemas.ResponsesToolTypeFunction):
-			if err := collectSchemaEdit(toolsRaw, path+".parameters", edits); err != nil {
-				return err
+			if err = collectSchemaEdit(toolsRaw, tool.Get("parameters"), prefix, i, "parameters", edits); err != nil {
+				return false
 			}
-			if err := collectSchemaEdit(toolsRaw, path+".function.parameters", edits); err != nil {
-				return err
+			if err = collectSchemaEdit(toolsRaw, tool.Get("function.parameters"), prefix, i, "function.parameters", edits); err != nil {
+				return false
 			}
 		case string(schemas.ResponsesToolTypeNamespace):
-			if gjson.Get(toolsRaw, path+".tools").IsArray() {
-				if err := collectToolSchemaEdits(toolsRaw, path+".tools", edits); err != nil {
-					return err
+			if members := tool.Get("tools"); members.IsArray() {
+				if err = collectToolSchemaEdits(toolsRaw, members, toolSchemaPath(prefix, i, "tools"), edits); err != nil {
+					return false
 				}
 			}
 		}
-	}
-	return nil
+		return true
+	})
+	return err
 }
 
-// collectSchemaEdit rewrites the schema object at path in toolsRaw and records the
-// edit when it changed. A missing or non-object value is not a schema and is skipped.
-func collectSchemaEdit(toolsRaw, path string, edits *[]rawSchemaEdit) error {
-	value := gjson.Get(toolsRaw, path)
+// toolSchemaPath joins prefix, the tool index and suffix into a gjson path for errors.
+func toolSchemaPath(prefix string, index int, suffix string) string {
+	path := strconv.Itoa(index) + "." + suffix
+	if prefix != "" {
+		path = prefix + "." + path
+	}
+	return path
+}
+
+// collectSchemaEdit rewrites value, the schema object at suffix of the tool at index in
+// the tools array at prefix, and records the edit when it changed. A missing or
+// non-object value is not a schema and is skipped.
+func collectSchemaEdit(toolsRaw string, value gjson.Result, prefix string, index int, suffix string, edits *[]rawSchemaEdit) error {
 	if !value.IsObject() {
 		return nil
 	}
 	if value.Index <= 0 || value.Index+len(value.Raw) > len(toolsRaw) || toolsRaw[value.Index:value.Index+len(value.Raw)] != value.Raw {
-		return fmt.Errorf("cannot locate tool schema %s in the request body", path)
+		return fmt.Errorf("cannot locate tool schema %s in the request body", toolSchemaPath(prefix, index, suffix))
 	}
 	var schema schemas.OrderedMap
 	if err := schemas.Unmarshal([]byte(value.Raw), &schema); err != nil {
-		return fmt.Errorf("failed to decode tool schema %s: %w", path, err)
+		return fmt.Errorf("failed to decode tool schema %s: %w", toolSchemaPath(prefix, index, suffix), err)
 	}
 	rewritten, changed := rewriteBooleanSchemaObject(&schema)
 	if !changed {
@@ -189,7 +195,7 @@ func collectSchemaEdit(toolsRaw, path string, edits *[]rawSchemaEdit) error {
 	}
 	raw, err := rewritten.MarshalJSON()
 	if err != nil {
-		return fmt.Errorf("failed to encode tool schema %s: %w", path, err)
+		return fmt.Errorf("failed to encode tool schema %s: %w", toolSchemaPath(prefix, index, suffix), err)
 	}
 	*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: raw})
 	return nil

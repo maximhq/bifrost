@@ -2,7 +2,9 @@ package utils
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -338,6 +340,85 @@ func TestRewriteToolBooleanSchemaNodesJSON(t *testing.T) {
 		got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(unchanged))
 		if err != nil || changed || string(got) != unchanged {
 			t.Fatalf("body without boolean subschemas changed: changed=%t err=%v got=%s", changed, err, got)
+		}
+	}
+}
+
+// rawToolsBody builds a body whose tools array holds n copies of each tool in tools.
+func rawToolsBody(n int, tools ...string) string {
+	var b strings.Builder
+	b.WriteString(`{"model":"m","tools":[`)
+	for i := range n {
+		for j, tool := range tools {
+			if i > 0 || j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(tool)
+		}
+	}
+	b.WriteString(`],"stream":true}`)
+	return b.String()
+}
+
+// rawToolsBodyCases pairs each tool with its rewritten form: Chat and Responses
+// function tools, a namespace with members, a tool without a schema and a clean one.
+var rawToolsBodyCases = [][2]string{
+	{`{"type":"function","function":{"name":"chat","parameters":{"type":"object","properties":{"a":true}}}}`,
+		`{"type":"function","function":{"name":"chat","parameters":{"type":"object","properties":{"a":{}}}}}`},
+	{`{"name":"resp","parameters":{"type":"array","items":true,"not":true}}`,
+		`{"name":"resp","parameters":{"type":"array","items":{},"not":{}}}`},
+	{`{"type":"namespace","name":"ns","tools":[{"type":"function","name":"x","parameters":{"properties":{"b":false}}},{},{"name":"y","parameters":{"items":true}}]}`,
+		`{"type":"namespace","name":"ns","tools":[{"type":"function","name":"x","parameters":{"properties":{"b":{"not":{}}}}},{},{"name":"y","parameters":{"items":{}}}]}`},
+	{`{}`, `{}`},
+	{`{"type":"function","name":"clean","parameters":{"type":"object",  "properties":{"c":{"type":"string"}}}}`,
+		`{"type":"function","name":"clean","parameters":{"type":"object",  "properties":{"c":{"type":"string"}}}}`},
+}
+
+// A large tools array is rewritten at every position and every other byte is kept.
+func TestRewriteToolBooleanSchemaNodesJSON_LargeToolsArray(t *testing.T) {
+	var in, want []string
+	for _, c := range rawToolsBodyCases {
+		in = append(in, c[0])
+		want = append(want, c[1])
+	}
+	body := rawToolsBody(2000, in...)
+	got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || string(got) != rawToolsBody(2000, want...) {
+		t.Fatalf("large raw body rewrite mismatch (changed=%t, got %d bytes)", changed, len(got))
+	}
+}
+
+// The rewrite walks the tools array once: eight times the tools takes about eight
+// times as long, not sixty-four. The bound leaves room for timer noise.
+func TestRewriteToolBooleanSchemaNodesJSON_LinearInToolCount(t *testing.T) {
+	measure := func(n int) time.Duration {
+		body := []byte(rawToolsBody(n, `{}`, `{"type":"function","name":"f","parameters":{"type":"object"}}`))
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			if _, changed, err := RewriteToolBooleanSchemaNodesJSON(body); err != nil || changed {
+				t.Fatalf("unexpected rewrite: changed=%t err=%v", changed, err)
+			}
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	small, large := measure(500), measure(4000)
+	if large > 24*small {
+		t.Fatalf("rewrite is not linear in the tool count: 1000 tools took %v, 8000 took %v (%.1fx)", small, large, float64(large)/float64(small))
+	}
+}
+
+func BenchmarkRewriteToolBooleanSchemaNodesJSON_LargeToolsArray(b *testing.B) {
+	body := []byte(rawToolsBody(20000, `{}`, `{"type":"function","name":"f","parameters":{"type":"object","items":true}}`))
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := RewriteToolBooleanSchemaNodesJSON(body); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
