@@ -50,15 +50,15 @@ func init() {
 	})
 }
 
-// datasetUser authenticates a dataset call. Using datasets is a permission a tracing key has only
-// when it was given: by default a key writes traces and does nothing else.
+// datasetUser authenticates a dataset call. A scoped principal (an enterprise API key bound to some
+// projects) does not use datasets, which belong to no project.
 func (h *TraceIngestHandler) datasetUser(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
-	principal, ok := h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization"))))
+	principal, ok := h.authenticate(ctx)
 	if !ok {
 		return nil, false
 	}
-	if !principal.CanUseDatasets && !principal.AllProjects {
-		SendError(ctx, fasthttp.StatusForbidden, "this tracing key may not use datasets. Turn on dataset access for the key under Observability > Tracing.")
+	if !principal.AllProjects {
+		SendError(ctx, fasthttp.StatusForbidden, "this credential may not use datasets")
 		return nil, false
 	}
 	if h.datasets == nil {
@@ -164,8 +164,20 @@ func (h *TraceIngestHandler) braintrustRegisterDataset(ctx *fasthttp.RequestCtx)
 
 // addBraintrustDatasetRows adds the dataset records of a logs3 flush to their evals datasets. A
 // record is a row with a dataset_id and no experiment. It returns how many rows it took.
+//
+// Evals datasets are not scoped to a project, so only a principal that may use every project
+// stores dataset records. A flush with records from any other principal is refused as a whole
+// (ErrForbidden), as the dataset routes refuse it, rather than acknowledged for rows it dropped.
 func (h *TraceIngestHandler) addBraintrustDatasetRows(ctx context.Context, principal *traceingest.Principal, rows []any) (int, error) {
-	if h.datasets == nil || (!principal.CanUseDatasets && !principal.AllProjects) {
+	if !principal.AllProjects {
+		for _, raw := range rows {
+			if row, ok := raw.(map[string]any); ok && isBraintrustDatasetRow(row) {
+				return 0, traceingest.ErrForbidden
+			}
+		}
+		return 0, nil
+	}
+	if h.datasets == nil {
 		return 0, nil
 	}
 	byDataset := make(map[string][]map[string]string)
@@ -174,10 +186,10 @@ func (h *TraceIngestHandler) addBraintrustDatasetRows(ctx context.Context, princ
 		if !ok {
 			continue
 		}
-		datasetID, _ := row["dataset_id"].(string)
-		if experiment, _ := row["experiment_id"].(string); datasetID == "" || experiment != "" {
+		if !isBraintrustDatasetRow(row) {
 			continue
 		}
+		datasetID, _ := row["dataset_id"].(string)
 		if deleted, _ := row["_object_delete"].(bool); deleted {
 			continue
 		}
@@ -201,6 +213,14 @@ func (h *TraceIngestHandler) addBraintrustDatasetRows(ctx context.Context, princ
 		added += len(cells)
 	}
 	return added, nil
+}
+
+// isBraintrustDatasetRow reports whether a logs3 row is a dataset record: it names a dataset and no
+// experiment.
+func isBraintrustDatasetRow(row map[string]any) bool {
+	datasetID, _ := row["dataset_id"].(string)
+	experiment, _ := row["experiment_id"].(string)
+	return datasetID != "" && experiment == ""
 }
 
 func langfuseDatasetJSON(dataset *datasets.DatasetView, projectID string) map[string]any {

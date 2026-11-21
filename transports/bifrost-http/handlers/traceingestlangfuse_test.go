@@ -17,9 +17,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// langfuseAuth is the header a Langfuse SDK sends: Basic public:secret, the secret being the key.
+// langfuseAuth is the header a Langfuse SDK sends: Basic public:secret, set to the dashboard
+// username and password.
 func langfuseAuth() map[string]string {
-	return map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-anything:"+traceTestKey)), "Content-Type": "application/json"}
+	return map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(traceTestUser+":"+traceTestPassword)), "Content-Type": "application/json"}
 }
 
 // TestLangfuseLegacyBatchAnswers207PerEvent pins POST /api/public/ingestion: each event gets its
@@ -109,6 +110,26 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 	assert.Equal(t, "good", scores[0].StringValue)
 	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`{"name":"quality"}`)).Response.StatusCode())
 
+	// Langfuse 5 posts scores as an array: 202 when every one is taken, 207 with counts otherwise.
+	batch := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`[{"traceId":"`+otlpTestTrace+`","name":"helpful","value":1,"dataType":"BOOLEAN"},{"traceId":"`+otlpTestTrace+`","name":"tone","value":"formal"}]`))
+	require.Equal(t, fasthttp.StatusAccepted, batch.Response.StatusCode(), string(batch.Response.Body()))
+	assert.JSONEq(t, `{"message":"Accepted"}`, string(batch.Response.Body()))
+	partial := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`[{"traceId":"`+otlpTestTrace+`","name":"speed","value":0.5},{"name":"no trace"}]`))
+	require.Equal(t, fasthttp.StatusMultiStatus, partial.Response.StatusCode())
+	var counts struct {
+		Accepted int              `json:"accepted"`
+		Rejected int              `json:"rejected"`
+		Errors   []map[string]any `json:"errors"`
+	}
+	require.NoError(t, sonic.Unmarshal(partial.Response.Body(), &counts))
+	assert.Equal(t, 1, counts.Accepted)
+	assert.Equal(t, 1, counts.Rejected)
+	require.Len(t, counts.Errors, 1)
+	assert.NotEmpty(t, counts.Errors[0]["message"])
+	scores, err = env.store.ListTraceScores(ctx, "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, scores, 4, "the single score, both batch scores and the accepted half of the partial batch")
+
 	mediaBody := []byte(`{"traceId":"` + otlpTestTrace + `","contentType":"image/png","contentLength":9,"sha256Hash":"6oAzQ2Pu0UXf7uUeuufcPxzX0MeHn4v9IHDAYdPDP1Y=","field":"input"}`)
 	media := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/media", auth, mediaBody)
 	require.Equal(t, fasthttp.StatusCreated, media.Response.StatusCode(), string(media.Response.Body()))
@@ -147,7 +168,7 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 // the upload URL. The receiver checks the bytes against that hash, so only the file itself lands.
 func TestLangfuseUploadAcceptsOnlyTheHashedBytes(t *testing.T) {
 	env := newTraceIngestTestEnv(t)
-	auth := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-any:"+traceTestKey))}
+	auth := langfuseAuth()
 	real := []byte("the real image bytes")
 	sum := sha256.Sum256(real)
 	body := []byte(`{"traceId":"` + otlpTestTrace + `","contentType":"image/png","contentLength":20,"sha256Hash":"` + base64.StdEncoding.EncodeToString(sum[:]) + `","field":"input"}`)
@@ -387,4 +408,26 @@ func TestLangfuseScoreTypeAndValueFilters(t *testing.T) {
 	} {
 		assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v3/scores?"+refused, auth, nil).Response.StatusCode(), refused)
 	}
+}
+
+// A score sent with no id gets an id derived from what it scores, so a retried request replaces
+// the row it wrote instead of adding a second one.
+func TestLangfuseScoreWithoutIDIsStoredOnceAcrossRetries(t *testing.T) {
+	ctx := context.Background()
+	env := newTraceIngestTestEnv(t)
+	body := []byte(`{"traceId":"retry-trace","name":"helpful","value":1}`)
+	var ids []string
+	for range 2 {
+		resp := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", langfuseAuth(), body)
+		require.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
+		var created struct {
+			ID string `json:"id"`
+		}
+		require.NoError(t, sonic.Unmarshal(resp.Response.Body(), &created))
+		ids = append(ids, created.ID)
+	}
+	assert.Equal(t, ids[0], ids[1], "the retry is answered with the same id")
+	scores, err := env.store.ListTraceScores(ctx, "p1", "retry-trace")
+	require.NoError(t, err)
+	assert.Len(t, scores, 1)
 }

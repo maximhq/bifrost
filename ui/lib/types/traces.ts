@@ -155,6 +155,7 @@ export interface TraceFilters {
 	user_id?: string;
 	experiment_id?: string;
 	status?: string;
+	trace_id?: string;
 	search?: string;
 	start_time?: string;
 	end_time?: string;
@@ -274,38 +275,19 @@ export interface TraceProject {
 	created_at?: string;
 }
 
-export interface TracingKey {
-	id: string;
-	name: string;
-	key_prefix: string;
-	project_ids: string[] | null;
-	default_project_id?: string;
-	virtual_key_ids?: string[];
-	log_content: boolean;
-	can_create_projects: boolean;
-	can_read_prompts?: boolean;
-	can_use_datasets?: boolean;
-	enabled: boolean;
-	last_used_at?: string;
-	created_at: string;
-}
-
-export interface TracingKeyInput {
-	name: string;
-	project_ids: string[];
-	default_project_id?: string;
-	virtual_key_ids?: string[];
-	log_content?: boolean;
-	can_create_projects?: boolean;
-	can_read_prompts?: boolean;
-	can_use_datasets?: boolean;
-	enabled?: boolean;
-}
-
 export interface TraceConnectInfo {
 	base_url: string;
 	endpoints: Record<TraceSource, string>;
 	uploads_available: boolean;
+	/** Whether SDKs must send the dashboard credentials as their API key. */
+	auth_required: boolean;
+}
+
+export interface TraceFilterData {
+	sources: string[] | null;
+	environments: string[] | null;
+	models: string[] | null;
+	kinds: string[] | null;
 }
 /** An experiment an SDK registered (a Braintrust experiment or a Langfuse dataset run), with what its traces add up to. */
 export interface TraceExperiment {

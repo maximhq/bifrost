@@ -223,7 +223,31 @@ func TestBraintrustOTLPKeepsTheExperiment(t *testing.T) {
 // A key reads the summary only of an experiment in a project it may use.
 func TestBraintrustSummaryChecksTheProject(t *testing.T) {
 	env := newTraceIngestTestEnv(t)
+	// The dashboard credential may use every project; an enterprise scoped key may not.
+	env.handler.SetAuthenticator(scopedTraceAuthenticator{projectIDs: []string{"p1"}})
 	foreign := traceingest.BraintrustObjectID("exp", "p2", "theirs")
 	resp := env.do(fasthttp.MethodGet, "/tracing/braintrust/v1/experiment/"+foreign+"/summarize", braintrustAuth(), nil)
 	assert.Equal(t, fasthttp.StatusForbidden, resp.Response.StatusCode(), string(resp.Response.Body()))
+}
+
+// scopedTraceAuthenticator stands in for enterprise scoped API keys: every request acts as a
+// principal limited to projectIDs.
+type scopedTraceAuthenticator struct{ projectIDs []string }
+
+func (a scopedTraceAuthenticator) AuthenticateTraceIngest(*fasthttp.RequestCtx) (*traceingest.Principal, error) {
+	return &traceingest.Principal{ProjectIDs: a.projectIDs, LogContent: true}, nil
+}
+
+// A scoped principal cannot store dataset records, so a flush that carries them is refused rather
+// than acknowledged for rows that were dropped. A flush of spans only is stored as before.
+func TestBraintrustDatasetRowsNeedAPrincipalThatMayStoreThem(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	env.handler.SetAuthenticator(scopedTraceAuthenticator{projectIDs: []string{"p1"}})
+	withDataset := `{"rows":[{"id":"rec-1","dataset_id":"ds-1","input":"q","expected":"a"}],"api_version":2}`
+	resp := env.do(fasthttp.MethodPost, "/tracing/braintrust/logs3", braintrustAuth(), []byte(withDataset))
+	assert.Equal(t, fasthttp.StatusForbidden, resp.Response.StatusCode(), string(resp.Response.Body()))
+	assert.NotContains(t, string(resp.Response.Body()), "rec-1", "a refused row is never acknowledged")
+	spans := `{"rows":[{"id":"row-1","project_id":"p1","span_id":"s1","root_span_id":"s1","span_attributes":{"name":"task","type":"task"},"metrics":{"start":1700000000,"end":1700000001}}],"api_version":2}`
+	resp = env.do(fasthttp.MethodPost, "/tracing/braintrust/logs3", braintrustAuth(), []byte(spans))
+	assert.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
 }

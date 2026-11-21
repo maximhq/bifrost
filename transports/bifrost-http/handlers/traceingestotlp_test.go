@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/stretchr/testify/assert"
@@ -153,9 +151,9 @@ func TestOTLPJSONExportUsesHexIDs(t *testing.T) {
 	assert.Equal(t, logstore.TraceSourceOTel, span.Source)
 }
 
-// TestOTLPAuthAndProjectRouting pins who may write where: no key is a 401, a key in any header
-// form SDKs use is accepted, a malformed body is a 400, an explicit project header must resolve,
-// and a project named by a resource attribute the key cannot use falls back to the key's default.
+// TestOTLPAuthAndProjectRouting pins auth and project routing: no credential is a 401, the
+// dashboard credentials in any header SDKs use are accepted, a malformed body is a 400, and the
+// project comes from the request header, then the resource, then the default project.
 func TestOTLPAuthAndProjectRouting(t *testing.T) {
 	ctx := context.Background()
 	env := newTraceIngestTestEnv(t)
@@ -171,7 +169,7 @@ func TestOTLPAuthAndProjectRouting(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", withKey, []byte{0xff, 0xff, 0xff}).Response.StatusCode())
 	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", map[string]string{"Content-Type": "application/json", "Authorization": traceTestKey}, []byte("{not json")).Response.StatusCode())
 
-	// The test key may create projects, so a project named by the SDK is made on first use.
+	// A project the SDK names is made on first use.
 	named := env.do(fasthttp.MethodPost, "/tracing/arize/v1/traces", withKey, otlpTestExport(t, otlpString("openinference.project.name", "support-bot"), otlpString("service.name", "api")))
 	require.Equal(t, fasthttp.StatusOK, named.Response.StatusCode())
 	project, err := env.config.GetTraceProjectByName(ctx, "support-bot")
@@ -180,16 +178,19 @@ func TestOTLPAuthAndProjectRouting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, spans, 3)
 
-	// A key that may not create projects: a resource attribute is a hint, an explicit header is not.
-	fixed := &tables.TableTracingKey{ID: "k-fixed", Name: "fixed", ProjectIDs: []string{"p1"}, DefaultProjectID: "p1", LogContent: true, Enabled: true}
-	fixed.SetValue("bf-tr-fixed")
-	env.config.keys[fixed.KeyHash] = fixed
-	fixedKey := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": "bf-tr-fixed"}
-	hinted := env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", fixedKey, otlpTestExport(t, otlpString("service.name", "some-service")))
-	assert.Equal(t, fasthttp.StatusOK, hinted.Response.StatusCode(), "an unusable service.name falls back to the key's default project")
-	fixedKey["x-project-name"] = "not-mine"
-	explicit := env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", fixedKey, otlpTestExport(t))
-	assert.Equal(t, fasthttp.StatusForbidden, explicit.Response.StatusCode(), "an explicit project the key cannot use is refused")
+	// An explicit project header wins over every resource attribute.
+	explicit := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": traceTestKey, "x-project-name": "from-header"}
+	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", explicit, otlpTestExport(t, otlpString("service.name", "api"))).Response.StatusCode())
+	headerProject, err := env.config.GetTraceProjectByName(ctx, "from-header")
+	require.NoError(t, err)
+	spans, err = env.store.ListTraceSpans(ctx, headerProject.ID, otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, spans, 3)
+	// With no project named anywhere, spans go to the default project.
+	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", withKey, otlpTestExport(t)).Response.StatusCode())
+	spans, err = env.store.ListTraceSpans(ctx, "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, spans, 3)
 }
 
 // A project lookup that fails for an operational reason is retried by the exporter, not routed to
@@ -247,7 +248,8 @@ func TestOTLPJSONReadsLargeNumbersExactly(t *testing.T) {
 // too: an x-project-name header there would split a trace's spans from its scores.
 func TestLangfuseOTLPIgnoresTheProjectHeader(t *testing.T) {
 	env := newTraceIngestTestEnv(t)
-	headers := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-any:"+traceTestKey)), "x-project-name": "elsewhere"}
+	headers := langfuseAuth()
+	headers["Content-Type"], headers["x-project-name"] = "application/x-protobuf", "elsewhere"
 	resp := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/otel/v1/traces", headers, otlpTestExport(t))
 	require.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
 	spans, err := env.store.ListTraceSpans(context.Background(), "p1", otlpTestTrace)
@@ -289,7 +291,7 @@ func TestOTLPOverGRPC(t *testing.T) {
 
 	bearer := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+traceTestKey, "x-project-name", "grpc-project")
 	_, err = client.Export(bearer, &request)
-	require.NoError(t, err, "the test key may create the project it names")
+	require.NoError(t, err, "a project named in metadata is made on first use")
 }
 
 // Stop waits for in-flight exports only up to its deadline, then closes them, so a slow export
@@ -351,4 +353,42 @@ func TestGRPCRateLimitCarriesRetryInfo(t *testing.T) {
 	}
 	require.NotNil(t, retry, "RetryInfo makes the exporter retry")
 	assert.Positive(t, retry.GetRetryDelay().AsDuration())
+}
+
+// keyedTraceAuthenticator accepts only requests carrying x-bf-api-key: scoped, as a principal
+// limited to p1.
+type keyedTraceAuthenticator struct{}
+
+func (keyedTraceAuthenticator) AuthenticateTraceIngest(ctx *fasthttp.RequestCtx) (*traceingest.Principal, error) {
+	if string(ctx.Request.Header.Peek("x-bf-api-key")) != "scoped" {
+		return nil, traceingest.ErrUnauthorized
+	}
+	return &traceingest.Principal{ProjectIDs: []string{"p1"}, LogContent: true}, nil
+}
+
+// An installed authenticator decides gRPC exports too: with dashboard auth off, an export it
+// refuses is refused, instead of acting as the admin.
+func TestOTLPOverGRPCUsesTheInstalledAuthenticator(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	env.handler.SetCredentials(&fakeDashboardAuth{active: false})
+	env.handler.SetAuthenticator(keyedTraceAuthenticator{})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := NewTraceIngestGRPCServer(env.handler, logger)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	client := collectortrace.NewTraceServiceClient(conn)
+	var request collectortrace.ExportTraceServiceRequest
+	require.NoError(t, proto.Unmarshal(otlpTestExport(t), &request))
+
+	_, err = client.Export(context.Background(), &request)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err), "the authenticator refuses a call with no key")
+	_, err = client.Export(metadata.AppendToOutgoingContext(context.Background(), "x-bf-api-key", "scoped"), &request)
+	require.NoError(t, err)
+	spans, err := env.store.ListTraceSpans(context.Background(), "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.NotEmpty(t, spans)
 }
