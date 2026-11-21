@@ -1749,6 +1749,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			// Read from this reload's snapshot: ClientConfig is rewritten under Mu
 			// by a concurrent config save.
 			UsageEstimationTokenizers: config.UsageEstimationTokenizers,
+			DisableUsageEstimation:    config.DisableUsageEstimation,
 		})
 		if err := s.Client.UpdateToolManagerConfig(
 			s.Config.ClientConfig.MCPAgentDepth,
@@ -3828,6 +3829,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPPerUserDiscoveryStore: perUserDiscoveryStore,
 
 		UsageEstimationTokenizers: s.Config.ClientConfig.UsageEstimationTokenizers,
+		DisableUsageEstimation:    s.Config.ClientConfig.DisableUsageEstimation,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

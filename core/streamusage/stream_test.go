@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -287,6 +288,40 @@ func TestEstimateIdleTimeout(t *testing.T) {
 	estimateFrom(newContext(), chatSnapshot("hello world", false), chatRequest("unknown"), "unknown", err)
 	if err.ExtraFields.BilledUsage != nil {
 		t.Fatalf("estimated a non-interruption error: %+v", err.ExtraFields.BilledUsage)
+	}
+}
+
+// KeepReported never counts: it leaves usage the provider attached alone, still copies
+// an idle-timeout stream's running totals, and ignores errors that are not interruptions.
+func TestKeepReported(t *testing.T) {
+	ctx := newContext()
+	reported := &schemas.BifrostLLMUsage{PromptTokens: 26, CompletionTokens: 4, TotalTokens: 30}
+
+	cancelled := cancellation()
+	KeepReported(ctx, cancelled)
+	if cancelled.ExtraFields.BilledUsage != nil {
+		t.Fatalf("a cancelled stream with no reported usage was billed %+v", cancelled.ExtraFields.BilledUsage)
+	}
+
+	provisional := cancellation()
+	provisional.ExtraFields.BilledUsage = reported.DeepCopy()
+	ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
+	KeepReported(ctx, provisional)
+	if got := provisional.ExtraFields.BilledUsage; got == nil || !reflect.DeepEqual(got, reported) {
+		t.Fatalf("provider usage changed: %+v want %+v", got, reported)
+	}
+
+	idle := &schemas.BifrostError{Error: &schemas.ErrorField{Error: fmt.Errorf("read: %w", providerUtils.ErrStreamIdleTimeout)}}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, reported)
+	KeepReported(ctx, idle)
+	if got := idle.ExtraFields.BilledUsage; got == nil || got == reported || !reflect.DeepEqual(got, reported) || got.Estimation != nil {
+		t.Fatalf("idle timeout usage=%+v want a copy of %+v, not estimated", got, reported)
+	}
+
+	other := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "Error reading stream", Error: fmt.Errorf("unexpected EOF")}}
+	KeepReported(ctx, other)
+	if other.ExtraFields.BilledUsage != nil {
+		t.Fatalf("billed a non-interruption error: %+v", other.ExtraFields.BilledUsage)
 	}
 }
 

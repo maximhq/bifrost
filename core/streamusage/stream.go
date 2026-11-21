@@ -29,6 +29,30 @@ func Estimate(ctx *schemas.BifrostContext, request *schemas.BifrostRequest, mode
 	estimate(ctx, ctx.GetAccumulatedResponse(), request, model, failure, idle)
 }
 
+// KeepReported is Estimate with counting off: an interrupted stream is billed
+// only what its provider reported, and nothing is tokenized.
+func KeepReported(ctx *schemas.BifrostContext, failure *schemas.BifrostError) {
+	if idle, ok := estimable(failure); ok {
+		reportedUsage(ctx, failure, idle)
+	}
+}
+
+// reportedUsage returns the usage the provider reported for a failed stream. The
+// idle-timeout path attaches none of its own, so it is read from the provider's
+// handle and attached to failure.
+func reportedUsage(ctx *schemas.BifrostContext, failure *schemas.BifrostError, idle bool) *schemas.BifrostLLMUsage {
+	reported := failure.ExtraFields.BilledUsage
+	if reported == nil && idle {
+		if u, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage); ok && u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+			// Bill it even when nothing is estimated. Copy it: the provider
+			// goroutine may still mutate the handle.
+			reported = u.DeepCopy()
+			failure.ExtraFields.BilledUsage = reported
+		}
+	}
+	return reported
+}
+
 // estimable reports whether failure is a cancellation, a timeout or a stream idle
 // timeout (idle), the only failures whose usage is estimated.
 func estimable(failure *schemas.BifrostError) (idle, ok bool) {
@@ -46,16 +70,7 @@ func estimable(failure *schemas.BifrostError) (idle, ok bool) {
 // estimate counts the prompt and the snapshot's output into failure's billed usage.
 // The snapshot is passed in, so unit tests need no tracer.
 func estimate(ctx *schemas.BifrostContext, snapshot *schemas.BifrostResponse, request *schemas.BifrostRequest, model string, failure *schemas.BifrostError, idle bool) {
-	reported := failure.ExtraFields.BilledUsage
-	if reported == nil && idle {
-		// The idle-timeout path attaches no billed usage; read the provider's handle.
-		if u, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage); ok && u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-			// Bill it even when nothing below is estimated. Copy it: the provider
-			// goroutine may still mutate the handle.
-			reported = u.DeepCopy()
-			failure.ExtraFields.BilledUsage = reported
-		}
-	}
+	reported := reportedUsage(ctx, failure, idle)
 	if snapshot == nil {
 		return // nothing received yet, or no accumulator
 	}

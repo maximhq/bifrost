@@ -124,6 +124,7 @@ When a chat completion, text completion, or Responses stream is cancelled or tim
 - **Provenance**: estimated fields are marked in `usage.estimation` (`prompt`, `completion`, `tokenizer`). Provider-reported fields are never overwritten, except the provisional output count a Claude stream reports in `message_start`, which is replaced when the stream is cancelled before a later usage event. This applies to every provider that serves Claude's streaming format (Anthropic, Vertex, Bedrock, Azure and others).
 - **Requires stream accumulation**: the estimate reads the output from the stream accumulator that this logging plugin (or the Maxim plugin) maintains. With neither enabled, only provider-reported usage is billed.
 - **Limits**: only the first choice of an `n > 1` stream is counted, and image or audio prompt content is not estimated.
+- **Turning it off**: set `client.disable_usage_estimation` to `true` (`DisableUsageEstimation` on `BifrostConfig` in the Go SDK) to bill only what the provider reported. Nothing is counted and no `usage.estimation` is set. Usage the provider reported is kept as is, including the running totals of a stream that went idle, and plugins see the same terminal hooks. The setting can also be changed at runtime through `PUT /api/config`.
 
 ---
 
