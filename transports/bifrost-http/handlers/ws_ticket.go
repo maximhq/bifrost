@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -194,10 +195,17 @@ func (s *WSTicketStore) consumeSigned(ticket string) string {
 	return payload.SessionToken
 }
 
-// deriveWSTicketKey derives a 32-byte key for a WebSocket ticket purpose.
+// deriveWSTicketKey derives a 32-byte key for a WebSocket ticket purpose with
+// HKDF-SHA-256 (NIST SP 800-56C), using the purpose as the info label so the
+// signing and encryption subkeys are independent. hkdf.Key fails only for an
+// output longer than 255 hash blocks, so the error path cannot be reached; a nil
+// key there makes the callers fail closed.
 func deriveWSTicketKey(purpose string, key []byte) []byte {
-	sum := sha256.Sum256(append([]byte(purpose+":"), key...))
-	return sum[:]
+	derived, err := hkdf.Key(sha256.New, key, nil, "bifrost-ws-ticket/"+purpose, 32)
+	if err != nil {
+		return nil
+	}
+	return derived
 }
 
 // encryptWSTicketPayload encrypts a signed WebSocket ticket payload with AES-GCM.
