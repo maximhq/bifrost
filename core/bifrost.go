@@ -44,6 +44,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
+	"github.com/maximhq/bifrost/core/providers/crowllm"
 	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/opencode"
@@ -5310,6 +5311,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return soniox.NewSonioxProvider(config, bifrost.logger)
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
+	case schemas.CrowLLM:
+		return crowllm.NewCrowLLMProvider(config, bifrost.logger)
 	case schemas.HuggingFace:
 		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	case schemas.XAI:

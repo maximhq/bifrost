@@ -1,0 +1,43 @@
+---
+title: "CrowLLM"
+description: "CrowLLM API conversion guide - OpenAI-compatible gateway with one key for every model and a zero-rated free shelf"
+icon: "c"
+---
+
+## Overview
+
+CrowLLM is an **OpenAI-compatible gateway** at `https://crowllm.com/v1`: one endpoint and one key for every model, with a `:free` model shelf next to the paid ids. Bifrost delegates to the OpenAI implementation with standard parameter filtering.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Image Generation | ✅ | - | `/v1/images/generations` |
+| List Models | ✅ | - | `/v1/models` |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+## Quickstart
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-api-key: <your-crowllm-key>" \
+  -d '{
+    "provider": "crowllm",
+    "model": "deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+Set `network_config.base_url` on the provider to route through a different host; it defaults to `https://crowllm.com`.
+
+## Free Models
+
+Model ids ending in `:free` bill at zero and need no credit. They are rate-limited, so use them for exploration rather than long agent loops. `GET /v1/models` returns the live catalog without authentication.
