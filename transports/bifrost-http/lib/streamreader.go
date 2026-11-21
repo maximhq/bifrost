@@ -136,6 +136,31 @@ func (r *SSEStreamReader) SendEvent(eventType string, data []byte) bool {
 	return r.Send(buf)
 }
 
+// SendChatCompletionEvent writes a normalized Chat Completions chunk. Usage must
+// be a separate event with choices: [], after any content/finish choices. Split
+// the already-serialized payload so route-specific usage fields and extra-field
+// filtering are preserved, without mutating data shared with plugins/logging.
+// Ordinary chunks take only the nil-usage check and the existing SendEvent path.
+func (r *SSEStreamReader) SendChatCompletionEvent(response *schemas.BifrostChatResponse, data []byte) (bool, error) {
+	if response.Usage == nil || (response.Choices != nil && len(response.Choices) == 0) {
+		return r.SendEvent("", data), nil
+	}
+	usageData, err := providerUtils.SetRawJSONField(data, "choices", []byte("[]"))
+	if err != nil {
+		return false, fmt.Errorf("marshal chat usage event: %w", err)
+	}
+	if len(response.Choices) > 0 {
+		choiceData, err := providerUtils.SetRawJSONField(data, "usage", []byte("null"))
+		if err != nil {
+			return false, fmt.Errorf("marshal chat choice event: %w", err)
+		}
+		if !r.SendEvent("", choiceData) {
+			return false, nil
+		}
+	}
+	return r.SendEvent("", usageData), nil
+}
+
 // SendError sends an SSE error event: "event: error\ndata: <data>\n\n".
 // Returns false if the reader has been closed (client disconnected).
 func (r *SSEStreamReader) SendError(data []byte) bool {

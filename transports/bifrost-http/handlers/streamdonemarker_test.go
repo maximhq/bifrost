@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -237,4 +240,26 @@ func TestStreamingResponseTeardownPanicIsRecovered(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("trace completer never ran")
 	}
+}
+
+// Pin the neutral /v1/chat/completions writer independently of SDK integrations.
+func TestStreamingResponseSeparateUsageChunk(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	terminal := providerUtils.CreateBifrostChatCompletionChunkResponse("chatcmpl-repro", usage, schemas.Ptr("stop"), 1, "repro-model", 123)
+	body := serveStreamingResponse(t, []*schemas.BifrostStreamChunk{contentChunk("hello"), {BifrostChatResponse: terminal}})
+	t.Logf("wire SSE:\n%s", body)
+	var events []string
+	for _, line := range strings.Split(body, "\n") {
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			events = append(events, data)
+		}
+	}
+	require.Len(t, events, 4, "content, finish, usage, DONE: %s", body)
+	require.Equal(t, "stop", gjson.Get(events[1], "choices.0.finish_reason").String())
+	require.Equal(t, "null", gjson.Get(events[1], "usage").Raw)
+	require.Equal(t, "[]", gjson.Get(events[2], "choices").Raw)
+	require.Equal(t, int64(15), gjson.Get(events[2], "usage.total_tokens").Int())
+	require.Equal(t, "[DONE]", events[3])
+	require.Same(t, usage, terminal.Usage, "wire normalization must not mutate plugin/logging data")
+	require.Len(t, terminal.Choices, 1)
 }
