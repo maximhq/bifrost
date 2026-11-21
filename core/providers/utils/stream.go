@@ -247,6 +247,16 @@ func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.Bi
 	return true
 }
 
+// reportStreamInterruption tells an observing SDK relay which send shutdown interrupted.
+// A plain request context needs only the existing producer drain.
+func reportStreamInterruption(ctx context.Context, chunk *schemas.BifrostStreamChunk) {
+	if observer, ok := ctx.(interface {
+		StreamForwardingInterrupted(*schemas.BifrostStreamChunk)
+	}); ok {
+		observer.StreamForwardingInterrupted(chunk)
+	}
+}
+
 // replayStreamPreamble transfers buffer ownership to the forwarding goroutine.
 // first is the unbuffered chunk that committed the stream, or nil at EOF.
 func replayStreamPreamble(
@@ -264,21 +274,27 @@ func replayStreamPreamble(
 			buffer.chunks = nil
 			buffer.bytes = 0
 			streamPreambles.CompareAndDelete(key, buffer)
-			// Unblock the producer if cancellation interrupted forwarding.
+			// Cancellation while waiting for input is clean EOF if nothing was discarded.
+			for chunk := range key.source {
+				if !schemas.IsStreamCommitMarker(chunk) {
+					reportStreamInterruption(ctx, chunk)
+					break
+				}
+			}
 			for range key.source {
 			}
 		}()
 
 		send := func(chunk *schemas.BifrostStreamChunk) bool {
-			if ctx.Err() != nil {
-				return false
+			if ctx.Err() == nil {
+				select {
+				case wrapped <- chunk:
+					return true
+				case <-ctx.Done():
+				}
 			}
-			select {
-			case wrapped <- chunk:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+			reportStreamInterruption(ctx, chunk)
+			return false
 		}
 		for i, chunk := range buffer.chunks {
 			if !send(chunk) {
@@ -549,6 +565,7 @@ func CheckFirstStreamChunkForError(
 			case <-ctx.Done():
 				// Consumer abandoned the wrapped channel. Drain the source so the
 				// provider's blocked send unblocks and its goroutine can exit.
+				reportStreamInterruption(ctx, chunk)
 				for range stream {
 				}
 				return

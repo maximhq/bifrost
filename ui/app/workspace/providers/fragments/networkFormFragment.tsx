@@ -72,6 +72,7 @@ const secondsToHumanReadable = (seconds: number, t: TFunction<"models">) => {
 	return parts.join(" ");
 };
 
+/** Edits provider network settings, validates limits, and saves configuration updates. */
 export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const { t } = useTranslation("models");
 	const dispatch = useAppDispatch();
@@ -105,6 +106,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_remote_file_size_bytes: provider.network_config?.max_remote_file_size_bytes ?? DefaultNetworkConfig.max_remote_file_size_bytes,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -158,6 +160,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_remote_file_size_bytes: data.network_config?.max_remote_file_size_bytes ?? DefaultNetworkConfig.max_remote_file_size_bytes,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					data.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -197,6 +200,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_remote_file_size_bytes: provider.network_config?.max_remote_file_size_bytes ?? DefaultNetworkConfig.max_remote_file_size_bytes,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -347,6 +351,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormLabel>{t("providers.network.initialBackoff")}</FormLabel>
 										<FormControl>
 											<Input
+												data-testid="network-config-initial-backoff-input"
 												placeholder={t("providers.network.placeholderInitialBackoff")}
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
@@ -377,6 +382,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormLabel>{t("providers.network.maxBackoff")}</FormLabel>
 										<FormControl>
 											<Input
+												data-testid="network-config-max-backoff-input"
 												placeholder={t("providers.network.placeholderMaxBackoff")}
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
@@ -400,6 +406,31 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<FormField
+							control={form.control}
+							name="network_config.max_remote_file_size_bytes"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>{t("providers.network.remoteFileSizeLimit")}</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											type="number"
+											min={0}
+											max={1073741824}
+											step={1}
+											placeholder="26214400"
+											data-testid="network-config-max-remote-file-size-input"
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess}
+											onChange={(e) => field.onChange(e.target.value === "" ? undefined : e.target.valueAsNumber)}
+										/>
+									</FormControl>
+									<FormDescription>{t("providers.network.remoteFileSizeLimitHelp")}</FormDescription>
+									<FormMessage data-testid="network-config-max-remote-file-size-error" />
+								</FormItem>
+							)}
+						/>
 						<div className="flex w-full flex-row items-start gap-4">
 							<FormField
 								control={form.control}

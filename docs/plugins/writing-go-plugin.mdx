@@ -856,6 +856,8 @@ func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*sche
 }
 ```
 
+When a native plugin returns `LLMPluginShortCircuit.Stream`, the plugin owns the channel. Capture `done := ctx.Root().Done()` before returning from the hook. In the producer goroutine, use `defer close(stream)` and select on `done` both while waiting for input and while sending chunks. This lets Bifrost finish draining the stream even when cancellation arrives while the producer is idle.
+
 #### `PostLLMHook(...)`
 
 Called after provider responses (or short-circuits). Use this to:

@@ -100,11 +100,27 @@ Per-provider `network_config` options (applies to all standard providers):
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
+| `max_remote_file_size_bytes` | integer | Per-resource HTTP(S) download limit before Base64 encoding. Omitted or `0`: 25 MiB (`26214400` bytes). Maximum: 1 GiB (`1073741824` bytes) |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
 | `extra_headers` | object | Static headers added to every provider request. Values may be literals or `env.VAR_NAME` / `vault.path` references; only the reference is stored. Literal values are masked in API responses and the UI once saved, while references stay visible; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400 |
 | `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
+
+You can also set this limit under **Providers → Edit Provider Config → Network → Remote File Size Limit (bytes)**.
+
+For example, set `network_config.max_remote_file_size_bytes` to `67108864`
+for the Vertex provider to allow each downloaded HTTP(S) attachment up to 64 MiB
+before Base64 encoding. Omitted or `0` keeps the 25 MiB default; negative values,
+fractions, and values above 1 GiB are rejected. Each fallback uses its own
+provider's setting. The existing timeout and SSRF protections still apply. The fixed
+20-second fetch timeout covers the entire download, including the response body,
+so a large attachment on a slow host may time out before reaching the size limit.
+Increasing the size limit does not extend this timeout.
+
+This only affects URLs Bifrost downloads: forwarded URLs, inline Base64 input,
+and `gs://` downloads are unaffected. Base64 encoding and concurrent attachments
+consume additional memory; upstream provider limits still apply.
 
 Concurrency and buffering per provider:
 
