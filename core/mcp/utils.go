@@ -1359,6 +1359,7 @@ type listToolsResult struct {
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger, warned *sync.Map) (*listToolsResult, error) {
 	// A server offering only prompts or resources has no tools/list to call.
 	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
+		pruneSkippedToolWarnings(warned, clientName, nil)
 		return &listToolsResult{tools: map[string]schemas.ChatTool{}}, nil
 	}
 	// Get available tools from external server with retry logic
@@ -1387,6 +1388,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	}
 
 	if toolsResponse == nil {
+		pruneSkippedToolWarnings(warned, clientName, nil)
 		return &listToolsResult{
 			tools: make(map[string]schemas.ChatTool),
 		}, nil
@@ -1404,9 +1406,9 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 			// The same invalid tools come back on every sync: warn the first time only.
 			invalid[mcpTool.Name] = struct{}{}
 			if _, seen := warned.LoadOrStore(clientName+"\x00"+mcpTool.Name, struct{}{}); seen {
-				logger.Debug("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+				logger.Debug("%s Skipping MCP tool %q from server %q: %v", MCPLogPrefix, mcpTool.Name, clientName, err)
 			} else {
-				logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+				logger.Warn("%s Skipping MCP tool %q from server %q: %v", MCPLogPrefix, mcpTool.Name, clientName, err)
 			}
 			skipped = append(skipped, schemas.SkippedMCPTool{
 				OriginalName: mcpTool.Name,
