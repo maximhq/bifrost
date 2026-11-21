@@ -1085,6 +1085,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.PromptCacheOptions = &optsCopy
 			}
 		}
+		if req.BackgroundOptions != nil && caps.FieldUnsupported(schemas.FieldBackgroundOptions, false) {
+			req.BackgroundOptions = nil
+		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)

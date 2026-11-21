@@ -148,6 +148,13 @@ func putIfSet[T any](m map[string]any, key string, v *T) {
 	}
 }
 
+// putPrewarm keys a prewarm request apart from the real one: it returns no output.
+func putPrewarm(m map[string]any, opts *schemas.PromptCacheOptions) {
+	if opts != nil && opts.Prewarm != nil && *opts.Prewarm {
+		m["prompt_cache_options.prewarm"] = true
+	}
+}
+
 // putSortedSetIfNonEmpty writes m[key] = sortedStringSet(values) when values
 // has any entries — otherwise leaves the key absent so the resulting metadata
 // hash treats "unset" and "empty" identically.
@@ -945,6 +952,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "logprobs", params.LogProbs)
 	putSortedSetIfNonEmpty(metadata, "modalities", params.Modalities)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
+	putPrewarm(metadata, params.PromptCacheOptions)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_enabled", params.Reasoning.Enabled)
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
@@ -1005,6 +1013,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "max_tool_calls", params.MaxToolCalls)
 	putIfSet(metadata, "previous_response_id", params.PreviousResponseID)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
+	putPrewarm(metadata, params.PromptCacheOptions)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
