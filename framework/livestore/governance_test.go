@@ -175,7 +175,7 @@ func TestDeleteOfTeamRereadsItsKeys(t *testing.T) {
 		require.True(t, ok, "%s stays", id)
 		require.Empty(t, k.TeamID, "%s is re-read with its team cleared", id)
 	}
-	require.Empty(t, cols.VirtualKeys.List("parent:"+string(KindTeam), "team-1"), "no key is indexed under the team")
+	require.Empty(t, cols.VirtualKeys.List(ParentIndex(KindTeam), "team-1"), "no key is indexed under the team")
 	_, ok = cols.Budgets.Get("b-team")
 	require.False(t, ok, "the team's budget goes with it")
 	_, ok = cols.RateLimits.Get("rl-team")
@@ -307,4 +307,25 @@ func TestFileRecordsHoldEachKeysGrantSet(t *testing.T) {
 	require.True(t, ok, "the key's grant set is held")
 	require.Len(t, set.Providers, 1)
 	require.Equal(t, "openai", set.Providers[0].Provider)
+}
+
+// TestCustomersAreFoundByName checks the customer name index: a customer is found by its name,
+// and a rename moves it to the new name.
+func TestCustomersAreFoundByName(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	require.NoError(t, db.Omit(clause.Associations).Create(&tables.TableCustomer{ID: "cust-1", Name: "Acme"}).Error)
+	s := loadedGovernance(t, db)
+	cols := s.Collections
+	c, ok := cols.Customers.GetBy(registry.CustomerByName, "Acme")
+	require.True(t, ok)
+	require.Equal(t, "cust-1", c.ID)
+
+	require.NoError(t, db.Model(&tables.TableCustomer{}).Where("id = ?", "cust-1").UpdateColumn("name", "Acme Corp").Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindCustomer, ID: "cust-1"}}))
+	_, ok = cols.Customers.GetBy(registry.CustomerByName, "Acme")
+	require.False(t, ok, "the old name finds nothing")
+	c, ok = cols.Customers.GetBy(registry.CustomerByName, "Acme Corp")
+	require.True(t, ok)
+	require.Equal(t, "cust-1", c.ID)
 }

@@ -7,6 +7,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// CustomerByName names the customer collection's name index, for GetBy.
+const CustomerByName = "name"
+
 // Team is one team as request handling reads it: its name, the customer it belongs to, its
 // budgets and rate limit by ID, and its own content-logging decision.
 type Team struct {
@@ -91,6 +94,9 @@ func readTeams(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) 
 
 // CustomerID is a customer record's primary key.
 func CustomerID(c *Customer) string { return c.ID }
+
+// CustomerName is a customer's key in the name index.
+func CustomerName(c *Customer) string { return c.Name }
 
 // CustomersPage reads up to limit customers with IDs after the cursor, in ID order, and returns
 // the next cursor, "" after the last page.

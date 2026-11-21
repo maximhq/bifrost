@@ -233,9 +233,7 @@ func (s *Store) rebuildProviderKeyLists(_ context.Context, changes []Change[regi
 		}
 	}
 	for _, provider := range providers {
-		// ChildOf names the parent index "parent:" plus the parent kind; the engine exports no
-		// helper for the name yet.
-		recs := s.Collections.ProviderKeys.List("parent:"+string(KindProvider), string(provider))
+		recs := s.Collections.ProviderKeys.List(ParentIndex(KindProvider), string(provider))
 		if len(recs) == 0 {
 			s.Views.ProviderKeyLists.Delete(string(provider))
 			continue
@@ -263,7 +261,9 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 		ID:   registry.CustomerID,
 		Page: registry.CustomersPage,
 		ByID: registry.CustomersByID,
-	}); err != nil {
+	},
+		UniqueIndex(registry.CustomerByName, registry.CustomerName),
+	); err != nil {
 		return err
 	}
 	if c.Teams, err = s.Register(KindTeam, []Kind{KindBudget, KindRateLimit, KindCustomer}, Loader[registry.Team]{
