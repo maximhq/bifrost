@@ -231,6 +231,7 @@
 			"descriptionHint": "Note for users. Not used by Bifrost.",
 			"descriptionPlaceholder": "What is this deployment used for?",
 			"useKeySetting": "Use key setting",
+			"serviceTierHint": "Overrides the key's service tier for this deployment.",
 			"on": "On",
 			"off": "Off",
 			"deploymentName": "Deployment name",
@@ -575,6 +576,9 @@
 		"keys": {
 			"useForBatch": "Use for Batch APIs",
 			"useForBatchHelp": "Enable this key for batch API operations. Only keys with this enabled will be used for batch requests.",
+			"serviceTier": "Service tier",
+			"serviceTierHelp": "Sent on chat and responses requests in place of any service tier the request sets. Each provider forwards only the tiers its model supports.",
+			"serviceTierNotSet": "Not set",
 			"vpcEndpointsOptional": "VPC Endpoints (Optional)",
 			"vpcEndpointsHelp": "Route traffic through interface VPC endpoints instead of the public regional endpoints. Use each endpoint's DNS name from the VPC console, not its ID. Region is still required — it sets the request signing scope.",
 			"vpc": {

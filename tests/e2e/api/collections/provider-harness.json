@@ -346633,6 +346633,2189 @@
           }
         }
       ]
+    },
+    {
+      "name": "373. Key and alias service_tier fill requests that set none (key service tier)",
+      "description": "A key's service_tier, or its alias's, is sent on chat completions and responses requests in place of the request's own tier; the alias's wins over the key's, and the request's tier applies only when neither sets one. Only openai, azure, anthropic, vertex and gemini keys take a tier, each with its own allowed values; every other provider rejects it at save and load.\n\nProfile setup: 'OpenAI Service Tier Key' (weight 0, so other OpenAI cases never pick it) has service_tier 'priority' and an alias gpt-4o-mini-tier-auto (tier 'auto'). The other providers carry one tier alias each on their existing key, which only requests naming that alias reach. Every case selects its key with x-bf-api-key.\n\nWhat each case reads: OpenAI, Azure and Anthropic read the outbound service_tier from extra_fields.raw_request; Anthropic gets 'default' as standard_only. Gemini reads raw_request.serviceTier. Vertex sends the tier as the X-Vertex-AI-LLM-Shared-Request-Type header, which raw_request does not show, so 373.9 reads the served tier Vertex reports back (usageMetadata.trafficType ON_DEMAND_PRIORITY -> service_tier 'priority'). OpenAI uses only 'auto' and 'priority' because the datasheet lists exactly those for openai/gpt-4o-mini, and Bifrost drops any other tier before the wire.\n\n373.1 key tier (chat). 373.2 alias over key. 373.3 key over request. 373.4 alias over request. 373.5 key tier (/v1/responses). 373.6 Azure alias. 373.7 Anthropic alias. 373.8 Gemini alias. 373.9 Vertex alias. 373.10 and 373.11 key tier on streaming chat and streaming /v1/responses. 373.12 to 373.14 the management API rejects a tier the key's provider does not take: a tier on groq, flex on anthropic, and an unknown alias tier on openai, each with 400 naming service_tier. 373.15 and 373.16 cover the raw-body paths, where the integration forwards the client's bytes: Claude Code on /anthropic/v1/messages (claude-cli user agent) and /genai generateContent with x-model-provider gemini. The alias tier must be written into those bytes; the log row's raw_request (x-bf-store-raw-request-response) shows what went upstream.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - key service_tier fills a request with none - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('373.1 status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('373.1 the key priority tier reaches the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "OpenAI Service Tier Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - alias service_tier overrides the key's - openai/gpt-4o-mini-tier-auto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('373.2 status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('373.2 the alias auto tier wins over the key priority tier', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "OpenAI Service Tier Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini-tier-auto\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - key service_tier overrides the request's - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('373.3 status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('373.3 the key priority tier replaces the request auto tier', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "OpenAI Service Tier Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - alias service_tier overrides the request's - openai/gpt-4o-mini-tier-auto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('373.4 status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('373.4 the alias auto tier replaces the request priority tier', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "OpenAI Service Tier Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini-tier-auto\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - key service_tier fills a request with none - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('373.5 status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('373.5 the key priority tier reaches the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "OpenAI Service Tier Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+      {
+        "name": "/v1/chat/completions - alias service_tier reaches Azure - azure/gpt-4o-mini-tier-auto",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "var body = {};",
+                "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                "pm.test('373.6 status is 200', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                "});",
+                "var rr = (body.extra_fields || {}).raw_request;",
+                "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "pm.test('373.6 the alias auto tier reaches the wire', function () {",
+                "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('auto');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Azure API Key"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"azure/gpt-4o-mini-tier-auto\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/chat/completions",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "chat",
+              "completions"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/v1/chat/completions - alias service_tier maps to Anthropic standard_only - anthropic/claude-haiku-4-5-tier-default",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "var body = {};",
+                "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                "pm.test('373.7 status is 200', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                "});",
+                "var rr = (body.extra_fields || {}).raw_request;",
+                "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "pm.test('373.7 the alias default tier is sent as Anthropic standard_only', function () {",
+                "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('standard_only');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Anthropic API Key"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-tier-default\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/chat/completions",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "chat",
+              "completions"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/v1/chat/completions - alias service_tier maps to Gemini serviceTier - gemini/gemini-3.8-flash-tier-priority",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "var body = {};",
+                "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                "pm.test('373.8 status is 200', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                "});",
+                "var rr = (body.extra_fields || {}).raw_request;",
+                "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "pm.test('373.8 the alias priority tier is sent as Gemini serviceTier', function () {",
+                "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                "  pm.expect(rr.serviceTier, 'outbound serviceTier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Gemini API Key"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash-tier-priority\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/chat/completions",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "chat",
+              "completions"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/v1/chat/completions - alias service_tier sends the Vertex Priority PayGo header - vertex/gemini-3.7-flash-tier-priority",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "var body = {};",
+                "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                "pm.test('373.9 status is 200', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                "});",
+                "pm.test('373.9 Vertex serves the request on Priority PayGo (trafficType ON_DEMAND_PRIORITY)', function () {",
+                "  pm.expect(body.service_tier, 'served service_tier: ' + txt.slice(0, 400)).to.eql('priority');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Vertex Global (Gemini 3)"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash-tier-priority\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/chat/completions",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "chat",
+              "completions"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/v1/chat/completions streaming - key service_tier fills a request with none - openai/gpt-4o-mini",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.10 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                "var rr = null;",
+                "var streamError = null;",
+                "txt.split('\\n').forEach(function (line) {",
+                "  if (line.indexOf('data:') !== 0) { return; }",
+                "  var payload = line.slice(5).trim();",
+                "  if (!payload || payload === '[DONE]') { return; }",
+                "  var chunk;",
+                "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                "  if (chunk.error) { streamError = JSON.stringify(chunk.error); }",
+                "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                "});",
+                "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "pm.test('373.10 the key priority tier reaches the wire on a stream', function () {",
+                "  pm.expect(rr, 'raw_request missing on the stream - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                "});",
+                "pm.test('373.10 the stream ends with [DONE] and carries no error event', function () {",
+                "  pm.expect(streamError, 'error event in the stream: ' + streamError).to.equal(null);",
+                "  pm.expect(txt, 'stream never reached [DONE]: ' + txt.slice(-300)).to.include('data: [DONE]');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "OpenAI Service Tier Key"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/chat/completions",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "chat",
+              "completions"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/v1/responses streaming - key service_tier fills a request with none - openai/gpt-4o-mini",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.11 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                "var rr = null;",
+                "// The terminal response.completed event carries extra_fields.raw_request when x-bf-send-back-raw-request is set.",
+                "txt.split('\\n').forEach(function (line) {",
+                "  if (line.indexOf('data:') !== 0) { return; }",
+                "  var ev;",
+                "  try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { return; }",
+                "  if (ev && ev.type === 'response.completed' && ev.extra_fields && ev.extra_fields.raw_request) { rr = ev.extra_fields.raw_request; }",
+                "});",
+                "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "pm.test('373.11 the key priority tier reaches the wire on a responses stream', function () {",
+                "  pm.expect(rr, 'raw_request missing on response.completed: ' + txt.slice(-400)).to.be.an('object');",
+                "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 400)).to.eql('priority');",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "OpenAI Service Tier Key"
+            },
+            {
+              "key": "x-bf-send-back-raw-request",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/v1/responses",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "v1",
+              "responses"
+            ]
+          }
+        }
+      },
+      {
+        "name": "[EXPECT-400] POST /api/providers/groq/keys - a tier on a provider without key tiers is rejected - groq key service tier",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.12 a tier on a provider without key tiers is rejected with 400', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                "  pm.expect(txt, 'the error must name service_tier: ' + txt.slice(0, 400)).to.include('service_tier');",
+                "});",
+                "// A key the gateway accepted by mistake is removed, so the shared profile stays as it was.",
+                "if (pm.response.code === 200) {",
+                "  var created = {};",
+                "  try { created = pm.response.json() || {}; } catch (e) { created = {}; }",
+                "  if (created.id) {",
+                "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/groq/keys/' + created.id, method: 'DELETE' }, function (err, res) {",
+                "      pm.test('the key created by mistake was removed', function () {",
+                "        pm.expect(err, 'DELETE failed for groq key ' + created.id + ': ' + String(err)).to.equal(null);",
+                "        pm.expect(res.code, 'DELETE groq key ' + created.id + ' returned ' + res.code + ': ' + res.text().slice(0, 200)).to.be.below(300);",
+                "      });",
+                "    });",
+                "  }",
+                "}"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"name\": \"harness-tier-reject-groq\",\n  \"value\": \"gsk-harness-not-a-key\",\n  \"models\": [\n    \"harness-tier-reject-only\"\n  ],\n  \"weight\": 0,\n  \"service_tier\": \"priority\"\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/api/providers/groq/keys",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "providers",
+              "groq",
+              "keys"
+            ]
+          }
+        }
+      },
+      {
+        "name": "[EXPECT-400] POST /api/providers/anthropic/keys - a tier the provider does not offer is rejected - anthropic key service tier",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.13 a tier the provider does not offer is rejected with 400', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                "  pm.expect(txt, 'the error must name service_tier: ' + txt.slice(0, 400)).to.include('service_tier');",
+                "});",
+                "// A key the gateway accepted by mistake is removed, so the shared profile stays as it was.",
+                "if (pm.response.code === 200) {",
+                "  var created = {};",
+                "  try { created = pm.response.json() || {}; } catch (e) { created = {}; }",
+                "  if (created.id) {",
+                "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/anthropic/keys/' + created.id, method: 'DELETE' }, function (err, res) {",
+                "      pm.test('the key created by mistake was removed', function () {",
+                "        pm.expect(err, 'DELETE failed for anthropic key ' + created.id + ': ' + String(err)).to.equal(null);",
+                "        pm.expect(res.code, 'DELETE anthropic key ' + created.id + ' returned ' + res.code + ': ' + res.text().slice(0, 200)).to.be.below(300);",
+                "      });",
+                "    });",
+                "  }",
+                "}"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"name\": \"harness-tier-reject-anthropic\",\n  \"value\": \"sk-ant-harness-not-a-key\",\n  \"models\": [\n    \"harness-tier-reject-only\"\n  ],\n  \"weight\": 0,\n  \"service_tier\": \"flex\"\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/api/providers/anthropic/keys",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "providers",
+              "anthropic",
+              "keys"
+            ]
+          }
+        }
+      },
+      {
+        "name": "[EXPECT-400] POST /api/providers/openai/keys - an unknown alias tier is rejected - openai key service tier",
+        "event": [
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.14 an unknown alias tier is rejected with 400', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                "  pm.expect(txt, 'the error must name service_tier: ' + txt.slice(0, 400)).to.include('service_tier');",
+                "});",
+                "// A key the gateway accepted by mistake is removed, so the shared profile stays as it was.",
+                "if (pm.response.code === 200) {",
+                "  var created = {};",
+                "  try { created = pm.response.json() || {}; } catch (e) { created = {}; }",
+                "  if (created.id) {",
+                "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/openai/keys/' + created.id, method: 'DELETE' }, function (err, res) {",
+                "      pm.test('the key created by mistake was removed', function () {",
+                "        pm.expect(err, 'DELETE failed for openai key ' + created.id + ': ' + String(err)).to.equal(null);",
+                "        pm.expect(res.code, 'DELETE openai key ' + created.id + ' returned ' + res.code + ': ' + res.text().slice(0, 200)).to.be.below(300);",
+                "      });",
+                "    });",
+                "  }",
+                "}"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"name\": \"harness-tier-reject-openai\",\n  \"value\": \"sk-harness-not-a-key\",\n  \"models\": [\n    \"harness-tier-reject-only\"\n  ],\n  \"weight\": 0,\n  \"aliases\": {\n    \"gpt-4o-mini-bad-tier\": {\n      \"model_id\": \"gpt-4o-mini\",\n      \"service_tier\": \"prioroty\"\n    }\n  }\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/api/providers/openai/keys",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "providers",
+              "openai",
+              "keys"
+            ]
+          }
+        }
+      },
+      {
+        "name": "Claude Code passthrough /anthropic/v1/messages - alias service_tier reaches the raw body as standard_only - anthropic/claude-haiku-4-5-tier-default",
+        "event": [
+          {
+            "listen": "prerequest",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                "pm.variables.set('keyTierClaudeCodeRequestId', reqId);",
+                "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+              ]
+            }
+          },
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.15 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                "var reqId = pm.variables.get('keyTierClaudeCodeRequestId');",
+                "// The raw-body path forwards the client's bytes, so the response carries no raw_request; the log row stores it.",
+                "// The writer batches, so poll: ten reads a second apart.",
+                "function checkLog(attempt) {",
+                "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                "    var rr = null;",
+                "    if (!err && res.code === 200) {",
+                "      rr = res.json().raw_request;",
+                "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "    }",
+                "    if (rr) {",
+                "      pm.test('373.15 the alias default tier is written into the forwarded body as standard_only', function () { pm.expect(rr.service_tier, JSON.stringify(rr).slice(0, 400)).to.eql('standard_only'); });",
+                "      return;",
+                "    }",
+                "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                "    pm.test('373.15 log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                "  });",
+                "}",
+                "checkLog(0);"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "key": "User-Agent",
+              "value": "claude-cli/2.1.289 (external, cli)"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Anthropic API Key"
+            },
+            {
+              "key": "x-bf-store-raw-request-response",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"model\": \"claude-haiku-4-5-tier-default\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/anthropic/v1/messages",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "anthropic",
+              "v1",
+              "messages"
+            ]
+          }
+        }
+      },
+      {
+        "name": "/genai generateContent with x-model-provider gemini (raw body) - alias service_tier reaches the raw body - gemini/gemini-3.8-flash-tier-priority",
+        "event": [
+          {
+            "listen": "prerequest",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                "pm.variables.set('keyTierGenaiRawRequestId', reqId);",
+                "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+              ]
+            }
+          },
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var txt = pm.response.text() || '';",
+                "pm.test('373.16 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                "var reqId = pm.variables.get('keyTierGenaiRawRequestId');",
+                "// The raw-body path forwards the client's bytes, so the response carries no raw_request; the log row stores it.",
+                "// The writer batches, so poll: ten reads a second apart.",
+                "function checkLog(attempt) {",
+                "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                "    var rr = null;",
+                "    if (!err && res.code === 200) {",
+                "      rr = res.json().raw_request;",
+                "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                "    }",
+                "    if (rr) {",
+                "      pm.test('373.16 the alias priority tier is written into the forwarded body', function () { pm.expect(rr.service_tier, JSON.stringify(rr).slice(0, 400)).to.eql('priority'); });",
+                "      return;",
+                "    }",
+                "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                "    pm.test('373.16 log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                "  });",
+                "}",
+                "checkLog(0);"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "x-model-provider",
+              "value": "gemini"
+            },
+            {
+              "key": "x-bf-api-key",
+              "value": "Gemini API Key"
+            },
+            {
+              "key": "x-bf-store-raw-request-response",
+              "value": "true"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 512\n  }\n}"
+          },
+          "url": {
+            "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.8-flash-tier-priority:generateContent",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "genai",
+              "v1beta",
+              "models",
+              "gemini-3.8-flash-tier-priority:generateContent"
+            ]
+          }
+        }
+      }
+      ]
+    },
+    {
+      "name": "374. Vertex service tier: us/eu Priority, key and alias tiers, routing-rule fallback on 429 (vertex service tier fixture) [SERIAL]",
+      "description": "Local fixture regression for the Vertex side of key and alias service_tier, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and run make run-provider-harness-test FEATURE=\"vertex service tier\" ENV_FILE=<dir>/harness-environment.json BASE_URL=<that gateway>. ENV_FILE sets vertexEndpointFixture=1, without which every case is skipped, and FEATURE limits the run to this folder so no other folder's requests reach that gateway. The fixture records the host, path and headers the gateway sends and answers a request sent with the Priority PayGo header as served on Priority (usageMetadata.trafficType ON_DEMAND_PRIORITY).\n\nIt pins the Priority PayGo region gate (us and eu multi-region endpoints send X-Vertex-AI-LLM-Shared-Request-Type: priority for gemini-4, a single-region key does not, and Flex is global only), a key-level tier filling a request with none and overriding the request's own, and an alias tier. It also reproduces the Standard PayGo throttling this feature was built for: the fixture answers gemini-4-carbon with 429 RESOURCE_EXHAUSTED unless the Priority header is sent, and its config carries a routing rule whose target is a standard us key serving gemini-4-carbon and whose fallback is a priority-only key serving the alias gemini-4-carbon-priority (model_id gemini-4-carbon, service_tier priority). The fixture config sets the customer's retry budget (max_retries 10, short backoff), so a throttled request is tried 11 times on Standard before the fallback. 374.9 to 374.11 assert those 11 Standard attempts go without the header, the fallback sends the alias on Priority PayGo, and the request is served on Priority, with or without the provider prefix and even when the client asks for default. 374.13 to 374.17 assert the same fallback on streams and on the routes the customer's clients use: streaming chat completions and /v1/responses, Codex's /openai/v1/responses, Claude Code's /anthropic/v1/messages (claude-cli user agent; a Gemini model takes the typed path), and the GenAI streamGenerateContent route with no provider named, which the routing rule moves to Vertex.",
+      "item": [
+        {
+          "name": "374.1 vertex/gemini-4-argon service_tier priority on the us multi-region key sends the Priority PayGo header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.1 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.1 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "  pm.test('the served tier is priority', function () { pm.expect(j.service_tier, txt.slice(0, 400)).to.equal('priority'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.2 vertex/gemini-4-argon service_tier priority on the eu multi-region key sends the Priority PayGo header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.2 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.2 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.eu.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.eu.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-eu"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.3 vertex/gemini-4-argon service_tier priority on a single-region key sends no header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.3 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.3 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to us-east5-aiplatform.googleapis.com', function () { pm.expect(call.host, shown).to.equal('us-east5-aiplatform.googleapis.com'); });",
+                  "  pm.test('no X-Vertex-AI-LLM-Shared-Request-Type header', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-east5"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.4 vertex/gemini-3.7-flash service_tier flex on the global key sends the Flex PayGo header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.4 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.4 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is flex', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('flex'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-global"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.5 vertex/gemini-3.7-flash service_tier flex on the us multi-region key sends no header (Flex is global only)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.5 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.5 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('no X-Vertex-AI-LLM-Shared-Request-Type header', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.6 vertex/gemini-4-argon key service_tier priority fills a request with none",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.6 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.6 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "  pm.test('the served tier is priority', function () { pm.expect(j.service_tier, txt.slice(0, 400)).to.equal('priority'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-tiered"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.7 vertex/gemini-4-argon key service_tier priority overrides a request flex tier",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.7 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.7 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-tiered"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.8 vertex/gemini-4-carbon-priority alias service_tier priority sends gemini-4-carbon with the Priority PayGo header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.8 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.8 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "  pm.test('the alias resolves to gemini-4-carbon', function () { pm.expect(call.path, shown).to.include('/models/gemini-4-carbon:'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-carbon-priority"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon-priority\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.9 vertex/gemini-4-carbon throttled on Standard falls back to the priority alias through the routing rule",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.9 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.9 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the served tier is priority', function () { pm.expect(j.service_tier, txt.slice(0, 400)).to.equal('priority'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.10 vertex gemini-4-carbon sent without a provider prefix falls back to the priority alias through the routing rule",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.10 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.10 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the served tier is priority', function () { pm.expect(j.service_tier, txt.slice(0, 400)).to.equal('priority'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-4-carbon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.11 vertex/gemini-4-carbon with a client service_tier default still falls back to Priority (the alias tier wins)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.11 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.11 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the served tier is priority', function () { pm.expect(j.service_tier, txt.slice(0, 400)).to.equal('priority'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"default\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.12 vertex/gemini-4-argon /v1/responses key service_tier priority fills a request with none",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('374.12 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.12 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:generateContent/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  pm.test('exactly one call reached Vertex', function () { pm.expect(calls.length, shown).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', headers: {} };",
+                  "  pm.test('sent to aiplatform.us.rep.googleapis.com', function () { pm.expect(call.host, shown).to.equal('aiplatform.us.rep.googleapis.com'); });",
+                  "  pm.test('X-Vertex-AI-LLM-Shared-Request-Type is priority', function () { pm.expect(call.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-tiered"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.13 vertex/gemini-4-carbon streaming chat completions falls back to the priority alias after the retry budget",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.13 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.13 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "pm.test('the stream carries the fixture reply', function () { pm.expect(txt, txt.slice(0, 400)).to.include('hello'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.14 vertex/gemini-4-carbon streaming /v1/responses falls back to the priority alias after the retry budget",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.14 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.14 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "pm.test('the stream carries the fixture reply', function () { pm.expect(txt, txt.slice(0, 400)).to.include('hello'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.15 vertex/gemini-4-carbon Codex route /openai/v1/responses streaming falls back to the priority alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.15 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.15 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "pm.test('the stream carries the fixture reply', function () { pm.expect(txt, txt.slice(0, 400)).to.include('hello'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.16 vertex/gemini-4-carbon Claude Code route /anthropic/v1/messages streaming falls back to the priority alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.16 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.16 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "pm.test('the stream carries the fixture reply', function () { pm.expect(txt, txt.slice(0, 400)).to.include('hello'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-carbon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "374.17 vertex gemini-4-carbon GenAI route streamGenerateContent with no provider named falls back to the priority alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('374.17 status is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('374.17 fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = ((res && res.json().data[0].requests) || []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); });",
+                  "  var shown = JSON.stringify(calls.map(function (c) { return { host: c.host, path: c.path, tier: c.headers['x-vertex-ai-llm-shared-request-type'] }; }));",
+                  "  var standard = calls.slice(0, -1);",
+                  "  var fallback = calls[calls.length - 1] || { headers: {}, path: '' };",
+                  "  pm.test('Standard is tried 11 times (1 + max_retries 10), then the priority alias once', function () { pm.expect(calls.length, shown).to.equal(12); });",
+                  "  pm.test('every Standard attempt goes without the header', function () {",
+                  "    standard.forEach(function (c) {",
+                  "      pm.expect(c.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "      pm.expect(c.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the fallback sends gemini-4-carbon on Priority PayGo', function () {",
+                  "    pm.expect(fallback.path, shown).to.include('/models/gemini-4-carbon:');",
+                  "    pm.expect(fallback.path, shown).to.include('/locations/us/');",
+                  "    pm.expect(fallback.headers['x-vertex-ai-llm-shared-request-type'], shown).to.equal('priority');",
+                  "  });",
+                  "});",
+                  "pm.test('the stream carries the fixture reply', function () { pm.expect(txt, txt.slice(0, 400)).to.include('hello'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"hi\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-4-carbon:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-4-carbon:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

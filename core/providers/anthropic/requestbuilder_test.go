@@ -4180,3 +4180,82 @@ func TestThinkingBlockBindingPassthroughExtraParamsDerivesBeta(t *testing.T) {
 		}
 	}
 }
+
+// TestRawBodyServiceTier pins that a key or alias service tier reaches a raw-body request (Claude
+// Code on /anthropic sends the client's bytes as-is): the attempt's tier is written in Anthropic's
+// form, overriding the client's, a request with no tier keeps its bytes, and a host that takes no
+// service_tier still drops it.
+func TestRawBodyServiceTier(t *testing.T) {
+	const body = `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`
+	const bodyWithAuto = `{"model":"claude-sonnet-4-6","max_tokens":1024,"service_tier":"auto","messages":[{"role":"user","content":"hello"}]}`
+	priority, standard := schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierDefault
+	buildResponses := func(t *testing.T, provider schemas.ModelProvider, raw string, tier *schemas.BifrostServiceTier) []byte {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-6", RawRequestBody: []byte(raw)}
+		if tier != nil {
+			request.Params = &schemas.ResponsesParameters{ServiceTier: tier}
+		}
+		cfg := AnthropicRequestBuildConfig{Provider: provider}
+		if provider == schemas.Vertex {
+			cfg.Model = "claude-sonnet-4-6"
+		}
+		out, err := BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return out
+	}
+
+	t.Run("key_tier_written_when_the_client_sent_none", func(t *testing.T) {
+		out := buildResponses(t, schemas.Anthropic, body, &standard)
+		if got := providerUtils.GetJSONField(out, "service_tier").String(); got != "standard_only" {
+			t.Fatalf("service_tier = %q, want standard_only; body=%s", got, out)
+		}
+	})
+	t.Run("key_tier_overrides_the_client_tier", func(t *testing.T) {
+		out := buildResponses(t, schemas.Anthropic, bodyWithAuto, &standard)
+		if got := providerUtils.GetJSONField(out, "service_tier").String(); got != "standard_only" {
+			t.Fatalf("service_tier = %q, want standard_only; body=%s", got, out)
+		}
+	})
+	t.Run("priority_maps_to_auto", func(t *testing.T) {
+		out := buildResponses(t, schemas.Anthropic, body, &priority)
+		if got := providerUtils.GetJSONField(out, "service_tier").String(); got != "auto" {
+			t.Fatalf("service_tier = %q, want auto; body=%s", got, out)
+		}
+	})
+	t.Run("no_tier_keeps_the_client_bytes", func(t *testing.T) {
+		withTier := buildResponses(t, schemas.Anthropic, bodyWithAuto, nil)
+		if got := providerUtils.GetJSONField(withTier, "service_tier").String(); got != "auto" {
+			t.Fatalf("the client's service_tier must pass through, got %q", got)
+		}
+		if out := buildResponses(t, schemas.Anthropic, body, nil); providerUtils.JSONFieldExists(out, "service_tier") {
+			t.Fatalf("no tier must add no service_tier; body=%s", out)
+		}
+	})
+	t.Run("matching_client_tier_is_left_as_sent", func(t *testing.T) {
+		auto := schemas.BifrostServiceTierAuto
+		if a, b := buildResponses(t, schemas.Anthropic, bodyWithAuto, &auto), buildResponses(t, schemas.Anthropic, bodyWithAuto, nil); string(a) != string(b) {
+			t.Fatalf("a tier equal to the client's must leave the bytes alone:\n%s\n%s", a, b)
+		}
+	})
+	t.Run("host_without_service_tier_still_drops_it", func(t *testing.T) {
+		if out := buildResponses(t, schemas.Vertex, body, &standard); providerUtils.JSONFieldExists(out, "service_tier") {
+			t.Fatalf("Claude on Vertex takes no service_tier; body=%s", out)
+		}
+	})
+	t.Run("chat_builder", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", RawRequestBody: []byte(body), Params: &schemas.ChatParameters{ServiceTier: &standard}}
+		out, err := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "service_tier").String(); got != "standard_only" {
+			t.Fatalf("service_tier = %q, want standard_only; body=%s", got, out)
+		}
+	})
+}

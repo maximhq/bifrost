@@ -231,6 +231,7 @@
 			"descriptionHint": "사용자를 위한 참고 사항이에요. Bifrost에서는 사용되지 않어요.",
 			"descriptionPlaceholder": "이 배포는 어떤 용도로 사용되나요?",
 			"useKeySetting": "키 설정 사용",
+			"serviceTierHint": "이 배포에 대해 키의 서비스 티어를 재정의해요.",
 			"on": "켜기",
 			"off": "끄기",
 			"deploymentName": "배포 이름",
@@ -575,6 +576,9 @@
 		"keys": {
 			"useForBatch": "일괄 API에 사용",
 			"useForBatchHelp": "일괄 API 작업에 이 키를 활성화하세요. 이 기능이 활성화된 키만 일괄 요청에 사용돼요.",
+			"serviceTier": "서비스 티어",
+			"serviceTierHelp": "채팅 및 Responses 요청에서 요청이 지정한 서비스 티어 대신 전송돼요. 각 공급자는 해당 모델이 지원하는 티어만 전달해요.",
+			"serviceTierNotSet": "설정 안 함",
 			"vpcEndpointsOptional": "VPC 엔드포인트(선택 사항)",
 			"vpcEndpointsHelp": "퍼블릭 리전 엔드포인트 대신 인터페이스 VPC 엔드포인트를 통해 트래픽을 라우팅해요. ID가 아닌 VPC 콘솔의 각 엔드포인트 DNS 이름을 사용하세요. 지역은 여전히 ​​필수이에요. 요청 서명 범위를 설정해요.",
 			"vpc": {

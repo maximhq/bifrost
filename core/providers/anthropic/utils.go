@@ -607,6 +607,21 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
+// setRawServiceTier writes the attempt's service tier into a raw Messages body in Anthropic's form,
+// so a key or alias tier also reaches client bytes sent as-is. A request with no tier, or a body
+// already carrying that value, is returned unchanged; a host that takes no service_tier drops it
+// afterwards in StripUnsupportedFieldsFromRawBody.
+func setRawServiceTier(jsonBody []byte, tier *schemas.BifrostServiceTier) ([]byte, error) {
+	if tier == nil {
+		return jsonBody, nil
+	}
+	want := MapBifrostServiceTierToAnthropicRequest(*tier)
+	if current := providerUtils.GetJSONField(jsonBody, "service_tier"); current.Exists() && current.String() == want {
+		return jsonBody, nil
+	}
+	return providerUtils.SetJSONField(jsonBody, "service_tier", want)
+}
+
 // StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body

@@ -231,6 +231,7 @@
 			"descriptionHint": "Nota para los usuarios. No utilizado por Bifrost.",
 			"descriptionPlaceholder": "¿Para qué se usa este despliegue?",
 			"useKeySetting": "Usar configuración de clave",
+			"serviceTierHint": "Sustituye el nivel de servicio de la clave para este despliegue.",
 			"on": "Encendida",
 			"off": "Fuera.",
 			"deploymentName": "Nombre del despliegue",
@@ -575,6 +576,9 @@
 		"keys": {
 			"useForBatch": "Uso para las API de lotes",
 			"useForBatchHelp": "Habilitar esta clave para las operaciones de la API de lotes. Sólo las claves con esto se habilitarán para las solicitudes de lotes.",
+			"serviceTier": "Nivel de servicio",
+			"serviceTierHelp": "Se envía en las solicitudes de chat y responses en lugar de cualquier nivel de servicio que indique la solicitud. Cada proveedor solo reenvía los niveles que admite su modelo.",
+			"serviceTierNotSet": "Sin definir",
 			"vpcEndpointsOptional": "VPC Endpoints (opcional)",
 			"vpcEndpointsHelp": "Tráfico de ruta a través de la interfaz VPC endpoints en lugar de los endpoints regionales públicos. Usa el nombre DNS de cada punto final de la consola VPC, no su ID. Región todavía es necesaria — establece el alcance de la firma de solicitud.",
 			"vpc": {

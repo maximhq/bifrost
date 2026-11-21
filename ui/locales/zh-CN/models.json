@@ -231,6 +231,7 @@
 			"descriptionHint": "给用户的备注。Bifrost 不使用此项。",
 			"descriptionPlaceholder": "此部署用于什么？",
 			"useKeySetting": "使用密钥设置",
+			"serviceTierHint": "为此部署覆盖密钥的服务层级。",
 			"on": "开",
 			"off": "关",
 			"deploymentName": "部署名称",
@@ -575,6 +576,9 @@
 		"keys": {
 			"useForBatch": "用于 Batch API",
 			"useForBatchHelp": "为此密钥启用 batch API 操作。只有启用此项的密钥才会用于 batch 请求。",
+			"serviceTier": "服务层级",
+			"serviceTierHelp": "在 chat 和 responses 请求中发送，替代请求自身指定的任何服务层级。各提供商只转发其模型支持的层级。",
+			"serviceTierNotSet": "未设置",
 			"vpcEndpointsOptional": "VPC Endpoints（可选）",
 			"vpcEndpointsHelp": "通过接口 VPC endpoints 而不是公网区域端点路由流量。请使用 VPC 控制台中每个 endpoint 的 DNS 名称，而不是其 ID。仍须填写 Region——它决定请求签名范围。",
 			"vpc": {

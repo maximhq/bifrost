@@ -1,4 +1,4 @@
-import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/types/config";
+import { BaseProvider, ConcurrencyAndBufferSize, KnownProvider, NetworkConfig, ServiceTier } from "@/lib/types/config";
 import { ProviderName } from "./logs";
 
 /**
@@ -187,6 +187,16 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 	// Fallback for a status value this build does not know. Neutral on
 	// purpose: an unrecognized status must not read as usable.
 	unknown: "bg-gray-100 text-gray-800 border-gray-200 dark:border-border dark:bg-muted dark:text-muted-foreground",
+};
+
+// Service tiers a key or alias may set, by base provider; mirrors keyServiceTiers in core/schemas/account.go.
+// A provider not listed takes no key tier, so the setting is hidden for it.
+export const PROVIDER_SERVICE_TIERS: Partial<Record<KnownProvider, ServiceTier[]>> = {
+	openai: ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+	azure: ["auto", "default", "flex", "priority"],
+	anthropic: ["auto", "default"],
+	vertex: ["default", "flex", "priority"],
+	gemini: ["default", "flex", "priority"],
 };
 
 // Mapping of what IS supported by each base provider

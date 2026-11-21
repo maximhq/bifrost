@@ -554,6 +554,7 @@ bifrost:
   #       enabled: true               # false = keep the key configured but skip it in routing (new keys default to true; omitted keeps the stored value)
   #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
   #       use_for_batch_api: false    # Whether this key can be used for batch API
+  #       # service_tier: priority          # tier enforced on chat/responses requests over the request's own (also settable per-alias)
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
   #                                         # and responses through Anthropic-compatible endpoints (also
   #                                         # settable per-alias alongside use_deployments_endpoint)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { aliasConfigSchema, vertexKeyConfigSchema } from "./schemas";
+import { aliasConfigSchema, modelProviderKeySchema, vertexKeyConfigSchema } from "./schemas";
 import { parseVertexEndpointURL } from "../vertexEndpoint";
 
 const secret = (value: string) => ({ value, ref: "" });
@@ -127,5 +127,22 @@ describe("vertexKeyConfigSchema, aws workload identity", () => {
 			aws_workload_identity: { audience: secret("") },
 		});
 		expect(result.success).toBe(true);
+	});
+});
+
+describe("service tier on keys and aliases", () => {
+	const key = { id: "k1", name: "vertex-priority", weight: 0, vertex_key_config: { ...base, auth_credentials: secret("env.CREDS") } };
+
+	it("keeps a key tier, and null so a cleared tier reaches the update API", () => {
+		expect(modelProviderKeySchema.parse({ ...key, service_tier: "priority" }).service_tier).toBe("priority");
+		const cleared = modelProviderKeySchema.parse({ ...key, service_tier: null });
+		expect(cleared).toHaveProperty("service_tier", null);
+		expect(modelProviderKeySchema.safeParse({ ...key, service_tier: "provisioned" }).success).toBe(false);
+	});
+
+	it("keeps an alias tier override", () => {
+		const alias = { model_id: "gemini-4-carbon", service_tier: "priority" };
+		expect(aliasConfigSchema.parse(alias)).toEqual(alias);
+		expect(aliasConfigSchema.safeParse({ model_id: "gemini-4-carbon", service_tier: "turbo" }).success).toBe(false);
 	});
 });
