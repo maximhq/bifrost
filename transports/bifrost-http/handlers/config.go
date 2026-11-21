@@ -795,6 +795,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.UsageEstimationTokenizers = tokenizers
 	}
 
+	// No restart needed: the reload after a successful save hands the stored value to the
+	// client. Omitted keeps the stored value, like the tokenizer list above.
+	if _, sent := clientConfigFields["disable_usage_estimation"]; sent {
+		updatedConfig.DisableUsageEstimation = payload.ClientConfig.DisableUsageEstimation
+	}
+
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
 		if payload.ClientConfig.MCPCodeModeBindingLevel != string(schemas.CodeModeBindingLevelServer) && payload.ClientConfig.MCPCodeModeBindingLevel != string(schemas.CodeModeBindingLevelTool) {
 			logger.Warn("mcp_code_mode_binding_level must be 'server' or 'tool'")

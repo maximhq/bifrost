@@ -221,3 +221,37 @@ func TestUpdateConfig_UsageEstimationTokenizers(t *testing.T) {
 	require.Len(t, recorder.applied, 3)
 	assert.Empty(t, recorder.applied[2])
 }
+
+// PUT /api/config sets disable_usage_estimation and persists it. Omitting the field keeps the stored
+// value.
+func TestUpdateConfig_DisableUsageEstimation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.DisableUsageEstimation
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.False(t, stored(t), "estimation stays on by default")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"disable_usage_estimation":true,`))
+	assert.True(t, stored(t))
+	assert.True(t, cfg.ClientConfig.DisableUsageEstimation, "the live config follows the save")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.True(t, stored(t), "omitted keeps the stored value")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"disable_usage_estimation":false,`))
+	assert.False(t, stored(t))
+}

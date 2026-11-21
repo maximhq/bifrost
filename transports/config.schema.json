@@ -344,6 +344,11 @@
           "default": [],
           "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. An empty array counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
         },
+        "disable_usage_estimation": {
+          "type": "boolean",
+          "description": "Bill a cancelled or timed-out stream only the usage its provider reported, and never count tokens for an estimate. Provider-reported usage and the terminal plugin hooks are unchanged. When false (default), usage the provider never reported is estimated; see usage_estimation_tokenizers.",
+          "default": false
+        },
         "allowed_headers": {
           "type": "array",
           "items": {

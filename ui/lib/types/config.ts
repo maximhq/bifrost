@@ -983,6 +983,8 @@ export interface CoreConfig {
 	// Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to
 	// estimate a cancelled stream's usage. Empty counts every model with o200k_base / cl100k_base.
 	usage_estimation_tokenizers?: string[];
+	// Bill a cancelled or timed-out stream only the usage its provider reported, never an estimate.
+	disable_usage_estimation?: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
