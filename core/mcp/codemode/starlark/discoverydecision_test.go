@@ -422,7 +422,8 @@ func TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks(t *testing.T) {
 		}
 		return *msg.Content.ContentStr, fake.calls(), schemas.TakeMCPDiscoveryRankerCallsFromContext(ctx)
 	}
-	models := func(requests []*schemas.BifrostDecisionRequest) string {
+	models := func(t *testing.T, requests []*schemas.BifrostDecisionRequest) string {
+		t.Helper()
 		var names []string
 		for _, req := range requests {
 			if len(req.Fallbacks) != 0 {
@@ -444,7 +445,7 @@ func TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks(t *testing.T) {
 		if paths := shortlistPaths(out); !strings.Contains(out, "(discovery ranker)") || len(paths) != 1 || paths[0] != "servers/jira/create_issue.pyi" {
 			t.Fatalf("expected the last model's ranking, got %v\n%s", paths, out)
 		}
-		if got := models(requests); got != "typesafe/system-one,openai/gpt-5-nano,anthropic/claude-haiku" {
+		if got := models(t, requests); got != "typesafe/system-one,openai/gpt-5-nano,anthropic/claude-haiku" {
 			t.Fatalf("unexpected models asked: %s", got)
 		}
 		if len(calls) != 3 || calls[0].Model != "system-one" || calls[1].Model != "gpt-5-nano" || calls[2].Model != "claude-haiku" {
@@ -454,8 +455,10 @@ func TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks(t *testing.T) {
 
 	t.Run("no model answers usably", func(t *testing.T) {
 		out, requests, calls := run(t, map[string]func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError){
-			"system-one":   func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
-			"gpt-5-nano":   func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}} },
+			"system-one": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
+			"gpt-5-nano": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}}
+			},
 			"claude-haiku": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
 		})
 		assertLexicalFallback(t, out)
@@ -473,7 +476,7 @@ func TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks(t *testing.T) {
 			"claude-haiku": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return usable, nil },
 		})
 		assertLexicalFallback(t, out)
-		if got := models(requests); got != "typesafe/system-one" {
+		if got := models(t, requests); got != "typesafe/system-one" {
 			t.Fatalf("no fallback may run after an error that forbids it, asked %s", got)
 		}
 	})
