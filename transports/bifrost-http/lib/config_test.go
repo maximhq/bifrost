@@ -707,8 +707,13 @@ type MockConfigStore struct {
 	// so a test can assert on the exact struct the config sync would persist
 	// rather than only on what the mock chose to keep.
 	governanceItemsUpdated struct {
-		budgets []tables.TableBudget
+		budgets    []tables.TableBudget
+		rateLimits []tables.TableRateLimit
 	}
+	// rateLimitUpdateErrs are returned, one per call and in order, by
+	// UpdateRateLimit before it starts recording, so a test can make a governance
+	// write fail the way a contended Postgres write does.
+	rateLimitUpdateErrs []error
 	flushSessionsCalled bool
 }
 
@@ -1157,6 +1162,12 @@ func (m *MockConfigStore) CreateRateLimit(ctx context.Context, rateLimit *tables
 }
 
 func (m *MockConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error {
+	if len(m.rateLimitUpdateErrs) > 0 {
+		err := m.rateLimitUpdateErrs[0]
+		m.rateLimitUpdateErrs = m.rateLimitUpdateErrs[1:]
+		return err
+	}
+	m.governanceItemsUpdated.rateLimits = append(m.governanceItemsUpdated.rateLimits, *rateLimit)
 	return nil
 }
 

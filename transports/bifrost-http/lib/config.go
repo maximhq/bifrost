@@ -3917,6 +3917,19 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 		}
 	}
 
+	// The store is read inside the lock so the merge plans against what the
+	// previous replica committed, not a snapshot taken before it wrote.
+	if err := withGovernanceSyncLock(ctx, config.ConfigStore, func() {
+		loadAndMergeGovernanceConfig(ctx, config, configData)
+	}); err != nil {
+		logger.Fatal("failed to sync governance config: %v", err)
+	}
+}
+
+// loadAndMergeGovernanceConfig reads the stored governance config and reconciles
+// config.json's governance section against it. It runs under the governance sync
+// lock, so only one replica at a time reads and writes these rows.
+func loadAndMergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var governanceConfig *configstore.GovernanceConfig
 	var err error
 	// Checking from the store
@@ -4185,7 +4198,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingRateLimit := range governanceConfig.RateLimits {
 			if existingRateLimit.ID == newRateLimit.ID {
 				found = true
-				if forceFileSync || existingRateLimit.ConfigHash != fileRLHash {
+				if rateLimitNeedsFileSync(forceFileSync, existingRateLimit, fileRLHash) {
 					logger.Debug("config hash mismatch for rate limit %s, syncing from config file", newRateLimit.ID)
 					configData.Governance.RateLimits[i].ConfigHash = fileRLHash
 					// Same ownership boundary as budgets above.
@@ -5560,172 +5573,179 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	prunedFileModelConfigIDs := pruneDeclarations.modelConfigIDs
 	prunedFileRateLimitIDs := pruneDeclarations.rateLimitIDs
 	prunedFileTiers := pruneDeclarations.tiers
-	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		if configData.governanceSectionPresent("virtual_keys") {
-			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
-			for i := range configData.Governance.VirtualKeys {
-				vk := &configData.Governance.VirtualKeys[i]
-				keep[vk.ID] = true
-				// Unchanged VKs never went through resolveMCPConfigClientIDs in
-				// mergeGovernanceConfig, so their MCPConfigs may still carry
-				// mcp_client_name with MCPClientID==0. Resolve before reconciling
-				// to avoid creating/deleting client-id 0 associations.
-				vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
-				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.Budgets, vk.RateLimitID, vk.CalendarAligned, func(pending virtualKeyTierState) error {
-					return writeVirtualKeyTierLimits(ctx, config.ConfigStore, tx, pending, prunedFileRateLimitIDs)
-				}, prunedFileModelConfigIDs, prunedFileTiers, prunedFileRateLimitIDs, true, vk.ProviderConfigs, vk.MCPConfigs, budgetIDsInConfigJSON); err != nil {
-					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
-				}
-			}
-			for _, vkID := range virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData) {
-				if protected[vkID] {
-					logger.Debug("keeping virtual key %s absent from config.json: protected by prune guard", vkID)
-					continue
-				}
-				if err := config.ConfigStore.DeleteVirtualKey(ctx, vkID, tx); err != nil {
-					return fmt.Errorf("failed to delete virtual key %s: %w", vkID, err)
-				}
-			}
-			// Guarded keys survive in the DB, so they must survive in memory too -
-			// the governance store is seeded from this slice.
-			nextVKs := append([]configstoreTables.TableVirtualKey(nil), configData.Governance.VirtualKeys...)
-			for _, existing := range config.GovernanceConfig.VirtualKeys {
-				if protected[existing.ID] && !keep[existing.ID] {
-					nextVKs = append(nextVKs, existing)
-				}
-			}
-			config.GovernanceConfig.VirtualKeys = nextVKs
-		}
-		// Routing rules are pruned in mergeGovernanceConfig instead, where the deletes can run
-		// in the same transaction as the inserts and before them.
-		if configData.governanceSectionPresent("pricing_overrides") {
-			keep := make(map[string]bool, len(configData.Governance.PricingOverrides))
-			for _, row := range configData.Governance.PricingOverrides {
-				keep[row.ID] = true
-			}
-			for _, existing := range config.GovernanceConfig.PricingOverrides {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeletePricingOverride(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete pricing override %s: %w", existing.ID, err)
+	// The transaction republishes the pruned lists on config.GovernanceConfig as
+	// it goes; a retried attempt starts again from the lists as they were.
+	governanceBeforePrune := *config.GovernanceConfig
+	err := retryTransientGovernanceWrite(ctx, func() error {
+		return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if configData.governanceSectionPresent("virtual_keys") {
+				keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
+				for i := range configData.Governance.VirtualKeys {
+					vk := &configData.Governance.VirtualKeys[i]
+					keep[vk.ID] = true
+					// Unchanged VKs never went through resolveMCPConfigClientIDs in
+					// mergeGovernanceConfig, so their MCPConfigs may still carry
+					// mcp_client_name with MCPClientID==0. Resolve before reconciling
+					// to avoid creating/deleting client-id 0 associations.
+					vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
+					if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.Budgets, vk.RateLimitID, vk.CalendarAligned, func(pending virtualKeyTierState) error {
+						return writeVirtualKeyTierLimits(ctx, config.ConfigStore, tx, pending, prunedFileRateLimitIDs)
+					}, prunedFileModelConfigIDs, prunedFileTiers, prunedFileRateLimitIDs, true, vk.ProviderConfigs, vk.MCPConfigs, budgetIDsInConfigJSON); err != nil {
+						return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
 					}
 				}
-			}
-			config.GovernanceConfig.PricingOverrides = configData.Governance.PricingOverrides
-		}
-		if configData.governanceSectionPresent("model_configs") {
-			keep := make(map[string]bool, len(configData.Governance.ModelConfigs))
-			for _, row := range configData.Governance.ModelConfigs {
-				keep[row.ID] = true
-			}
-			keyLimits := virtualKeyLimitModelConfigs(config.GovernanceConfig, configData, protected, tierOfProviderConfig, tiersKnown)
-			nextModelConfigs := append([]configstoreTables.TableModelConfig(nil), configData.Governance.ModelConfigs...)
-			for _, existing := range config.GovernanceConfig.ModelConfigs {
-				if existing.ID == "" || keep[existing.ID] {
-					continue
-				}
-				if !fileManagedModelConfigScope(existing.Scope) || keyLimits[existing.ID] {
-					nextModelConfigs = append(nextModelConfigs, existing)
-					continue
-				}
-				if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-					return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
-				}
-			}
-			config.GovernanceConfig.ModelConfigs = nextModelConfigs
-		}
-		if configData.governanceSectionPresent("teams") {
-			keep := make(map[string]bool, len(configData.Governance.Teams))
-			for _, row := range configData.Governance.Teams {
-				keep[row.ID] = true
-			}
-			for _, existing := range config.GovernanceConfig.Teams {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteTeam(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete team %s: %w", existing.ID, err)
+				for _, vkID := range virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData) {
+					if protected[vkID] {
+						logger.Debug("keeping virtual key %s absent from config.json: protected by prune guard", vkID)
+						continue
+					}
+					if err := config.ConfigStore.DeleteVirtualKey(ctx, vkID, tx); err != nil {
+						return fmt.Errorf("failed to delete virtual key %s: %w", vkID, err)
 					}
 				}
-			}
-			config.GovernanceConfig.Teams = configData.Governance.Teams
-		}
-		if configData.governanceSectionPresent("customers") {
-			keep := make(map[string]bool, len(configData.Governance.Customers))
-			for _, row := range configData.Governance.Customers {
-				keep[row.ID] = true
-			}
-			for _, existing := range config.GovernanceConfig.Customers {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteCustomer(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete customer %s: %w", existing.ID, err)
+				// Guarded keys survive in the DB, so they must survive in memory too -
+				// the governance store is seeded from this slice.
+				nextVKs := append([]configstoreTables.TableVirtualKey(nil), configData.Governance.VirtualKeys...)
+				for _, existing := range config.GovernanceConfig.VirtualKeys {
+					if protected[existing.ID] && !keep[existing.ID] {
+						nextVKs = append(nextVKs, existing)
 					}
 				}
+				config.GovernanceConfig.VirtualKeys = nextVKs
 			}
-			config.GovernanceConfig.Customers = configData.Governance.Customers
-		}
-		if configData.governanceSectionPresent("providers") {
-			keep := make(map[string]configstoreTables.TableProvider, len(configData.Governance.Providers))
-			for _, row := range configData.Governance.Providers {
-				keep[row.Name] = row
+			// Routing rules are pruned in mergeGovernanceConfig instead, where the deletes can run
+			// in the same transaction as the inserts and before them.
+			if configData.governanceSectionPresent("pricing_overrides") {
+				keep := make(map[string]bool, len(configData.Governance.PricingOverrides))
+				for _, row := range configData.Governance.PricingOverrides {
+					keep[row.ID] = true
+				}
+				for _, existing := range config.GovernanceConfig.PricingOverrides {
+					if existing.ID != "" && !keep[existing.ID] {
+						if err := config.ConfigStore.DeletePricingOverride(ctx, existing.ID, tx); err != nil {
+							return fmt.Errorf("failed to delete pricing override %s: %w", existing.ID, err)
+						}
+					}
+				}
+				config.GovernanceConfig.PricingOverrides = configData.Governance.PricingOverrides
 			}
-			for _, existing := range config.GovernanceConfig.Providers {
-				if existing.Name == "" || keep[existing.Name].Name != "" {
-					continue
+			if configData.governanceSectionPresent("model_configs") {
+				keep := make(map[string]bool, len(configData.Governance.ModelConfigs))
+				for _, row := range configData.Governance.ModelConfigs {
+					keep[row.ID] = true
 				}
-				if err := tx.Model(&configstoreTables.TableProvider{}).
-					Where("name = ?", existing.Name).
-					Select("budget_id", "rate_limit_id").
-					Updates(map[string]interface{}{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
-					return fmt.Errorf("failed to clear provider governance mapping for %s: %w", existing.Name, err)
+				keyLimits := virtualKeyLimitModelConfigs(config.GovernanceConfig, configData, protected, tierOfProviderConfig, tiersKnown)
+				nextModelConfigs := append([]configstoreTables.TableModelConfig(nil), configData.Governance.ModelConfigs...)
+				for _, existing := range config.GovernanceConfig.ModelConfigs {
+					if existing.ID == "" || keep[existing.ID] {
+						continue
+					}
+					if !fileManagedModelConfigScope(existing.Scope) || keyLimits[existing.ID] {
+						nextModelConfigs = append(nextModelConfigs, existing)
+						continue
+					}
+					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
+					}
 				}
+				config.GovernanceConfig.ModelConfigs = nextModelConfigs
 			}
-			config.GovernanceConfig.Providers = configData.Governance.Providers
-		}
-		if configData.governanceSectionPresent("budgets") {
-			keep := make(map[string]bool, len(configData.Governance.Budgets))
-			for _, row := range configData.Governance.Budgets {
-				keep[row.ID] = true
+			if configData.governanceSectionPresent("teams") {
+				keep := make(map[string]bool, len(configData.Governance.Teams))
+				for _, row := range configData.Governance.Teams {
+					keep[row.ID] = true
+				}
+				for _, existing := range config.GovernanceConfig.Teams {
+					if existing.ID != "" && !keep[existing.ID] {
+						if err := config.ConfigStore.DeleteTeam(ctx, existing.ID, tx); err != nil {
+							return fmt.Errorf("failed to delete team %s: %w", existing.ID, err)
+						}
+					}
+				}
+				config.GovernanceConfig.Teams = configData.Governance.Teams
 			}
-			nextBudgets := append([]configstoreTables.TableBudget(nil), configData.Governance.Budgets...)
-			for _, existing := range config.GovernanceConfig.Budgets {
-				if existing.ID == "" || keep[existing.ID] {
-					continue
+			if configData.governanceSectionPresent("customers") {
+				keep := make(map[string]bool, len(configData.Governance.Customers))
+				for _, row := range configData.Governance.Customers {
+					keep[row.ID] = true
 				}
-				if keepBudgets[existing.ID] {
-					nextBudgets = append(nextBudgets, existing)
-					continue
+				for _, existing := range config.GovernanceConfig.Customers {
+					if existing.ID != "" && !keep[existing.ID] {
+						if err := config.ConfigStore.DeleteCustomer(ctx, existing.ID, tx); err != nil {
+							return fmt.Errorf("failed to delete customer %s: %w", existing.ID, err)
+						}
+					}
 				}
-				if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-					return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
-				}
+				config.GovernanceConfig.Customers = configData.Governance.Customers
 			}
-			config.GovernanceConfig.Budgets = nextBudgets
-		}
-		if configData.governanceSectionPresent("rate_limits") {
-			keep := make(map[string]bool, len(configData.Governance.RateLimits))
-			for _, row := range configData.Governance.RateLimits {
-				keep[row.ID] = true
+			if configData.governanceSectionPresent("providers") {
+				keep := make(map[string]configstoreTables.TableProvider, len(configData.Governance.Providers))
+				for _, row := range configData.Governance.Providers {
+					keep[row.Name] = row
+				}
+				for _, existing := range config.GovernanceConfig.Providers {
+					if existing.Name == "" || keep[existing.Name].Name != "" {
+						continue
+					}
+					if err := tx.Model(&configstoreTables.TableProvider{}).
+						Where("name = ?", existing.Name).
+						Select("budget_id", "rate_limit_id").
+						Updates(map[string]interface{}{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
+						return fmt.Errorf("failed to clear provider governance mapping for %s: %w", existing.Name, err)
+					}
+				}
+				config.GovernanceConfig.Providers = configData.Governance.Providers
 			}
-			nextRateLimits := append([]configstoreTables.TableRateLimit(nil), configData.Governance.RateLimits...)
-			for _, existing := range config.GovernanceConfig.RateLimits {
-				if existing.ID == "" || keep[existing.ID] {
-					continue
+			if configData.governanceSectionPresent("budgets") {
+				keep := make(map[string]bool, len(configData.Governance.Budgets))
+				for _, row := range configData.Governance.Budgets {
+					keep[row.ID] = true
 				}
-				if keepRateLimits[existing.ID] {
-					nextRateLimits = append(nextRateLimits, existing)
-					continue
+				nextBudgets := append([]configstoreTables.TableBudget(nil), configData.Governance.Budgets...)
+				for _, existing := range config.GovernanceConfig.Budgets {
+					if existing.ID == "" || keep[existing.ID] {
+						continue
+					}
+					if keepBudgets[existing.ID] {
+						nextBudgets = append(nextBudgets, existing)
+						continue
+					}
+					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
+					}
 				}
-				if err := tx.Exec(
-					"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
-					existing.ID,
-				).Error; err != nil {
-					return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
-				}
-				if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-					return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
-				}
+				config.GovernanceConfig.Budgets = nextBudgets
 			}
-			config.GovernanceConfig.RateLimits = nextRateLimits
-		}
-		return nil
+			if configData.governanceSectionPresent("rate_limits") {
+				keep := make(map[string]bool, len(configData.Governance.RateLimits))
+				for _, row := range configData.Governance.RateLimits {
+					keep[row.ID] = true
+				}
+				nextRateLimits := append([]configstoreTables.TableRateLimit(nil), configData.Governance.RateLimits...)
+				for _, existing := range config.GovernanceConfig.RateLimits {
+					if existing.ID == "" || keep[existing.ID] {
+						continue
+					}
+					if keepRateLimits[existing.ID] {
+						nextRateLimits = append(nextRateLimits, existing)
+						continue
+					}
+					if err := tx.Exec(
+						"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
+						existing.ID,
+					).Error; err != nil {
+						return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
+					}
+					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
+					}
+				}
+				config.GovernanceConfig.RateLimits = nextRateLimits
+			}
+			return nil
+		})
+	}, func() {
+		*config.GovernanceConfig = governanceBeforePrune
 	})
 	if err != nil {
 		logger.Fatal("failed to prune governance config: %v", err)
@@ -5763,7 +5783,75 @@ func updateGovernanceConfigInStore(
 	governanceInConfigJSON *configstore.GovernanceConfig,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
-	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+	// Rows are written in id order, the order the governance usage dump locks
+	// them in, so a running replica's dump and this write queue behind each
+	// other instead of deadlocking.
+	budgetsToUpdate = sortedByID(budgetsToUpdate, func(b configstoreTables.TableBudget) string { return b.ID })
+	rateLimitsToAdd = sortedByID(rateLimitsToAdd, func(r configstoreTables.TableRateLimit) string { return r.ID })
+	rateLimitsToUpdate = sortedByID(rateLimitsToUpdate, func(r configstoreTables.TableRateLimit) string { return r.ID })
+	inputs := snapshotGovernanceWriteInputs(customersToAdd, customersToUpdate, virtualKeysToAdd)
+	err := retryTransientGovernanceWrite(ctx, func() error {
+		return writeGovernanceConfigInStore(ctx, config,
+			budgetsToAdd, budgetsToUpdate,
+			rateLimitsToAdd, rateLimitsToUpdate,
+			customersToAdd, customersToUpdate,
+			teamsToAdd, teamsToUpdate,
+			virtualKeysToAdd, virtualKeysToUpdate,
+			routingRulesToAdd, routingRulesToUpdate, routingRulesToDelete,
+			pricingOverridesToAdd, pricingOverridesToUpdate,
+			modelConfigsToAdd, modelConfigsToUpdate,
+			providersToAdd, providersToUpdate,
+			complexityAnalyzerConfigToUpdate,
+			isConfigJSONSourceOfTruth,
+			budgetIDsInConfigJSON,
+			governanceInConfigJSON)
+	}, func() {
+		inputs.restoreInto(customersToAdd, customersToUpdate, virtualKeysToAdd)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Published only after the commit: a rollback would otherwise leave the
+	// in-memory config advertising a complexity config the store never kept.
+	if complexityAnalyzerConfigToUpdate != nil {
+		config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
+	}
+
+	return nil
+}
+
+// writeGovernanceConfigInStore applies one attempt of the planned governance
+// changes in a single transaction. It may mutate its inputs; the caller restores
+// them before re-running it after a transient failure.
+func writeGovernanceConfigInStore(
+	ctx context.Context,
+	config *Config,
+	budgetsToAdd []configstoreTables.TableBudget,
+	budgetsToUpdate []configstoreTables.TableBudget,
+	rateLimitsToAdd []configstoreTables.TableRateLimit,
+	rateLimitsToUpdate []configstoreTables.TableRateLimit,
+	customersToAdd []configstoreTables.TableCustomer,
+	customersToUpdate []configstoreTables.TableCustomer,
+	teamsToAdd []configstoreTables.TableTeam,
+	teamsToUpdate []configstoreTables.TableTeam,
+	virtualKeysToAdd []configstoreTables.TableVirtualKey,
+	virtualKeysToUpdate []configstoreTables.TableVirtualKey,
+	routingRulesToAdd []configstoreTables.TableRoutingRule,
+	routingRulesToUpdate []configstoreTables.TableRoutingRule,
+	routingRulesToDelete []string,
+	pricingOverridesToAdd []configstoreTables.TablePricingOverride,
+	pricingOverridesToUpdate []configstoreTables.TablePricingOverride,
+	modelConfigsToAdd []configstoreTables.TableModelConfig,
+	modelConfigsToUpdate []configstoreTables.TableModelConfig,
+	providersToAdd []configstoreTables.TableProvider,
+	providersToUpdate []configstoreTables.TableProvider,
+	complexityAnalyzerConfigToUpdate *configstore.ComplexityAnalyzerConfig,
+	isConfigJSONSourceOfTruth bool,
+	budgetIDsInConfigJSON map[string]bool,
+	governanceInConfigJSON *configstore.GovernanceConfig,
+) error {
+	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Owner-scoped budgets require owner rows to exist first:
 		// - team_id -> governance_teams
 		// - virtual_key_id -> governance_virtual_keys
@@ -6403,17 +6491,6 @@ func updateGovernanceConfigInStore(
 
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-
-	// Published only after the commit: a rollback would otherwise leave the
-	// in-memory config advertising a complexity config the store never kept.
-	if complexityAnalyzerConfigToUpdate != nil {
-		config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
-	}
-
-	return nil
 }
 
 func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstoreTables.TableModelConfig) error {
