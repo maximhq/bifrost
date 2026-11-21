@@ -1134,6 +1134,70 @@ func TestCancelledStreamWithoutAccumulatorIsNotEstimated(t *testing.T) {
 	}
 }
 
+// DisableUsageEstimation keeps a cancelled stream's post-hooks on the usage the provider
+// reported: with it off (the default) the accumulated output is counted, with it on nothing
+// is, and ReloadConfig switches it at runtime.
+func TestCancelledStreamUsageEstimationOptOut(t *testing.T) {
+	const provider schemas.ModelProvider = "cancel-opt-out"
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(provider, 1, 16, stallingStreamUpstream(t).URL)
+	account.configs[provider].NetworkConfig.MaxRetries = 0
+	account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+	account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	recorder := &cancelledUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 2)}
+	tracer := &snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hello world")},
+		}}}},
+	}}}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger(), Tracer: tracer, LLMPlugins: []schemas.LLMPlugin{recorder}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	billed := func() *schemas.BifrostLLMUsage {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-cancel-opt-out")
+		stream, streamErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: provider, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}},
+		})
+		if streamErr != nil {
+			t.Fatal(streamErr.GetErrorString())
+		}
+		for chunk := range stream {
+			if chunk.BifrostError == nil {
+				cancel()
+			}
+		}
+		select {
+		case usage := <-recorder.usage:
+			return usage
+		case <-time.After(3 * time.Second):
+			t.Fatal("cancellation never reached accounting")
+			return nil
+		}
+	}
+
+	if usage := billed(); usage == nil || usage.Estimation == nil {
+		t.Fatalf("estimation is on by default, got billed usage %+v", usage)
+	}
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, DisableUsageEstimation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if usage := billed(); usage != nil {
+		t.Fatalf("estimated with DisableUsageEstimation set: %+v", usage)
+	}
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatal(err)
+	}
+	if usage := billed(); usage == nil || usage.Estimation == nil {
+		t.Fatalf("estimation did not come back after the reload, got billed usage %+v", usage)
+	}
+}
+
 // An async provider that already submitted a task must not have it submitted again. A 401
 // while polling a submitted MachGen image task would otherwise rotate to the next key and
 // re-run the whole call: a second, billed task, with the first one's result lost.
