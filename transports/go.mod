@@ -25,6 +25,7 @@ require (
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.17
 	github.com/maximhq/bifrost/plugins/otel v1.6.7
 	github.com/maximhq/bifrost/plugins/prompts v1.1.17
+	github.com/maximhq/bifrost/plugins/requestguard v1.0.0
 	github.com/maximhq/bifrost/plugins/routing v1.3.2
 	github.com/maximhq/bifrost/plugins/semanticcache v1.7.7
 	github.com/maximhq/bifrost/plugins/telemetry v1.9.7

@@ -42,10 +42,13 @@ type GuardDecision struct {
 	Blocked             bool                  `json:"blocked"`
 	BlockReason         string                `json:"block_reason,omitempty"`
 	CapabilityIssues    []CapabilityIssue     `json:"capability_issues,omitempty"`
+	BudgetViolations    []BudgetViolation     `json:"budget_violations,omitempty"`
 	CostEstimate        *CostEstimate         `json:"cost_estimate,omitempty"`
 	Recommendations     []ModelRecommendation `json:"recommendations,omitempty"`
 	CoalesceRole        string                `json:"coalesce_role,omitempty"`
 	CoalescedSavingsUSD float64               `json:"coalesced_savings_usd,omitempty"`
+	HasWarnings         bool                  `json:"has_warnings,omitempty"`
+	MetadataAppended    bool                  `json:"-"`
 	Reasons             []string              `json:"reasons,omitempty"`
 }
 

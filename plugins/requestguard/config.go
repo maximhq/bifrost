@@ -1,6 +1,7 @@
 package requestguard
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -19,6 +20,8 @@ const (
 	PolicyBlock     PolicyMode = "block"
 	PolicyDowngrade PolicyMode = "downgrade"
 )
+
+const maxConfiguredRecommendations = 10
 
 // UnknownCapabilityPolicy controls requests whose capability is not present in
 // the model catalog.
@@ -136,7 +139,47 @@ func DefaultConfig() Config {
 			MaxBufferedBytes:  1 << 20,
 		},
 		Headers: HeadersConfig{Prefix: "X-Bifrost-RequestGuard"},
+		Metrics: MetricsConfig{Enabled: true},
 	}
+}
+
+// MarshalJSON represents WaitTimeout in milliseconds, matching the config
+// schema and the duration convention used by NetworkConfig.
+func (c CoalescerConfig) MarshalJSON() ([]byte, error) {
+	type alias CoalescerConfig
+	return json.Marshal(struct {
+		*alias
+		WaitTimeoutMS int64 `json:"wait_timeout"`
+	}{alias: (*alias)(&c), WaitTimeoutMS: c.WaitTimeout.Milliseconds()})
+}
+
+// UnmarshalJSON accepts wait_timeout as integer milliseconds while preserving
+// default values for fields omitted from a partial nested config object.
+func (c *CoalescerConfig) UnmarshalJSON(data []byte) error {
+	if c == nil {
+		return fmt.Errorf("coalescer config is nil")
+	}
+	type alias CoalescerConfig
+	var wire struct {
+		*alias
+		WaitTimeout json.RawMessage `json:"wait_timeout"`
+	}
+	wire.alias = (*alias)(c)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.WaitTimeout) == 0 || string(wire.WaitTimeout) == "null" {
+		return nil
+	}
+	var milliseconds int64
+	if err := json.Unmarshal(wire.WaitTimeout, &milliseconds); err != nil {
+		return fmt.Errorf("coalescer.wait_timeout must be integer milliseconds: %w", err)
+	}
+	if milliseconds > math.MaxInt64/int64(time.Millisecond) || milliseconds < math.MinInt64/int64(time.Millisecond) {
+		return fmt.Errorf("coalescer.wait_timeout is out of range")
+	}
+	c.WaitTimeout = time.Duration(milliseconds) * time.Millisecond
+	return nil
 }
 
 // NormalizeAndValidate fills zero-value defaults and rejects invalid policy
@@ -198,6 +241,9 @@ func (c *Config) NormalizeAndValidate() error {
 	}
 	if c.Recommender.MaxRecommendations == 0 {
 		c.Recommender.MaxRecommendations = defaults.Recommender.MaxRecommendations
+	}
+	if c.Recommender.MaxRecommendations > maxConfiguredRecommendations {
+		return fmt.Errorf("recommender.max_recommendations must not exceed %d", maxConfiguredRecommendations)
 	}
 	if !finite(c.Recommender.MinSavingsPct) || c.Recommender.MinSavingsPct < 0 || c.Recommender.MinSavingsPct > 100 {
 		return fmt.Errorf("recommender.min_savings_pct must be between 0 and 100")

@@ -10,30 +10,49 @@ type fakeCatalog struct {
 	modelInfo            *schemas.Model
 	pricingEntry         *modelcatalog.PricingEntry
 	requestTypeSupported bool
+	capabilitiesByRoute  map[string]*schemas.ModelCapabilities
+	modelInfoByRoute     map[string]*schemas.Model
+	pricingByRoute       map[string]*modelcatalog.PricingEntry
+	costByRoute          map[string]float64
+	modelsByProvider     map[schemas.ModelProvider][]string
+	providersByModel     map[string][]schemas.ModelProvider
 }
 
-func (f *fakeCatalog) GetModelCapabilities(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+func routeKey(provider schemas.ModelProvider, model string) string {
+	return string(provider) + "/" + model
+}
+
+func (f *fakeCatalog) GetModelCapabilities(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+	if value, ok := f.capabilitiesByRoute[routeKey(provider, model)]; ok {
+		return value
+	}
 	return f.capabilities
 }
 
-func (f *fakeCatalog) GetModelInfo(schemas.ModelProvider, string) *schemas.Model {
+func (f *fakeCatalog) GetModelInfo(provider schemas.ModelProvider, model string) *schemas.Model {
+	if value, ok := f.modelInfoByRoute[routeKey(provider, model)]; ok {
+		return value
+	}
 	return f.modelInfo
 }
 
-func (f *fakeCatalog) GetPricingEntryForModel(string, schemas.ModelProvider) *modelcatalog.PricingEntry {
+func (f *fakeCatalog) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *modelcatalog.PricingEntry {
+	if value, ok := f.pricingByRoute[routeKey(provider, model)]; ok {
+		return value
+	}
 	return f.pricingEntry
 }
 
-func (*fakeCatalog) CalculateCostForUsage(*schemas.BifrostLLMUsage, schemas.ModelProvider, string, schemas.RequestType, *modelcatalog.PricingLookupScopes) float64 {
-	return 0
+func (f *fakeCatalog) CalculateCostForUsage(_ *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, _ schemas.RequestType, _ *modelcatalog.PricingLookupScopes) float64 {
+	return f.costByRoute[routeKey(provider, model)]
 }
 
-func (*fakeCatalog) GetModelsForProvider(schemas.ModelProvider) []string {
-	return nil
+func (f *fakeCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
+	return f.modelsByProvider[provider]
 }
 
-func (*fakeCatalog) GetProvidersForModel(string) []schemas.ModelProvider {
-	return nil
+func (f *fakeCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
+	return f.providersByModel[model]
 }
 
 func (f *fakeCatalog) IsRequestTypeSupported(string, schemas.ModelProvider, schemas.RequestType) bool {
