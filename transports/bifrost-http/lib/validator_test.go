@@ -4223,6 +4223,7 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 		vectorstore.VectorStoreTypeQdrant:   "qdrant_config",
 		vectorstore.VectorStoreTypePinecone: "pinecone_config",
 		vectorstore.VectorStoreTypeChromem:  "chromem_config",
+		vectorstore.VectorStoreTypePgVector: "pgvector_config",
 	}
 
 	schema := loadSchema(t)
@@ -4274,6 +4275,7 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			"qdrant":   `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "localhost"}}}`,
 			"pinecone": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"api_key": "k", "index_host": "h"}}}`,
 			"chromem":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem"}}}`,
+			"pgvector": `{"vector_store": {"enabled": true, "type": "pgvector", "config": {}}}`,
 		}
 		for name, config := range valid {
 			if err := validateConfig(t, compiled, config); err != nil {
@@ -4293,6 +4295,10 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			"chromem with a redis config":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"addr": "localhost:6379"}}}`,
 			"weaviate with an empty config": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {}}}`,
 			"pinecone with an empty config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {}}}`,
+			// pgvector has no settings: it borrows the logs store's database, so
+			// connection fields belong to logs_store, not here.
+			"pgvector with a redis config":   `{"vector_store": {"enabled": true, "type": "pgvector", "config": {"addr": "localhost:6379"}}}`,
+			"pgvector with a chromem config": `{"vector_store": {"enabled": true, "type": "pgvector", "config": {"path": "/app/data/chromem"}}}`,
 		}
 		for name, config := range mismatched {
 			if err := validateConfig(t, compiled, config); err == nil {
@@ -4314,8 +4320,18 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			}
 		}
 
-		// The negative control lives in "chromem config validates" below, which
-		// pins the memory-only form as valid.
+		// The negative controls live in "chromem config validates" and
+		// "pgvector needs no config block" below.
+	})
+
+	// pgvector borrows the logs store's database, so it has nothing to dial
+	// and NewVectorStore accepts it with no config block at all.
+	t.Run("pgvector needs no config block", func(t *testing.T) {
+		compiled := compileSchema(t)
+		omitted := `{"vector_store": {"enabled": true, "type": "pgvector"}}`
+		if err := validateConfig(t, compiled, omitted); err != nil {
+			t.Errorf("pgvector with no config block must be valid, got: %v", err)
+		}
 	})
 
 	t.Run("chromem config validates", func(t *testing.T) {

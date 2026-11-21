@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"gorm.io/gorm"
 )
 
 type VectorStoreType string
@@ -17,6 +20,7 @@ const (
 	VectorStoreTypeQdrant   VectorStoreType = "qdrant"
 	VectorStoreTypePinecone VectorStoreType = "pinecone"
 	VectorStoreTypeChromem  VectorStoreType = "chromem"
+	VectorStoreTypePgVector VectorStoreType = "pgvector"
 )
 
 // Query represents a query to the vector store.
@@ -216,6 +220,17 @@ type Config struct {
 	Config  any             `json:"config"`
 }
 
+// MarshalJSON writes the config so UnmarshalJSON reads it back: a pgvector
+// config left nil is written as {}, since the schema and the decoder reject
+// "config": null.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type plain Config
+	if c.Type == VectorStoreTypePgVector && c.Config == nil {
+		c.Config = PgVectorConfig{}
+	}
+	return json.Marshal(plain(c))
+}
+
 // UnmarshalJSON unmarshals the config from JSON.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
@@ -270,6 +285,25 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Config = chromemConfig
+	case VectorStoreTypePgVector:
+		// pgvector borrows the logs store's database, so it has no settings: the
+		// config is omitted or {}, as the schema allows, and anything else
+		// would be a setting silently ignored.
+		if len(temp.Config) > 0 {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(temp.Config, &fields); err != nil || fields == nil {
+				return fmt.Errorf("pgvector config must be an empty object: it keeps its vectors in the logs store's database and has no settings")
+			}
+			if len(fields) > 0 {
+				names := make([]string, 0, len(fields))
+				for field := range fields {
+					names = append(names, field)
+				}
+				sort.Strings(names)
+				return fmt.Errorf("pgvector config has no settings, got %s: it keeps its vectors in the logs store's database", strings.Join(names, ", "))
+			}
+		}
+		c.Config = PgVectorConfig{}
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -277,8 +311,27 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// NewVectorStore returns a new vector store based on the configuration.
+// Dependencies are handles a store borrows from the rest of Bifrost instead of
+// opening a connection of its own.
+type Dependencies struct {
+	LogStore ScopedDBProvider // pgvector keeps its tables in this store's Postgres database
+}
+
+// ScopedDBProvider is the logs store surface pgvector builds on. RDBLogStore
+// and HybridLogStore provide it, as the logstore queue relies on too.
+type ScopedDBProvider interface {
+	ScopedDB(ctx context.Context) *gorm.DB
+}
+
+// NewVectorStore returns a new vector store based on the configuration, for
+// stores that need nothing from the rest of Bifrost.
 func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) (VectorStore, error) {
+	return NewVectorStoreWithDependencies(ctx, config, Dependencies{}, logger)
+}
+
+// NewVectorStoreWithDependencies returns a new vector store based on the
+// configuration, giving it deps. pgvector needs deps.LogStore.
+func NewVectorStoreWithDependencies(ctx context.Context, config *Config, deps Dependencies, logger schemas.Logger) (VectorStore, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -331,6 +384,13 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid chromem config")
 		}
 		return newChromemStore(ctx, &chromemConfig, logger)
+	case VectorStoreTypePgVector:
+		// A nil config block is valid: pgvector has no settings of its own.
+		pgVectorConfig, ok := config.Config.(PgVectorConfig)
+		if !ok && config.Config != nil {
+			return nil, fmt.Errorf("invalid pgvector config")
+		}
+		return newPgVectorStore(ctx, &pgVectorConfig, deps, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }

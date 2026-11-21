@@ -1565,7 +1565,7 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	// Initialize vector store (only if explicitly configured)
 	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
 		logger.Info("connecting to vectorstore")
-		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
+		config.VectorStore, err = vectorstore.NewVectorStoreWithDependencies(ctx, configData.VectorStoreConfig, vectorStoreDependencies(config), logger)
 		if err != nil {
 			logger.Fatal("failed to connect to vector store: %v", err)
 		}
@@ -1576,6 +1576,19 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		}
 	}
 	return nil
+}
+
+// vectorStoreDependencies hands the vector store what it may borrow instead of
+// connecting itself: pgvector keeps its tables in the logs store's database,
+// so it needs the logs store, which is initialized before this runs. A logs
+// store with no SQL handle is left out, and pgvector then refuses to start
+// with a message that says so.
+func vectorStoreDependencies(config *Config) vectorstore.Dependencies {
+	var deps vectorstore.Dependencies
+	if provider, ok := config.LogsStore.(vectorstore.ScopedDBProvider); ok {
+		deps.LogStore = provider
+	}
+	return deps
 }
 
 // attachWarpHistoryLock gives a ClickHouse logs store the config-store lock, so

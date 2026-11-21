@@ -2677,9 +2677,10 @@
             "redis",
             "qdrant",
             "pinecone",
-            "chromem"
+            "chromem",
+            "pgvector"
           ],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas. \"pgvector\" keeps vectors in the logs store's Postgres database, so a deployment already on Postgres needs no other service"
         },
         "config": {
           "description": "Backend-specific settings. The block must match the backend named by the sibling \"type\"; the conditionals below pin it to that backend rather than accepting any backend's shape",
@@ -2698,6 +2699,9 @@
             },
             {
               "$ref": "#/$defs/chromem_config"
+            },
+            {
+              "$ref": "#/$defs/pgvector_config"
             }
           ]
         }
@@ -2806,6 +2810,25 @@
             "properties": {
               "config": {
                 "$ref": "#/$defs/chromem_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "pgvector"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/pgvector_config"
               }
             }
           }
@@ -11734,6 +11757,12 @@
         "api_key",
         "index_host"
       ],
+      "additionalProperties": false
+    },
+    "pgvector_config": {
+      "type": "object",
+      "description": "pgvector configuration for vector store. pgvector has no connection settings: it keeps its tables in the logs store's database, which must be Postgres (logs_store.type \"postgres\"), so a deployment already running Postgres needs no other service. The database needs the pgvector extension, 0.8.0 or later; Bifrost installs it when its database user may, and otherwise refuses to start with the CREATE EXTENSION command an administrator has to run. Vectors share the logs database's load and connection pool.",
+      "properties": {},
       "additionalProperties": false
     },
     "chromem_config": {

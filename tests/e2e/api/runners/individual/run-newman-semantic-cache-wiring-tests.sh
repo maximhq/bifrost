@@ -2,10 +2,12 @@
 
 # Bifrost Semantic Cache Wiring Test Runner
 #
-# Boots one clean Bifrost per vector store (Redis, Weaviate, or both at once), each on its own
-# temp app dir with SQLite config and logs stores, and runs
-# collections/bifrost-semantic-cache-wiring.postman_collection.json against it. With
-# --store both the two newman runs go concurrently and the runner fails if either does.
+# Boots one clean Bifrost per vector store (Redis, Weaviate, pgvector, or several at once), each on
+# its own temp app dir with a SQLite config store, and runs
+# collections/bifrost-semantic-cache-wiring.postman_collection.json against it. The logs store is
+# SQLite too, except for pgvector, which keeps its vectors in the logs store's Postgres database:
+# that run gets a fresh database, created on start and dropped on exit. With --store both (Redis
+# and Weaviate) or all (all three) the newman runs go concurrently and the runner fails if any does.
 #
 # Live and paid: the collection calls OpenAI (chat, responses, embeddings, speech, whisper,
 # gpt-image-1.5), Anthropic, Gemini, Cohere, OpenRouter and Bedrock. Keys are never written into the
@@ -13,8 +15,9 @@
 # server it boots. The collection is generated - edit runners/build-semantic-cache-wiring.mjs,
 # not the JSON.
 #
-# Requires: a built bifrost-http binary, newman, and reachable Redis Stack and/or Weaviate
-# (tests/docker-compose.yml provides both).
+# Requires: a built bifrost-http binary, newman, and reachable Redis Stack, Weaviate and/or
+# Postgres with the pgvector extension available (tests/docker-compose.yml provides all three),
+# plus psql for pgvector.
 
 set -e
 
@@ -36,6 +39,11 @@ PORT="8096"
 STORE="both"
 REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
 WEAVIATE_HOST="${WEAVIATE_HOST:-localhost:9000}"
+PGVECTOR_HOST="${PGVECTOR_HOST:-localhost}"
+PGVECTOR_PORT="${PGVECTOR_PORT:-5432}"
+PGVECTOR_USER="${PGVECTOR_USER:-bifrost}"
+PGVECTOR_PASSWORD="${PGVECTOR_PASSWORD:-bifrost_password}"
+PGVECTOR_ADMIN_DB="${PGVECTOR_ADMIN_DB:-bifrost}"
 REPORTERS="cli"
 VERBOSE=""
 FOLDERS=()
@@ -68,8 +76,10 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --binary <path>   Path to a built bifrost-http binary (required)"
-            echo "  --port <port>     First port to boot on (default: 8096). Redis uses it, Weaviate the next one"
-            echo "  --store <name>    redis, weaviate or both (default: both, run concurrently)"
+            echo "  --port <port>     First port to boot on (default: 8096). Each store takes the next one, in the"
+            echo "                    order redis, weaviate, pgvector"
+            echo "  --store <name>    redis, weaviate, pgvector, both (redis and weaviate) or all"
+            echo "                    (default: both; several stores run concurrently)"
             echo "  --folder <name>   Run only this collection folder (repeatable). Setup and P (providers) always run;"
             echo "                    O (logs) also runs D, X and S, whose requests it reads"
             echo "  --html            Generate HTML reports"
@@ -82,6 +92,10 @@ while [[ $# -gt 0 ]]; do
             echo "                    provider credentials, all required"
             echo "  REDIS_ADDR        default localhost:6379 (Redis Stack, for the search module)"
             echo "  WEAVIATE_HOST     default localhost:9000 (HTTP only)"
+            echo "  PGVECTOR_HOST, PGVECTOR_PORT, PGVECTOR_USER, PGVECTOR_PASSWORD"
+            echo "                    default localhost, 5432, bifrost, bifrost_password: a Postgres with"
+            echo "                    pgvector 0.8.0 or later available, where the user may create databases"
+            echo "  PGVECTOR_ADMIN_DB default bifrost: the database psql connects to for CREATE/DROP DATABASE"
             exit 0 ;;
         *) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
     esac
@@ -95,9 +109,12 @@ echo ""
 case "$STORE" in
     redis) STORES=(redis) ;;
     weaviate) STORES=(weaviate) ;;
+    pgvector) STORES=(pgvector) ;;
     both) STORES=(redis weaviate) ;;
-    *) echo -e "${RED}Error: --store must be redis, weaviate or both${NC}"; exit 1 ;;
+    all) STORES=(redis weaviate pgvector) ;;
+    *) echo -e "${RED}Error: --store must be redis, weaviate, pgvector, both or all${NC}"; exit 1 ;;
 esac
+uses_pgvector() { [[ " ${STORES[*]} " == *" pgvector "* ]]; }
 
 if ! command -v newman &>/dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
@@ -109,6 +126,10 @@ if [ -n "$BIFROST_BINARY" ] && [[ "$BIFROST_BINARY" != /* ]]; then
 fi
 if [ -z "$BIFROST_BINARY" ] || [ ! -x "$BIFROST_BINARY" ]; then
     echo -e "${RED}Error: --binary must point to an executable bifrost-http binary${NC}"
+    exit 1
+fi
+if uses_pgvector && ! command -v psql &>/dev/null; then
+    echo -e "${RED}Error: --store $STORE needs psql, to create and drop the pgvector run's database${NC}"
     exit 1
 fi
 if [ ! -f "$COLLECTION" ]; then
@@ -137,6 +158,33 @@ NEWMAN_PIDS=()
 # in the same second from sharing it, and so from deleting each other's classes.
 RUN_SEED="scw$(date +%s)$$"
 SETUP_TOKEN="scw-setup-$(date +%s)-$RANDOM"
+# The pgvector run's own database, so its logs and vector tables start empty like the SQLite runs.
+PGVECTOR_DB="${RUN_SEED}_pgvector"
+PGVECTOR_DB_CREATED=""
+
+# with_deadline runs a command and kills it if it is still running after $1 seconds, returning
+# non-zero then. A connect timeout alone does not bound a session that connected and then stopped
+# answering, and macOS has no timeout(1).
+with_deadline() {
+    local secs="$1" pid watcher rc
+    shift
+    "$@" &
+    pid=$!
+    ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+    watcher=$!
+    wait "$pid" 2>/dev/null
+    rc=$?
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+}
+
+# pg_admin runs one statement against the admin database, giving up after 5s to connect and 15s
+# overall, so an unresponsive Postgres cannot hang the runner on start or exit.
+pg_admin() {
+    with_deadline 15 env PGPASSWORD="$PGVECTOR_PASSWORD" PGCONNECT_TIMEOUT=5 psql -h "$PGVECTOR_HOST" \
+        -p "$PGVECTOR_PORT" -U "$PGVECTOR_USER" -d "$PGVECTOR_ADMIN_DB" -v ON_ERROR_STOP=1 -qAtc "$1"
+}
 
 cleanup() {
     # Stop the newman runs before their servers. Bash starts background jobs ignoring SIGINT when
@@ -160,15 +208,44 @@ cleanup() {
             curl -s --connect-timeout 5 --max-time 15 -o /dev/null -X DELETE "http://$WEAVIATE_HOST/v1/schema/$class" 2>/dev/null || true
         done
     fi
+    # Drop the pgvector run's database once its server is gone. FORCE ends any connection left over.
+    # Best effort and time-limited, like the Weaviate cleanup above.
+    if [ -n "$PGVECTOR_DB_CREATED" ]; then
+        pg_admin "DROP DATABASE IF EXISTS \"$PGVECTOR_DB\" WITH (FORCE)" >/dev/null 2>&1 || true
+    fi
     rm -rf "$WORK_ROOT"
 }
 trap cleanup EXIT
 
+# json_str prints its argument as a JSON string literal, escaping backslashes, quotes and the
+# control characters a shell value can carry, so a password with " or \ stays valid JSON and
+# decodes to itself.
+json_str() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '"%s"' "$s"
+}
+
 vector_store_block() {
     case "$1" in
-        redis) echo "{ \"enabled\": true, \"type\": \"redis\", \"config\": { \"addr\": \"$REDIS_ADDR\" } }" ;;
-        weaviate) echo "{ \"enabled\": true, \"type\": \"weaviate\", \"config\": { \"scheme\": \"http\", \"host\": \"$WEAVIATE_HOST\" } }" ;;
+        redis) printf '%s\n' "{ \"enabled\": true, \"type\": \"redis\", \"config\": { \"addr\": $(json_str "$REDIS_ADDR") } }" ;;
+        weaviate) printf '%s\n' "{ \"enabled\": true, \"type\": \"weaviate\", \"config\": { \"scheme\": \"http\", \"host\": $(json_str "$WEAVIATE_HOST") } }" ;;
+        pgvector) printf '%s\n' "{ \"enabled\": true, \"type\": \"pgvector\" }" ;;
     esac
+}
+
+# pgvector keeps its vectors in the logs store's database, so its run logs to Postgres.
+logs_store_block() {
+    local dir="$1" store="$2"
+    if [ "$store" = "pgvector" ]; then
+        printf '%s\n' "{ \"enabled\": true, \"type\": \"postgres\", \"config\": { \"host\": $(json_str "$PGVECTOR_HOST"), \"port\": $(json_str "$PGVECTOR_PORT"), \"user\": $(json_str "$PGVECTOR_USER"), \"password\": $(json_str "$PGVECTOR_PASSWORD"), \"db_name\": $(json_str "$PGVECTOR_DB"), \"ssl_mode\": \"disable\" } }"
+    else
+        printf '%s\n' "{ \"enabled\": true, \"type\": \"sqlite\", \"config\": { \"path\": $(json_str "$dir/logs.db") } }"
+    fi
 }
 
 write_config() {
@@ -185,7 +262,7 @@ write_config() {
     "max_request_body_size_mb": 100
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
-  "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
+  "logs_store": $(logs_store_block "$dir" "$store"),
   "vector_store": $(vector_store_block "$store")
 }
 EOF
@@ -195,6 +272,12 @@ start_bifrost() {
     local store="$1" port="$2"
     local dir="$WORK_ROOT/$store"
     mkdir -p "$dir"
+    if [ "$store" = "pgvector" ]; then
+        if ! pg_admin "CREATE DATABASE \"$PGVECTOR_DB\""; then
+            echo -e "${RED}[$store] could not create database $PGVECTOR_DB on $PGVECTOR_HOST:$PGVECTOR_PORT${NC}"; exit 1
+        fi
+        PGVECTOR_DB_CREATED=1
+    fi
     write_config "$dir" "$store"
     if port_in_use "$port"; then
         echo -e "${RED}Error: port $port is already in use; pass --port to use another${NC}"

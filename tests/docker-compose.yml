@@ -193,9 +193,11 @@ services:
         networks:
             bifrost_network:
                 ipv4_address: 172.28.0.15
-    # Postgres instance for configstore and encryption tests
+    # Postgres instance for configstore, encryption and pgvector tests. The
+    # pgvector image is stock Postgres 16 with the extension available, which
+    # framework/vectorstore's pgvector tests install on first use.
     postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:0.8.0-pg16
         environment:
             POSTGRES_USER: bifrost
             POSTGRES_PASSWORD: bifrost_password

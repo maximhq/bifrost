@@ -77,6 +77,18 @@ func vectorStoreTestBackends() []upsertBackend {
 			},
 		},
 		{
+			name:      "pgvector",
+			dimension: PgVectorTestDimension,
+			setup: func(t *testing.T) (VectorStore, context.Context, string) {
+				if testing.Short() {
+					t.Skip("Skipping integration tests in short mode")
+				}
+				setup := NewPgVectorTestSetup(t)
+				t.Cleanup(func() { setup.Cleanup(t) })
+				return setup.Store, setup.ctx, PgVectorTestNamespace
+			},
+		},
+		{
 			name:      "redis",
 			dimension: RedisTestDimension,
 			setup: func(t *testing.T) (VectorStore, context.Context, string) {
@@ -245,6 +257,18 @@ func TestVectorStoreListNamespaces(t *testing.T) {
 				setup := NewPineconeTestSetup(t)
 				t.Cleanup(func() { setup.Cleanup(t) })
 				return setup.Store, setup.ctx, PineconeTestNamespace
+			},
+		},
+		{
+			name:      "pgvector",
+			dimension: PgVectorTestDimension,
+			setup: func(t *testing.T) (VectorStore, context.Context, string) {
+				if testing.Short() {
+					t.Skip("Skipping integration tests in short mode")
+				}
+				setup := NewPgVectorTestSetup(t)
+				t.Cleanup(func() { setup.Cleanup(t) })
+				return setup.Store, setup.ctx, PgVectorTestNamespace
 			},
 		},
 		{
