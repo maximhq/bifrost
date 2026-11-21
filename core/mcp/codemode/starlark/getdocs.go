@@ -86,13 +86,8 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			matchedClientName = clientName
 
 			// Find the specific tool
-			for i, tool := range tools {
-				if tool.Function != nil {
-					if matchesToolReference(toolName, clientName, tool.Function.Name) {
-						matchedTool = &tools[i]
-						break
-					}
-				}
+			if i := findToolReference(tools, toolName, clientName); i >= 0 {
+				matchedTool = &tools[i]
 			}
 			break
 		}

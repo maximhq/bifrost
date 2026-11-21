@@ -128,13 +128,8 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			if isToolLevel {
 				// Tool-level: filter to specific tool
 				var foundTool *schemas.ChatTool
-				for i, tool := range tools {
-					if tool.Function != nil {
-						if matchesToolReference(toolName, clientName, tool.Function.Name) {
-							foundTool = &tools[i]
-							break
-						}
-					}
+				if i := findToolReference(tools, toolName, clientName); i >= 0 {
+					foundTool = &tools[i]
 				}
 
 				if foundTool == nil {

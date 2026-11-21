@@ -96,9 +96,11 @@ type discoveryRankResponse struct {
 }
 
 // discoveryTool is one visible tool with its lexical score. path is the
-// tool's .pyi file at tool binding. candidate.ID is path, except when tools
-// share a file: two raw names can come to one canonical name, and the ranker
-// contract needs one id per candidate, so later tools get a "#N" suffix.
+// tool's .pyi file at tool binding. Two raw names can come to one canonical
+// name and so one file; such tools are listed under their raw-name file
+// instead, which readToolFile resolves to that exact tool. candidate.ID is the
+// canonical file, and the ranker contract needs one id per candidate, so later
+// tools sharing it get a "#N" suffix.
 type discoveryTool struct {
 	candidate discoveryCandidate
 	path      string
@@ -215,6 +217,17 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 		entries[i].tool.candidate.ID = entries[i].tool.path
 		if shared > 0 {
 			entries[i].tool.candidate.ID = fmt.Sprintf("%s#%d", entries[i].tool.path, shared+1)
+		}
+	}
+	// The canonical file of colliding tools resolves to whichever is listed
+	// first, so each is shown under its raw-name file. IDs are already set.
+	for i := range entries {
+		e := &entries[i]
+		id := e.tool.candidate.ID
+		collides := strings.Contains(id, "#") ||
+			(i+1 < len(entries) && strings.HasPrefix(entries[i+1].tool.candidate.ID, id+"#"))
+		if raw := stripClientPrefix(e.rawName, e.tool.candidate.Server); collides && validateNormalizedToolName(raw) == nil {
+			e.tool.path = fmt.Sprintf("servers/%s/%s.pyi", e.tool.candidate.Server, raw)
 		}
 	}
 
