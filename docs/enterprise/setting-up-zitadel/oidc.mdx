@@ -221,7 +221,7 @@ Enter the credentials you collected in the steps above:
 | **Domain** | Your Zitadel host, e.g. `my-instance.zitadel.cloud` or `auth.company.com` (no scheme, no path) |
 | **Project ID** | Project ID from Step 2 |
 | **Client ID** | Web Application Client ID from Step 1 |
-| **Audience** | Optional access-token audience override |
+| **Audiences** | Optional - one or more accepted access-token audiences |
 | **Service Account Client ID** | From Step 5 (optional - bulk sync only) |
 | **Service Account Client Secret** | From Step 5 (optional - bulk sync only) |
 
@@ -311,7 +311,7 @@ Bifrost also refreshes each OIDC session when it expires (sessions last at least
 
 **Role claims missing in the token** - enable **Return user roles during authentication** on the project (Step 2) and ensure the user has an active role authorization for the project.
 
-**`invalid audience` when validating the JWT** - check the `audience` field in Bifrost. It must match the `aud` claim issued by Zitadel. Leaving it empty uses the project resource owner as the audience.
+**`invalid audience` when validating the JWT** - check the **Audiences** field in Bifrost. One of them must match the `aud` claim issued by Zitadel. Leaving it empty uses the project resource owner as the audience.
 
 **Service account cannot list users** - confirm the service account has **Org User Manager** or **Org Owner Viewer** role in the organization. Regenerate the client secret if you've lost it - the original cannot be retrieved.
 

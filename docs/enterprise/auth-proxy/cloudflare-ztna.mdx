@@ -141,7 +141,7 @@ Select **Login only** (authenticate against existing roles) or **Full** (map rol
 | Field | Value |
 | --- | --- |
 | **Team domain (issuer)** | Your Cloudflare team domain, e.g. `https://<team>.cloudflareaccess.com`. Bifrost derives the JWKS endpoint and the `Cf-Access-Jwt-Assertion` header automatically. |
-| **Application AUD tag** | The Audience tag from your Access application, binding the token to this application. |
+| **Application AUD tags** | The Audience tag from your Access application, binding the token to this application. Add more than one to accept tokens for several applications. |
 
 The **Advanced** section lets you override the request header, supply an explicit JWKS URL, or change the identity claim - all optional for Cloudflare Access.
 
@@ -191,7 +191,7 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 | `mode` | string | No | `login_only` (default) or `full`. |
 | `issuerUrl` | string (secret) | Yes | Cloudflare team domain, e.g. `https://<team>.cloudflareaccess.com`. Must be `https`. |
 | `audience` | string (secret) | Yes* | The application AUD tag that binds the token to this application. |
-| `allowedAudiences` | string[] | No | Accept any of several AUD tags instead of a single `audience`. |
+| `allowedAudiences` | string[] | No | More accepted AUD tags. A token carrying `audience` or any of these is accepted. |
 | `headerName` | string (secret) | No | Override the request header. Defaults to `Cf-Access-Jwt-Assertion`. |
 | `jwksUrl` | string (secret) | No | Override the JWKS URL. Derived from the team domain (`/cdn-cgi/access/certs`) when blank. |
 | `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
