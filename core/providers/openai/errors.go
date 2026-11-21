@@ -147,7 +147,7 @@ func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 		bifrostErr.Error.Type = errorResp.Error.Type
 		bifrostErr.Error.Code = errorResp.Error.Code
-		if errorResp.Error.Message != "" {
+		if strings.TrimSpace(errorResp.Error.Message) != "" {
 			bifrostErr.Error.Message = errorResp.Error.Message
 		}
 		bifrostErr.Error.Param = errorResp.Error.Param
