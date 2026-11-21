@@ -6,6 +6,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestToAnthropicChatCompletionError checks that the envelope's error.type is always a
@@ -293,5 +294,55 @@ func TestAnthropicMessageErrorDetailsMarshal(t *testing.T) {
 	}
 	if strings.Contains(string(data), "details") {
 		t.Errorf("details must be omitted when nil so existing errors stay byte-identical, got %s", data)
+	}
+}
+
+func TestParseAnthropicErrorPreservesCode(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantCode   *string
+	}{
+		{"code", `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider","code":"invalid_provider"}}`, schemas.Ptr("invalid_provider")},
+		{"absent", `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider"}}`, nil},
+		{"null", `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider","code":null}}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp fasthttp.Response
+			resp.SetStatusCode(400)
+			resp.Header.SetContentType("application/json")
+			resp.Header.Set("Retry-After", "2")
+			resp.SetBodyString(tc.body)
+			got := ParseAnthropicError(&resp)
+			if got == nil || got.StatusCode == nil || *got.StatusCode != 400 || got.Error == nil {
+				t.Fatalf("expected HTTP 400 provider error, got %+v", got)
+			}
+			if got.IsBifrostError || got.Error.Type == nil || *got.Error.Type != "invalid_request_error" || got.Error.Message != "unknown provider" {
+				t.Fatalf("error details changed: %+v", got)
+			}
+			if (got.Error.Code == nil) != (tc.wantCode == nil) || (tc.wantCode != nil && *got.Error.Code != *tc.wantCode) {
+				t.Fatalf("code = %v, want %v", got.Error.Code, tc.wantCode)
+			}
+			if got.ExtraFields.RetryAfter != 2000 {
+				t.Fatalf("retry hint = %d, want 2000", got.ExtraFields.RetryAfter)
+			}
+		})
+	}
+}
+
+func BenchmarkParseAnthropicError(b *testing.B) {
+	for _, tc := range []struct{ name, body string }{
+		{"without_code", `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider"}}`},
+		{"with_code", `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider","code":"invalid_provider"}}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var resp fasthttp.Response
+			resp.SetStatusCode(400)
+			resp.SetBodyString(tc.body)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				ParseAnthropicError(&resp)
+			}
+		})
 	}
 }

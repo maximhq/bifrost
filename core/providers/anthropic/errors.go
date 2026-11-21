@@ -229,6 +229,7 @@ func ParseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
+		bifrostErr.Error.Code = errorResp.Error.Code
 	}
 	return bifrostErr
 }
