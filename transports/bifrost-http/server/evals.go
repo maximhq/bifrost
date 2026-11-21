@@ -95,9 +95,7 @@ func (s *BifrostHTTPServer) setupEvals(ctx context.Context) (*handlers.EvalsHand
 	}
 	s.evals = &evalsRuntime{runner: runner, queue: q}
 	evaluators := evals.NewService(s.Config.ConfigStore, engine, runner)
-	// Tracing projects can run evaluators on their traces as they complete.
-	s.traceEvaluator = handlers.NewTraceEvaluator(evaluators)
-	s.wireTraceEvaluator()
+	s.EvalsService = evaluators
 	return handlers.NewEvalsHandler(evaluators), runsHandler
 }
 

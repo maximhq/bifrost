@@ -1672,3 +1672,44 @@ func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
 	require.InDelta(t, float64(120)*2.5e-6+float64(40)*1e-5, got, 1e-12)
 }
+
+// gatewayOnlyPlugin is a connector that records gateway requests only, as the logging plugin does.
+type gatewayOnlyPlugin struct{ testRealtimeObservabilityPlugin }
+
+func (p *gatewayOnlyPlugin) GetName() string                 { return "gateway-only" }
+func (p *gatewayOnlyPlugin) ConsumesGatewayTracesOnly() bool { return true }
+
+// TestTracer_ExportExternalTraceReachesConnectorsButNotGatewayOnlyPlugins pins the fan-out of a trace
+// received from an SDK: every connector gets it, except a plugin that records gateway requests only
+// (request logs and request metrics), which must not count SDK spans as gateway traffic.
+func TestTracer_ExportExternalTraceReachesConnectorsButNotGatewayOnlyPlugins(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	connector := &testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 1)}
+	logs := &gatewayOnlyPlugin{testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 1)}}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{connector, logs}, nil)
+
+	external := &schemas.Trace{TraceID: "0af7651916cd43dd8448eb211c80319c", Spans: []*schemas.Span{{SpanID: "b7ad6b7169203331", Name: "chat"}}}
+	external.RootSpan = external.Spans[0]
+	tracer.ExportTrace(context.Background(), external)
+
+	select {
+	case got := <-connector.injected:
+		if got.TraceID != external.TraceID || len(got.Spans) != 1 {
+			t.Fatalf("connector got %+v, want the external trace", got)
+		}
+	default:
+		t.Fatal("ExportTrace returned before the connector received the trace")
+	}
+	select {
+	case <-logs.injected:
+		t.Fatal("a gateway-only plugin received an SDK trace")
+	default:
+	}
+	if len(external.Spans) != 1 || external.Spans[0].Name != "chat" {
+		t.Fatal("the caller's trace was changed")
+	}
+}
