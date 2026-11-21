@@ -49,6 +49,7 @@
 - fix: openai - empty `text`, `srt` and `vtt` transcriptions are valid responses
 - fix: openai - streaming speech on `tts-1` and `tts-1-hd` returns a 400
 - fix: gemini - audio `fileData` parts are no longer treated as transcription
+- fix: gemini - transcription reads `parts[].audioTranscription.text`, which dedicated transcription models such as `gemini-3.5-transcribe` return instead of a text part, on both unary and streaming transcription (falling back to text parts); `Part` keeps `audioTranscription` through JSON round trips (thanks [@Xytronix](https://github.com/Xytronix)!)
 - fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
