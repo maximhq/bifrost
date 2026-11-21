@@ -346508,7 +346508,412 @@
       ]
     },
     {
-      "name": "372. xAI image generation forwards quality (xai image quality) (#10226 / PR #10251)",
+      "name": "374. Key alias reaches the advisor tool model (advisor alias) [SERIAL]",
+      "description": "A key alias is applied per attempt to the request model, but Bifrost forwarded an advisor tool's model (Anthropic advisor_20260301) as the client named it, so a client naming the advisor by its alias got a provider error while the same name worked as the request model. Governance already checks the alias name the client sent; the fix sends each advisor tool's model under the attempt key's alias, on the parsed tools and on the raw body Claude Code clients forward verbatim. The setup adds an Anthropic key on the profile's credential, weight 0 so rotation never picks it, mapping harness-advisor-alias to claude-opus-4-8; every case pins it with x-bf-api-key. Before the fix Anthropic rejects the unknown advisor model; after it each route answers 200. The cleanup deletes the key.",
+      "item": [
+        {
+          "name": "anthropic advisor alias setup: add a key that maps harness-advisor-alias to claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "// The key id is chosen before the create, so cleanup can delete a key whose create response was lost.",
+                  "pm.collectionVariables.unset('advisorAliasKeyReady');",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.set('advisorAliasKeyId', pm.variables.replaceIn('{{$guid}}'));",
+                  "  pm.collectionVariables.set('advisorAliasKeyName', 'harness-advisor-key-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('advisorAliasKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/anthropic/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('advisor alias: the retained key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('advisorAliasKeyName');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: key added', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) { key = {}; }",
+                  "pm.test('advisor alias: the key keeps the id sent', function () {",
+                  "  pm.expect(key.id, 'unexpected id: ' + pm.response.text()).to.equal(pm.collectionVariables.get('advisorAliasKeyId'));",
+                  "});",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('advisorAliasKeyReady', '1'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"{{advisorAliasKeyId}}\",\"name\":\"{{advisorAliasKeyName}}\",\"value\":\"env.ANTHROPIC_API_KEY\",\"models\":[\"*\"],\"weight\":0,\"aliases\":{\"harness-advisor-alias\":{\"model_id\":\"claude-opus-4-8\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic/keys"
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming a key alias is sent as claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('advisorAliasKeyName') || !pm.collectionVariables.get('advisorAliasKeyReady')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: /anthropic/v1/messages is served with the advisor model aliased', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text(), 'the unaliased advisor model reached the provider: ' + pm.response.text()).to.not.contain('harness-advisor-alias');",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.type, 'not a message: ' + pm.response.text()).to.equal('message');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{advisorAliasKeyName}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"harness-advisor-alias\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages claude-cli raw body: an advisor tool naming a key alias is sent as claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('advisorAliasKeyName') || !pm.collectionVariables.get('advisorAliasKeyReady')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: the raw body Claude Code forwards is served with the advisor model aliased', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text(), 'the unaliased advisor model reached the provider: ' + pm.response.text()).to.not.contain('harness-advisor-alias');",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.type, 'not a message: ' + pm.response.text()).to.equal('message');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{advisorAliasKeyName}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              },
+              {
+                "key": "user-agent",
+                "value": "claude-cli/2.1.252 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"harness-advisor-alias\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming a key alias is sent as claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('advisorAliasKeyName') || !pm.collectionVariables.get('advisorAliasKeyReady')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: the stream is served with the advisor model aliased', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text(), 'the unaliased advisor model reached the provider: ' + pm.response.text()).to.not.contain('harness-advisor-alias');",
+                  "  pm.expect(pm.response.text(), 'stream carried an error: ' + pm.response.text()).to.not.contain('event: error');",
+                  "  pm.expect(pm.response.text(), 'stream did not finish: ' + pm.response.text()).to.contain('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{advisorAliasKeyName}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"harness-advisor-alias\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses: an advisor tool naming a key alias is sent as claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('advisorAliasKeyName') || !pm.collectionVariables.get('advisorAliasKeyReady')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: /v1/responses is served with the advisor model aliased', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text(), 'the unaliased advisor model reached the provider: ' + pm.response.text()).to.not.contain('harness-advisor-alias');",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.output, 'no output: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{advisorAliasKeyName}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"model\": \"harness-advisor-alias\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses additional_tools: an advisor declared in an additional_tools item naming a key alias is sent as claude-opus-4-8 - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('advisorAliasKeyName') || !pm.collectionVariables.get('advisorAliasKeyReady')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: an advisor hoisted from additional_tools is served with its model aliased', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text(), 'the unaliased advisor model reached the provider: ' + pm.response.text()).to.not.contain('harness-advisor-alias');",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.output, 'no output: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "{{advisorAliasKeyName}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"tools\": [\n        {\n          \"type\": \"advisor\",\n          \"model\": \"harness-advisor-alias\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "anthropic advisor alias cleanup: delete the key - advisor alias",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('advisorAliasKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor alias: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('advisorAliasKeyId');",
+                  "  pm.collectionVariables.unset('advisorAliasKeyName');",
+                  "  pm.collectionVariables.unset('advisorAliasKeyReady');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/anthropic/keys/{{advisorAliasKeyId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "375. xAI image generation forwards quality (xai image quality) (#10226 / PR #10251)",
       "description": "xAI grok-imagine-image-2.0 accepts quality (low, medium, auto). filterXAISpecificParameters used to nil quality for every xAI image request, so the provider served its default while the response echoed the client's value. Case 1 pins that a supported quality reaches xAI (raw_request) and size stays off the wire; case 2 pins that an unsupported quality (high) is still not sent.",
       "item": [
         {
