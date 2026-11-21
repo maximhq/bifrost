@@ -25,6 +25,8 @@
             "upstream-extra-content",
             "upstream-transcribe-empty",
             "upstream-transcribe-newline",
+            "upstream-responses-done-only",
+            "upstream-responses-completed",
             "gpt-5-pro"
           ],
           "weight": 1
