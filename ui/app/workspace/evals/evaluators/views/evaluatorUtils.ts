@@ -189,6 +189,20 @@ export function executionOutcome(result: EvaluationResult): ExecutionOutcome {
 	return result.pass ? "passed" : "failed";
 }
 
+/** Whether the evaluator reads any variable, which is when a test can load from a dataset. */
+export function readsVariables(variables: string[], optionalVariables: string[]): boolean {
+	return variables.length > 0 || optionalVariables.length > 0;
+}
+
+/**
+ * The dataset batch a test runs on. The dataset control is shown only while the
+ * evaluator reads a variable, so a batch chosen before the variables went away is
+ * not used: Run then makes a single call.
+ */
+export function testBatch<T>(batch: T | null, variables: string[], optionalVariables: string[]): T | null {
+	return readsVariables(variables, optionalVariables) ? batch : null;
+}
+
 /** A score as text. Empty when the evaluator produced none. */
 export function scoreText(score: EvaluationScore): string {
 	if (score.status !== "ok") return "";

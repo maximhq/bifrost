@@ -826,6 +826,14 @@ export function useNavItems(): NavItem[] {
 									description: t("navDesc.evaluators"),
 									hasAccess: hasEvaluatorsAccess,
 								},
+								{
+									id: "evals.datasets",
+									title: t("nav.datasets"),
+									url: "/workspace/evals/datasets",
+									icon: Database,
+									description: t("navDesc.datasets"),
+									hasAccess: hasEvaluatorsAccess,
+								},
 							],
 						},
 					]

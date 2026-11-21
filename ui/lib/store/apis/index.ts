@@ -24,6 +24,7 @@ export * from "./pluginsApi";
 export * from "./relaysApi";
 export * from "./providersApi";
 export * from "./promptsApi";
+export * from "./evalDatasetsApi";
 export * from "./evalsApi";
 export * from "./sessionApi";
 export * from "./skillsApi";

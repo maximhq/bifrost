@@ -6,7 +6,7 @@ import type { LogEntry } from "@/lib/types/logs";
 
 import i18n from "@/lib/i18n";
 
-import { createColumns, getMessage } from "./columns";
+import { addToDatasetSessionId, createColumns, getMessage } from "./columns";
 
 describe("metadata cells", () => {
 	it.each([
@@ -351,5 +351,21 @@ describe("createColumns translations", () => {
 		} finally {
 			await i18n.changeLanguage("en");
 		}
+	});
+});
+describe("addToDatasetSessionId", () => {
+	const log = { id: "req-1", session_id: "sess-1" } as LogEntry;
+
+	it("imports the whole session from a collapsed session row in grouped view", () => {
+		expect(addToDatasetSessionId(log, true)).toBe("sess-1");
+	});
+
+	it("imports only the chosen request from a nested row, even in grouped view", () => {
+		const nested = { ...log, __chainChild: true } as LogEntry;
+		expect(addToDatasetSessionId(nested, true)).toBeUndefined();
+	});
+
+	it("imports only the request outside grouped view", () => {
+		expect(addToDatasetSessionId(log, false)).toBeUndefined();
 	});
 });
