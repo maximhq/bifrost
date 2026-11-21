@@ -404,3 +404,43 @@ updates:
     directory: /tests/e2e/api/webhook-receiver
     schedule:
       interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/micromatch-compat
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/node-forge-compat
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/instructions-test-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/realtime-hooks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/agentgateway
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /tests/integrations/python
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/live
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /tests/live/python
+    schedule:
+      interval: weekly
