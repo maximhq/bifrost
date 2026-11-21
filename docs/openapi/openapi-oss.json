@@ -41600,7 +41600,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Probe a decision route",
-        "description": "Sends one fixed predicate question with a short text input to exactly this provider\nand model on the decisions endpoint, so a decision route can be checked before it is\nrelied on. The request carries no fallbacks and skips the plugin pipeline: routing\nrules, governance, caching, and request logs do not apply, so the result reflects this\nroute alone. The HTTP access log still records the call's method, path, and status.\nEach probe is a real, billed request.\n\nA probe that reached the provider returns `200` whether or not the route works:\n`ok` reports the outcome, and on failure `error` carries the provider's status code,\nerror type, code, and message, with the provider's key values and any URL\ncredentials removed. The request is rejected with `400` before anything is sent when\n`model` is missing, the model is not served on the provider's decisions endpoint\n(the same rule `GET /api/models?decisions=true` applies), or `key_id` is not one of\nthe provider's keys, and with `404` when the provider is not configured.\n",
+        "description": "Sends one fixed predicate question with a short text input to exactly this provider\nand model on the decisions endpoint, so a decision route can be checked before it is\nrelied on. The request carries no fallbacks and skips the plugin pipeline: routing\nrules, governance, caching, and request logs do not apply, so the result reflects this\nroute alone. The HTTP access log still records the call's method, path, and status.\nEach probe is a real, billed request.\n\nA probe that reached the provider returns `200` whether or not the route works:\n`ok` is true only for a usable answer (one predicate answer with a probability\nfrom 0 to 1), and on failure `error` carries the provider's status code, error\ntype, code, and message, with the provider's credentials and any URL credentials\nremoved. A refusal or a missing or out-of-range probability is a failure with\nstatus code `502`. The request is rejected with `400` before anything is sent when\n`model` is missing, the model is not served on the provider's decisions endpoint\n(the same rule `GET /api/models?decisions=true` applies), or `key_id` is not one of\nthe provider's keys, and with `404` when the provider is not configured.\n",
         "tags": [
           "Providers"
         ],
@@ -41665,7 +41665,7 @@
                   "properties": {
                     "ok": {
                       "type": "boolean",
-                      "description": "Whether the route returned an answer"
+                      "description": "Whether the route returned a usable answer, one predicate answer with a probability from 0 to 1. A refusal or a missing or out-of-range probability is false."
                     },
                     "provider": {
                       "type": "string",
@@ -41685,7 +41685,7 @@
                     },
                     "error": {
                       "type": "object",
-                      "description": "Why a probe failed, with the provider's key values and URL credentials removed",
+                      "description": "Why a probe failed, with the provider's credentials (key values, client secrets, private keys, AWS keys and session tokens, extra header values) and URL credentials removed",
                       "required": [
                         "status_code",
                         "message"

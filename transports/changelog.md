@@ -44,7 +44,7 @@
 - **Databricks Scoped OAuth Secrets** - Databricks service principals whose OAuth secret is limited to specific scopes work without configuration: Bifrost retries the token request with the scopes its routes need, and a scope 403 is reported as the provider's own message
 - **Virtual MCPs on Virtual Keys** - The virtual key details sheet lists the Virtual MCPs assigned to the key
 - **FIPS-Approved Key Derivation** - In FIPS 140-3 mode, the encryption data key is derived with PBKDF2-HMAC-SHA-256 and passwords are hashed with PBKDF2-HMAC-SHA-256. Standard builds keep writing the earlier formats, and both formats stay readable, so a rolling deploy is safe
-- **Decision Route Probe** - New `POST /api/providers/{provider}/decisions/probe` sends one fixed decision request to exactly one provider and model, with no fallbacks and no routing rules, and reports whether it answered, which model answered, latency, usage, and on failure the provider's status, error type, code, and message with credentials removed
+- **Decision Route Probe** - New `POST /api/providers/{provider}/decisions/probe` sends one fixed decision request to exactly one provider and model, with no fallbacks and no routing rules, and reports whether it returned a usable answer (a refusal or a probability outside 0..1 is a failure), which model answered, latency, usage, and on failure the provider's status, error type, code, and message with credentials removed
 - **Logical Alias for Decision Models** - The routing rules docs show how to map a logical model name such as `judge` to a decision model with ordered fallbacks, globally or per virtual key
 
 ## 🐞 Fixed

@@ -401,3 +401,86 @@ func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
 		})
 	}
 }
+
+// TestProbeDecision_RejectsUnusableAnswers pins that a reply nothing could act
+// on is a failed probe: a refusal, a predicate answer with no probability or
+// one outside 0..1, and a distribution that does not sum to about 1 each come
+// back as ok false with a 502 naming the problem, not as a working route.
+func TestProbeDecision_RejectsUnusableAnswers(t *testing.T) {
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	cases := []struct {
+		name     string
+		answer   string
+		wantText string
+	}{
+		{name: "refusal", answer: `{"type":"refusal","name":"probe"}`, wantText: "refused"},
+		{name: "probability above 1", answer: `{"type":"predicate","name":"probe","probability":1.7}`, wantText: "outside 0..1"},
+		{name: "negative probability", answer: `{"type":"predicate","name":"probe","probability":-0.2}`, wantText: "outside 0..1"},
+		{name: "no probability", answer: `{"type":"predicate","name":"probe"}`, wantText: "no probability"},
+		{name: "distribution off 1", answer: `{"type":"predicate","name":"probe","probability":0.9,"probabilities":[{"value":true,"probability":0.9},{"value":false,"probability":0.4}]}`, wantText: "sum to"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newDecisionProbeHandler(t, http.StatusOK, `{"model":"decider-2026-01","answers":[`+tc.answer+`]}`)
+			status, body := probeDecisionForTest(h, probeTestProvider, `{"model":"decider"}`)
+			if status != fasthttp.StatusOK {
+				t.Fatalf("status got %d, want 200; body=%s", status, body)
+			}
+			var result DecisionProbeResponse
+			if err := json.Unmarshal(body, &result); err != nil {
+				t.Fatalf("failed to decode response: %v; body=%s", err, body)
+			}
+			if result.OK || result.Error == nil || result.Error.StatusCode != fasthttp.StatusBadGateway || !strings.Contains(result.Error.Message, tc.wantText) {
+				t.Fatalf("got %s, want ok false with a 502 containing %q", body, tc.wantText)
+			}
+			if result.Model != "decider-2026-01" {
+				t.Fatalf("model got %q, want the provider-reported decider-2026-01", result.Model)
+			}
+		})
+	}
+}
+
+// TestDecisionProbeSecrets_IncludesEveryKeyCredential pins that the scrub list
+// holds the secrets a key authenticates with besides its value: client
+// secrets, OAuth private keys and extra token parameters, AWS access and
+// secret keys and session tokens, Vertex service account secrets, and an
+// inline identity token, and that a provider error echoing one is redacted.
+func TestDecisionProbeSecrets_IncludesEveryKeyCredential(t *testing.T) {
+	secret := func(v string) *schemas.SecretVar { return schemas.NewSecretVar(v) }
+	config := &configstore.ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "azure", AzureKeyConfig: &schemas.AzureKeyConfig{ClientSecret: secret("azure-client-secret")}},
+			{ID: "vertex", VertexKeyConfig: &schemas.VertexKeyConfig{AuthCredentials: *secret(`{"type":"service_account","private_key_id":"vertex-private-key-id","private_key":"vertex-private-key-pem"}`)}},
+			{ID: "bedrock", BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *secret("AKIABEDROCKACCESS"), SecretKey: *secret("bedrock-secret-key"), SessionToken: secret("bedrock-session-token")}},
+			{ID: "mantle", BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{AccessKey: *secret("AKIAMANTLEACCESS"), SecretKey: *secret("mantle-secret-key"), SessionToken: secret("mantle-session-token")}},
+			{ID: "sagemaker", SageMakerKeyConfig: &schemas.SageMakerKeyConfig{AccessKey: *secret("AKIASAGEMAKERACCESS"), SecretKey: *secret("sagemaker-secret-key"), SessionToken: secret("sagemaker-session-token")}},
+			{ID: "databricks", DatabricksKeyConfig: &schemas.DatabricksKeyConfig{ClientSecret: secret("databricks-client-secret")}},
+			{ID: "oauth", OAuthKeyConfig: &schemas.OAuthKeyConfig{ClientSecret: secret("oauth-client-secret"), PrivateKey: secret("oauth-private-key-pem"), ExtraParams: map[string]string{"resource": "oauth-extra-param-secret"}}},
+			{ID: "anthropic", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{IdentitySource: &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: secret("anthropic-identity-token")}}}},
+		},
+	}
+	want := []string{
+		"azure-client-secret", "vertex-private-key-id", "vertex-private-key-pem",
+		"AKIABEDROCKACCESS", "bedrock-secret-key", "bedrock-session-token",
+		"AKIAMANTLEACCESS", "mantle-secret-key", "mantle-session-token",
+		"AKIASAGEMAKERACCESS", "sagemaker-secret-key", "sagemaker-session-token",
+		"databricks-client-secret", "oauth-client-secret", "oauth-private-key-pem", "oauth-extra-param-secret",
+		"anthropic-identity-token",
+	}
+	text := "rejected: " + strings.Join(want, " ")
+	got := decisionProbeErrorFrom(&schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
+	}, decisionProbeSecrets(config))
+	if got.Type == nil || got.Code == nil {
+		t.Fatalf("type %v, code %v; want both set", got.Type, got.Code)
+	}
+	for field, value := range map[string]string{"message": got.Message, "type": *got.Type, "code": *got.Code} {
+		for _, secret := range want {
+			if strings.Contains(value, secret) {
+				t.Fatalf("%s leaks %q: %q", field, secret, value)
+			}
+		}
+	}
+}

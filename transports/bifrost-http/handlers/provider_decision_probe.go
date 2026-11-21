@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -143,10 +144,61 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, result)
 		return
 	}
-	result.OK = true
 	result.Provider, result.Model = probedRoute(result.Provider, result.Model, resp.ExtraFields.RoutingInfo, resp.Model)
 	result.Usage = resp.Usage
+	if problem := decisionProbeAnswerProblem(resp.Answers); problem != "" {
+		result.Error = &DecisionProbeError{StatusCode: fasthttp.StatusBadGateway, Message: problem}
+		SendJSON(ctx, result)
+		return
+	}
+	result.OK = true
 	SendJSON(ctx, result)
+}
+
+// decisionProbeAnswerProbabilityTolerance is how far a probability
+// distribution may sum from 1, the rounding the decision emulation accepts.
+const decisionProbeAnswerProbabilityTolerance = 0.05
+
+// decisionProbeAnswerProblem says why the answers to the probe's one predicate
+// question could not be used, or returns "" when they can. A route only works
+// if a caller could act on its answer: a refusal, an answer of another type, or
+// a probability that is missing, outside 0..1, or part of a distribution that
+// does not sum to about 1 is a failed probe even though the provider replied.
+func decisionProbeAnswerProblem(answers []schemas.DecisionAnswer) string {
+	if len(answers) != 1 {
+		return fmt.Sprintf("the provider returned %d answers to one question", len(answers))
+	}
+	answer := answers[0]
+	switch answer.Type {
+	case schemas.DecisionTypePredicate:
+	case schemas.DecisionTypeRefusal:
+		return "the provider refused the probe question"
+	default:
+		return fmt.Sprintf("the provider returned a %q answer to a predicate question", answer.Type)
+	}
+	if answer.Probability == nil {
+		return "the predicate answer has no probability"
+	}
+	if !decisionProbeValidProbability(*answer.Probability) {
+		return fmt.Sprintf("the predicate answer's probability %v is outside 0..1", *answer.Probability)
+	}
+	if len(answer.Probabilities) > 0 {
+		var sum float64
+		for _, p := range answer.Probabilities {
+			if !decisionProbeValidProbability(p.Probability) {
+				return fmt.Sprintf("the answer's probability %v is outside 0..1", p.Probability)
+			}
+			sum += p.Probability
+		}
+		if math.Abs(sum-1) > decisionProbeAnswerProbabilityTolerance+1e-12 {
+			return fmt.Sprintf("the answer's probabilities sum to %v, not about 1", sum)
+		}
+	}
+	return ""
+}
+
+func decisionProbeValidProbability(p float64) bool {
+	return !math.IsNaN(p) && p >= 0 && p <= 1
 }
 
 // probedRoute names the provider and model that served the probe: the
@@ -209,9 +261,14 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 	return out
 }
 
-// decisionProbeSecrets lists the provider's credential values to scrub: its
-// key values and its extra header values. Empty values are skipped, since
-// scrubbing "" would insert the marker between every character.
+// decisionProbeSecrets lists the provider's credential values to scrub: each
+// key's value and the secrets its provider config authenticates with (client
+// secrets, private keys, AWS access and secret keys and session tokens, Vertex
+// service account credentials, an inline identity token, OAuth extra token
+// parameters), plus the extra header values. Bearer tokens minted from these
+// live in each provider's own token cache, which the handler cannot read, so
+// they are not listed. Empty values are skipped, since scrubbing "" would
+// insert the marker between every character.
 func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 	var secrets []string
 	add := func(value string) {
@@ -219,8 +276,58 @@ func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 			secrets = append(secrets, value)
 		}
 	}
+	addPtr := func(value *schemas.SecretVar) {
+		if value != nil {
+			add(value.GetValue())
+		}
+	}
 	for i := range config.Keys {
-		add(config.Keys[i].Value.GetValue())
+		key := &config.Keys[i]
+		add(key.Value.GetValue())
+		if c := key.AzureKeyConfig; c != nil {
+			addPtr(c.ClientSecret)
+		}
+		if c := key.VertexKeyConfig; c != nil {
+			credentials := c.AuthCredentials.GetValue()
+			add(credentials)
+			// A service account JSON is never echoed whole; its secret fields might be.
+			var fields map[string]any
+			if sonic.UnmarshalString(credentials, &fields) == nil {
+				for _, name := range []string{"private_key", "private_key_id", "client_secret", "refresh_token"} {
+					if value, ok := fields[name].(string); ok {
+						add(value)
+					}
+				}
+			}
+		}
+		if c := key.BedrockKeyConfig; c != nil {
+			add(c.AccessKey.GetValue())
+			add(c.SecretKey.GetValue())
+			addPtr(c.SessionToken)
+		}
+		if c := key.BedrockMantleKeyConfig; c != nil {
+			add(c.AccessKey.GetValue())
+			add(c.SecretKey.GetValue())
+			addPtr(c.SessionToken)
+		}
+		if c := key.SageMakerKeyConfig; c != nil {
+			add(c.AccessKey.GetValue())
+			add(c.SecretKey.GetValue())
+			addPtr(c.SessionToken)
+		}
+		if c := key.DatabricksKeyConfig; c != nil {
+			addPtr(c.ClientSecret)
+		}
+		if c := key.OAuthKeyConfig; c != nil {
+			addPtr(c.ClientSecret)
+			addPtr(c.PrivateKey)
+			for _, value := range c.ExtraParams {
+				add(value)
+			}
+		}
+		if c := key.AnthropicKeyConfig; c != nil && c.WorkloadIdentity != nil && c.WorkloadIdentity.IdentitySource != nil {
+			addPtr(c.WorkloadIdentity.IdentitySource.Token)
+		}
 	}
 	if config.NetworkConfig != nil {
 		for _, header := range config.NetworkConfig.ExtraHeaders {

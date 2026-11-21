@@ -1024,7 +1024,7 @@ DecisionProbeResponse:
   properties:
     ok:
       type: boolean
-      description: Whether the route returned an answer
+      description: Whether the route returned a usable answer, one predicate answer with a probability from 0 to 1. A refusal or a missing or out-of-range probability is false.
     provider:
       type: string
       description: Provider that answered, or that was attempted when the probe failed
@@ -1042,7 +1042,7 @@ DecisionProbeResponse:
 
 DecisionProbeError:
   type: object
-  description: Why a probe failed, with the provider's key values and URL credentials removed
+  description: Why a probe failed, with the provider's credentials (key values, client secrets, private keys, AWS keys and session tokens, extra header values) and URL credentials removed
   required:
     - status_code
     - message
