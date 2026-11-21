@@ -3724,6 +3724,34 @@ func TestInvokeIngressCarriesToolStrict(t *testing.T) {
 	}
 }
 
+// TestToBedrockInvokeAnthropicResponse_StopReasonTranslation: the non-streaming builder must
+// translate Bifrost's Responses incomplete reasons into Anthropic stop reasons, as the
+// streaming encoder already does, instead of leaking max_output_tokens / content_filter.
+func TestToBedrockInvokeAnthropicResponse_StopReasonTranslation(t *testing.T) {
+	model := "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	for reason, want := range map[string]string{
+		"max_output_tokens": "max_tokens",
+		"content_filter":    "refusal",
+	} {
+		resp := &schemas.BifrostResponsesResponse{
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: reason},
+		}
+		result := toBedrockInvokeAnthropicResponse(resp, model)
+		assert.Equal(t, want, result.StopReason, reason)
+	}
+}
+
+// TestToBedrockInvokeAI21Response_FinishReasonTranslation: AI21 speaks stop/length, so the
+// internal max_output_tokens reason must not leak through the AI21 invoke builder.
+func TestToBedrockInvokeAI21Response_FinishReasonTranslation(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{
+		IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"},
+	}
+	result := toBedrockInvokeAI21Response(resp)
+	require.Len(t, result.Choices, 1)
+	assert.Equal(t, "length", result.Choices[0].FinishReason)
+}
+
 // The InvokeModel body must send a tail system reminder in the same form at turn N and at N+1,
 // after Claude's tool_use reply is appended behind it, with the datasheet row held false as it
 // is for released gateways. Before the placement pass, the role-less function_call item made
