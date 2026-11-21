@@ -233,7 +233,6 @@ type codexFixtureOptions struct {
 func newCodexRelayFixtureWith(t *testing.T, config *lib.Config, opts codexFixtureOptions) *codexRelayFixture {
 	t.Helper()
 	plugins := opts.plugins
-	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
 	recorder := &codexPipelineRecorder{}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account:    wsTwoKeyAccount{baseURL: "http://127.0.0.1:1"},
