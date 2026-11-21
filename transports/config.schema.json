@@ -198,6 +198,13 @@
           "description": "Number of days to retain logs",
           "default": 365
         },
+        "vector_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 106751,
+          "default": 0,
+          "description": "Days to keep vector store entries tied to logs (Warp's log index and the complexity router's captured requests). 0 keeps them as long as the logs. Never longer than log_retention_days: a larger value is capped at it. Takes effect at the next hourly sweep, without a restart."
+        },
         "enforce_governance_header": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"

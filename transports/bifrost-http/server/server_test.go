@@ -2424,32 +2424,65 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
 }
 
-// The routing plugin bounds captured request vectors by the logs' retention;
+// The routing plugin bounds captured request vectors by the vector retention;
 // if it stopped satisfying the setter, bootstrap and reload would both skip
 // it without a word.
-var _ logRetentionSetter = (*routing.RoutingPlugin)(nil)
+var _ vectorRetentionSetter = (*routing.RoutingPlugin)(nil)
 
 type retentionRecorder struct{ days func() int }
 
-func (r *retentionRecorder) SetLogRetention(days func() int) { r.days = days }
+func (r *retentionRecorder) SetVectorRetention(days func() int) { r.days = days }
 
-// A reload builds a fresh routing plugin, which must get the same log
+// vector_retention_days only ever shortens how long vectors are kept: unset
+// follows the logs, a shorter value wins, a longer one is capped at the logs,
+// and with logs kept forever the vector value alone applies.
+func TestEffectiveVectorRetentionDays(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		logDays, vecDays int
+		want             int
+	}{
+		{"both unset: no sweep", 0, 0, 0},
+		{"unset follows logs", 30, 0, 30},
+		{"shorter than logs wins", 30, 7, 7},
+		{"longer than logs is capped", 30, 90, 30},
+		{"equal to logs", 30, 30, 30},
+		{"logs kept forever: vector value alone", 0, 14, 14},
+		{"negative vector value is treated as unset", 30, -1, 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, effectiveVectorRetentionDays(tc.logDays, tc.vecDays))
+		})
+	}
+}
+
+// A reload builds a fresh routing plugin, which must get the same vector
 // retention as the one bootstrap wired, or its captured vectors outlive their
-// logs. The retention is read at each sweep: 0 while there is no cleaner (logs
-// kept forever), then whatever the cleaner holds now.
-func TestApplyRoutingLogRetentionReadsTheLiveCleaner(t *testing.T) {
+// logs. Both retentions are read at each sweep: the cleaner's (0 while there is
+// none, logs kept forever) and client_config.vector_retention_days, so a change
+// to either through PUT /api/config applies at the next sweep.
+func TestApplyRoutingVectorRetentionReadsLiveRetentions(t *testing.T) {
 	s := &BifrostHTTPServer{}
 	rec := &retentionRecorder{}
-	s.applyRoutingLogRetention(rec)
+	s.applyRoutingVectorRetention(rec)
 	require.NotNil(t, rec.days)
-	assert.Equal(t, 0, rec.days(), "no cleaner: logs are kept forever")
+	assert.Equal(t, 0, rec.days(), "no cleaner and no config: nothing is swept")
 
 	s.LogsCleaner = logstore.NewLogsCleaner(nil, logstore.CleanerConfig{RetentionDays: 5}, bifrost.NewNoOpLogger())
 	assert.Equal(t, 5, rec.days(), "a cleaner built after wiring is still read")
 	s.LogsCleaner.UpdateRetentionDays(2)
-	assert.Equal(t, 2, rec.days(), "a retention changed at runtime is read at the next sweep")
+	assert.Equal(t, 2, rec.days(), "a log retention changed at runtime is read at the next sweep")
 
-	s.applyRoutingLogRetention(struct{}{}) // a plugin without the setter is left alone
+	s.LogsCleaner.UpdateRetentionDays(30)
+	s.Config = &lib.Config{ClientConfig: &configstore.ClientConfig{VectorRetentionDays: 7}}
+	assert.Equal(t, 7, rec.days(), "a shorter vector retention wins over the logs'")
+	s.Config.ClientConfig.VectorRetentionDays = 90
+	assert.Equal(t, 30, rec.days(), "a vector retention longer than the logs' is capped at it")
+
+	s.LogsCleaner = nil
+	assert.Equal(t, 90, rec.days(), "with logs kept forever the vector retention alone applies")
+
+	s.applyRoutingVectorRetention(struct{}{}) // a plugin without the setter is left alone
 }
 
 // sharedVectorStore stands in for a vector store shared across nodes
