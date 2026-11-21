@@ -45,6 +45,13 @@ if [ ! -f "$REPO_ROOT/go.work" ]; then
         go work use "$plugin_dir"
       fi
     done
+    for module_dir in core framework plugins/requestguard; do
+      module_path="$(awk '$1 == "module" { print $2; exit }' "$REPO_ROOT/$module_dir/go.mod" | tr -d '\r')"
+      module_version="$(awk -v module="$module_path" '$1 == module { print $2; exit }' "$REPO_ROOT/transports/go.mod" | tr -d '\r')"
+      if [ -n "$module_path" ] && [ -n "$module_version" ]; then
+        go work edit -replace="$module_path@$module_version=./$module_dir"
+      fi
+    done
   )
   echo "✅ Go workspace initialized at $REPO_ROOT/go.work"
 else

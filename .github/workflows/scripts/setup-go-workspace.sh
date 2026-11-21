@@ -33,4 +33,15 @@ for plugin_dir in ./plugins/*/; do
     go work use "$plugin_dir"
   fi
 done
+
+# The transport imports requestguard before its first public module tag exists.
+# Keep the workspace use entry for plugin tests, and pin the transport's exact
+# requirement to the local source so Go does not query the module proxy.
+for module_dir in core framework plugins/requestguard; do
+  module_path="$(awk '$1 == "module" { print $2; exit }' "$module_dir/go.mod" | tr -d '\r')"
+  module_version="$(awk -v module="$module_path" '$1 == module { print $2; exit }' transports/go.mod | tr -d '\r')"
+  if [ -n "$module_path" ] && [ -n "$module_version" ]; then
+    go work edit -replace="$module_path@$module_version=./$module_dir"
+  fi
+done
 echo "✅ Go workspace initialized"

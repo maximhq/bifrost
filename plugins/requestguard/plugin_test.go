@@ -114,7 +114,10 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 	cfg.BudgetGuard.Mode = PolicyOff
 	cfg.Coalescer.Enabled = true
 	cfg.Coalescer.MaxInFlight = 16
-	cfg.Coalescer.WaitTimeout = 2 * time.Second
+	// Followers wait inside PreLLMHook until the leader completes. Keep their
+	// coalescer deadline well beyond the test's registration barrier so a slow
+	// race run cannot turn followers into fail-open leaders before we release it.
+	cfg.Coalescer.WaitTimeout = 30 * time.Second
 	cfg.Metrics.Enabled = true
 	cfg.Metrics.Registerer = registry
 	plugin, err := Init(cfg, nil, requestGuardTestCatalog())
@@ -125,7 +128,10 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 
 	const requestCount = 10
 	releaseLeader := make(chan struct{})
-	leaderContexts := make(chan *schemas.BifrostContext, 1)
+	var releaseLeaderOnce sync.Once
+	releaseLeaderNow := func() { releaseLeaderOnce.Do(func() { close(releaseLeader) }) }
+	t.Cleanup(releaseLeaderNow)
+	leaderContexts := make(chan *schemas.BifrostContext, requestCount)
 	followerShortCircuits := make(chan *schemas.LLMPluginShortCircuit, requestCount-1)
 	leaderResponse := requestGuardTestResponse("leader")
 	var requests sync.WaitGroup
@@ -156,7 +162,7 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("no coalescer leader started")
 	}
-	waitForRequestGuard(t, func() bool {
+	waitForRequestGuardTimeout(t, 5*time.Second, func() bool {
 		plugin.coalescer.mu.Lock()
 		defer plugin.coalescer.mu.Unlock()
 		for _, flight := range plugin.coalescer.flights {
@@ -164,7 +170,7 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 		}
 		return false
 	})
-	close(releaseLeader)
+	releaseLeaderNow()
 	requests.Wait()
 
 	seenResponses := map[*schemas.BifrostResponse]struct{}{leaderResponse: {}}
@@ -488,8 +494,12 @@ func requestGuardTestResponse(id string) *schemas.BifrostResponse {
 }
 
 func waitForRequestGuard(t *testing.T, ready func() bool) {
+	waitForRequestGuardTimeout(t, 2*time.Second, ready)
+}
+
+func waitForRequestGuardTimeout(t *testing.T, timeout time.Duration, ready func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if ready() {
 			return
