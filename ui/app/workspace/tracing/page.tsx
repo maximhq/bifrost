@@ -148,7 +148,6 @@ export default function TracingPage() {
 		session_id: url.session_id,
 		trace_id: url.trace_id,
 	};
-	const [viewerProject, setViewerProject] = useState<string | null>(null);
 	const traceColumns = useMemo(() => createTraceColumns(t, projects), [t, projects]);
 	const spanColumns = useMemo(() => createSpanColumns(t), [t]);
 	const sessionColumns = useMemo(() => createSessionColumns(t), [t]);
@@ -206,9 +205,13 @@ export default function TracingPage() {
 	const navigate = (direction: "prev" | "next") => {
 		const target = navigable[position + (direction === "prev" ? -1 : 1)];
 		if (!target) return;
-		setViewerProject(target.project);
-		setUrl({ trace: target.trace, span: target.span });
+		setUrl({ project: target.project, trace: target.trace, span: target.span });
 	};
+	// A link with a trace and no project (older links, hand-edited URLs) finds the project by trace id.
+	const traceProject = useGetTracesQuery(
+		{ filters: { trace_id: url.trace }, pagination: { limit: 1, offset: 0 } },
+		{ skip: !url.trace || !!url.project },
+	);
 	const linkedProject = useMemo(
 		() => projects.find((project) => project.id === url.project || project.name === url.project)?.id ?? url.project,
 		[projects, url.project],
@@ -383,8 +386,7 @@ export default function TracingPage() {
 							onPaginationChange={onPaginationChange}
 							onRefresh={refresh}
 							onRowClick={(trace) => {
-								setViewerProject(trace.project_id);
-								setUrl({ trace: trace.trace_id, span: "" });
+								setUrl({ project: trace.project_id, trace: trace.trace_id, span: "" });
 							}}
 							{...tableProps(traceConfig)}
 						/>
@@ -403,8 +405,7 @@ export default function TracingPage() {
 							onPaginationChange={onPaginationChange}
 							onRefresh={refresh}
 							onRowClick={(span) => {
-								setViewerProject(span.project_id);
-								setUrl({ trace: span.trace_id, span: span.span_id });
+								setUrl({ project: span.project_id, trace: span.trace_id, span: span.span_id });
 							}}
 							{...tableProps(spanConfig)}
 						/>
@@ -466,14 +467,13 @@ export default function TracingPage() {
 			</div>
 
 			<TraceViewer
-				projectId={url.trace ? viewerProject || linkedProject || url.project_ids[0] || null : null}
+				projectId={url.trace ? linkedProject || traceProject.data?.traces?.[0]?.project_id || null : null}
 				traceId={url.trace || null}
 				initialSpanId={url.span || null}
 				hasPrev={position > 0}
 				hasNext={position !== -1 && position < navigable.length - 1}
 				onNavigate={navigate}
 				onClose={() => {
-					setViewerProject(null);
 					setUrl({ trace: "", span: "", project: "" });
 				}}
 				renderSpanExtras={renderTraceSpanExtras}
