@@ -1025,7 +1025,25 @@ export const ProviderIcons = {
 				/>
 			</svg>
 		);
+	},	llmtr: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 24 24"
+				className={className}
+				fill="none"
+			>
+				<title>LLMTR</title>
+				<rect width="24" height="24" rx="6" fill="#0F766E" />
+				<path fill="#FFFFFF" d="M8 6h2.4v8.2H16V16.6H8z" />
+			</svg>
+		);
 	},
+
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

@@ -44,6 +44,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Groq,
 	schemas.HuggingFace,
 	schemas.Kimchi,
+	schemas.Llmtr,
 	schemas.MiniMax,
 	schemas.Mistral,
 	schemas.Nebius,

@@ -165,6 +165,7 @@
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/kimchi",
+                  "providers/supported-providers/llmtr",
                   "providers/supported-providers/machgen",
                   "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
