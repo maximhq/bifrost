@@ -543,6 +543,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	if requestType == schemas.VideoRetrieveRequest {
 		return nil
 	}
+	// The same holds for a stored response: a Gemini Interaction's every read and cancel repeats
+	// the run's full usage. The run is billed once, by job accounting, under the create.
+	if requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest ||
+		requestType == schemas.ResponsesCancelRequest {
+		return nil
+	}
 
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
