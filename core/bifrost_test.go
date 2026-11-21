@@ -4426,6 +4426,7 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	// Simulate an undelivered stream handoff sitting in the channel.
 	streamCh := msg.ResponseStream
 	streamCh <- make(chan *schemas.BifrostStreamChunk)
+	msg.streamDone = make(chan struct{})
 
 	b.releaseChannelMessage(msg)
 
@@ -4438,10 +4439,100 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	if msg.ResponseStream != nil {
 		t.Error("releaseChannelMessage should clear the ResponseStream reference")
 	}
+	if msg.streamDone != nil {
+		t.Error("releaseChannelMessage should clear the stream completion signal")
+	}
 	select {
 	case <-streamCh:
 		t.Error("pooled response stream channel should be drained before Put")
 	default:
+	}
+}
+
+type sdkStreamProbe struct {
+	cacheHitPlugin
+	ctx    *schemas.BifrostContext
+	source chan *schemas.BifrostStreamChunk
+}
+
+func TestSDKResponsesStreamWithoutInput(t *testing.T) {
+	client := newStreamTestClient(t, NewMockAccount())
+	stream, err := client.ResponsesStreamRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: testChatModel,
+	})
+	require.Nil(t, stream)
+	require.NotNil(t, err)
+	assert.Equal(t, "responses not provided for responses stream request", err.GetErrorString())
+}
+
+func (p *sdkStreamProbe) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.ctx = ctx.Root()
+	if p.source != nil {
+		return req, &schemas.LLMPluginShortCircuit{Stream: p.source}, nil
+	}
+	return req, nil, nil
+}
+
+func TestSDKStreamContextLifetime(t *testing.T) {
+	for _, source := range []string{"provider", "plugin"} {
+		for _, end := range []string{"eof", "shutdown"} {
+			t.Run(source+"/"+end, func(t *testing.T) {
+				plugin := &sdkStreamProbe{}
+				var finish func()
+				account := NewMockAccount()
+				if source == "provider" {
+					release := make(chan struct{})
+					finish = sync.OnceFunc(func() { close(release) })
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "text/event-stream")
+						fmt.Fprint(w, "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n")
+						w.(http.Flusher).Flush()
+						select {
+						case <-release:
+							fmt.Fprint(w, "data: [DONE]\n\n")
+						case <-r.Context().Done():
+						}
+					}))
+					t.Cleanup(server.Close)
+					account = mockAccountFor(server.URL)
+				} else {
+					account.AddProvider(schemas.OpenAI, 1, 1)
+					plugin.source = make(chan *schemas.BifrostStreamChunk, 1)
+					plugin.source <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{Model: testChatModel}}
+					finish = sync.OnceFunc(func() { close(plugin.source) })
+				}
+				client, err := Init(context.Background(), schemas.BifrostConfig{
+					Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+				})
+				require.NoError(t, err)
+				shutdown := sync.OnceFunc(client.Shutdown)
+				t.Cleanup(shutdown)
+				t.Cleanup(finish)
+
+				stream, streamErr := client.ChatCompletionStreamRequest(nil, chatRequest())
+				require.Nil(t, streamErr)
+				require.NoError(t, plugin.ctx.Err(), "the stream is still open after dispatch")
+				require.NotNil(t, <-stream)
+				if end == "shutdown" {
+					shutdown()
+				} else {
+					finish()
+					drainStream(stream)
+				}
+				select {
+				case <-plugin.ctx.Done():
+					require.ErrorIs(t, plugin.ctx.Err(), context.Canceled)
+				case <-time.After(3 * time.Second):
+					t.Fatal("the SDK request context outlived the stream or instance")
+				}
+				if end == "shutdown" {
+					finish()
+					drainStream(stream)
+				} else {
+					require.NoError(t, client.ctx.Err())
+				}
+			})
+		}
 	}
 }
 
