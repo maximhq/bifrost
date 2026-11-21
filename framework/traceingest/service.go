@@ -433,6 +433,31 @@ func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tab
 	if !s.allowRate(principal.KeyID, len(spans)) {
 		return ErrRateLimited
 	}
+	return s.ingest(ctx, principal, project, source, spans)
+}
+
+// Admit charges spans against the principal's rate limit once, for a request that then stores them
+// in several groups with IngestAdmitted. Charging each group would let a retried request store the
+// first group again and be refused on the next, every time.
+func (s *Service) Admit(principal *Principal, spans int) error {
+	if spans > 0 && !s.allowRate(principal.KeyID, spans) {
+		return ErrRateLimited
+	}
+	return nil
+}
+
+// IngestAdmitted is Ingest for spans already charged with Admit.
+func (s *Service) IngestAdmitted(ctx context.Context, principal *Principal, project *tables.TableTraceProject, source string, spans []*SpanPart) error {
+	if len(spans) == 0 {
+		return nil
+	}
+	if !principal.allows(project.ID) {
+		return ErrForbidden
+	}
+	return s.ingest(ctx, principal, project, source, spans)
+}
+
+func (s *Service) ingest(ctx context.Context, principal *Principal, project *tables.TableTraceProject, source string, spans []*SpanPart) error {
 	hidden := !principal.LogContent || (s.cfg.ContentLoggingDisabled != nil && s.cfg.ContentLoggingDisabled())
 	rules := s.masksFor(project)
 	now := time.Now().UTC()
