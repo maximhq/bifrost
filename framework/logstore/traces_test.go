@@ -864,3 +864,30 @@ func TestTraceUploadBytesLiveOnTheRowWithoutAnObjectStore(t *testing.T) {
 	assert.Equal(t, TraceUploadStatusDone, upload.Status)
 	assert.ErrorIs(t, store.SaveTraceUploadBytes(ctx, "missing", []byte("x")), ErrNotFound)
 }
+
+// An estimated cost is a fallback: it is written only where the span has no cost. A span whose SDK
+// cost was committed after the enrichment read keeps that cost.
+func TestEstimatedCostNeverReplacesAStoredCost(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "t", SpanID: "sdk", Source: TraceSourceOTel, StartTime: time.Now(), Cost: new(0.5), Provider: "anthropic"}}))
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "t", SpanID: "bare", Source: TraceSourceOTel, StartTime: time.Now()}}))
+
+	estimate := TraceSpanEnrichment{Cost: new(9.0), CostEstimated: new(true), Provider: new("openai")}
+	for _, span := range []string{"sdk", "bare"} {
+		require.NoError(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "t", span, estimate))
+	}
+	found, err := store.FindTraceSpans(ctx, "p1", []TraceSpanKey{{TraceID: "t", SpanID: "sdk"}, {TraceID: "t", SpanID: "bare"}})
+	require.NoError(t, err)
+	byID := map[string]*TraceSpan{}
+	for _, span := range found {
+		byID[span.SpanID] = span
+	}
+	require.NotNil(t, byID["sdk"].Cost)
+	assert.Equal(t, 0.5, *byID["sdk"].Cost, "the SDK's cost stays")
+	assert.False(t, byID["sdk"].CostEstimated)
+	assert.Equal(t, "anthropic", byID["sdk"].Provider)
+	require.NotNil(t, byID["bare"].Cost)
+	assert.Equal(t, 9.0, *byID["bare"].Cost, "a span with no cost gets the estimate")
+	assert.True(t, byID["bare"].CostEstimated)
+}
