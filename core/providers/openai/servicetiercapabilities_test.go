@@ -58,7 +58,10 @@ func TestServiceTierForModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tt.provider, tt.model)
-			got := serviceTierForModel(caps, tt.tier)
+			// No base type on the context: ResolveBaseProvider falls back to the
+			// provider itself, the shape direct converter calls see.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			got := serviceTierForModel(ctx, tt.provider, caps, tt.tier)
 			if tt.want == nil {
 				if got != nil {
 					t.Fatalf("service tier = %q, want nil", *got)
@@ -139,6 +142,73 @@ func TestOpenAIConvertersFilterServiceTierByModelCapability(t *testing.T) {
 			}
 			if (responses.ServiceTier != nil) != tt.wantTier {
 				t.Fatalf("responses service tier = %v, want present=%v", responses.ServiceTier, tt.wantTier)
+			}
+		})
+	}
+}
+
+// TestServiceTierForModel_CustomBedrockBaseKeepsFamilyGuard pins that the
+// Bedrock-family tier guard keys off the base provider, not the capability
+// row's provider: a custom provider fronting Bedrock publishes its own row
+// (whose Provider() reports the custom name), but service_tier auto/default
+// must still be dropped before the request leaves.
+func TestServiceTierForModel_CustomBedrockBaseKeepsFamilyGuard(t *testing.T) {
+	auto := schemas.BifrostServiceTierAuto
+	priority := schemas.BifrostServiceTierPriority
+
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == "bedrock-openai-compat" && model == "openai.gpt-5.6-luna" {
+			// The custom row carries no ServiceTiers: unknown catalog state.
+			return &schemas.ModelCapabilities{}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	// Base-typed context, the shape bifrost stamps for every custom provider.
+	bedrockBase := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.Bedrock)
+	openaiBase := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+
+	tests := []struct {
+		name     string
+		ctx      *schemas.BifrostContext
+		provider schemas.ModelProvider
+		tier     schemas.BifrostServiceTier
+		wantNil  bool
+	}{
+		{name: "custom provider on a Bedrock base drops auto", ctx: bedrockBase, provider: "bedrock-openai-compat", tier: auto, wantNil: true},
+		{name: "custom provider on a Bedrock base fails closed on a non-standard tier", ctx: bedrockBase, provider: "bedrock-openai-compat", tier: priority, wantNil: true},
+		{name: "custom provider on an OpenAI base keeps auto", ctx: openaiBase, provider: "bedrock-openai-compat", tier: auto, wantNil: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chat := ToOpenAIChatRequest(tt.ctx, &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    "openai.gpt-5.6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+				Params:   &schemas.ChatParameters{ServiceTier: &tt.tier},
+			})
+			if chat == nil {
+				t.Fatal("chat conversion returned nil")
+			}
+			if (chat.ServiceTier == nil) != tt.wantNil {
+				t.Fatalf("chat service tier = %v, want nil=%v", chat.ServiceTier, tt.wantNil)
+			}
+
+			responses := ToOpenAIResponsesRequest(tt.ctx, &schemas.BifrostResponsesRequest{
+				Provider: tt.provider,
+				Model:    "openai.gpt-5.6-luna",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{ServiceTier: &tt.tier},
+			})
+			if responses == nil {
+				t.Fatal("responses conversion returned nil")
+			}
+			if (responses.ServiceTier == nil) != tt.wantNil {
+				t.Fatalf("responses service tier = %v, want nil=%v", responses.ServiceTier, tt.wantNil)
 			}
 		})
 	}

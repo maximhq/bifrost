@@ -620,7 +620,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	// The request's own row wins; base-family rows are only a fallback.
+	caps := schemas.ResolveModelCapsForRequest(ctx, bifrostReq.Provider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -1085,7 +1086,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.PromptCacheOptions = &optsCopy
 			}
 		}
-		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
+		req.ServiceTier = serviceTierForModel(ctx, bifrostReq.Provider, caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
@@ -1130,7 +1131,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
 				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			}
@@ -1206,25 +1207,34 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.Reasoning.Effort != nil {
 			effort = *req.ResponsesParameters.Reasoning.Effort
 		}
-		if samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort) {
-			req.ResponsesParameters.TopP = nil
-		}
-		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
+		// Only OpenAI hosts gate these by name; third-party gpt-oss hosts accept
+		// them. A row that explicitly restricts a field is honored whatever the
+		// base family — the fallback stays inside the family gate so an
+		// unrestricted third-party row keeps its sampling parameters.
 		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
+		nameRules := samplingNameRules(base, capModel)
+		if nameRules || caps.RowRestrictsField(schemas.FieldTopP) {
+			if samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort) {
+				req.ResponsesParameters.TopP = nil
+			}
+		}
+		if nameRules || caps.RowRestrictsField(schemas.FieldTemperature) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
+		}
+		if nameRules || caps.RowRestrictsField(schemas.FieldTopLogprobs) {
 			if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, capModel, effort) {
 				req.ResponsesParameters.TopLogProbs = nil
 			}
-			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
-				slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
-				// Clone: Include shares its backing array with bifrostReq.Params.
-				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
-					return s == schemas.ResponsesIncludeOutputTextLogProbs
-				})
-			}
+		}
+		if (nameRules || caps.RowRestrictsField(schemas.FieldLogprobs)) &&
+			samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
+			slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
+			// Clone: Include shares its backing array with bifrostReq.Params.
+			req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
+				return s == schemas.ResponsesIncludeOutputTextLogProbs
+			})
 		}
 		if base == schemas.OpenAI || base == schemas.Azure {
 			// Codex asks for encrypted reasoning on every request; models that do not
@@ -1279,10 +1289,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = normalizedTools
 	}
 
-	// Filter out tools that the OpenAI-compatible target doesn't support.
-	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
-	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider), toolProvider)
-	req.provisionToolSearch(toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel)))
+	// Filter out tools that the OpenAI-compatible target doesn't support. Model
+	// capability comes from the already-resolved row (the request's own row
+	// wins); toolProvider stays the family key for provider-level restrictions.
+	req.filterUnsupportedTools(supportsWebSearchContentTypes(caps, toolProvider), toolProvider)
+	req.provisionToolSearch(caps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel)))
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
@@ -1317,6 +1328,15 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // xAI/Groq.
 func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
 	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
+	// A row can rename the disabled label (custom dialects spell it "off"): the
+	// translated label is still the reasoning-disabled state — but only on a
+	// model that can disable reasoning at all; an always-reasoning row maps
+	// "none" onto its lowest rung, which is not the disabled state.
+	if !effortIsNone && effort != "" && caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
+		if disabled, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && disabled == effort {
+			effortIsNone = true
+		}
+	}
 	// An outright unsupported_fields entry outranks the conditional label: the
 	// row rejects the field whatever the effort. Probed with a false fallback so
 	// only an explicit true short-circuits.
