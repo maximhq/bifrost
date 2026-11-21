@@ -737,6 +737,48 @@ func (s *WeaviateStore) ListNamespaces(ctx context.Context, prefix string) ([]st
 	return namespaces, nil
 }
 
+// Count returns how many objects in the class match the queries, from an
+// Aggregate meta count. A missing class holds none.
+func (s *WeaviateStore) Count(ctx context.Context, className string, queries []Query) (int64, error) {
+	exists, err := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check class existence: %w", err)
+	}
+	if !exists {
+		return 0, nil
+	}
+	aggregate := s.client.GraphQL().Aggregate().
+		WithClassName(className).
+		WithFields(graphql.Field{Name: "meta", Fields: []graphql.Field{{Name: "count"}}})
+	if where := buildWeaviateFilter(queries); where != nil {
+		aggregate = aggregate.WithWhere(where)
+	}
+	resp, err := aggregate.Do(ctx)
+	if err != nil {
+		return 0, readError(className, err)
+	}
+	if len(resp.Errors) > 0 {
+		return 0, s.graphQLError(ctx, className, resp.Errors)
+	}
+	return weaviateAggregateCount(resp.Data, className)
+}
+
+// weaviateAggregateCount reads Aggregate.<class>[0].meta.count.
+func weaviateAggregateCount(data map[string]models.JSONObject, className string) (int64, error) {
+	aggregate, _ := data["Aggregate"].(map[string]interface{})
+	rows, _ := aggregate[className].([]interface{})
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	row, _ := rows[0].(map[string]interface{})
+	meta, _ := row["meta"].(map[string]interface{})
+	count, ok := meta["count"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("invalid aggregate response for class %s: %+v", className, data)
+	}
+	return int64(count), nil
+}
+
 func (s *WeaviateStore) DeleteNamespace(ctx context.Context, className string) error {
 	exists, err := s.client.Schema().ClassExistenceChecker().
 		WithClassName(className).

@@ -647,6 +647,7 @@ func (s *RedisStore) fetchMatchingSearchResults(ctx context.Context, client redi
 		return nil, fmt.Errorf("failed to fetch scanned keys: %w", err)
 	}
 
+	fieldProps := s.getNamespaceFieldTypes(namespace)
 	results := make([]SearchResult, 0, len(keys))
 	for i, cmd := range cmds {
 		if cmd.Err() != nil {
@@ -668,7 +669,10 @@ func (s *RedisStore) fetchMatchingSearchResults(ctx context.Context, client redi
 			properties[k] = v
 		}
 
-		if !matchesQueriesForScan(properties, queries) {
+		// Filterable TAG values are stored hex-encoded while a query carries
+		// them plain, so they are matched decoded. The result keeps them as
+		// stored: its callers decode them once, as for an indexed read.
+		if !matchesQueriesForScan(decodedForScanMatch(properties, fieldProps), queries) {
 			continue
 		}
 
@@ -1711,6 +1715,85 @@ func (s *RedisStore) ListNamespaces(ctx context.Context, prefix string) ([]strin
 	return namespaces, nil
 }
 
+// Count returns how many documents in the namespace's search index match the
+// queries: FT.INFO num_docs with none, a zero-row FT.SEARCH's total with a
+// filter. A missing index holds none.
+func (s *RedisStore) Count(ctx context.Context, namespace string, queries []Query) (int64, error) {
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
+	defer cancel()
+	if len(queries) > 0 {
+		return s.countMatching(ctx, namespace, queries)
+	}
+	reply, err := s.client.Do(ctx, "FT.INFO", namespace).Result()
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown index") || strings.Contains(strings.ToLower(err.Error()), "no such index") {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to read search index info: %w", err)
+	}
+	value, ok := ftInfoField(reply, "num_docs")
+	if !ok {
+		return 0, fmt.Errorf("FT.INFO for %s has no num_docs", namespace)
+	}
+	if text, ok := toString(value); ok {
+		count, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return 0, fmt.Errorf("FT.INFO num_docs %q is not a number: %w", text, err)
+		}
+		return int64(count), nil
+	}
+	if count, ok := toFloat64(value); ok {
+		return int64(count), nil
+	}
+	return 0, fmt.Errorf("FT.INFO num_docs has unexpected type %T", value)
+}
+
+// countMatching reads the total of a zero-row FT.SEARCH, the same query
+// DeleteAll runs, so a count and the delete it sizes agree on what matches.
+// An engine that refuses the query's syntax (some answer "vector query clause
+// is missing") is counted the way DeleteAll then finds what to delete: by
+// collecting the matching ids, which retries without DIALECT and falls back to
+// a scan unless the caller disabled that.
+func (s *RedisStore) countMatching(ctx context.Context, namespace string, queries []Query) (int64, error) {
+	reply, err := s.client.Do(ctx, "FT.SEARCH", namespace, buildRedisQuery(queries, s.getNamespaceFieldTypes(namespace)), "LIMIT", 0, 0, "DIALECT", "2").Result()
+	if err != nil {
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "unknown index") || strings.Contains(errMsg, "no such index") {
+			return 0, nil
+		}
+		if isQuerySyntaxError(errMsg) {
+			ids, err := s.getAllMatchingIDs(ctx, namespace, queries)
+			if err != nil {
+				return 0, fmt.Errorf("failed to count matching documents: %w", err)
+			}
+			return int64(len(ids)), nil
+		}
+		return 0, fmt.Errorf("failed to count matching documents: %w", err)
+	}
+	return redisSearchTotal(reply)
+}
+
+// redisSearchTotal reads the total off an FT.SEARCH reply: the first element
+// under RESP2, total_results under RESP3.
+func redisSearchTotal(reply interface{}) (int64, error) {
+	if value, ok := ftInfoField(reply, "total_results"); ok {
+		if count, ok := toFloat64(value); ok {
+			return int64(count), nil
+		}
+	}
+	if rows, ok := reply.([]interface{}); ok && len(rows) > 0 {
+		if count, ok := toFloat64(rows[0]); ok {
+			return int64(count), nil
+		}
+		if text, ok := toString(rows[0]); ok {
+			if count, err := strconv.ParseInt(text, 10, 64); err == nil {
+				return count, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("unexpected FT.SEARCH reply %T", reply)
+}
+
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
@@ -1832,6 +1915,22 @@ func (s *RedisStore) decodeFilterableProperties(namespace string, results []Sear
 			}
 		}
 	}
+}
+
+// decodedForScanMatch returns properties with filterable TAG values decoded,
+// for matching a scanned hash against a query. The input is not changed.
+func decodedForScanMatch(properties map[string]interface{}, fieldProps map[string]VectorStoreProperties) map[string]interface{} {
+	if len(fieldProps) == 0 {
+		return properties
+	}
+	decoded := make(map[string]interface{}, len(properties))
+	for field, value := range properties {
+		if str, ok := value.(string); ok && isFilterableTag(field, fieldProps) {
+			value = decodeTagValue(str)
+		}
+		decoded[field] = value
+	}
+	return decoded
 }
 
 // escapeSearchValue escapes special characters in search values.

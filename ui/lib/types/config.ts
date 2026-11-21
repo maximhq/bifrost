@@ -937,6 +937,8 @@ export interface CoreConfig {
 	log_retention_days: number;
 	// Days to keep log-derived vector store entries; 0 = same as logs, capped at log_retention_days.
 	vector_retention_days?: number;
+	// Size budget in MB for all log-derived vectors together, oldest deleted first; 0 = no budget.
+	vector_max_size_mb?: number;
 	enforce_auth_on_inference: boolean;
 	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	extra_fields_placement?: "body" | "headers";

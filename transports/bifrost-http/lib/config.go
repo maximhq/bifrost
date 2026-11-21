@@ -1625,6 +1625,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if cc.VectorRetentionDays < 0 || cc.VectorRetentionDays > configstore.MaxVectorRetentionDays {
 		return fmt.Errorf("vector_retention_days %d must be between 0 and %d", cc.VectorRetentionDays, configstore.MaxVectorRetentionDays)
 	}
+	if cc.VectorMaxSizeMB < 0 {
+		return fmt.Errorf("vector_max_size_mb %d must not be negative", cc.VectorMaxSizeMB)
+	}
 	// Same reasoning for the rotation grace period: PUT /api/config bounds it,
 	// but config.json and pre-existing DB rows reach the runtime through here.
 	// An out-of-range cooldown would keep a retired virtual key authenticating

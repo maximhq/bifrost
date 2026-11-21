@@ -2299,3 +2299,43 @@ func TestUpdateConfig_VectorRetentionDays(t *testing.T) {
 		assert.Zero(t, stored(), "%s follows the logs again", clear)
 	}
 }
+
+func TestUpdateConfig_VectorMaxSizeMB(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() int {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.VectorMaxSizeMB
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_max_size_mb":2048}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	assert.Equal(t, 2048, cfg.ClientConfig.VectorMaxSizeMB)
+	assert.Equal(t, 2048, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":30}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, 2048, cfg.ClientConfig.VectorMaxSizeMB, "an omitted field keeps the live value")
+	assert.Equal(t, 2048, stored(), "an omitted field keeps the stored value")
+
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_max_size_mb":-1}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.Equal(t, 2048, cfg.ClientConfig.VectorMaxSizeMB, "a refused save leaves the live value")
+	assert.Equal(t, 2048, stored(), "a refused save leaves the stored value")
+
+	for _, clear := range []string{"0", "null"} {
+		h.updateConfig(putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_max_size_mb":2048}}`))
+		cleared := putConfigCtx(`{"client_config":{"log_retention_days":30,"vector_max_size_mb":` + clear + `}}`)
+		h.updateConfig(cleared)
+		require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+		assert.Zero(t, cfg.ClientConfig.VectorMaxSizeMB, "%s removes the cap", clear)
+		assert.Zero(t, stored(), "%s removes the cap", clear)
+	}
+}
