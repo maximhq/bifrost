@@ -828,5 +828,28 @@ test("Soniox rows run only in the soniox partition", () => {
   assert.deepEqual(runFilter(["--provider", "soniox"], { source }), ["soniox-speech-native", "soniox-speech-openai-route", "soniox-transcription-openai-route", "soniox-models"]);
 });
 
+test("Nace SDK routes stay out of forks that do not carry Nace credentials", () => {
+  const source = join(WORK, "nace-ingress.json");
+  const row = (provider, path) => ({
+    name: `${provider} decision`,
+    request: { method: "POST", url: `http://localhost:8080/${path}/v1/decisions`, body: { mode: "raw", raw: JSON.stringify({ model: `${provider}/model` }) } },
+  });
+  writeFileSync(source, JSON.stringify({ info: { name: "provider isolation" }, item: [row("nace", "openai"), row("nace", "typesafe"), row("openai", "openai"), row("typesafe", "typesafe")] }));
+  assert.deepEqual(runFilter(["--provider", "nace"], { source }), ["nace decision", "nace decision"]);
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai decision"]);
+  assert.deepEqual(runFilter(["--provider", "typesafe"], { source }), ["typesafe decision"]);
+});
+
+test("A prompt word that contains nace does not move an OpenAI row to the Nace fork", () => {
+  const source = join(WORK, "nace-word.json");
+  const row = (name, model, prompt) => ({
+    name,
+    request: { method: "POST", url: "http://localhost:8080/v1/chat/completions", body: { mode: "raw", raw: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }) } },
+  });
+  writeFileSync(source, JSON.stringify({ info: { name: "nace word match" }, item: [row("furnace prompt", "openai/gpt-4o", "Explain how a furnace works and why a menace is scary."), row("nace model", "nace/drex-v2.0", "Hello")] }));
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["furnace prompt"]);
+  assert.deepEqual(runFilter(["--provider", "nace"], { source }), ["nace model"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

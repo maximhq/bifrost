@@ -163,6 +163,7 @@ const PROVIDER_KEYWORDS = {
   runware: ["runware", "runware/"],
   machgen: ["machgen", "machgen/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  nace: ["nace", "drex-"],
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
   mcp: ["mcp"],
@@ -311,6 +312,11 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (declared && Object.hasOwn(PROVIDER_KEYWORDS, declared)) return declared === provider;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
+  // Nace's SDK routes contain openai/typesafe, but require Nace credentials.
+  // "nace" is matched as a whole word so prompt words such as "furnace" or "menace" do not claim a row.
+  const isNace = /\bnace\b/.test(haystack) || haystack.includes("drex-");
+  if (provider === "nace") return isNace;
+  if (isNace) return false;
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
   // gpt-/claude-/gemini, so they'd otherwise be claimed by the openai/anthropic/gemini
   // partitions too. Route them exclusively to the openrouter partition.

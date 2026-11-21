@@ -5,6 +5,7 @@ package bifrost
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -43,6 +44,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/machgen"
 	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/nace"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -68,6 +70,9 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+//go:embed version
+var coreVersion string
 
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
@@ -5330,6 +5335,14 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
 	case schemas.Databricks:
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
+	case schemas.Nace:
+		version := coreVersion
+		if bifrost.ctx != nil {
+			if runtimeVersion, ok := bifrost.ctx.Value(schemas.BifrostContextKeyRuntimeVersion).(string); ok && strings.TrimSpace(runtimeVersion) != "" {
+				version = runtimeVersion
+			}
+		}
+		return nace.NewNaceProvider(config, bifrost.logger, version)
 	case schemas.Typesafe:
 		return typesafe.NewTypesafeProvider(config, bifrost.logger)
 	default:
