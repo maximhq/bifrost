@@ -1377,7 +1377,7 @@ type MCPStdioConfig struct {
 	Args    []string `json:"args"`    // Command line arguments
 	Envs    []string `json:"envs"`    // Environment variables required
 
-	// StderrHandler, if set, receives each line the subprocess writes to stderr. Not serialized.
+	// StderrHandler, if set, receives each line the subprocess writes to stderr; it must return. Not serialized.
 	StderrHandler func(line string) `json:"-"`
 }
 

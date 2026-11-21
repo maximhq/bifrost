@@ -4110,8 +4110,7 @@ const stderrQueueSize = 256
 // into its own bounded buffer, so leaving stderr unread cannot block the
 // subprocess. Safe to call for any connection type: GetStderr's transport
 // type assertion no-ops for non-stdio clients. Must be called after
-// cli.Start(), when the pipe exists. The pipe is closed by cli.Close(), which
-// ends the goroutines.
+// cli.Start(), when the pipe exists. See forwardStderrLines for shutdown.
 func forwardStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 	stderr, ok := client.GetStderr(cli)
 	if !ok || stderr == nil {
@@ -4132,8 +4131,14 @@ func forwardStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 // forwardStderrLines reads stderr line by line in a background goroutine and
 // hands each line to handler on a second goroutine, through a queue of
 // stderrQueueSize. A full queue drops lines, so a slow handler never stops
-// stderr from being read. Both goroutines end when stderr returns an error
-// (EOF on close).
+// stderr from being read.
+//
+// Shutdown: when stderr returns an error (EOF once cli.Close() closes it), the
+// reader goroutine exits and closes the queue. The delivery goroutine then
+// exits after handing over the lines already queued, but only as each handler
+// call returns. Closing the client does not interrupt a callback in progress,
+// so a handler that never returns keeps the delivery goroutine alive. Handlers
+// must return for delivery to finish.
 func forwardStderrLines(stderr io.Reader, handler func(line string)) {
 	lines := make(chan string, stderrQueueSize)
 	go func() {
