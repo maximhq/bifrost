@@ -864,6 +864,13 @@ export const modelProviderKeySchema = z
 		oauth_key_config: oauthKeyConfigSchema.optional(),
 		anthropic_key_config: anthropicKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		use_for_evals: z.boolean().optional(),
+		eval_concurrency: z
+			.number(msg("validation.valueMustBeAPositiveWholeNumber"))
+			.int(msg("validation.valueMustBeAPositiveWholeNumber"))
+			.min(1, msg("validation.valueMustBeAPositiveWholeNumber"))
+			.nullable()
+			.optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),

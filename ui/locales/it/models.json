@@ -573,6 +573,10 @@
 		"keys": {
 			"useForBatch": "Usa per API Batch",
 			"useForBatchHelp": "Abilita questa chiave per le operazioni batch API. Solo le chiavi con questa opzione attiva saranno usate per le richieste batch.",
+			"useForEvals": "Usa per le valutazioni",
+			"useForEvalsHelp": "Consente ai valutatori di chiamare i modelli con questa chiave. Le valutazioni usano solo le chiavi con questa opzione attiva. Così non competono mai con il traffico di produzione sulle altre chiavi.",
+			"evalConcurrency": "Concorrenza delle valutazioni",
+			"evalConcurrencyHelp": "Il numero massimo di valutazioni eseguite insieme su questa chiave, contando tutte le istanze di Bifrost. Le altre attendono in coda. Lascia vuoto per il valore predefinito di 4.",
 			"vpcEndpointsOptional": "Endpoint VPC (opzionale)",
 			"vpcEndpointsHelp": "Instrada il traffico tramite interface VPC endpoint invece degli endpoint regionali pubblici. Usa il nome DNS di ciascun endpoint dalla console VPC, non l'ID. La region è comunque obbligatoria: imposta lo scope di firma della richiesta.",
 			"vpc": {

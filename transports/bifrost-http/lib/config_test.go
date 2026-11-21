@@ -18929,6 +18929,45 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 	}
 }
 
+// TestGenerateKeyHash_EvalFields verifies that the eval flag and its concurrency affect
+// hash generation, so a config.json change to either is detected during sync.
+func TestGenerateKeyHash_EvalFields(t *testing.T) {
+	base := func() schemas.Key {
+		return schemas.Key{Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}
+	}
+	with := func(use *bool, concurrency *int) schemas.Key {
+		key := base()
+		key.UseForEvals, key.EvalConcurrency = use, concurrency
+		return key
+	}
+	tests := []struct {
+		name        string
+		key1, key2  schemas.Key
+		expectEqual bool
+	}{
+		{"unset_vs_false_same_hash", with(nil, nil), with(new(false), nil), true},
+		{"unset_vs_true_different_hash", with(nil, nil), with(new(true), nil), false},
+		{"true_vs_true_same_hash", with(new(true), new(4)), with(new(true), new(4)), true},
+		{"concurrency_change_different_hash", with(new(true), new(4)), with(new(true), new(8)), false},
+		{"unset_concurrency_vs_set_different_hash", with(new(true), nil), with(new(true), new(4)), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash1, err := configstore.GenerateKeyHash(tt.key1)
+			if err != nil {
+				t.Fatalf("Failed to generate hash for key1: %v", err)
+			}
+			hash2, err := configstore.GenerateKeyHash(tt.key2)
+			if err != nil {
+				t.Fatalf("Failed to generate hash for key2: %v", err)
+			}
+			if (hash1 == hash2) != tt.expectEqual {
+				t.Errorf("hash equality: got %v, want %v", hash1 == hash2, tt.expectEqual)
+			}
+		})
+	}
+}
+
 // TestGenerateKeyHash_UseForBatchAPIField verifies that the UseForBatchAPI field affects hash generation.
 // Different UseForBatchAPI values should produce different hashes.
 func TestGenerateKeyHash_UseForBatchAPIField(t *testing.T) {
@@ -27209,6 +27248,133 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 		require.Len(t, merged, 1)
 		require.Equal(t, float64(2), merged[0].Weight, "a changed config.json must still replace the stored key")
 	})
+}
+
+// TestProviderKeyMerge_FileKeyKeepsStoredEvalSettings pins what happens to a key marked for
+// evals in the dashboard when config.json replaces it at startup. The file says nothing
+// about evals, so the mark and its concurrency stay, in both merge paths. A file that
+// sets them still wins.
+func TestProviderKeyMerge_FileKeyKeepsStoredEvalSettings(t *testing.T) {
+	SetLogger(&testLogger{})
+	fileKey := schemas.Key{Name: "shared", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	dbKey := fileKey
+	dbKey.ID = "key-1"
+	dbKey.Weight = 0.5 // the stored key differs from the file, so the file version is used
+	dbKey.ConfigHash = "hash-of-an-older-file-version"
+	dbKey.UseForEvals = new(true)
+	dbKey.EvalConcurrency = new(6)
+
+	merges := map[string]func(file, db []schemas.Key) []schemas.Key{
+		"provider hash matches": func(file, db []schemas.Key) []schemas.Key { return reconcileProviderKeys(schemas.OpenAI, file, db) },
+		"provider hash changed": func(file, db []schemas.Key) []schemas.Key { return mergeProviderKeys(schemas.OpenAI, file, db) },
+	}
+	for name, merge := range merges {
+		t.Run(name, func(t *testing.T) {
+			merged := merge([]schemas.Key{fileKey}, []schemas.Key{dbKey})
+			require.Len(t, merged, 1)
+			require.Equal(t, float64(1), merged[0].Weight, "the file version of the key is used")
+			require.NotNil(t, merged[0].UseForEvals, "an unset use_for_evals keeps the stored value")
+			require.True(t, *merged[0].UseForEvals)
+			require.NotNil(t, merged[0].EvalConcurrency, "an unset eval_concurrency keeps the stored value")
+			require.Equal(t, 6, *merged[0].EvalConcurrency)
+
+			explicit := fileKey
+			explicit.UseForEvals = new(false)
+			explicit.EvalConcurrency = new(2)
+			merged = merge([]schemas.Key{explicit}, []schemas.Key{dbKey})
+			require.Len(t, merged, 1)
+			require.False(t, *merged[0].UseForEvals, "an explicit use_for_evals in the file wins")
+			require.Equal(t, 2, *merged[0].EvalConcurrency)
+		})
+	}
+}
+
+// TestLoadConfig_EvalConcurrencyBelowOneFailsBoot pins that a config.json key with an
+// eval_concurrency below 1 fails startup, naming the key, as the schema minimum and the
+// provider-key API do. Stored, the value would be ignored without a word.
+func TestLoadConfig_EvalConcurrencyBelowOneFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, &ConfigData{
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": {Keys: []schemas.Key{{Name: "evals-key", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, UseForEvals: new(true), EvalConcurrency: new(0)}}},
+		},
+	})
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	if config != nil {
+		defer config.Close(ctx)
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "eval_concurrency")
+	require.Contains(t, err.Error(), "evals-key")
+}
+
+// mergeProviderKeys copies a stored key's eval settings onto the matching file key. The
+// file hash of every key is taken before that, once: re-hashing a file key that already
+// inherited stored eval settings, while matching a later stored key, would record a hash
+// of something config.json never said, and the next start would see a changed file.
+func TestProviderKeyMerge_InheritedEvalSettingsStayOutOfTheFileHash(t *testing.T) {
+	SetLogger(&testLogger{})
+	fileA := schemas.Key{Name: "a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}
+	fileB := schemas.Key{Name: "b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}
+	wantA, err := configstore.GenerateKeyHash(fileA)
+	require.NoError(t, err)
+	wantB, err := configstore.GenerateKeyHash(fileB)
+	require.NoError(t, err)
+
+	dbA := fileA
+	dbA.ID, dbA.ConfigHash, dbA.Weight = "key-a", "older-a", 0.5
+	dbA.UseForEvals, dbA.EvalConcurrency = new(true), new(7)
+	dbB := fileB
+	dbB.ID, dbB.ConfigHash, dbB.Weight = "key-b", "older-b", 0.5
+
+	merged := mergeProviderKeys(schemas.OpenAI, []schemas.Key{fileA, fileB}, []schemas.Key{dbA, dbB})
+	require.Len(t, merged, 2)
+	assert.True(t, *merged[0].UseForEvals, "a keeps the stored eval mark")
+	assert.Equal(t, wantA, merged[0].ConfigHash, "a's hash is the hash of what config.json says")
+	assert.Equal(t, wantB, merged[1].ConfigHash)
+}
+
+// The key hash reads an omitted use_for_evals and an explicit false as the same, so
+// adding "use_for_evals": false to config.json leaves the file hash unchanged. The
+// stored key is then kept, but what the file says outright must still take effect: a
+// key the dashboard marked for evaluations is unmarked by an explicit false in the file.
+func TestProviderKeyMerge_ExplicitFileEvalSettingsApplyToAnUnchangedKey(t *testing.T) {
+	SetLogger(&testLogger{})
+	fileKey := schemas.Key{Name: "shared", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	omittedHash, err := configstore.GenerateKeyHash(fileKey)
+	require.NoError(t, err)
+	explicit := fileKey
+	explicit.UseForEvals = new(false)
+	explicitHash, err := configstore.GenerateKeyHash(explicit)
+	require.NoError(t, err)
+	require.Equal(t, omittedHash, explicitHash, "an explicit false does not change the hash")
+
+	stored := func(hash string) schemas.Key {
+		dbKey := fileKey
+		dbKey.ID = "key-1"
+		dbKey.ConfigHash = hash
+		dbKey.UseForEvals = new(true)
+		dbKey.EvalConcurrency = new(6)
+		return dbKey
+	}
+	for name, hash := range map[string]string{"stored hash": omittedHash, "no stored hash": ""} {
+		t.Run(name, func(t *testing.T) {
+			merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{explicit}, []schemas.Key{stored(hash)})
+			require.Len(t, merged, 1)
+			require.Equal(t, "key-1", merged[0].ID, "the stored key is kept")
+			require.NotNil(t, merged[0].UseForEvals)
+			require.False(t, *merged[0].UseForEvals, "the file's explicit false unmarks the key")
+			require.Equal(t, 6, *merged[0].EvalConcurrency, "what the file leaves unset stays as stored")
+
+			// A file that says nothing leaves the dashboard's mark alone.
+			merged = reconcileProviderKeys(schemas.OpenAI, []schemas.Key{fileKey}, []schemas.Key{stored(hash)})
+			require.Len(t, merged, 1)
+			require.True(t, *merged[0].UseForEvals)
+		})
+	}
 }
 
 // TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys pins the upgrade path from the

@@ -573,6 +573,10 @@
 		"keys": {
 			"useForBatch": "Usar para Batch APIs",
 			"useForBatchHelp": "Ative esta chave para operações de Batch API. Só as chaves com isto ativado serão usadas para pedidos batch.",
+			"useForEvals": "Usar para avaliações",
+			"useForEvalsHelp": "Permite que os avaliadores chamem modelos com esta chave. As avaliações usam apenas chaves com esta opção ativada. Assim nunca competem com o tráfego de produção nas suas outras chaves.",
+			"evalConcurrency": "Concorrência das avaliações",
+			"evalConcurrencyHelp": "O máximo de avaliações executadas ao mesmo tempo nesta chave, contando todas as instâncias do Bifrost. As demais aguardam em uma fila. Deixe vazio para usar o padrão de 4.",
 			"vpcEndpointsOptional": "Endpoints VPC (opcional)",
 			"vpcEndpointsHelp": "Encaminhe o tráfego por endpoints VPC de interface em vez dos endpoints regionais públicos. Use o nome DNS de cada endpoint da consola VPC, não o seu ID. A região continua a ser obrigatória — define o âmbito de assinatura do pedido.",
 			"vpc": {

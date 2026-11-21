@@ -466,6 +466,40 @@ func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumnsBoundsLockWait(t *t
 	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
 }
 
+// TestMigrationAddKeyEvalColumnsBoundsLockWait pins that adding the eval columns to
+// config_keys fails fast on a held table lock on postgres instead of queueing every
+// later reader of the keys table behind its ACCESS EXCLUSIVE request.
+func TestMigrationAddKeyEvalColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_keys (id INTEGER PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_keys")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddKeyEvalColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns pins the columns, re-runs and rollback.
 func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(t *testing.T) {
 	const id = "add_oauth2_authorize_requests_device_code_columns"

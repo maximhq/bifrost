@@ -551,6 +551,14 @@ Key:
     use_openai_endpoints:
       type: boolean
       description: Whether to use OpenAI-compatible endpoints for this key
+    use_for_evals:
+      type: boolean
+      description: Whether this key can serve evaluation model calls. Evaluations only ever use keys with this set.
+    eval_concurrency:
+      type: integer
+      nullable: true
+      minimum: 1
+      description: Maximum evaluations in flight on this key at once. With a log store this holds across every Bifrost instance; without one each instance runs its own queue, and the cap holds per instance. Defaults to 4. On an update, null clears the stored value and returns the key to the default; leaving the field out keeps the stored value. A value below 1 is refused. A changed value applies on each instance at its next key sync.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection
