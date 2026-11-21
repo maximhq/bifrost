@@ -4,6 +4,7 @@ package xai
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -298,9 +299,93 @@ func (provider *XAIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the xAI provider.
+// Speech performs a text-to-speech request to xAI's POST /v1/tts, which returns raw
+// audio bytes in the requested codec.
 func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("speech request is required", nil)
+	}
+	// A large-payload request carries the client's staged OpenAI-shaped body
+	// (input, voice), which /v1/tts does not accept (text, voice_id), and a
+	// stream cannot be converted in place. TTS input never needs that size.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, providerUtils.NewBifrostBadRequestError("xAI speech does not support large-payload passthrough: the staged body cannot be converted to the /v1/tts schema")
+	}
+	if request.Input == nil || request.Input.Input == "" {
+		return nil, providerUtils.NewBifrostBadRequestError("speech input text is required")
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (*XAISpeechRequest, error) {
+			return ToXAISpeechRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tts"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	for k, v := range openai.BearerAuthHeader(key) {
+		req.Header.Set(k, v)
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, ParseXAIError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if len(body) == 0 {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("xAI text-to-speech response contained no audio", nil), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	// /v1/tts answers with audio only, so a JSON body on a 200 is an error, never audio.
+	if mediaType, _, _ := strings.Cut(string(resp.Header.ContentType()), ";"); strings.Contains(strings.ToLower(mediaType), "json") {
+		jsonErr := errorInSuccessfulBody(body)
+		if jsonErr == nil {
+			jsonErr = &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+				Error:          &schemas.ErrorField{Message: "xAI text-to-speech returned JSON instead of audio"},
+			}
+		}
+		providerUtils.ApplyRetryAfter(jsonErr, &resp.Header)
+		return nil, providerUtils.EnrichError(ctx, jsonErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	bifrostResponse := &schemas.BifrostSpeechResponse{
+		// The decoded body may alias the pooled response buffer, which is released on return.
+		Audio: append([]byte(nil), body...),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerResponseHeaders,
+		},
+	}
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
+	return bifrostResponse, nil
 }
 
 // Rerank is not supported by the XAI provider.
@@ -323,9 +408,40 @@ func (provider *XAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookR
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the xAI provider.
+// Transcription performs a speech-to-text request to xAI's POST /v1/stt. The multipart
+// form is OpenAI-shaped with the file field last, which xAI requires (fields after the
+// file are ignored); the response carries text, language, duration and words.
 func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
+	// /v1/stt answers with xAI's JSON only. The shared handler would copy that body
+	// verbatim into the transcript for a plain-text format, and decode it as OpenAI's
+	// diarized shape (dropping words, language and duration usage) for diarized_json,
+	// so refuse those formats up front.
+	if request != nil && request.Params != nil && (schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) || schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat)) {
+		return nil, providerUtils.NewBifrostBadRequestError("xAI transcription returns JSON only; response_format " + *request.Params.ResponseFormat + " is not supported, use json")
+	}
+	// A large-payload body streams to /v1/stt as the client sent it, so a field placed
+	// after the file would be dropped by xAI. The guard fails the upload when it sees one.
+	var guard *fileLastGuard
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		guard = guardStagedTranscriptionBody(ctx)
+	}
+	response, bifrostErr := openai.HandleOpenAITranscriptionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/stt"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		nil,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		handleXAITranscriptionResponse,
+		provider.logger,
+	)
+	if guard != nil && guard.err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(guard.err.Error())
+	}
+	return response, bifrostErr
 }
 
 // TranscriptionStream is not supported by the xAI provider.
