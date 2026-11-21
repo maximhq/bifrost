@@ -6,7 +6,7 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetTraceFilterDataQuery } from "@/lib/store";
 import type { TraceProject } from "@/lib/types/traces";
-import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
+import { PanelLeftClose, RotateCcw, Search, FolderCog } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -27,10 +27,12 @@ interface TracingFilterSidebarProps {
 	filters: TracingSidebarFilters;
 	onFiltersChange: (filters: TracingSidebarFilters) => void;
 	projects: TraceProject[];
+	/** Opens the projects popup: list, create, and each project's sheet. */
+	onManageProjects?: () => void;
 }
 
 /** The Tracing filter sidebar, built on the same primitives as the LLM, MCP and relay log sidebars. */
-export function TracingFilterSidebar({ filters, onFiltersChange, projects }: TracingFilterSidebarProps) {
+export function TracingFilterSidebar({ filters, onFiltersChange, projects, onManageProjects }: TracingFilterSidebarProps) {
 	const { t } = useTranslation("observability");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
@@ -149,6 +151,17 @@ export function TracingFilterSidebar({ filters, onFiltersChange, projects }: Tra
 								placeholder={t("tracing.filters.searchProjects")}
 								testIdPrefix="tracing-project-filter"
 							/>
+						)}
+						{onManageProjects && (
+							<button
+								type="button"
+								onClick={onManageProjects}
+								className="text-muted-foreground hover:text-foreground hover:bg-muted/60 mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium"
+								data-testid="tracing-manage-projects"
+							>
+								<FolderCog className="size-3.5" />
+								{t("tracing.projects.manage")}
+							</button>
 						)}
 					</FilterSection>
 					<FilterSection

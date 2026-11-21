@@ -17,12 +17,12 @@ import {
 	useGetTracesQuery,
 } from "@/lib/store";
 import type { TraceFilters, TracePagination } from "@/lib/types/traces";
-import { RefreshCw, Search, Settings } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TracingEmptyState } from "./views/emptyState";
-import { ProjectSettings } from "./views/projectSettings";
+import { ProjectSheet, ProjectsDialog } from "./views/projects";
 import { renderTraceSpanExtras } from "./views/traceExtras";
 import { toVolumeHistogram, TraceMetricStrip } from "./views/traceOverview";
 import { LogsDataTable, type LogsTablePagination } from "./views/logsDataTable";
@@ -33,6 +33,8 @@ import {
 	createTraceColumns,
 	getTraceColumnLabels,
 } from "./views/tracingColumns";
+import { navigationIndex } from "./traceTree";
+import { validZoomWindow } from "@/lib/utils/traceQuery";
 import { TraceViewer } from "./views/traceViewer";
 
 const RANGE_KEYS = ["1h", "24h", "7d", "30d"] as const;
@@ -75,7 +77,8 @@ export default function TracingPage() {
 		trace: parseAsSafeString.withDefault(""),
 		span: parseAsSafeString.withDefault(""),
 	});
-	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [projectsOpen, setProjectsOpen] = useState(false);
+	const [sheetProjectId, setSheetProjectId] = useState<string | null>(null);
 	const [chartOpen, setChartOpen] = useState(true);
 	const [searchDraft, setSearchDraft] = useState(url.search);
 	const { data: projectsData, isLoading: projectsLoading } = useGetTraceProjectsQuery();
@@ -88,7 +91,9 @@ export default function TracingPage() {
 		[url.range, url.view, url.search, url.status, url.session_id, url.trace_id, url.project_ids, url.models, url.kinds, url.environments],
 	);
 	const rangeSeconds = RANGES[url.range] ?? RANGES["24h"];
-	const zoomed = url.start_time !== null && url.end_time !== null;
+	// A zoom window from the URL is used only when it is a real, ordered window: a hand-edited or
+	// out-of-range one falls back to the range, instead of throwing when it is turned into dates.
+	const zoomed = validZoomWindow(url.start_time, url.end_time);
 	const startSeconds = zoomed ? (url.start_time as number) : Math.floor((windowEnd - rangeSeconds * 1000) / 1000);
 	const endSeconds = zoomed ? (url.end_time as number) : Math.floor((windowEnd + 60_000) / 1000);
 
@@ -201,21 +206,33 @@ export default function TracingPage() {
 		url.view === "spans"
 			? (spans.data?.spans ?? []).map((span) => ({ project: span.project_id, trace: span.trace_id, span: span.span_id }))
 			: (traces.data?.traces ?? []).map((trace) => ({ project: trace.project_id, trace: trace.trace_id, span: "" }));
-	const position = navigable.findIndex((row) => row.trace === url.trace && (url.view !== "spans" || row.span === url.span));
+	// A link with a trace and no project (older links, hand-edited URLs) finds the project by trace id,
+	// inside the one project the sidebar selects when it selects one. With no project to go by, a trace
+	// id two projects share is not guessed: the sheet stays closed.
+	const discoveryProjects = url.project_ids.length === 1 ? url.project_ids : undefined;
+	const traceProject = useGetTracesQuery(
+		{ filters: { trace_id: url.trace, project_ids: discoveryProjects }, pagination: { limit: 2, offset: 0 } },
+		{ skip: !url.trace || !!url.project },
+	);
+	// currentData: a lookup still running for this trace never hands over the previous trace's project.
+	const discovered = traceProject.currentData?.traces ?? [];
+	const discoveredProject = discovered.length === 1 ? discovered[0].project_id : "";
+	// An exact id first; a name only for older links that carry one.
+	const linkedProject = useMemo(() => {
+		if (!url.project) return "";
+		return (
+			projects.find((project) => project.id === url.project)?.id ??
+			projects.find((project) => project.name === url.project)?.id ??
+			url.project
+		);
+	}, [projects, url.project]);
+	const viewerProject = url.trace ? linkedProject || discoveredProject : "";
+	const position = navigationIndex(navigable, { project: viewerProject, trace: url.trace, span: url.span, bySpan: url.view === "spans" });
 	const navigate = (direction: "prev" | "next") => {
 		const target = navigable[position + (direction === "prev" ? -1 : 1)];
 		if (!target) return;
 		setUrl({ project: target.project, trace: target.trace, span: target.span });
 	};
-	// A link with a trace and no project (older links, hand-edited URLs) finds the project by trace id.
-	const traceProject = useGetTracesQuery(
-		{ filters: { trace_id: url.trace }, pagination: { limit: 1, offset: 0 } },
-		{ skip: !url.trace || !!url.project },
-	);
-	const linkedProject = useMemo(
-		() => projects.find((project) => project.id === url.project || project.name === url.project)?.id ?? url.project,
-		[projects, url.project],
-	);
 	const refresh = () => {
 		setWindowEnd(Date.now());
 		void stats.refetch();
@@ -240,7 +257,12 @@ export default function TracingPage() {
 	return (
 		<div className="dark:bg-card bg-white" data-testid="tracing-page" data-radius="md">
 			<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
-				<TracingFilterSidebar filters={sidebarFilters} onFiltersChange={(next) => setUrl({ ...next, offset: 0 })} projects={projects} />
+				<TracingFilterSidebar
+					filters={sidebarFilters}
+					onFiltersChange={(next) => setUrl({ ...next, offset: 0 })}
+					projects={projects}
+					onManageProjects={() => setProjectsOpen(true)}
+				/>
 				<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 					<div className="flex flex-wrap items-center gap-2 p-4 pb-0">
 						<form
@@ -261,14 +283,12 @@ export default function TracingPage() {
 						</form>
 						<Tabs
 							value={url.view}
-							// A tab switch starts the view clean: it drops what a session or experiment drill-down
-							// set and any open trace. Sidebar filters stay, since they are visible and shared.
+							// A tab switch drops the experiment drill-down and any open trace. Sidebar filters
+							// stay, since they are visible and shared: the session id and trace id among them.
 							onValueChange={(view) =>
 								setUrl({
 									view,
-									session_id: null,
 									experiment: null,
-									trace_id: null,
 									project: null,
 									trace: null,
 									span: null,
@@ -324,16 +344,6 @@ export default function TracingPage() {
 							onClick={refresh}
 						>
 							<RefreshCw className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="outline"
-							size="icon"
-							className="size-7.5"
-							aria-label={t("tracing.settings.button")}
-							data-testid="tracing-settings-button"
-							onClick={() => setSettingsOpen(true)}
-						>
-							<Settings className="h-4 w-4" />
 						</Button>
 					</div>
 					{(url.experiment || url.session_id) && (
@@ -440,14 +450,14 @@ export default function TracingPage() {
 					{url.view === "experiments" && (
 						<LogsDataTable
 							columns={experimentColumns}
-							data={experiments.data?.experiments ?? []}
+							data={(experiments.data?.experiments ?? []).slice(pagination.offset, pagination.offset + pagination.limit)}
 							getRowId={(experiment) => `${experiment.project_id}/${experiment.id}`}
 							pageSizeStorageKey="bifrost.traceExperiments.pageSize"
 							testIdPrefix="trace-experiments"
 							waitingLabel={t("tracing.table.waiting")}
 							totalItems={experiments.data?.experiments?.length ?? 0}
 							loading={experiments.isFetching && !experiments.data}
-							pagination={{ ...pagination, offset: 0 }}
+							pagination={pagination}
 							onPaginationChange={onPaginationChange}
 							onRefresh={refresh}
 							onRowClick={(experiment) =>
@@ -468,7 +478,7 @@ export default function TracingPage() {
 			</div>
 
 			<TraceViewer
-				projectId={url.trace ? linkedProject || traceProject.data?.traces?.[0]?.project_id || null : null}
+				projectId={viewerProject || null}
 				traceId={url.trace || null}
 				initialSpanId={url.span || null}
 				hasPrev={position > 0}
@@ -479,7 +489,24 @@ export default function TracingPage() {
 				}}
 				renderSpanExtras={renderTraceSpanExtras}
 			/>
-			<ProjectSettings open={settingsOpen} onOpenChange={setSettingsOpen} projects={projects} initialProjectId={url.project_ids[0]} />
+			<ProjectsDialog
+				open={projectsOpen}
+				onOpenChange={setProjectsOpen}
+				projects={projects}
+				onOpenProject={(id) => {
+					setProjectsOpen(false);
+					setSheetProjectId(id);
+				}}
+			/>
+			<ProjectSheet
+				project={projects.find((project) => project.id === sheetProjectId)}
+				onClose={() => setSheetProjectId(null)}
+				onViewTraces={(id) => {
+					setSheetProjectId(null);
+					// Another project's traces drop the session or experiment the list was scoped to.
+					setUrl({ view: "traces", project_ids: [id], session_id: null, experiment: null, offset: 0 });
+				}}
+			/>
 		</div>
 	);
 }
