@@ -2,6 +2,7 @@
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
 - feat: soniox - new provider for async speech-to-text, text-to-speech with streaming, speech sessions and real-time transcription
+- feat: code mode - `listToolFiles` takes an optional `query` and `limit` and returns a ranked shortlist of the caller's visible tool files, ranked lexically or by an optional external HTTP ranker (`MCPToolManagerConfig.CodeModeDiscoveryRanker`) with a lexical fallback; without `query` the listing is unchanged
 - feat: sarvam - chat and model listing move to Token Factory v2, and Sarvam Prism serves decisions (thanks [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)!)
   <Warning>
   `sarvam-30b` is no longer served. Use `sarvam-105b`.

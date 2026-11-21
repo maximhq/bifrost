@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,43 @@ func TestMCPCodeModeLimitsValidate(t *testing.T) {
 				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestMCPCodeModeDiscoveryRankerValidate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ranker  MCPCodeModeDiscoveryRanker
+		wantErr bool
+	}{
+		{"empty disables", MCPCodeModeDiscoveryRanker{}, false},
+		{"https", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank"}, false},
+		{"http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank"}, false},
+		{"maximum timeout", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 30}, false},
+		{"timeout above maximum", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 31}, true},
+		{"timeout that overflows a duration", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 9223372037}, true},
+		{"negative timeout", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: -1}, true},
+		{"other scheme", MCPCodeModeDiscoveryRanker{URL: "ftp://ranker.example/rank"}, true},
+		{"relative", MCPCodeModeDiscoveryRanker{URL: "/rank"}, true},
+		{"credentials in url", MCPCodeModeDiscoveryRanker{URL: "https://user:pass@ranker.example/rank"}, true},
+		{"token over https", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"token over loopback http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"plain http without token", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank"}, false},
+		{"token over non-loopback http", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank", TokenFile: "/run/secrets/ranker"}, true},
+		{"port without a host", MCPCodeModeDiscoveryRanker{URL: "https://:8443/rank"}, true},
+		{"host with a custom port", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example:8443/rank"}, false},
+	} {
+		if err := tc.ranker.Validate(); (err != nil) != tc.wantErr {
+			t.Fatalf("%s: Validate() = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+	// A malformed URL is refused without quoting it: it may carry credentials.
+	err := MCPCodeModeDiscoveryRanker{URL: "https://user:secret@ranker.example/%zz"}.Validate()
+	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "ranker.example") {
+		t.Fatalf("expected an error that does not quote the URL, got %v", err)
+	}
+	if got := (MCPCodeModeDiscoveryRanker{}).Timeout(); got != DefaultCodeModeDiscoveryRankerTimeout {
+		t.Fatalf("default timeout = %v", got)
 	}
 }
 
