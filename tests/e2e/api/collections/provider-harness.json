@@ -346667,9 +346667,12 @@
                   "pm.test('a non-public audio URL is refused as a caller error, not a 500', function () {",
                   "  pm.expect(pm.response.code, 'want 400: ' + pm.response.text()).to.eql(400);",
                   "});",
+                  "var message = ((pm.response.json() || {}).error || {}).message || '';",
                   "pm.test('the error names the refused block', function () {",
-                  "  var message = ((pm.response.json() || {}).error || {}).message || '';",
                   "  pm.expect(message, 'error body: ' + pm.response.text()).to.include('messages[0].content[1]');",
+                  "});",
+                  "pm.test('the fetcher blocked the metadata address, not a timeout or TLS failure', function () {",
+                  "  pm.expect(message, 'error body: ' + pm.response.text()).to.include('blocked connection to non-public address 169.254.169.254');",
                   "});"
                 ]
               }
