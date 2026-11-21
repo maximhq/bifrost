@@ -458,6 +458,7 @@ func (provider *DagonProvider) CountTokens(ctx *schemas.BifrostContext, key sche
 			Provider:                  schemas.Dagon,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		},
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,

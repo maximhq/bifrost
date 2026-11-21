@@ -15,6 +15,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/dagon"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -392,6 +393,40 @@ func TestDagonAnthropicEndpointDropsServerTools(t *testing.T) {
 	}
 	if len(body.Tools) != 1 || body.Tools[0]["name"] != "lookup" {
 		t.Fatalf("outbound tools = %v, want only the lookup function tool", body.Tools)
+	}
+}
+
+// TestDagonCountTokensHonoursBetaHeaderOverrides checks that CountTokens applies the
+// operator's BetaHeaderOverrides like the chat and Responses paths: a beta Dagon drops by
+// default reaches the upstream once an override enables it.
+func TestDagonCountTokensHonoursBetaHeaderOverrides(t *testing.T) {
+	const beta = "interleaved-thinking-2025-05-14"
+	gotBeta := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta <- r.Header.Get(anthropic.AnthropicBetaHeader)
+		jsonResponse(`{"input_tokens":7}`)(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := dagon.NewDagonProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL + "/",
+			DefaultRequestTimeoutInSeconds: 10,
+			AllowPrivateNetwork:            true,
+			BetaHeaderOverrides:            map[string]bool{anthropic.AnthropicInterleavedThinkingBetaHeaderPrefix: true},
+		},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatalf("NewDagonProvider: %v", err)
+	}
+
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{anthropic.AnthropicBetaHeader: {beta}})
+	if _, bifrostErr := provider.CountTokens(ctx, testKey(), responsesRequest()); bifrostErr != nil {
+		t.Fatalf("CountTokens: %v", llmtests.GetErrorMessage(bifrostErr))
+	}
+	if got := <-gotBeta; !strings.Contains(got, beta) {
+		t.Fatalf("%s = %q, want it to contain %q", anthropic.AnthropicBetaHeader, got, beta)
 	}
 }
 
