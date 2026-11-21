@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -3350,7 +3349,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 				if startErr := externalClient.Start(perAttemptCtx); startErr != nil {
 					return startErr
 				}
-				drainStderr(externalClient, config)
+				forwardStderr(externalClient, config)
 				return nil
 			},
 			transportRetryConfig,
@@ -4100,17 +4099,19 @@ const maxStderrLineBytes = 64 * 1024
 
 // stderrQueueSize bounds the backlog of lines awaiting delivery to
 // StderrHandler. If the handler is slow or blocked and the queue fills,
-// further lines are dropped so handler latency can never stall pipe
-// draining.
+// further lines are dropped so handler latency can never stall reading
+// the transport's stderr.
 const stderrQueueSize = 256
 
-// drainStderr always reads cli's stderr pipe to completion in a background
-// goroutine, forwarding each line to config.StdioConfig.StderrHandler if one
-// is supplied. Safe to call for any connection type: GetStderr's transport
+// forwardStderr forwards each line the subprocess writes to stderr to
+// config.StdioConfig.StderrHandler from a background goroutine. Without a
+// handler it does nothing: the mcp-go stdio transport already drains the pipe
+// into its own bounded buffer, so leaving stderr unread cannot block the
+// subprocess. Safe to call for any connection type: GetStderr's transport
 // type assertion no-ops for non-stdio clients. Must be called after
 // cli.Start(), when the pipe exists. The pipe is closed by cli.Close(), which
 // ends the goroutines.
-func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
+func forwardStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 	stderr, ok := client.GetStderr(cli)
 	if !ok || stderr == nil {
 		// nil when the transport spawned no subprocess (empty command).
@@ -4121,7 +4122,6 @@ func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 		handler = config.StdioConfig.StderrHandler
 	}
 	if handler == nil {
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
 		return
 	}
 

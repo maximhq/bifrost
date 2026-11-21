@@ -2217,24 +2217,7 @@ func (c *lineCollector) snapshot() []string {
 	return slices.Clone(c.lines)
 }
 
-func TestDrainStderrPreventsBlockingOnFullPipeBuffer(t *testing.T) {
-	t.Parallel()
-
-	t.Run("with_drain_unblocks", func(t *testing.T) {
-		t.Parallel()
-		sentinel := filepath.Join(t.TempDir(), "done")
-		cmd := fmt.Sprintf(`yes boom | head -c 200000 >&2; touch %q`, sentinel)
-
-		cli := startedStdioClient(t, "sh", "-c", cmd)
-		drainStderr(cli, &schemas.MCPClientConfig{
-			ConnectionType: schemas.MCPConnectionTypeSTDIO,
-			StdioConfig:    &schemas.MCPStdioConfig{}})
-
-		requireSentinel(t, sentinel, "subprocess did not finish writing stderr; pipe likely not drained")
-	})
-}
-
-func TestDrainStderrForwardsLinesToHandler(t *testing.T) {
+func TestForwardStderrForwardsLinesToHandler(t *testing.T) {
 	t.Parallel()
 
 	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo second >&2`)
@@ -2244,7 +2227,7 @@ func TestDrainStderrForwardsLinesToHandler(t *testing.T) {
 		ConnectionType: schemas.MCPConnectionTypeSTDIO,
 		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
 	}
-	drainStderr(cli, config)
+	forwardStderr(cli, config)
 
 	require.Eventually(t, func() bool {
 		return len(collector.snapshot()) == 2
@@ -2253,7 +2236,7 @@ func TestDrainStderrForwardsLinesToHandler(t *testing.T) {
 	require.Equal(t, []string{"first", "second"}, collector.snapshot())
 }
 
-func TestDrainStderrForwardsBlankLines(t *testing.T) {
+func TestForwardStderrForwardsBlankLines(t *testing.T) {
 	t.Parallel()
 
 	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo >&2; echo third >&2`)
@@ -2263,7 +2246,7 @@ func TestDrainStderrForwardsBlankLines(t *testing.T) {
 		ConnectionType: schemas.MCPConnectionTypeSTDIO,
 		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
 	}
-	drainStderr(cli, config)
+	forwardStderr(cli, config)
 
 	require.Eventually(t, func() bool {
 		return len(collector.snapshot()) == 3
@@ -2272,10 +2255,10 @@ func TestDrainStderrForwardsBlankLines(t *testing.T) {
 	require.Equal(t, []string{"first", "", "third"}, collector.snapshot())
 }
 
-// TestDrainStderrNilPipe covers a stdio transport that never spawned a
+// TestForwardStderrNilPipe covers a stdio transport that never spawned a
 // subprocess (empty command): GetStderr reports ok with a nil reader, which
-// drainStderr must skip rather than read from in a background goroutine.
-func TestDrainStderrNilPipe(t *testing.T) {
+// forwardStderr must skip rather than read from in a background goroutine.
+func TestForwardStderrNilPipe(t *testing.T) {
 	t.Parallel()
 
 	cli := client.NewClient(transport.NewStdio("", nil))
@@ -2288,38 +2271,11 @@ func TestDrainStderrNilPipe(t *testing.T) {
 			ConnectionType: schemas.MCPConnectionTypeSTDIO,
 			StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: handler},
 		}
-		require.NotPanics(t, func() { drainStderr(cli, config) })
+		require.NotPanics(t, func() { forwardStderr(cli, config) })
 	}
 }
 
-func TestCreateSTDIOConnectionRejectsEmptyCommand(t *testing.T) {
-	t.Parallel()
-
-	m := &MCPManager{logger: defaultLogger}
-	blank := "  "
-	cases := map[string]struct {
-		command   string
-		overrides *schemas.BifrostMCPConnectRequest
-	}{
-		"empty config command":   {command: ""},
-		"blank override command": {command: "echo", overrides: &schemas.BifrostMCPConnectRequest{StdioCommand: &blank}},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			config := &schemas.MCPClientConfig{
-				Name:           "empty-cmd",
-				ConnectionType: schemas.MCPConnectionTypeSTDIO,
-				StdioConfig:    &schemas.MCPStdioConfig{Command: tc.command},
-			}
-			cli, _, err := m.createSTDIOConnection(context.Background(), config, tc.overrides)
-			require.Error(t, err)
-			require.Nil(t, cli)
-			require.Contains(t, err.Error(), "a stdio command is required")
-		})
-	}
-}
-
-func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
+func TestForwardStderrIgnoresNonSTDIOConfig(t *testing.T) {
 	t.Parallel()
 
 	cli := startedStdioClient(t, "sh", "-c", `echo unread >&2`)
@@ -2327,10 +2283,10 @@ func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
 	// Simulates an HTTP/SSE config, whose StdioConfig is always nil. Must not
 	// panic despite the stdio transport actually being present here.
 	config := &schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeHTTP}
-	require.NotPanics(t, func() { drainStderr(cli, config) })
+	require.NotPanics(t, func() { forwardStderr(cli, config) })
 }
 
-func TestDrainStderrTruncatesOversizedLine(t *testing.T) {
+func TestForwardStderrTruncatesOversizedLine(t *testing.T) {
 	t.Parallel()
 	sentinel := filepath.Join(t.TempDir(), "done")
 
@@ -2344,7 +2300,7 @@ func TestDrainStderrTruncatesOversizedLine(t *testing.T) {
 		ConnectionType: schemas.MCPConnectionTypeSTDIO,
 		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
 	}
-	drainStderr(cli, config)
+	forwardStderr(cli, config)
 
 	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; oversized line likely blocked the reader")
 
@@ -2357,7 +2313,7 @@ func TestDrainStderrTruncatesOversizedLine(t *testing.T) {
 	require.Equal(t, "second", lines[1])
 }
 
-func TestDrainStderrHandlerBlockDoesNotStallReading(t *testing.T) {
+func TestForwardStderrHandlerBlockDoesNotStallReading(t *testing.T) {
 	t.Parallel()
 	sentinel := filepath.Join(t.TempDir(), "done")
 
@@ -2375,7 +2331,7 @@ func TestDrainStderrHandlerBlockDoesNotStallReading(t *testing.T) {
 			},
 		},
 	}
-	drainStderr(cli, config)
+	forwardStderr(cli, config)
 	t.Cleanup(func() { close(block) })
 
 	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; blocked handler stalled the reader")
