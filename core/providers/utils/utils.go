@@ -4061,6 +4061,13 @@ func markStreamTerminalHandled(ctx *schemas.BifrostContext) {
 	ctx.SetValue(streamTerminalHandledKey{}, true)
 }
 
+// ResetStreamTerminalHandled clears the marker a previous stream attempt left on a context
+// that a retry or fallback attempt reuses, so the new attempt's terminal is its own. Call it
+// only once the previous attempt's stream has drained.
+func ResetStreamTerminalHandled(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(streamTerminalHandledKey{})
+}
+
 func streamTerminalHandled(ctx *schemas.BifrostContext) bool {
 	handled, _ := ctx.Value(streamTerminalHandledKey{}).(bool)
 	return handled
