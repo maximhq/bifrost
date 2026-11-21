@@ -1,3 +1,4 @@
+- fix: a stream producer panic is reported to plugins as a server error, not a client cancellation; `lib.RecoverStreamProducer` now takes the request's `BifrostContext` (#10203) [@ahmedabdou14](https://github.com/ahmedabdou14)
 ## 🔒 Security
 
 - **Go 1.27.4** - Security release with fixes to `net/http` (a possible HTTP server crash, CVE-2026-97054), cgo, the go command, the compiler and the linker. Bifrost now builds with Go 1.27.4, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.4-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.4 to load.

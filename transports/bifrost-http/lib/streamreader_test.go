@@ -2,6 +2,7 @@ package lib
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1396,7 +1397,7 @@ func TestRecoverStreamProducerCancelsAndDrains(t *testing.T) {
 	}()
 
 	require.NotPanics(t, func() {
-		defer RecoverStreamProducer(cancel, stream, nil)
+		defer RecoverStreamProducer(nil, cancel, stream, nil)
 		var chunk *schemas.BifrostStreamChunk
 		_ = chunk.BifrostChatResponse
 	})
@@ -1415,7 +1416,7 @@ func TestRecoverStreamProducerCancelsAndDrains(t *testing.T) {
 	untouched := make(chan *schemas.BifrostStreamChunk, 1)
 	untouched <- &schemas.BifrostStreamChunk{}
 	func() {
-		defer RecoverStreamProducer(func() { t.Fatal("cancel called without a panic") }, untouched, nil)
+		defer RecoverStreamProducer(nil, func() { t.Fatal("cancel called without a panic") }, untouched, nil)
 	}()
 	require.Len(t, untouched, 1, "no panic must leave the stream unread")
 }
@@ -1429,7 +1430,7 @@ func TestRecoverStreamProducerReportsPanic(t *testing.T) {
 		close(stream)
 		var order []string
 		require.NotPanics(t, func() {
-			defer RecoverStreamProducer(func() { order = append(order, "cancel") }, stream, func() { order = append(order, "onPanic") })
+			defer RecoverStreamProducer(nil, func() { order = append(order, "cancel") }, stream, func() { order = append(order, "onPanic") })
 			panic("boom")
 		})
 		require.Equal(t, []string{"onPanic", "cancel"}, order)
@@ -1444,7 +1445,7 @@ func TestRecoverStreamProducerReportsPanic(t *testing.T) {
 		}()
 		cancelled := false
 		require.NotPanics(t, func() {
-			defer RecoverStreamProducer(func() { cancelled = true }, stream, func() { panic("error frame") })
+			defer RecoverStreamProducer(nil, func() { cancelled = true }, stream, func() { panic("error frame") })
 			panic("boom")
 		})
 		require.True(t, cancelled, "cancel must still run after onPanic panicked")
@@ -1454,11 +1455,43 @@ func TestRecoverStreamProducerReportsPanic(t *testing.T) {
 			t.Fatal("sender stayed blocked: the stream was not drained after onPanic panicked")
 		}
 	})
+	t.Run("marks the context as the producer's own failure before cancelling", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream := make(chan *schemas.BifrostStreamChunk)
+		close(stream)
+		markedAtCancel := false
+		require.NotPanics(t, func() {
+			defer RecoverStreamProducer(ctx, func() {
+				markedAtCancel, _ = ctx.Value(schemas.BifrostContextKeyStreamConsumerFailed).(bool)
+			}, stream, nil)
+			panic("boom")
+		})
+		require.True(t, markedAtCancel, "the provider must see the mark when the cancel reaches it")
+
+		clean := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		func() {
+			defer RecoverStreamProducer(clean, func() {}, nil, nil)
+		}()
+		require.Nil(t, clean.Value(schemas.BifrostContextKeyStreamConsumerFailed), "no panic must leave the context unmarked")
+	})
 	t.Run("no panic, no onPanic", func(t *testing.T) {
 		func() {
-			defer RecoverStreamProducer(func() {}, nil, func() { t.Fatal("onPanic called without a panic") })
+			defer RecoverStreamProducer(nil, func() {}, nil, func() { t.Fatal("onPanic called without a panic") })
 		}()
 	})
+}
+
+// BenchmarkRecoverStreamProducerNoPanic is the cost every streamed response pays when the
+// producer does not panic: one deferred call per stream, not per chunk.
+func BenchmarkRecoverStreamProducerNoPanic(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancel := func() {}
+	b.ReportAllocs()
+	for b.Loop() {
+		func() {
+			defer RecoverStreamProducer(ctx, cancel, nil, nil)
+		}()
+	}
 }
 
 // TestRunRecovered pins that a teardown step's panic is contained, so the steps after it

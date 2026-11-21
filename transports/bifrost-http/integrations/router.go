@@ -3075,7 +3075,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		// is cancelled and drained, then the teardown closes the stream. sendPanicError is
 		// assigned once sendConvertedStreamError exists below.
 		var sendPanicError func()
-		defer lib.RecoverStreamProducer(cancel, streamChan, func() {
+		defer lib.RecoverStreamProducer(bifrostCtx, cancel, streamChan, func() {
 			if sendPanicError != nil {
 				sendPanicError()
 			}
@@ -4306,7 +4306,7 @@ func (g *GenericRouter) handlePassthroughStream(
 		}
 		// Runs before the teardown above. Raw passthrough bytes are not always SSE, so a
 		// terminal frame is written only on a Responses relay that has not ended yet.
-		defer lib.RecoverStreamProducer(cancel, stream, func() {
+		defer lib.RecoverStreamProducer(bifrostCtx, cancel, stream, func() {
 			if frames != nil && !frames.sawTerminal {
 				if frame := frames.failedFrame(lib.StreamProducerPanicError()); frame != nil {
 					reader.Send(frame)
