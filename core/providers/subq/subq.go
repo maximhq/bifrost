@@ -67,20 +67,43 @@ func (provider *SubqProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // responsesInputHasImage reports whether any Responses input message carries an
-// input_image content block. Subq's Responses endpoint silently ignores images,
-// so those requests fall back to Chat Completions.
+// input_image content block, including blocks inside function_call_output items.
+// Subq's Responses endpoint silently ignores images, so those requests fall back
+// to Chat Completions.
 func responsesInputHasImage(input []schemas.ResponsesMessage) bool {
 	for _, message := range input {
-		if message.Content == nil {
-			continue
+		if message.Content != nil && hasImageBlock(message.Content.ContentBlocks) {
+			return true
 		}
-		for _, block := range message.Content.ContentBlocks {
-			if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
-				return true
-			}
+		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil &&
+			hasImageBlock(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+			return true
 		}
 	}
 	return false
+}
+
+func hasImageBlock(blocks []schemas.ResponsesMessageContentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+			return true
+		}
+	}
+	return false
+}
+
+// checkImageFallback rejects image input combined with previous_response_id:
+// the Chat Completions fallback cannot replay the stored conversation, so the
+// request would silently lose its history.
+func checkImageFallback(request *schemas.BifrostResponsesRequest, requestType schemas.RequestType) *schemas.BifrostError {
+	if request.Params != nil && request.Params.PreviousResponseID != nil && *request.Params.PreviousResponseID != "" {
+		bifrostErr := providerUtils.NewBifrostOperationError("subq does not support image input together with previous_response_id; send the full conversation instead", nil)
+		bifrostErr.StatusCode = schemas.Ptr(400)
+		bifrostErr.ExtraFields.Provider = schemas.Subq
+		bifrostErr.ExtraFields.RequestType = requestType
+		return bifrostErr
+	}
+	return nil
 }
 
 // ListModels performs a list models request to Subq's API.
@@ -157,6 +180,9 @@ func (provider *SubqProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 // back to Chat Completions.
 func (provider *SubqProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if responsesInputHasImage(request.Input) {
+		if bifrostErr := checkImageFallback(request, schemas.ResponsesRequest); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
 			return nil, err
@@ -183,6 +209,9 @@ func (provider *SubqProvider) Responses(ctx *schemas.BifrostContext, key schemas
 // ResponsesStream performs a streaming responses request to the Subq API.
 func (provider *SubqProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if responsesInputHasImage(request.Input) {
+		if bifrostErr := checkImageFallback(request, schemas.ResponsesStreamRequest); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}

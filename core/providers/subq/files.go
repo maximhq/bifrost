@@ -66,7 +66,7 @@ func (provider *SubqProvider) FileUpload(ctx *schemas.BifrostContext, key schema
 	}
 
 	part, err := writer.CreatePart(map[string][]string{
-		"Content-Disposition": {fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename)},
+		"Content-Disposition": {multipart.FileContentDisposition("file", filename)},
 		"Content-Type":        {contentType},
 	})
 	if err != nil {
@@ -120,12 +120,20 @@ func (provider *SubqProvider) FileUpload(ctx *schemas.BifrostContext, key schema
 	return fileResponse, nil
 }
 
-// FileList lists files for the first configured key.
+// FileList lists files serially across keys: one upstream call per page, with
+// the key index and Subq's native cursor carried in the serial cursor.
 func (provider *SubqProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys available for file list", nil)
 	}
-	key := keys[0]
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		return &schemas.BifrostFileListResponse{Object: "list", Data: []schemas.FileObject{}}, nil
+	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -142,8 +150,8 @@ func (provider *SubqProvider) FileList(ctx *schemas.BifrostContext, keys []schem
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
 	}
-	if request.After != nil && *request.After != "" {
-		values.Set("after", *request.After)
+	if nativeCursor != "" {
+		values.Set("after", nativeCursor)
 	}
 	if request.Order != nil && *request.Order != "" {
 		values.Set("order", *request.Order)
@@ -199,16 +207,17 @@ func (provider *SubqProvider) FileList(ctx *schemas.BifrostContext, keys []schem
 	}
 
 	bifrostResp := &schemas.BifrostFileListResponse{
-		Object:  "list",
-		Data:    files,
-		HasMore: openAIResp.HasMore,
+		Object: "list",
+		Data:   files,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
-	if openAIResp.HasMore && lastFileID != "" {
-		bifrostResp.After = &lastFileID
+	nextCursor, hasMore := helper.BuildNextCursor(openAIResp.HasMore && lastFileID != "", lastFileID)
+	bifrostResp.HasMore = hasMore
+	if nextCursor != "" {
+		bifrostResp.After = &nextCursor
 	}
 	return bifrostResp, nil
 }

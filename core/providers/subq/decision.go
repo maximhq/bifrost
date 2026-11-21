@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	subqDecisionPath = "/v1/systemone"
-	maxDecisionImages        = 4
+	subqDecisionPath  = "/v1/systemone"
+	maxDecisionImages = 4
 )
 
 // ToSubqDecisionRequest converts a Bifrost decision request into Subq's
