@@ -1,0 +1,193 @@
+name: Test Coverage
+
+# Every dev push (PR merge or direct push) gets an independent coverage run.
+# This reports coverage; it has no percentage target or decrease check.
+# Tests, profile validation and upload errors fail the job, not low coverage.
+on:
+  push:
+    branches: [dev]
+  # GitHub requires repository write access to dispatch a manual run.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    # Upstream repository only; manual runs must select dev.
+    if: >-
+      github.repository == 'maximhq/bifrost' &&
+      github.ref == 'refs/heads/dev'
+    runs-on: builder-8-32
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # Codecov OIDC; no upload token or provider credentials.
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - name: Set up Node.js for MCP fixtures
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Start disposable test services
+        run: |
+          docker compose -f tests/docker-compose.yml up -d --wait \
+            postgres clickhouse redis-stack redis-tls redis-cluster redis-cluster-tls
+          # Postgres and standalone TLS Redis have no Compose healthcheck.
+          for service in postgres redis-tls; do
+            ready=false
+            for attempt in {1..60}; do
+              if [[ "$service" == postgres ]]; then
+                if docker compose -f tests/docker-compose.yml exec -T postgres pg_isready -U bifrost; then
+                  ready=true; break
+                fi
+              elif docker compose -f tests/docker-compose.yml exec -T redis-tls \
+                redis-cli --tls --cacert /tls/ca.crt -p 6380 ping; then
+                ready=true; break
+              fi
+              echo "Waiting for $service ($attempt/60)"
+              sleep 2
+            done
+            if [[ "$ready" != true ]]; then
+              echo "::error::$service did not become ready"
+              exit 1
+            fi
+          done
+
+      - name: Build local MCP fixtures
+        run: make setup-mcp-tests
+
+      - name: Set up coverage workspace
+        id: workspace
+        run: |
+          # Resolve all production modules to this commit, not published versions.
+          go work init ./core ./framework ./transports ./cli ./scripts/bifrost-migration-cli
+          for module in plugins/*/go.mod; do
+            go work use "${module%/go.mod}"
+          done
+          # Unit tests only need an asset for the HTTP binary's go:embed directive.
+          mkdir -p transports/bifrost-http/ui
+          printf 'coverage test fixture\n' > transports/bifrost-http/ui/.gitkeep
+
+      - name: Run tests and collect coverage
+        id: tests
+        run: |
+          set -euo pipefail
+          patterns=(./core/... ./framework/... ./transports/... ./cli/... ./scripts/bifrost-migration-cli/...)
+          for module in plugins/*/go.mod; do
+            patterns+=("./${module%/go.mod}/...")
+          done
+          package_list=$(go list "${patterns[@]}")
+          test_packages=()
+          cover_packages=()
+          while IFS= read -r package; do
+            case "$package" in
+              */core/internal/memtest|*/transports/v2/bifrost-http/tests|*/transports/v2/bifrost-http/tests/*)
+                # Allocation/static audits and gateway E2E tests have separate harnesses.
+                continue ;;
+            esac
+            test_packages+=("$package")
+            case "$package" in
+              */core/internal/llmtests|*/core/internal/mcptests|*/core/internal/schemaorder|*/core/network/proxytest|*/cli/internal/operations/gen)
+                # Run helper-package tests, but do not count test support/build tooling.
+                continue ;;
+            esac
+            cover_packages+=("$package")
+          done <<< "$package_list"
+          if (( ${#test_packages[@]} == 0 || ${#cover_packages[@]} == 0 )); then
+            echo "::error::No test/production packages found"
+            exit 1
+          fi
+          mkdir -p coverage
+          coverpkg=$(IFS=,; echo "${cover_packages[*]}")
+          flags=(-short -count=1 -timeout=20m -covermode=atomic -coverpkg="$coverpkg")
+          # Plugin test builds must use the same instrumentation as the host
+          # to keep their shared-library ABI compatible.
+          export GOFLAGS="-cover -covermode=atomic -coverpkg=$coverpkg"
+          # Collect the complete block inventory, including untested code.
+          # This zero-test profile is only a completeness check, never upload data.
+          go test "${flags[@]}" -run '^$' -coverprofile=coverage/reference.out "${test_packages[@]}"
+          # No live-provider credentials: local converter/stub/MCP tests still run.
+          # A failing test stops here and prevents validation/upload; no failures hidden.
+          go test "${flags[@]}" -coverprofile=coverage/raw.out "${test_packages[@]}" | tee coverage/tests.log
+
+      - name: Validate coverage profile
+        id: profile
+        run: |
+          set -euo pipefail
+          for profile in coverage/reference.out coverage/raw.out; do
+            [[ $(head -n 1 "$profile") == 'mode: atomic' ]]
+            [[ $(wc -l < "$profile") -gt 1 ]]
+            go tool cover -func="$profile" > /dev/null
+            # Cross-package test runs produce repeated block records. Sum their
+            # atomic counters to avoid uploading repeated zero-counter blocks.
+            awk '
+              NR == 1 { print; next }
+              { block = $1 " " $2; hits[block] += $3 }
+              END { for (block in hits) printf "%s %.0f\n", block, hits[block] }
+            ' "$profile" > "$profile.compact"
+            mv "$profile.compact" "$profile"
+            awk 'NR > 1 { print $1, $2 }' "$profile" | LC_ALL=C sort > "$profile.blocks"
+          done
+          # A missing package/block must not make the reported percentage look better.
+          diff -u coverage/reference.out.blocks coverage/raw.out.blocks
+          # Shared fixtures/mocks are compiled so tests across modules can import
+          # them. The catalog is generated data, not handwritten logic.
+          # Keep providers, internal production code and plugins/mocker in the report.
+          awk '
+            {
+              sub(/^github.com\/maximhq\/bifrost\/transports\/v2\//, "./transports/")
+              sub(/^github.com\/maximhq\/bifrost\//, "./")
+              if ($1 ~ /^\.\/core\/schemas\/exportfixture\.go:/ ||
+                  $1 ~ /^\.\/framework\/(objectstore\/mock|vectorstore\/test_utils)\.go:/ ||
+                  $1 ~ /^\.\/plugins\/(governance|routing|routing\/rules|semanticcache)\/test_utils\.go:/ ||
+                  $1 ~ /^\.\/cli\/internal\/operations\/catalog\.gen\.go:/) next
+              print
+            }
+          ' coverage/raw.out > coverage/coverage.out
+          [[ $(wc -l < coverage/coverage.out) -gt 1 ]]
+          go tool cover -func=coverage/coverage.out > coverage/summary.txt
+          # Percentages are informational, including zero and decreases.
+          tail -n 1 coverage/summary.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage/coverage.out
+          flags: tests
+          disable_search: true # Never upload the reference or unrelated release profiles.
+          handle_no_reports_found: false
+          fail_ci_if_error: true # Authentication, missing-report and service errors are fatal.
+
+      - name: Save test and coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: test-coverage
+          path: |
+            coverage/coverage.out
+            coverage/summary.txt
+            coverage/tests.log
+            coverage/*.blocks
+          retention-days: 14
+
+      - name: Stop disposable test services
+        if: always()
+        run: docker compose -f tests/docker-compose.yml down --volumes
