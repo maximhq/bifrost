@@ -872,7 +872,7 @@ test-memory: install-gotestsum ## Run memory-regression tests (allocation scalin
 	@$(ECHO) "$(CYAN)loop-bound raw-JSON mutation in core/providers has been classified.$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
 	@rc=0; \
-	for mod in core transports; do \
+	for mod in core framework transports; do \
 		pkgs=$$(cd $$mod && grep -rl "_AllocationScaling\|_Retention" --include="*_test.go" . 2>/dev/null | xargs -n1 dirname | sort -u); \
 		if [ "$$mod" = "core" ]; then pkgs="./internal/memtest $$(echo "$$pkgs" | grep -v '^./internal/memtest$$')"; fi; \
 		[ -z "$$(echo $$pkgs)" ] && continue; \

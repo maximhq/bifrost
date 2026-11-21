@@ -312,7 +312,7 @@ func (h *TracesHandler) connect(ctx *fasthttp.RequestCtx) {
 	authRequired := h.ingest != nil && h.ingest.credentials != nil && h.ingest.credentials.IsDashboardAuthActive()
 	SendJSON(ctx, map[string]any{
 		"auth_required": authRequired,
-		"base_url": base,
+		"base_url":      base,
 		"endpoints": map[string]string{
 			logstore.TraceSourceBraintrust: base + tracingPrefix + "/braintrust",
 			logstore.TraceSourceLangfuse:   base + tracingPrefix + "/langfuse",
