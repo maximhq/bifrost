@@ -343761,6 +343761,9 @@
                   "  pm.expect(severity.probabilities, \"score distribution: \" + pm.response.text()).to.be.an(\"array\").with.lengthOf(2);",
                   "  pm.expect(severity.probabilities.map(function (p) { return p.value; })).to.deep.equal([0, 1]);",
                   "  pm.expect(severity.probabilities.map(function (p) { return p.label; })).to.deep.equal([\"0\", \"1\"]);",
+                  "  pm.expect(severity.legend, \"score legend: \" + pm.response.text()).to.deep.equal({\"0\": \"low\", \"1\": \"high\"});",
+                  "  var weighted = severity.probabilities.reduce(function (sum, p) { return sum + p.value * p.probability; }, 0);",
+                  "  pm.expect(severity.score, \"score must agree with probabilities: \" + pm.response.text()).to.be.closeTo(weighted, 0.01);",
                   "  var total = 0;",
                   "  severity.probabilities.forEach(function (p) { pm.expect(p.probability).to.be.within(0, 1); total += p.probability; });",
                   "  pm.expect(total, \"score distribution sums to 1: \" + pm.response.text()).to.be.closeTo(1, 0.01);",
@@ -343808,6 +343811,12 @@
                   "  var ids = models.map(function (model) { return model.id; });",
                   "  pm.expect(ids).to.include('nace/drex-v2.0');",
                   "  pm.expect(ids).to.include('nace/drex-max');",
+                  "  ids.forEach(function (id) { pm.expect(id, pm.response.text()).to.match(/^nace\\//); });",
+                  "  var max = models.filter(function (model) { return model.id === 'nace/drex-max'; })[0];",
+                  "  pm.expect(max.supported_methods).to.include('decisions');",
+                  "  pm.expect(max.architecture.input_modalities).to.include('image');",
+                  "  pm.expect(max.max_input_tokens).to.equal(262144);",
+                  "  pm.expect(max.pricing.prompt).to.equal('0.00000003');",
                   "});"
                 ]
               }
@@ -344075,6 +344084,148 @@
                 "v1",
                 "models"
               ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - nace/drex-v2.0 rejects inline image [EXPECT-400] - #9739",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Pinned text-only Drex rejects images locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error.message).to.contain('images require a drex-max model');",
+                  "  pm.expect(pm.response.json().error.message).to.contain('drex-v2.0');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-v2.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - nace/drex-max-v1.1 ordered message and tool-output images - #9739",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Drex keeps message and tool-output image order', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers[0].type).to.equal('predicate');",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "  var sent = body.extra_fields.raw_request;",
+                  "  if (typeof sent === 'string') sent = JSON.parse(sent);",
+                  "  var input = JSON.parse(pm.request.body.raw).input;",
+                  "  pm.expect(sent.images).to.deep.equal([input[0].content[1].image_url, input[2].output[1].image_url]);",
+                  "  pm.expect(JSON.stringify(sent.state)).to.contain('lookup_1');",
+                  "  pm.expect(JSON.stringify(sent.state)).to.contain('A second synthetic image from the tool.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-max-v1.1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"lookup_1\",\n      \"name\": \"lookup_image\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"lookup_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"A second synthetic image from the tool.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - nace/drex-v2.0 rejects inline image [EXPECT-400] - #9739",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Pinned text-only Drex rejects images locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error.message).to.contain('images require a drex-max model');",
+                  "  pm.expect(pm.response.json().error.message).to.contain('drex-v2.0');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-v2.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - nace/drex-max-v1.1 ordered message and tool-output images - #9739",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Drex keeps message and tool-output image order', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers[0].type).to.equal('predicate');",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "  var sent = body.extra_fields.raw_request;",
+                  "  if (typeof sent === 'string') sent = JSON.parse(sent);",
+                  "  var input = JSON.parse(pm.request.body.raw).input;",
+                  "  pm.expect(sent.images).to.deep.equal([input[0].content[1].image_url, input[2].output[1].image_url]);",
+                  "  pm.expect(JSON.stringify(sent.state)).to.contain('lookup_1');",
+                  "  pm.expect(JSON.stringify(sent.state)).to.contain('A second synthetic image from the tool.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-max-v1.1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"lookup_1\",\n      \"name\": \"lookup_image\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"lookup_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"A second synthetic image from the tool.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
             }
           }
         }

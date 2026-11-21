@@ -23,6 +23,7 @@ func TestClientIdentity(t *testing.T) {
 		{"2.5.0/build", "bifrost/2.5.0build"},
 		{"2.5.0 (darwin)", "bifrost/2.5.0darwin"},
 		{"", "bifrost/dev"},
+		{"///", "bifrost/dev"},
 	} {
 		got := clientIdentity(tc.version)
 		require.Equal(t, tc.want, got, "version %q", tc.version)

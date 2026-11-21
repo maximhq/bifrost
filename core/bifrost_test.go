@@ -10489,15 +10489,25 @@ func TestNaceUsesBootstrapRuntimeVersion(t *testing.T) {
 			if bErr != nil {
 				t.Fatal(bErr)
 			}
-			if got := <-headers; got != expected {
-				t.Errorf("decision client=%q, want %q", got, expected)
+			select {
+			case got := <-headers:
+				if got != expected {
+					t.Errorf("decision client=%q, want %q", got, expected)
+				}
+			default:
+				t.Fatal("decision request did not reach the fixture")
 			}
 			_, bErr = provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{})
 			if bErr != nil {
 				t.Fatal(bErr)
 			}
-			if got := <-headers; got != expected {
-				t.Errorf("model-list client=%q, want %q", got, expected)
+			select {
+			case got := <-headers:
+				if got != expected {
+					t.Errorf("model-list client=%q, want %q", got, expected)
+				}
+			default:
+				t.Fatal("model-list request did not reach the fixture")
 			}
 		})
 	}

@@ -835,6 +835,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: &test-core-egress >
+            console.nace.ai:443
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
@@ -1576,6 +1577,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            console.nace.ai:443
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
             api.cerebras.ai:443
@@ -1705,6 +1707,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            console.nace.ai:443
             _grpc_config.localhost:443
             _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
@@ -2173,6 +2176,7 @@ jobs:
           # through its published 6379, which DNATs to 172.38.0.13. Keep the
           # pinned IPs in sync with .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.1:5432
             127.0.0.1:6379
             172.38.0.11:5432
@@ -2690,6 +2694,7 @@ jobs:
           # in sync; drift here will block egress to Postgres during the docker
           # image test.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.11:53
             172.28.0.16:5432
             api.anthropic.com:443
@@ -2853,6 +2858,7 @@ jobs:
           # in sync; drift here will block egress to Postgres during the docker
           # image test.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.11:53
             172.28.0.16:5432
             api.anthropic.com:443

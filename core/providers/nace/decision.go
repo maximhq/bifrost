@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -20,7 +21,9 @@ func ToNaceDecisionRequest(request *schemas.BifrostDecisionRequest) (*NaceDecisi
 	if err != nil {
 		return nil, err
 	}
-	if len(images) > 0 && !readsImages(request.Model) {
+	// Mutable aliases are resolved by Nace at execution time. Reject only pinned
+	// text-only IDs locally: a catalog's alias_for can change without a gateway rebuild.
+	if len(images) > 0 && (request.Model == "drex-v2.0" || request.Model == "drex-v1.5") {
 		return nil, providerUtils.InvalidRequestErrorf("images require a drex-max model; %q is text-only", request.Model)
 	}
 	textOnly := *request
@@ -179,9 +182,13 @@ func (provider *NaceProvider) nativeDecision(ctx *schemas.BifrostContext, key sc
 	wait()
 	enrich := func(err *schemas.BifrostError) *schemas.BifrostError {
 		var errorBody []byte
-		if rawResponse {
-			// Invalid JSON is retained as-is by EnrichError; detach it from the pool.
-			errorBody = bytes.Clone(resp.Body())
+		if rawResponse && err.ExtraFields.RawResponse == nil {
+			if !gjson.ValidBytes(resp.Body()) {
+				// RawMessage requires valid JSON; retain non-JSON errors as an owned string.
+				err.ExtraFields.RawResponse = string(resp.Body())
+			} else {
+				errorBody = bytes.Clone(resp.Body())
+			}
 		}
 		return providerUtils.EnrichError(ctx, err, body, errorBody, rawRequest, rawResponse, latency)
 	}
