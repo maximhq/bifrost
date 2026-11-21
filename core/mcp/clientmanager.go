@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -4125,6 +4126,15 @@ func forwardStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 		return
 	}
 
+	forwardStderrLines(stderr, handler)
+}
+
+// forwardStderrLines reads stderr line by line in a background goroutine and
+// hands each line to handler on a second goroutine, through a queue of
+// stderrQueueSize. A full queue drops lines, so a slow handler never stops
+// stderr from being read. Both goroutines end when stderr returns an error
+// (EOF on close).
+func forwardStderrLines(stderr io.Reader, handler func(line string)) {
 	lines := make(chan string, stderrQueueSize)
 	go func() {
 		for line := range lines {

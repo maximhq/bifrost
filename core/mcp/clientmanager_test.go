@@ -2315,26 +2315,47 @@ func TestForwardStderrTruncatesOversizedLine(t *testing.T) {
 
 func TestForwardStderrHandlerBlockDoesNotStallReading(t *testing.T) {
 	t.Parallel()
-	sentinel := filepath.Join(t.TempDir(), "done")
 
-	// Enough lines to overflow stderrQueueSize even though the handler is
-	// stuck on the first one; the subprocess must still finish writing.
-	cmd := fmt.Sprintf(`for i in $(seq 1 %d); do echo "line-$i" >&2; done; touch %q`, stderrQueueSize*4, sentinel)
-	cli := startedStdioClient(t, "sh", "-c", cmd)
+	// io.Pipe writes return only once the reader has consumed them, so every
+	// completed write below proves forwardStderrLines read that line itself,
+	// independent of any buffering in the stdio transport.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
 
-	block := make(chan struct{})
-	config := &schemas.MCPClientConfig{
-		ConnectionType: schemas.MCPConnectionTypeSTDIO,
-		StdioConfig: &schemas.MCPStdioConfig{
-			StderrHandler: func(line string) {
-				<-block // blocks on every call, including the first
-			},
-		},
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	forwardStderrLines(pr, func(string) {
+		once.Do(func() { close(blocked) })
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+
+	_, err := io.WriteString(pw, "first\n")
+	require.NoError(t, err)
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was never called")
 	}
-	forwardStderr(cli, config)
-	t.Cleanup(func() { close(block) })
 
-	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; blocked handler stalled the reader")
+	// The handler is now stuck. Write well past the queue capacity.
+	written := make(chan error, 1)
+	go func() {
+		for i := range stderrQueueSize * 4 {
+			if _, err := fmt.Fprintf(pw, "line-%d\n", i); err != nil {
+				written <- err
+				return
+			}
+		}
+		written <- nil
+	}()
+	select {
+	case err := <-written:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader stopped consuming stderr while the handler was blocked")
+	}
 }
 
 // These make the test binary serve newMatrixUpstream instead of running tests, so an upstream on the
