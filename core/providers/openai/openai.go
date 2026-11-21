@@ -2536,12 +2536,11 @@ func HandleOpenAIResponsesStreaming(
 
 		// The loop returns as soon as a terminal event (completed / incomplete /
 		// failed / error) arrives, so falling out of it means the body ended without
-		// one. A plain io.EOF cannot distinguish that from a healthy close, so
-		// surface it rather than closing the channel silently — a silent close is
-		// indistinguishable to the client from a stream that just stopped emitting.
-		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
-		}
+		// one. A Responses stream must end with a terminal event, so this is a
+		// truncation even when [DONE] arrived. Surface it rather than closing the
+		// channel silently: with no error and no final chunk, the client and the
+		// post-hooks never see the request end.
+		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 	}()
 
 	return responseChan, nil

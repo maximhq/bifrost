@@ -221,6 +221,24 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Responses stream ending with [DONE]
+
+Folder 375 pins that a Responses stream that ends with `[DONE]` and no terminal event
+(`response.completed`, `response.incomplete`, `response.failed` or `error`) is reported as
+truncated, on create (`POST /v1/responses`) and on retrieve (`GET /v1/responses/{id}?stream=true`).
+The fixture model `upstream-responses-done-only` and response id `resp_fixture_done_only` stream
+`response.created`, one text delta and `[DONE]`; the client must receive an `error` event saying
+the provider closed the stream before a completion marker. `upstream-responses-completed` and
+`resp_fixture_completed` add `response.completed` and must end without an error. These cases make
+no live provider calls and are skipped unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="responses done truncation" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
